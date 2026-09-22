@@ -71,16 +71,26 @@ function PgTab(props: IDockviewPanelHeaderProps) {
   );
 }
 
-let api: DockviewApi | null = null;
+// dockview api 存 globalThis：HMR 重载本模块时保活（模块级变量会丢引用导致所有 open* 失效）
+interface PiggyGlobals {
+  __piggyDock?: DockviewApi;
+}
+const g = globalThis as unknown as PiggyGlobals;
+function setDockApi(a: DockviewApi | null) {
+  g.__piggyDock = a ?? undefined;
+}
+function api(): DockviewApi | null {
+  return g.__piggyDock ?? null;
+}
 const persist = debounce(() => {
   if (!api) return;
   void cmd('layout_save', {
-    value: { dockview: api.toJSON(), updated_at: Date.now() },
+    value: { dockview: api()?.toJSON(), updated_at: Date.now() },
   }).catch(() => {});
 }, 800);
 
 function onReady(e: DockviewReadyEvent) {
-  api = e.api;
+  setDockApi(e.api);
   e.api.onDidActivePanelChange((ev) => {
     const tabId = (ev.panel?.params as SessionParams | undefined)?.tabId;
     if (tabId) useTabs.getState().setActive(tabId);
@@ -136,8 +146,8 @@ async function restore() {
           }
         }
       }
-      api.fromJSON(serialized as never);
-      if (api.panels.length === 0) await openWelcome();
+      api()?.fromJSON(serialized as never);
+      if (api()?.panels.length === 0) await openWelcome();
       return;
     }
   } catch {
@@ -150,7 +160,7 @@ async function restore() {
 
 export async function openSessionTab(snap: TabSnapshot, title: string) {
   ensureTab(snap);
-  api?.addPanel({
+  api()?.addPanel({
     id: `session:${snap.tab_id}`,
     component: 'session',
     title,
@@ -162,33 +172,33 @@ export async function openSessionTab(snap: TabSnapshot, title: string) {
       title,
     } satisfies PanelParams,
   });
-  api?.getPanel(`session:${snap.tab_id}`)?.focus();
+  api()?.getPanel(`session:${snap.tab_id}`)?.focus();
 }
 
 export function openSettingsTab() {
   const id = 'settings';
-  if (api?.getPanel(id)) {
-    api.getPanel(id)!.focus();
+  if (api()?.getPanel(id)) {
+    api()?.getPanel(id)!.focus();
     return;
   }
-  api?.addPanel({ id, component: 'settings', title: '设置', params: { kind: 'settings' } });
+  api()?.addPanel({ id, component: 'settings', title: '设置', params: { kind: 'settings' } });
 }
 
 export function openPreviewTab(key: string, path: string, title: string) {
   const id = `preview:${key}`;
-  api?.getPanel(id)?.api.close();
-  api?.addPanel({ id, component: 'preview', title: `✦ ${title}`, params: { kind: 'preview', path } });
+  api()?.getPanel(id)?.api.close();
+  api()?.addPanel({ id, component: 'preview', title: `✦ ${title}`, params: { kind: 'preview', path } });
 }
 
 export function closeActivePanel() {
   if (!api) return;
-  const active = api.activePanel ?? api.panels.find((x) => x.id === `session:${useTabs.getState().activeTabId}`);
+  const active = api()?.activePanel ?? api()?.panels.find((x) => x.id === `session:${useTabs.getState().activeTabId}`);
   active?.api.close();
 }
 
 export async function openWelcome() {
-  if (api?.getPanel('welcome')) return;
-  api?.addPanel({ id: 'welcome', component: 'welcome', title: 'Piggy', params: {} });
+  if (api()?.getPanel('welcome')) return;
+  api()?.addPanel({ id: 'welcome', component: 'welcome', title: 'Piggy', params: {} });
 }
 
 const darkTheme: DockviewTheme = { name: 'piggy-dark', className: 'pg-dv-theme-dark', colorScheme: 'dark' };

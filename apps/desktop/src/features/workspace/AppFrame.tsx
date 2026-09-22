@@ -17,12 +17,16 @@ import { RightBar } from './RightBar';
 import { ModelThinkingControls } from './ModelThinking';
 import { DialogRouter } from '@/features/dialogs/DialogRouter';
 
-let bootPromise: Promise<void> | null = null;
+// boot 单例挂 globalThis：HMR 重载本模块时保活（模块级变量会被重置 → boot 重跑 → tab 重复创建）
+interface PiggyBootGlobals {
+  __piggyBootPromise?: Promise<void>;
+}
+const bg = globalThis as unknown as PiggyBootGlobals;
 
-/** 启动流程（单例；StrictMode/重试安全） */
-function startBoot() {
-  if (bootPromise) return bootPromise;
-  bootPromise = (async () => {
+/** 启动流程（单例；StrictMode/HMR/重试安全） */
+function startBoot(): Promise<void> {
+  if (bg.__piggyBootPromise) return bg.__piggyBootPromise;
+  bg.__piggyBootPromise = (async () => {
     // 单窗口语义：新 JS 上下文接管前，收割上一上下文的孤儿 worker（docs/02 §7.5）
     try {
       await cmd('boot_reset');
@@ -39,22 +43,22 @@ function startBoot() {
       );
       if (!hasSession) await createFreshTab();
     } catch {
-      bootPromise = null;
+      bg.__piggyBootPromise = undefined;
       await createFreshTab();
     }
   })();
-  return bootPromise;
+  return bg.__piggyBootPromise;
 }
 
 /** pi 二进制缺失等启动失败后的重试入口（横幅按钮，docs/02 §2.1） */
 export function retryBoot() {
-  bootPromise = null;
+  bg.__piggyBootPromise = undefined;
   void startBoot();
 }
 
 /** @internal 仅供测试 */
 export function resetBootForTest() {
-  bootPromise = null;
+  bg.__piggyBootPromise = undefined;
 }
 
 export function AppFrame() {
