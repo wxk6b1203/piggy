@@ -239,6 +239,58 @@ impl WorkerInner {
             .await
     }
 
+
+    pub async fn get_tree(&self) -> Result<Value, String> {
+        self.request_checked("get_tree", json!({}), None).await
+    }
+
+    pub async fn fork(&self, entry_id: &str) -> Result<Value, String> {
+        self.request_checked(
+            "fork",
+            json!({ "entryId": entry_id }),
+            Some(DEFAULT_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn clone_session(&self) -> Result<Value, String> {
+        self.request_checked("clone", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
+    }
+
+    pub async fn get_fork_messages(&self) -> Result<Value, String> {
+        self.request_checked("get_fork_messages", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
+    }
+
+    pub async fn set_thinking_level(&self, level: &str) -> Result<Value, String> {
+        self.request_checked(
+            "set_thinking_level",
+            json!({ "level": level }),
+            Some(DEFAULT_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn get_available_thinking_levels(&self) -> Result<Value, String> {
+        self.request_checked(
+            "get_available_thinking_levels",
+            json!({}),
+            Some(DEFAULT_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn cycle_thinking_level(&self) -> Result<Value, String> {
+        self.request_checked("cycle_thinking_level", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
+    }
+
+    pub async fn get_commands(&self) -> Result<Value, String> {
+        self.request_checked("get_commands", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
+    }
+
     pub async fn raw_request(
         &self,
         command: &str,

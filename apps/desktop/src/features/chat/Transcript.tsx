@@ -1,18 +1,18 @@
-/** 会话转录（docs/04 §2.1 Transcript v1）：虚拟化 + 实时块挂载点 */
+/** 会话转录（docs/04 §2.1）：虚拟化 + per-tab 实时块挂载点 */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useEffect, useRef } from 'react';
 import { useStore } from 'zustand';
-import { live } from '@/lib/live';
-import { useMessages, type MessageView as MessageViewT } from '@/stores/messages';
+import { liveFor } from '@/lib/live';
+import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
 import { MessageView } from './MessageView';
 
 const LIVE_ID = '__live__';
 
-export function Transcript() {
+export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const liveRef = useRef<HTMLDivElement>(null);
-  const ids = useMessages((s) => s.ids);
-  const streaming = useMessages((s) => s.streaming);
+  const ids = useTabMsg(tabId, (t) => t.ids);
+  const streaming = useTabMsg(tabId, (t) => t.streaming);
   const rowIds = streaming ? [...ids, LIVE_ID] : ids;
 
   const virtualizer = useVirtualizer({
@@ -23,15 +23,13 @@ export function Transcript() {
     getItemKey: (i) => rowIds[i] ?? `row-${i}`,
   });
 
-  // 实时块挂载/卸载（瞬态通道，不触发 React 渲染）
   useEffect(() => {
     const container = liveRef.current;
     const scroller = scrollRef.current;
-    if (container && scroller) live.mount(container, scroller);
-    return () => live.unmount();
-  }, [streaming]);
+    if (container && scroller) liveFor(tabId).mount(container, scroller);
+    return () => liveFor(tabId).unmount();
+  }, [tabId, streaming]);
 
-  // 新消息到达：贴底跟随
   const lastId = ids.at(-1);
   useEffect(() => {
     const el = scrollRef.current;
@@ -66,7 +64,7 @@ export function Transcript() {
                   <div className="pg-role">assistant ▌</div>
                 </div>
               ) : (
-                <Row id={id} />
+                <Row tabId={tabId} id={id} />
               )}
             </div>
           );
@@ -76,8 +74,11 @@ export function Transcript() {
   );
 }
 
-function Row({ id }: { id: string }) {
-  const view = useStore(useMessages, (s) => s.byId[id] as MessageViewT | undefined);
+function Row({ tabId, id }: { tabId: string; id: string }) {
+  const view = useStore(
+    useMessages,
+    (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined,
+  );
   if (!view) return null;
   return <MessageView view={view} />;
 }

@@ -57,6 +57,21 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 4. 修改 GUI 内任一配置后，终端 `pi` 立即可见新配置（auth.json/models.json/settings.json 三文件回归）；
 5. 工作区验收：tab 预览/固定/徽标语义正确（04 §1.3），布局记忆跨重启生效（04 §1.8）。
 
+### 3.1 M1 执行工作包（2026-09-22 排定，顺序经依赖调整）
+
+| WP | 内容 | 位置理由 | 状态 |
+|---|---|---|---|
+| 1 | 工作区布局 v1：dockview 编辑区 + 左右视图轨 + 底部面板 + tab 模型（预览/固定/徽标）+ 布局持久化 | 结构地基，后续功能都往骨架里插 | ✅ |
+| 2 | 会话管理：sessions/list.rs（扫描+watcher）+ 侧栏会话视图 + new/switch/rename/delete/export/fork/clone | G2 核心；依赖 WP1 侧栏 | ✅ |
+| 3 | 模型/Thinking + Composer 完整态：Cmd+L 选择器、thinking 循环、图片粘贴/拖拽、斜杠补全 | 小而高频，提前保持日常可用 | ✅ |
+| 4 | Monaco 基座：worker/CSP/懒加载/实例池/主题注册（风险 spike 前置） | M1 最大技术未知数，尽早排雷 | ✅ |
+| 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | |
+| 6 | 快捷键 v1 + 命令面板（CommandRegistry/KeymapService/Cmd+K） | 独立性强 | |
+| 7 | 轨迹视图 v1（对话\|轨迹页签、事件流、context_edit 渲染） | 数据源现成 | |
+| 8 | 收尾验收：bash 面板、setStatus/setWidget 槽位、三条用户故事 E2E、rpc-demo 实测、G2 勾验 | 对齐 M1 五条验收 | |
+
+> 用户调整顺序：1 → 3 → 2 → 4（小赢前置）；5–8 顺延。
+
 ## 4. M2 · 性能达标（约 2 周，可与 M1 部分并行）
 
 **范围**：05 预算全绿。

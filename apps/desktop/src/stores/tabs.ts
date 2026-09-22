@@ -1,5 +1,6 @@
-/** tabsStore（M0 单 tab 版）：worker 状态、模型/会话元信息、统计 */
+/** tabsStore v2（M1 多 tab）：tab 注册表 + 活动 tab + 未读徽标（docs/04 §1.3） */
 import { create } from 'zustand';
+import { immer } from 'zustand/middleware/immer';
 import { cmd } from '@/lib/ipc';
 
 export interface TabSnapshot {
@@ -17,81 +18,126 @@ export interface TabSnapshot {
   };
 }
 
-interface TabsState {
-  tabId: string | null;
-  snapshot: TabSnapshot | null;
-  workerState: 'spawning' | 'ready' | 'busy' | 'crashed' | 'stopped';
-  banner: string | null;
-  statsText: string | null;
-  init(cwd?: string): Promise<TabSnapshot>;
-  setWorkerState(s: TabsState['workerState'], extra?: Record<string, unknown>): void;
-  refreshStats(): Promise<void>;
-  refreshState(): Promise<void>;
+export interface TabInfo {
+  tabId: string;
+  cwd: string;
+  sessionFile: string | null;
+  sessionId: string | null;
+  sessionName: string | null;
+  workerState: TabSnapshot['worker_state'];
+  model: { id?: string; provider?: string } | null;
+  thinkingLevel: string | null;
 }
 
-let initPromise: Promise<TabSnapshot> | null = null;
+interface TabsState {
+  tabs: Record<string, TabInfo>;
+  order: string[];
+  activeTabId: string | null;
+  unread: Record<string, boolean>;
+  banner: string | null;
 
-export const useTabs = create<TabsState>()((set, get) => ({
-  tabId: null,
-  snapshot: null,
-  workerState: 'spawning',
+  addTab(snap: TabSnapshot): void;
+  removeTab(tabId: string): void;
+  setActive(tabId: string): void;
+  patch(tabId: string, patch: Partial<TabInfo>): void;
+  setWorkerState(tabId: string, s: TabInfo['workerState'], extra?: Record<string, unknown>): void;
+  markUnread(tabId: string): void;
+  clearUnread(tabId: string): void;
+  setBanner(b: string | null): void;
+  snapshotOf(tabId: string): TabSnapshot | null;
+}
+
+export const useTabs = create<TabsState>()(
+  immer((set, get) => ({
+  tabs: {},
+  order: [],
+  activeTabId: null,
+  unread: {},
   banner: null,
-  statsText: null,
 
-  async init(cwd) {
-    // 单例：React StrictMode 下 effect 双执行只创建一个 tab（docs/09 M0 修正）
-    if (!initPromise) {
-      initPromise = cmd<TabSnapshot>('tab_create', { cwd, name: 'Piggy M0' })
-        .then((snap) => {
-          set({ tabId: snap.tab_id, snapshot: snap, workerState: snap.worker_state });
-          return snap;
-        })
-        .catch((e) => {
-          initPromise = null; // 失败允许重试
-          throw e;
-        });
-    }
-    return initPromise;
+  addTab(snap) {
+    set((s) => {
+      s.tabs[snap.tab_id] = {
+        tabId: snap.tab_id,
+        cwd: snap.cwd,
+        sessionFile: snap.session_file,
+        sessionId: snap.session_id,
+        sessionName: snap.session_name,
+        workerState: snap.worker_state,
+        model: snap.state.model ?? null,
+        thinkingLevel: snap.state.thinkingLevel ?? null,
+      };
+      if (!s.order.includes(snap.tab_id)) s.order.push(snap.tab_id);
+      s.activeTabId = snap.tab_id;
+    });
   },
 
-  setWorkerState(s, extra) {
-    set({ workerState: s });
-    if (extra) {
-      if (extra['gaveUp']) set({ banner: '⚠ worker 反复崩溃，已停止自动重启' });
-      else if (s === 'crashed') set({ banner: '⚠ worker 崩溃，正在自动重启…' });
-      else if (s === 'ready' && extra['revived']) set({ banner: null });
-    }
-    if (s === 'ready' || s === 'busy') set({ banner: get().banner?.startsWith('⚠ worker') ? null : get().banner });
+  removeTab(tabId) {
+    set((s) => {
+      delete s.tabs[tabId];
+      s.order = s.order.filter((id) => id !== tabId);
+      delete s.unread[tabId];
+      if (s.activeTabId === tabId) {
+        s.activeTabId = s.order.at(-1) ?? null;
+      }
+    });
   },
 
-  async refreshStats() {
-    const tabId = get().tabId;
-    if (!tabId) return;
-    try {
-      const stats = await cmd<{
-        tokens?: { total?: number };
-        cost?: number;
-        contextUsage?: { percent?: number | null };
-      }>('pi_get_session_stats', { tabId });
-      const tok = stats.tokens?.total?.toLocaleString() ?? '—';
-      const cost = stats.cost != null ? `$${Number(stats.cost).toFixed(4)}` : '';
-      const ctx = stats.contextUsage?.percent != null ? ` · ctx ${stats.contextUsage.percent}%` : '';
-      set({ statsText: `${tok} tok${cost ? ` · ${cost}` : ''}${ctx}` });
-    } catch {
-      /* M0：静默 */
-    }
+  setActive(tabId) {
+    set({ activeTabId: tabId });
+    get().clearUnread(tabId);
   },
 
-  async refreshState() {
-    const tabId = get().tabId;
-    if (!tabId) return;
-    try {
-      const state = await cmd<Record<string, unknown>>('pi_get_state', { tabId });
-      set((s) => ({
-        snapshot: s.snapshot ? { ...s.snapshot, state: state as TabSnapshot['state'] } : s.snapshot,
-      }));
-    } catch {
-      /* 静默 */
-    }
+  patch(tabId, patch) {
+    set((s) => {
+      const t = s.tabs[tabId];
+      if (t) Object.assign(t, patch);
+    });
   },
-}));
+
+  setWorkerState(tabId, workerState, extra) {
+    get().patch(tabId, { workerState });
+    if (extra?.['gaveUp']) useTabs.setState({ banner: '⚠ worker 反复崩溃，已停止自动重启' });
+    else if (workerState === 'crashed') useTabs.setState({ banner: '⚠ worker 崩溃，正在自动重启…' });
+    else if (workerState === 'ready' && extra?.['revived']) useTabs.setState({ banner: null });
+  },
+
+  markUnread(tabId) {
+    set((s) => {
+      s.unread[tabId] = true;
+    });
+  },
+
+  clearUnread(tabId) {
+    set((s) => {
+      delete s.unread[tabId];
+    });
+  },
+
+  setBanner(b) {
+    set({ banner: b });
+  },
+
+  snapshotOf(tabId) {
+    const t = get().tabs[tabId];
+    if (!t) return null;
+    return {
+      tab_id: t.tabId,
+      cwd: t.cwd,
+      session_id: t.sessionId,
+      session_file: t.sessionFile,
+      session_name: t.sessionName,
+      worker_state: t.workerState,
+      state: { model: t.model, thinkingLevel: t.thinkingLevel ?? undefined },
+    };
+  },
+  }))
+);
+/** 创建 tab（含初始化）；失败抛出由调用方呈现 */
+export async function createTab(opts: { cwd?: string; sessionPath?: string; name?: string }) {
+  return cmd<TabSnapshot>('tab_create', {
+    cwd: opts.cwd,
+    session_path: opts.sessionPath,
+    name: opts.name,
+  });
+}

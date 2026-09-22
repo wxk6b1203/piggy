@@ -1,7 +1,7 @@
 /**
- * 实时块引擎（docs/04 §4 渲染分帧核心）：
- * `pi:frame:*` → 直接 DOM 追加（appendData），不触发 React 渲染；
- * `message_start/end` 边界 reset；usage 走 1Hz 节流回调（状态栏订阅）。
+ * 实时块引擎 v2（docs/04 §4）：per-tab 实例。
+ * `pi:frame` → 直接 DOM 追加（appendData），不触发 React 渲染；
+ * 仅活动 tab 挂载（后台 tab 的帧丢弃视觉、保留 commit）。
  */
 import type { Frame } from '@piggy/pi-protocol';
 
@@ -16,11 +16,12 @@ class LiveEngine {
   private usageText = '';
   private usageLastEmit = -Infinity;
   private followRAF = 0;
+  private disposed = false;
 
   mount(container: HTMLElement, scrollEl: HTMLElement) {
+    if (this.disposed) return;
     this.container = container;
     this.scrollEl = scrollEl;
-    // 冲刷 mount 前累积的内容
     for (const [ci, p] of this.pending) {
       const el = this.ensureBlock(ci, p.kind, p.label);
       if (el && p.text) this.appendText(el, p.text);
@@ -30,8 +31,15 @@ class LiveEngine {
   unmount() {
     this.container = null;
     this.scrollEl = null;
-    this.blocks.clear(); // 旧容器节点作废（pending 保留，mount 时重建）
+    this.blocks.clear();
+    this.pending.clear();
     cancelAnimationFrame(this.followRAF);
+  }
+
+  dispose() {
+    this.unmount();
+    this.disposed = true;
+    this.usageCb = null;
   }
 
   onUsage(cb: UsageCb | null) {
@@ -44,8 +52,12 @@ class LiveEngine {
     if (this.container) this.container.textContent = '';
   }
 
+  currentUsage(): string {
+    return this.usageText;
+  }
+
   handleFrame(frame: Frame) {
-    // 1. 块边界信号 → 创建块结构
+    if (this.disposed) return;
     for (const sig of frame.signals ?? []) {
       const ci = (sig as { contentIndex?: number }).contentIndex ?? 0;
       const kind = (sig as { type: string }).type;
@@ -56,7 +68,6 @@ class LiveEngine {
         this.ensureBlock(ci, 'tool', s.toolName ?? 'tool');
       }
     }
-    // 2. 文本增量 → appendData（O(1)，无 DOM 重建）
     for (const d of frame.text ?? []) {
       const el = this.ensureBlock(d.contentIndex, 'text');
       if (el) this.appendText(el, d.delta ?? '');
@@ -70,15 +81,12 @@ class LiveEngine {
     for (const d of frame.toolArgs ?? []) {
       this.note(d.contentIndex, 'tool', '');
     }
-    // 3. usage → 1Hz 节流
     if (frame.usage) {
-      const u = frame.usage as {
-        totalTokens?: number;
-        cost?: { total?: number };
-      };
+      const u = frame.usage as { totalTokens?: number; cost?: { total?: number } };
       const tokens = u.totalTokens ?? 0;
       const cost = u.cost?.total;
-      this.usageText = cost != null ? `${tokens.toLocaleString()} tok · $${cost.toFixed(4)}` : `${tokens.toLocaleString()} tok`;
+      this.usageText =
+        cost != null ? `${tokens.toLocaleString()} tok · $${cost.toFixed(4)}` : `${tokens.toLocaleString()} tok`;
       const now = performance.now();
       if (now - this.usageLastEmit > 1000) {
         this.usageLastEmit = now;
@@ -86,10 +94,6 @@ class LiveEngine {
       }
     }
     this.follow();
-  }
-
-  currentUsage(): string {
-    return this.usageText;
   }
 
   /* ---------- 内部 ---------- */
@@ -106,7 +110,6 @@ class LiveEngine {
     if (existing) return existing;
     const c = this.container;
     if (!c) {
-      // 未挂载：只记内容，mount 时重建
       this.pending.set(ci, { kind, text: this.pending.get(ci)?.text ?? '', label });
       return null;
     }
@@ -134,11 +137,9 @@ class LiveEngine {
   }
 
   private appendText(el: HTMLElement, text: string) {
-    // thinking 块写到 body 容器
     const target = el.classList.contains('pg-live-thinking')
       ? (el.querySelector('.pg-thinking-body') as HTMLElement | null) ?? el
       : el;
-    // 文本节点追加（appendData O(1)）；无文本节点则创建
     const last = target.lastChild;
     if (last && last.nodeType === Node.TEXT_NODE) {
       (last as Text).appendData(text);
@@ -147,7 +148,6 @@ class LiveEngine {
     }
   }
 
-  /** 底部跟随：用户上滚即暂停（docs/04 §4.3） */
   private follow() {
     if (!this.scrollEl || !this.container) return;
     const el = this.scrollEl;
@@ -160,4 +160,19 @@ class LiveEngine {
   }
 }
 
-export const live = new LiveEngine();
+const engines = new Map<string, LiveEngine>();
+
+/** tab 维度的 live 引擎（tab 关闭时 dispose） */
+export function liveFor(tabId: string): LiveEngine {
+  let e = engines.get(tabId);
+  if (!e) {
+    e = new LiveEngine();
+    engines.set(tabId, e);
+  }
+  return e;
+}
+
+export function disposeLive(tabId: string) {
+  engines.get(tabId)?.dispose();
+  engines.delete(tabId);
+}

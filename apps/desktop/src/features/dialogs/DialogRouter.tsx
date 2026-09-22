@@ -8,7 +8,7 @@ import { useTabs } from '@/stores/tabs';
 export function DialogRouter() {
   const current = useDialogs((s) => s.current);
   const next = useDialogs((s) => s.next);
-  const tabId = useTabs((s) => s.tabId);
+  const tabId = useTabs((s) => s.activeTabId);
   const [value, setValue] = useState('');
 
   const reply = async (payload: Record<string, unknown>) => {

@@ -1,9 +1,11 @@
 //! IPC 命令层（docs/03 §1 原则 2）：参数校验 + 转发，不含业务逻辑。
 
+use crate::config::app;
 use crate::events::{EventSink, TauriSink};
 use crate::pi::discovery::discover;
-use crate::pi::process::SessionTarget;
-use crate::sessions::registry::{spawn_tab_watcher, SharedRegistry, TabSnapshot};
+use crate::pi::process::{self, SessionTarget};
+use crate::sessions::list;
+use crate::sessions::registry::{spawn_tab_watcher, Registry, SharedRegistry, TabSnapshot};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -226,4 +228,181 @@ pub async fn pi_stderr_tail(
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/* ---------------- M1：会话列表 / 布局 / thinking / tree / fork / commands ---------------- */
+
+/// webview 重载（HMR/刷新）后由新 JS 上下文首先调用：
+/// 清理上一上下文遗留的全部 worker/registry（单窗口 M1 语义；多窗口需按窗口归属，见 docs/09 M1 修正记录）。
+#[tauri::command]
+pub async fn boot_reset(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let tab_ids = {
+        let reg = state.registry.lock().await;
+        reg.tab_ids()
+    };
+    for id in tab_ids {
+        let mut reg = state.registry.lock().await;
+        let _ = reg.close_tab(&sink(&app), &id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn session_list() -> Result<Vec<list::SessionMeta>, String> {
+    tokio::task::spawn_blocking(list::scan_sessions)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn session_delete(path: String) -> Result<(), String> {
+    list::trash_session(&path)
+}
+
+/// 关闭会话重命名：临时 worker → set_session_name → 关闭。
+#[tauri::command]
+pub async fn session_rename(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<(), String> {
+    let cwd = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/".into()),
+    );
+    let worker = {
+        let reg = state.registry.lock().await;
+        crate::pi::process::spawn_worker(
+            &format!("rename-{}", uuid::Uuid::new_v4()),
+            crate::pi::process::SpawnArgs {
+                cwd,
+                pi_bin: reg.pi_bin.path.clone(),
+                session: SessionTarget::Path(path),
+                name: None,
+            },
+            sink(&app),
+        )
+        .await?
+    };
+    let out = worker.set_session_name(&name).await;
+    worker.shutdown().await;
+    out.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn layout_load() -> Result<Value, String> {
+    app::layout_load()
+}
+
+#[tauri::command]
+pub async fn layout_save(value: Value) -> Result<(), String> {
+    app::layout_save(&value)
+}
+
+#[tauri::command]
+pub async fn pi_get_tree(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.get_tree().await
+}
+
+#[tauri::command]
+pub async fn pi_get_fork_messages(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.get_fork_messages().await
+}
+
+#[tauri::command]
+pub async fn pi_fork(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    entry_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.fork(&entry_id).await
+}
+
+#[tauri::command]
+pub async fn pi_clone(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.clone_session().await
+}
+
+#[tauri::command]
+pub async fn pi_set_thinking_level(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    level: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.set_thinking_level(&level).await
+}
+
+#[tauri::command]
+pub async fn pi_get_available_thinking_levels(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.get_available_thinking_levels().await
+}
+
+#[tauri::command]
+pub async fn pi_cycle_thinking(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.cycle_thinking_level().await
+}
+
+#[tauri::command]
+pub async fn pi_get_commands(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.get_commands().await
+}
+
+#[tauri::command]
+pub async fn pi_export_html(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    output_path: Option<String>,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.export_html(output_path.as_deref()).await
+}
+
+/// 文件预览读取（M1 限定 $HOME 子树；docs/08 §6 scope 收敛）。
+#[tauri::command]
+pub async fn fs_preview_read(path: String) -> Result<Value, String> {
+    use std::os::unix::fs::MetadataExt;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let pb = std::path::PathBuf::from(&path);
+    if !pb.starts_with(&home) {
+        return Err("路径越界（仅限用户目录）".into());
+    }
+    let md = std::fs::metadata(&pb).map_err(|e| e.to_string())?;
+    if md.len() > 5 * 1024 * 1024 {
+        return Err("文件超过 5MB，暂不支持预览".into());
+    }
+    let body = std::fs::read_to_string(&pb)
+        .map_err(|e| format!("读取失败（二进制文件?）: {e}"))?;
+    Ok(serde_json::json!({
+        "path": path,
+        "size": md.size(),
+        "lines": body.lines().count(),
+        "content": body,
+    }))
 }

@@ -20,10 +20,8 @@ describe('App 初始化（mock IPC）', () => {
     invokeMock.mockReset();
     listenMock.mockClear();
     listenMock.mockResolvedValue(() => {});
-    useTabs.setState({ tabId: null, snapshot: null, workerState: 'spawning', banner: null, statsText: null });
-    useMessages.setState({
-      byId: {}, ids: [], streaming: false, queue: { steering: [], followUp: [] }, toolRuns: {}, banner: null, hydrated: false,
-    });
+    useTabs.setState({ tabs: {}, order: [], activeTabId: null, unread: {}, banner: null });
+    useMessages.setState({ tabs: {} });
   });
 
   it('挂载后调用 tab_create 并拉取消息', async () => {
@@ -53,8 +51,8 @@ describe('App 初始化（mock IPC）', () => {
     const calls = invokeMock.mock.calls.map((c) => c[0]);
     expect(calls).toContain('tab_create');
     expect(calls).toContain('pi_get_messages');
-    expect(useTabs.getState().tabId).toBe('t-1');
-    expect(useMessages.getState().ids.length).toBe(1);
+    expect(useTabs.getState().activeTabId).toBe('t-1');
+    expect(useMessages.getState().tabs['t-1']!.ids.length).toBe(1);
   });
 
   it('tab_create 失败时展示 banner（不崩）', async () => {
