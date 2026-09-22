@@ -23,7 +23,17 @@ fn now_ms() -> u64 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let pi_bin = discover(None).expect("未找到 pi 二进制：请安装 pi 或设置 PI_BIN");
+    // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
+    let pi_bin = match discover(None) {
+        Ok(b) => {
+            eprintln!("[piggy] pi: {} ({})", b.path.display(), b.version);
+            Some(b)
+        }
+        Err(e) => {
+            eprintln!("[piggy] pi 未找到（{e}）；将随首次会话创建重试");
+            None
+        }
+    };
     tauri::Builder::default()
         .setup(|app| {
             APP_HANDLE.set(app.handle().clone()).ok();

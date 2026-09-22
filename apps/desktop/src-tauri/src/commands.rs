@@ -271,12 +271,13 @@ pub async fn session_rename(
         std::env::var("HOME").unwrap_or_else(|_| "/".into()),
     );
     let worker = {
-        let reg = state.registry.lock().await;
+        let mut reg = state.registry.lock().await;
+        let pi_bin = reg.resolve_bin()?;
         crate::pi::process::spawn_worker(
             &format!("rename-{}", uuid::Uuid::new_v4()),
             crate::pi::process::SpawnArgs {
                 cwd,
-                pi_bin: reg.pi_bin.path.clone(),
+                pi_bin,
                 session: SessionTarget::Path(path),
                 name: None,
             },

@@ -59,9 +59,14 @@ pub async fn spawn_worker(
     if let Some(n) = &args.name {
         cmd.arg("--name").arg(n);
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn pi failed ({:?}): {e}", args.pi_bin))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            // 二进制消失（pi 升级窗口/被移动）：结构化标记，registry 据此重新发现并重试（docs/02 §2.1）
+            format!("PI_BINARY_MISSING: {e} ({})", args.pi_bin.display())
+        } else {
+            format!("spawn pi failed ({:?}): {e}", args.pi_bin)
+        }
+    })?;
     let mut stdin = child
         .stdin
         .take()

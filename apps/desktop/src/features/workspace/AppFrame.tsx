@@ -1,88 +1,79 @@
-/** AppFrame（WP1，docs/04 §1）：外框 react-resizable-panels + 编辑区 dockview + 状态栏 */
+/** AppFrame（WP1，docs/04 §1）：外框 react-resizable-panels + 编辑区 dockview + bash 面板 + 状态栏 */
 import { Group, Panel, Separator } from 'react-resizable-panels';
+import { useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
+import { ensureTabListeners } from '@/lib/tabEvents';
 import { windowEvents } from '@/lib/windowEvents';
 import { useAppCommands } from '@/lib/appCommands';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { HelpOverlay } from '@/features/palette/HelpOverlay';
 import { BashPanel } from './BashPanel';
-import { useEffect, useState } from 'react';
 import { useTabMsg } from '@/stores/messages';
-import { useTabs } from '@/stores/tabs';
+import { useTabs, createTab } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { EditorArea, openSessionTab } from './EditorArea';
 import { SessionsSidebar } from './SessionsSidebar';
 import { RightBar } from './RightBar';
-import { ModelThinkingControls } from '@/features/workspace/ModelThinking';
+import { ModelThinkingControls } from './ModelThinking';
 import { DialogRouter } from '@/features/dialogs/DialogRouter';
-import { createTab } from '@/stores/tabs';
-import { ensureTabListeners } from '@/lib/tabEvents';
 
 let bootPromise: Promise<void> | null = null;
 
-/** @internal 仅供测试/重试：清除启动单例 */
+/** 启动流程（单例；StrictMode/重试安全） */
+function startBoot() {
+  if (bootPromise) return bootPromise;
+  bootPromise = (async () => {
+    // 单窗口语义：新 JS 上下文接管前，收割上一上下文的孤儿 worker（docs/02 §7.5）
+    try {
+      await cmd('boot_reset');
+    } catch {
+      /* 首启无遗留 */
+    }
+    interface LayoutJson {
+      dockview?: { panels?: Record<string, { params?: { kind?: string } }> };
+    }
+    try {
+      const l = await cmd<LayoutJson>('layout_load');
+      const hasSession = Object.values(l?.dockview?.panels ?? {}).some(
+        (p) => p.params?.kind === 'session',
+      );
+      if (!hasSession) await createFreshTab();
+    } catch {
+      bootPromise = null;
+      await createFreshTab();
+    }
+  })();
+  return bootPromise;
+}
+
+/** pi 二进制缺失等启动失败后的重试入口（横幅按钮，docs/02 §2.1） */
+export function retryBoot() {
+  bootPromise = null;
+  void startBoot();
+}
+
+/** @internal 仅供测试 */
 export function resetBootForTest() {
   bootPromise = null;
 }
 
 export function AppFrame() {
-  const activeTabId = useTabs((s) => s.activeTabId);
-  const order = useTabs((s) => s.order);
-  const tabs = useTabs((s) => s.tabs);
-  const banner = useTabs((s) => s.banner);
-  const theme = useUi((s) => s.theme);
-  const toggleTheme = useUi((s) => s.toggleTheme);
-  const sidebarOpen = useUi((s) => s.sidebarOpen);
-  const setSidebarOpen = useUi((s) => s.setSidebarOpen);
-  const [bashOpen, setBashOpen] = useState(false);
-
   useAppCommands();
 
-  // 事件：关闭活动 tab / 切终端面板
-  useEffect(() => {
-    const off1 = windowEvents.on('close-active-tab', () => {
-      import('./EditorArea').then(({ closeActivePanel }) => closeActivePanel());
-    });
-    const off2 = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
-    return () => {
-      off1();
-      off2();
-    };
-  }, []);
+  const tabs = useTabs((s) => s.tabs);
+  const order = useTabs((s) => s.order);
+  const activeTabId = useTabs((s) => s.activeTabId);
+  const banner = useTabs((s) => s.banner);
+  const sidebarOpen = useUi((s) => s.sidebarOpen);
+  const setSidebarOpen = useUi((s) => s.setSidebarOpen);
+  const theme = useUi((s) => s.theme);
+  const toggleTheme = useUi((s) => s.toggleTheme);
+  const [bashOpen, setBashOpen] = useState(false);
 
-  // 启动：恢复布局（EditorArea.restore 处理 dockview 部分）；无会话面板则建新 tab
-  // 单例 promise：StrictMode 双 effect 只执行一次（docs/09 M0 修正记录）
   useEffect(() => {
-    if (!bootPromise) {
-      bootPromise = (async () => {
-        // 单窗口语义：新 JS 上下文接管前，收割上一上下文的孤儿 worker（02 §7.5）
-        try {
-          await cmd('boot_reset');
-        } catch {
-          /* 首启无遗留 */
-        }
-        interface LayoutJson {
-          dockview?: { panels?: Record<string, { params?: { kind?: string } }> };
-        }
-        try {
-          const l = await cmd<LayoutJson>('layout_load');
-          const hasSession = Object.values(l?.dockview?.panels ?? {}).some(
-            (p) => p.params?.kind === 'session',
-          );
-          if (!hasSession) await createFreshTab();
-        } catch (e) {
-          // 失败可重试：清空单例（下次触发重新 boot）
-          bootPromise = null;
-          try {
-            await createFreshTab();
-          } catch (e2) {
-            void e2;
-            bootPromise = null;
-          }
-          void e;
-        }
-      })();
-    }
+    void startBoot();
+    const off = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
+    return off;
   }, []);
 
   const active = activeTabId ? tabs[activeTabId] : null;
@@ -109,7 +100,18 @@ export function AppFrame() {
           {theme === 'dark' ? '☀' : '☾'}
         </button>
       </header>
-      {(banner ?? msgBanner) && <div className="pg-banner">{banner ?? msgBanner}</div>}
+      {(banner ?? msgBanner) && (
+        <div
+          className="pg-banner"
+          role={banner?.startsWith('启动失败') ? 'button' : undefined}
+          onClick={banner?.startsWith('启动失败') ? () => retryBoot() : undefined}
+          style={banner?.startsWith('启动失败') ? { cursor: 'pointer' } : undefined}
+          title={banner?.startsWith('启动失败') ? '点击重试' : undefined}
+        >
+          {banner ?? msgBanner}
+          {banner?.startsWith('启动失败') ? '（点击重试）' : ''}
+        </div>
+      )}
       <div className="pg-frame">
         <Group orientation="horizontal" className="pg-group-h">
           {sidebarOpen && (

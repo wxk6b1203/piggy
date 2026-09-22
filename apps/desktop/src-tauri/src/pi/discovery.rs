@@ -43,7 +43,7 @@ pub fn discover(override_path: Option<&Path>) -> Result<PiBinary, DiscoveryError
 
 fn which_pi() -> PathBuf {
     let Some(paths) = std::env::var_os("PATH") else {
-        return PathBuf::from("pi");
+        return probe_well_known().unwrap_or_else(|| PathBuf::from("pi"));
     };
     for dir in std::env::split_paths(&paths) {
         for name in ["pi", "pi.exe", "pi.cmd"] {
@@ -53,5 +53,19 @@ fn which_pi() -> PathBuf {
             }
         }
     }
-    PathBuf::from("pi")
+    // PATH 未命中（GUI 从 Finder 启动时 PATH 极简）：探测常见安装位置
+    probe_well_known().unwrap_or_else(|| PathBuf::from("pi"))
+}
+
+/// 常见安装位置（pi.dev 安装脚本 / pnpm / cargo 风格目录）。
+fn probe_well_known() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let candidates = [
+        home.join(".local/bin/pi"),
+        PathBuf::from("/usr/local/bin/pi"),
+        PathBuf::from("/opt/homebrew/bin/pi"),
+        home.join("Library/pnpm/bin/pi"),
+        home.join(".cargo/bin/pi"),
+    ];
+    candidates.into_iter().find(|c| c.is_file())
 }

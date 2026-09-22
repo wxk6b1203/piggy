@@ -30,7 +30,7 @@ impl Tab {
 }
 
 pub struct Registry {
-    pub pi_bin: PiBinary,
+    pub pi_bin: Option<PiBinary>,
     pub tabs: HashMap<String, Tab>,
     /// 会话文件（规范化路径）→ 占用它的 tab_id（docs/02 §6.3 互斥）
     open_files: HashMap<String, String>,
@@ -50,12 +50,24 @@ pub struct TabSnapshot {
 }
 
 impl Registry {
-    pub fn new(pi_bin: PiBinary) -> Self {
+    pub fn new(pi_bin: Option<PiBinary>) -> Self {
         Self {
             pi_bin,
             tabs: HashMap::new(),
             open_files: HashMap::new(),
         }
+    }
+
+    /// 校验缓存的 pi 路径；失效则按发现链重新定位（升级自愈）。
+    pub fn resolve_bin(&mut self) -> Result<PathBuf, String> {
+        if let Some(b) = &self.pi_bin {
+            if b.path.exists() {
+                return Ok(b.path.clone());
+            }
+        }
+        let b = crate::pi::discovery::discover(None).map_err(|e| e.to_string())?;
+        self.pi_bin = Some(b.clone());
+        Ok(b.path)
     }
 
     /// 创建 tab：spawn worker → get_state 握手 → 绑定会话文件 → 初始化游标。
@@ -67,17 +79,9 @@ impl Registry {
         name: Option<String>,
     ) -> Result<TabSnapshot, String> {
         let tab_id = uuid::Uuid::new_v4().to_string();
-        let worker = spawn_worker(
-            &tab_id,
-            SpawnArgs {
-                cwd: cwd.clone(),
-                pi_bin: self.pi_bin.path.clone(),
-                session: session.clone(),
-                name: name.clone(),
-            },
-            sink.clone(),
-        )
-        .await?;
+        let worker = self
+            .spawn_with_rediscovery(&tab_id, cwd.clone(), session.clone(), name.clone(), sink.clone())
+            .await?;
         let state = worker.get_state().await?;
         let session_file = state["sessionFile"].as_str().map(String::from);
         let session_id = state["sessionId"].as_str().map(String::from);
@@ -112,6 +116,34 @@ impl Registry {
         self.tabs.insert(tab_id.clone(), tab);
         sink.emit_json("tabs:changed", json!({"tabIds": self.tab_ids()}));
         Ok(snapshot)
+    }
+
+    /// spawn + ENOENT 自愈：二进制缺失时重新发现一次再试（pi 升级窗口，02 §2.1）。
+    pub async fn spawn_with_rediscovery(
+        &mut self,
+        tab_id: &str,
+        cwd: PathBuf,
+        session: SessionTarget,
+        name: Option<String>,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<Worker, String> {
+        let build = |pi_bin: PathBuf| SpawnArgs {
+            cwd: cwd.clone(),
+            pi_bin,
+            session: session.clone(),
+            name: name.clone(),
+        };
+        let args = build(self.resolve_bin()?);
+        match spawn_worker(tab_id, args.clone(), sink.clone()).await {
+            Ok(w) => Ok(w),
+            Err(e) if e.starts_with("PI_BINARY_MISSING") => {
+                // pi 升级/移动窗口：重走发现链再试一次（docs/02 §2.1）
+                self.pi_bin = None;
+                let args = build(self.resolve_bin()?);
+                spawn_worker(tab_id, args, sink).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn tab_ids(&self) -> Vec<String> {
@@ -199,17 +231,9 @@ async fn revive_tab(reg: &mut Registry, sink: &Arc<dyn EventSink>, tab_id: &str)
         .clone()
         .map(SessionTarget::Path)
         .unwrap_or(SessionTarget::New);
-    let worker = spawn_worker(
-        tab_id,
-        SpawnArgs {
-            cwd: cwd.clone(),
-            pi_bin: reg.pi_bin.path.clone(),
-            session: target,
-            name: None,
-        },
-        sink.clone(),
-    )
-    .await?;
+    let worker = reg
+        .spawn_with_rediscovery(tab_id, cwd.clone(), target, None, sink.clone())
+        .await?;
     let mut state = worker.get_state().await?;
     // C1 兜底：若 --session 未生效，显式 switch_session
     let actual = state["sessionFile"].as_str().map(String::from);
