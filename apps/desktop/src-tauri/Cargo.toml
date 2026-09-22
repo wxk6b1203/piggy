@@ -1,0 +1,49 @@
+[package]
+name = "piggy-desktop"
+version = "0.1.0"
+description = "Piggy — pi 的图形驾驶舱（Tauri 2 壳）"
+edition = "2021"
+
+[lib]
+name = "piggy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# 契约测试：需要 PATH 上有真实 pi 二进制（docs/02 §9）
+contract = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "sync",
+    "time",
+] }
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "contract"
+path = "tests/contract.rs"
+required-features = ["contract"]
+
+[[test]]
+name = "fixtures_parse"
+path = "tests/fixtures_parse.rs"
+
+# 低磁盘占用：dev/test 构建不带 debuginfo（M0 机器磁盘紧张；需要调试时临时去掉）
+[profile.dev]
+debug = 0
+[profile.test]
+debug = 0

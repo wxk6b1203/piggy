@@ -1,0 +1,16 @@
+{
+ "type": "message_end",
+ "message": {
+  "role": "toolResult",
+  "toolCallId": "call_bbf3ba678a984751a3362429",
+  "toolName": "bash",
+  "content": [
+   {
+    "type": "text",
+    "text": "piggy-m0-test\n"
+   }
+  ],
+  "isError": false,
+  "timestamp": 1790005475152
+ }
+}

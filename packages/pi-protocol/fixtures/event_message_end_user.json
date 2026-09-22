@@ -1,0 +1,13 @@
+{
+ "type": "message_end",
+ "message": {
+  "role": "user",
+  "content": [
+   {
+    "type": "text",
+    "text": "Run this exact bash command: echo piggy-m0-test. Then reply with exactly: OK"
+   }
+  ],
+  "timestamp": 1790005469466
+ }
+}

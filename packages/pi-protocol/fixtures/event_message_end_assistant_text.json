@@ -1,0 +1,34 @@
+{
+ "type": "message_end",
+ "message": {
+  "role": "assistant",
+  "content": [
+   {
+    "type": "text",
+    "text": "OK"
+   }
+  ],
+  "api": "anthropic-messages",
+  "provider": "cc-switch-zhipu-glm",
+  "model": "glm-5.3-flash",
+  "usage": {
+   "input": 12771,
+   "output": 3,
+   "cacheRead": 704,
+   "cacheWrite": 0,
+   "totalTokens": 13478,
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "total": 0
+   },
+   "cacheWrite1h": 0
+  },
+  "stopReason": "stop",
+  "timestamp": 1790005475157,
+  "responseId": "msg_20260921234435ad4470a14b334ba3",
+  "rawStopReason": "end_turn"
+ }
+}

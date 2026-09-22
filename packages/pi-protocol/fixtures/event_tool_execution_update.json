@@ -1,0 +1,11 @@
+{
+ "type": "tool_execution_update",
+ "toolCallId": "call_bbf3ba678a984751a3362429",
+ "toolName": "bash",
+ "args": {
+  "command": "echo piggy-m0-test"
+ },
+ "partialResult": {
+  "content": []
+ }
+}

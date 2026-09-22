@@ -1,0 +1,24 @@
+{
+ "type": "message_update",
+ "usage": {
+  "input": 0,
+  "output": 0,
+  "cacheRead": 0,
+  "cacheWrite": 0,
+  "totalTokens": 0,
+  "cost": {
+   "input": 0,
+   "output": 0,
+   "cacheRead": 0,
+   "cacheWrite": 0,
+   "total": 0
+  },
+  "cacheWrite1h": 0
+ },
+ "assistantMessageEvent": {
+  "type": "toolcall_start",
+  "contentIndex": 1,
+  "id": "call_bbf3ba678a984751a3362429",
+  "toolName": "bash"
+ }
+}

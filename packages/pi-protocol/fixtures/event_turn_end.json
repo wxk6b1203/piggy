@@ -1,0 +1,58 @@
+{
+ "type": "turn_end",
+ "message": {
+  "role": "assistant",
+  "content": [
+   {
+    "type": "thinking",
+    "thinking": "The user wants me to run the exact bash command `echo piggy-m0-test` and then reply with exactly `OK`.",
+    "thinkingSignature": "3263170048b94aa7aaae3d96"
+   },
+   {
+    "type": "toolCall",
+    "id": "call_bbf3ba678a984751a3362429",
+    "name": "bash",
+    "arguments": {
+     "command": "echo piggy-m0-test"
+    }
+   }
+  ],
+  "api": "anthropic-messages",
+  "provider": "cc-switch-zhipu-glm",
+  "model": "glm-5.3-flash",
+  "usage": {
+   "input": 13423,
+   "output": 42,
+   "cacheRead": 0,
+   "cacheWrite": 0,
+   "totalTokens": 13465,
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "total": 0
+   },
+   "cacheWrite1h": 0
+  },
+  "stopReason": "toolUse",
+  "timestamp": 1790005469482,
+  "responseId": "msg_202609212344309221ca1e80554a03",
+  "rawStopReason": "tool_use"
+ },
+ "toolResults": [
+  {
+   "role": "toolResult",
+   "toolCallId": "call_bbf3ba678a984751a3362429",
+   "toolName": "bash",
+   "content": [
+    {
+     "type": "text",
+     "text": "piggy-m0-test\n"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1790005475152
+  }
+ ]
+}

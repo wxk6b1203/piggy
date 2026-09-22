@@ -1,0 +1,229 @@
+//! IPC 命令层（docs/03 §1 原则 2）：参数校验 + 转发，不含业务逻辑。
+
+use crate::events::{EventSink, TauriSink};
+use crate::pi::discovery::discover;
+use crate::pi::process::SessionTarget;
+use crate::sessions::registry::{spawn_tab_watcher, SharedRegistry, TabSnapshot};
+use serde_json::Value;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{AppHandle, State};
+
+pub struct AppState {
+    pub registry: SharedRegistry,
+}
+
+fn sink(app: &AppHandle) -> Arc<dyn EventSink> {
+    Arc::new(TauriSink { app: app.clone() })
+}
+
+async fn worker_of(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    tab_id: &str,
+) -> Result<crate::pi::client::Worker, String> {
+    let mut reg = state.registry.lock().await;
+    reg.ensure_worker(&sink(app), tab_id).await
+}
+
+#[tauri::command]
+pub async fn pi_discover() -> Result<Value, String> {
+    let bin = discover(None).map_err(|e| e.to_string())?;
+    serde_json::to_value(bin).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn tab_create(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    session_path: Option<String>,
+    name: Option<String>,
+) -> Result<TabSnapshot, String> {
+    let cwd = cwd
+        .map(PathBuf::from)
+        .or_else(home_dir)
+        .ok_or_else(|| "无法确定 cwd".to_string())?;
+    let target = match session_path {
+        Some(p) => SessionTarget::Path(p),
+        None => SessionTarget::New,
+    };
+    let snapshot = {
+        let mut reg = state.registry.lock().await;
+        match reg.create_tab(&sink(&app), cwd, target, name).await {
+            Ok(s) => {
+                eprintln!("[piggy] tab_create ok: {}", s.tab_id);
+                s
+            }
+            Err(e) => {
+                eprintln!("[piggy] tab_create FAILED: {e}");
+                return Err(e);
+            }
+        }
+    };
+    spawn_tab_watcher(
+        state.registry.clone(),
+        sink(&app),
+        snapshot.tab_id.clone(),
+    );
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn tab_close(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<(), String> {
+    let mut reg = state.registry.lock().await;
+    reg.close_tab(&sink(&app), &tab_id).await
+}
+
+#[tauri::command]
+pub async fn pi_prompt(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    message: String,
+    images: Option<Vec<Value>>,
+    streaming_behavior: Option<String>,
+) -> Result<bool, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.prompt(&message, images, streaming_behavior.as_deref()).await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn pi_abort(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<(), String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.abort().await.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn pi_clear_queue(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.clear_queue().await
+}
+
+#[tauri::command]
+pub async fn pi_get_state(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.get_state().await
+}
+
+#[tauri::command]
+pub async fn pi_get_messages(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.get_messages().await
+}
+
+#[tauri::command]
+pub async fn pi_get_session_stats(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.get_session_stats().await
+}
+
+#[tauri::command]
+pub async fn pi_set_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    provider: String,
+    model_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.set_model(&provider, &model_id).await
+}
+
+#[tauri::command]
+pub async fn pi_get_available_models(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.get_available_models().await
+}
+
+#[tauri::command]
+pub async fn pi_new_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    let out = worker.new_session().await?;
+    let mut reg = state.registry.lock().await;
+    if let Ok(st) = worker.get_state().await {
+        if let Some(tab) = reg.tabs.get_mut(&tab_id) {
+            tab.session_file = st["sessionFile"].as_str().map(String::from);
+            tab.session_id = st["sessionId"].as_str().map(String::from);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn pi_set_session_name(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    name: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    let out = worker.set_session_name(&name).await;
+    if out.is_ok() {
+        let mut reg = state.registry.lock().await;
+        if let Some(tab) = reg.tabs.get_mut(&tab_id) {
+            tab.session_name = Some(name);
+        }
+    }
+    out
+}
+
+/// Extension UI 应答（docs/02 §8）：前端弹窗交互后写回 stdin。
+#[tauri::command]
+pub async fn ui_reply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    response: Value,
+) -> Result<(), String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.ui_response(response).await
+}
+
+#[tauri::command]
+pub async fn pi_stderr_tail(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    let tail: Vec<String> = worker.stderr_tail.lock().await.iter().cloned().collect();
+    serde_json::to_value(tail).map_err(|e| e.to_string())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}

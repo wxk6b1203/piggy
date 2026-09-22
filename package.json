@@ -1,0 +1,20 @@
+{
+  "name": "piggy",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.24.0",
+  "scripts": {
+    "dev": "pnpm --filter @piggy/desktop dev",
+    "build": "pnpm --filter @piggy/desktop build",
+    "tauri": "pnpm --filter @piggy/desktop tauri",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "test:rust": "cd apps/desktop/src-tauri && cargo test",
+    "test:contract": "cd apps/desktop/src-tauri && cargo test --features contract -- --test-threads=2 --nocapture",
+    "fmt": "cd apps/desktop/src-tauri && cargo fmt"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

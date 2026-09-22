@@ -1,0 +1,49 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r --if-present typecheck
+      - run: pnpm -r --if-present test
+      - run: pnpm --filter @piggy/desktop build
+
+  rust:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy, rustfmt }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: apps/desktop/src-tauri }
+      - name: fmt
+        run: cd apps/desktop/src-tauri && cargo fmt --check
+      - name: clippy
+        run: cd apps/desktop/src-tauri && cargo clippy -- -D warnings
+      - name: unit + fixtures 对拍
+        run: cd apps/desktop/src-tauri && cargo test --lib --tests
+
+  contract:
+    # 契约测试（docs/02 §9）：安装真实 pi 对 C1–C10 实测
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: apps/desktop/src-tauri }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+      - name: 契约测试（C9/e2e 消耗最小 token；provider 缺失时允许跳过）
+        run: cd apps/desktop/src-tauri && cargo test --features contract --test contract -- --test-threads=2
+        env:
+          CI_CONTRACT: "1"

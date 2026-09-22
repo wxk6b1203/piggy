@@ -1,0 +1,109 @@
+# 08 · 工程结构、构建链与质量策略
+
+> 上游：[03-module-design.md](03-module-design.md) · 下游：[09-roadmap.md](09-roadmap.md)
+
+## 1. 仓库布局（pnpm monorepo + Tauri）
+
+```
+piggy/
+├─ docs/                          # 本文档集（设计 SSOT）
+├─ apps/
+│  └─ desktop/                    # Tauri 应用
+│     ├─ src/                     # React 前端（03 §3）
+│     │  ├─ app/  features/  stores/  lib/  components/  hooks/
+│     │  └─ main.tsx
+│     ├─ src-tauri/               # Rust 主进程（03 §2）
+│     │  ├─ src/
+│     │  │  ├─ main.rs  lib.rs
+│     │  │  ├─ commands/          # IPC 薄层（pi_*.rs session_*.rs config_*.rs fleet_*.rs app_*.rs）
+│     │  │  ├─ pi/                # discovery process codec client protocol coalesce
+│     │  │  ├─ sessions/          # registry list tree
+│     │  │  ├─ config/            # auth models settings app
+│     │  │  ├─ fleet/
+│     │  │  └─ events.rs  shortcuts.rs
+│     │  ├─ tests/contract.rs     # 02 §9 契约测试（需 PATH 上的 pi）
+│     │  ├─ capabilities/         # Tauri 权限清单（§6）
+│     │  └─ tauri.conf.json
+│     ├─ index.html
+│     ├─ vite.config.ts           # @vitejs/plugin-react + babel-plugin-react-compiler
+│     └─ package.json
+├─ packages/
+│  ├─ pi-protocol/                # TS 协议类型 + zod schema（与 Rust protocol.rs 对拍）
+│  │  └─ src/{commands,events,messages,entries}.ts
+│  └─ piggy-bridge/               # pi 扩展（06 §4，独立发布 npm）
+│     └─ src/index.ts
+├─ pnpm-workspace.yaml
+├─ package.json                   # workspace root：scripts · devDeps（lint/test 工具）
+├─ tsconfig.base.json
+├─ .github/workflows/             # ci.yml · nightly-perf.yml · release.yml
+└─ README.md
+```
+
+为什么 monorepo：piggy-bridge 与主应用**共享私有协议语义**（`PIGGY:1:` 载荷、命令集），同仓演进、原子 PR；pi-protocol 与 Rust 类型对拍需要同一 fixture 集，跨仓无法维持。
+
+## 2. 构建链
+
+| 环节 | 工具 | 要点 |
+|---|---|---|
+| 前端 | Vite 6（`@vitejs/plugin-react` + `babel-plugin-react-compiler`） | SWC 不用于 JSX（compiler 是 Babel 插件，走官方组合）；生产构建禁 sourcemap 内联 |
+| 类型 | tsc --noEmit（独立于构建的 typecheck 脚本） | workspace 引用走 `exports` 字段 |
+| Rust | cargo（workspace 单 crate + 未来按需拆分） | `cargo clippy -D warnings`；MSRV 1.80 |
+| 桌面打包 | `tauri build`（dmg/nsis/appimage）+ tauri-plugin-updater | 签名与更新元数据在 release.yml（M4） |
+| 格式化 | prettier + rustfmt（CI 校验） | — |
+| Lint | eslint（含自定义规则，§4）+ clippy | — |
+
+## 3. 依赖纪律
+
+- 前端运行时依赖白名单：`react` `react-dom` `antd`（≥6.6，React 19 原生支持，无需 v5-patch 包）`@ant-design/icons`（v6，与 antd 配套） `zustand` `immer` `@tanstack/react-virtual` `@tauri-apps/api` `@tauri-apps/plugin-*` `unified/remark/rehype 系` `shiki` `monaco-editor`（ESM 按需 + workers）`@monaco-editor/react` `@vscode/codicons` `@xterm/xterm` + addons `react-resizable-panels` `dockview` `zod`。CodeMirror 全家不在白名单；Monaco 禁全语言打包（lint 强制，10 §2.2）；antd 遵循 04 §6（VS Code 形态覆写、mask blur 关闭、禁用 Splitter）。新增依赖 = PR 说明 + 体积/性能影响评估；
+- Rust 依赖最小化：tokio、serde/serde_json、tauri、notify、sysinfo、portable-pty（M4）；不引重型框架；
+- **零遥测 SDK、零分析 SDK**（00 隐私立场；崩溃遥测若未来引入须 opt-in 并单列 ADR）。
+
+## 4. 代码规范与质量门（PR 阻断项）
+
+1. `tsc` / `clippy -D warnings` / `eslint --max-warnings 0` 通过；
+2. **eslint 自定义规则**：
+   - `apps/desktop/src/features/chat/**` 禁 `antd` 导入（04 §2 铁律）；
+   - `pi:frame` 处理路径禁 `setState` 类 API（04 §4.1，按文件路径匹配）；
+   - 禁 `setInterval`（05 §3.1，白名单：回收计时器所在文件）；
+   - 禁 `dangerouslySetInnerHTML`（白名单：Shiki/rehype 输出容器，必须伴随 sanitize 上游断言注释）；
+3. 协议类型改动必须同步 `packages/pi-protocol` 与 Rust `protocol.rs`（对拍测试强制，§5）；
+4. 行为变更必须附 docs/ 修改（docs README 闭环规则 2/4）；
+5. 性能红线清单（04 §9）勾选确认。
+
+## 5. 测试策略（金字塔）
+
+| 层 | 范围 | 工具 |
+|---|---|---|
+| Rust 单元 | codec（分帧边界）、coalesce（合帧语义）、config 原子写、registry 状态机 | `cargo test` |
+| 协议对拍 | Rust 序列化 ↔ TS zod 对同一 fixture 集双向解析 | fixture JSON 入库，两侧测试读取（CI 作业 `contract-matrix`） |
+| 契约测试 | 02 §9 C1–C11 对真实 pi 二进制 | `tests/contract.rs`（本地/CI 装 pi；CI 环境 `npm i -g @earendil-works/pi-coding-agent`） |
+| 前端单测 | store reducer（commit 批量应用）、视图模型转换、键位解析 | vitest |
+| 组件/集成 | 转录虚拟化 + 实时块转正、Composer 流式态、palette 导航 | vitest + @testing-library/react（jsdom 下无 Tauri，mock `lib/ipc`） |
+| E2E | 关键旅程（00 §4 的 1/2/3） | tauri-driver（WebDriver）+ WebdriverIO；性能场景走 §6 |
+| 性能 | 05 §6 场景库 S1–S6 | nightly 工作流 + 预算断言 |
+
+测试数据：录制脱敏的 pi 会话 JSONL 作为 fixture（含多分支、压缩、工具调用、图片块的形态多样性）。
+
+## 6. Tauri 权限与能力清单（最小化）
+
+`capabilities/default.json`：
+
+- `core:default`（窗口/事件基础）；
+- `core:window:allow-*`（标题/焦点，按需子集）；
+- 插件：`global-shortcut`（可关）、`updater`（M4）、`dialog:allow-open/save`、`opener:default`、`clipboard-manager:allow-read/write`；
+- `fs`：**scope 显式列举** `$HOME/.pi/**`（读写）+ 会话导出/日志目录；项目目录访问只在用户通过 dialog 选择后以运行时 scope 追加；
+- shell：不启用自由 shell；打开文件走 `opener`；
+- CSP：`default-src 'self'`；`connect-src` 无需外网（LLM 请求都发生在 pi 进程）。
+
+## 7. 发布与版本
+
+- 语义版本：0.x 阶段 minor=功能、patch=修复；
+- 契约锚定：每个 release 注明验证过的 pi 版本区间（`pi --version` 矩阵）；
+- 更新通道：stable / beta（tauri-plugin-updater endpoints）；
+- piggy-bridge 随主应用节奏发布，但允许独立小版本（它只依赖文档化的扩展 API 与 subagents RPC v1 的能力协商，06 §4.3）。
+
+## 8. 本地开发体验
+
+- `pnpm dev`：Vite dev server + `tauri dev`（HMR）；Rust 侧 `cargo watch` 由 tauri dev 内建处理；
+- `pnpm test:contract -- --pi /path/to/pi`：本地跑契约；
+- 调试面板：`app:stats`（05 §6.1 IPC 计量、worker 资源采样）+ 协议日志环形查看器（`PIGGY_DEBUG=1` 时启用完整事件落盘）。

@@ -1,0 +1,6 @@
+{
+ "type": "extension_ui_request",
+ "id": "676dfb73-015a-40d0-84e3-7601c44fd2b8",
+ "method": "setWidget",
+ "widgetKey": "subagent-async"
+}

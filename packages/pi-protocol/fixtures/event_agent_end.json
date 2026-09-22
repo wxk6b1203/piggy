@@ -1,0 +1,1478 @@
+{
+ "type": "agent_end",
+ "messages": [
+  {
+   "role": "system",
+   "content": "",
+   "sections": {
+    "preamble": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.",
+    "tools": "<tools>\n- read: Read file contents\n- bash: Execute bash commands (ls, grep, find, etc.)\n- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call\n- write: Create or overwrite files\n- subagent: For operator-requested delegation, use subagents; compose multi-child work in one workflow call.\n- web_search: Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.\n- source_check: Gather structured source evidence and passage-level citations for manual semantic review of a claim.\n- fetch_content: Use to fetch URL content, direct images, GitHub repos, and videos.\n- get_search_content: Use after web_search, source_check, or fetch_content to retrieve stored content via responseId. Use findText to locate passages without paging through the full content.\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>",
+    "rules": "<rules>\n- Use bash for file operations like ls, rg, find\n- Use read to examine files instead of cat or sed.\n- You can inspect PI_* environment variables for current model and session details.\n- Use edit for precise changes (edits[].oldText must match exactly)\n- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls\n- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.\n- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.\n- Use write only for new files or complete rewrites.\n- Do not invoke subagents unless the operator requested delegation directly or through applicable instructions.\n- Be concise in your responses\n- Show file paths clearly when working with files\n</rules>",
+    "docs": "<docs>\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /Users/wxk/Library/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.86.1/1f059584c4bc551daf18baeb4cf0428716561d42eeb2fa33cd9a8f3ba0b7c9ea/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /Users/wxk/Library/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.86.1/1f059584c4bc551daf18baeb4cf0428716561d42eeb2fa33cd9a8f3ba0b7c9ea/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /Users/wxk/Library/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.86.1/1f059584c4bc551daf18baeb4cf0428716561d42eeb2fa33cd9a8f3ba0b7c9ea/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n</docs>",
+    "project_context": "<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"/Users/wxk/.pi/agent/AGENTS.md\">\n# 全局环境备忘\n\n## Office skills 专用 Python 环境(uv venv)\n\n已安装的全局 skills:`docx`、`pdf`、`pptx`、`xlsx`(源码在 `~/Documents/Project/office-skills/`,软链自 `~/.agents/skills/`)。\n\n这些 skill 的 Python 依赖(openpyxl、pandas、pypdf、pdfplumber、python-docx、python-pptx、markitdown、reportlab、**pymupdf**、olefile、pytesseract、pdf2image)统一装在 **uv 虚拟环境**中:\n\n- **Python 解释器:`~/.venvs/office/bin/python`(Python 3.14.6,uv 管理)**\n- 运行 skill 脚本时**必须**用该解释器,例如:\n  ```bash\n  ~/.venvs/office/bin/python <skill目录>/scripts/xxx.py ...\n  ```\n- `markitdown` CLI:`~/.venvs/office/bin/markitdown <file>`\n- PDF 处理链路:PyMuPDF(解析/处理首选)+ reportlab(生成)+ qpdf CLI(修复兑底,已 brew 安装);详见 pdf skill\n- **文档解析(扫描件→可读文本)以 MinerU 本地 standard 档为准**:`~/.venvs/mineru/bin/mineru-kit parse 文件.pdf -o out.md --tier standard`(Apple Silicon 上 Torch/MPS+llama.cpp 全本地,~15s/密集页,输出带标题/段落/脚注的结构化 Markdown);**轻量纯文字 OCR 用 PaddleOCR v6 CPU**(稀疏页秒级,密集页 ~30s,mobile 档 ~19s);Tesseract 仅兑底(无中文包)：\n  - MinerU 独立环境 `~/.venvs/mineru`(Python 3.12 + mineru 4.x),模型首次联网下载走 modelscope;与 office/paddle 环境互不混用;云端 `mineru-open-api`(npm 全局,token 存 `~/.mineru/config.yaml`)作本地不可用时兜底\n  - PaddleOCR 独立环境 `~/.venvs/paddleocr/bin/python`(paddlepaddle 3.3.1 + paddleocr 3.7.0),勿与其他环境混用;扫描 PDF 先用 PyMuPDF 渲染成图再 OCR(密集页/浅水印缺行时改 300dpi)\n- 一次性激活:`source ~/.venvs/office/bin/activate`\n- 需要新增依赖时:`uv pip install --python ~/.venvs/office/bin/python <包名>`\n\n注意:系统 `python3` 是 Homebrew 的受管环境(PEP 668),不要往里 pip install;uv 托管的 3.13.x 解释器在 macOS 上会被 SIGKILL,勿用,统一走 `~/.venvs/office/bin/python`。\n\n</project_instructions>\n</project_context>",
+    "skills": "<skills>\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>docx</name>\n    <description>Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files) or Word templates (.dotx files). Triggers include: any mention of &apos;Word doc&apos;, &apos;word document&apos;, &apos;.docx&apos;, &apos;.dotx&apos;, or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx or .dotx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a &apos;report&apos;, &apos;memo&apos;, &apos;letter&apos;, &apos;template&apos;, or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation.</description>\n    <location>/Users/wxk/.agents/skills/docx/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>mineru-document-extractor</name>\n    <description>MinerU document extraction — convert PDFs, scanned documents, images, Word (DOC/DOCX), PowerPoint (PPT/PPTX), Excel (XLS/XLSX), and web pages into clean Markdown, HTML, LaTeX, or DOCX. MinerU is an all-in-one CLI tool and agent skill for reliable, high-fidelity document parsing. Struggling with unreadable PDFs, messy table formatting, or garbled formulas after conversion? MinerU solves these with two extraction modes: MinerU flash-extract for instant zero-setup conversion with table recognition, formula recognition, and OCR (no token, no login, no configuration — just run and get results), and MinerU precision extract with VLM-based layout analysis, multiple output formats, and batch processing of hundreds of files. Use MinerU when you need to: &quot;how do I extract text from this PDF&quot;, &quot;I want to convert my PDF to Markdown&quot;, &quot;can you parse this academic paper with tables and formulas&quot;, &quot;I need to OCR a scanned document&quot;, &quot;batch convert all my PDFs&quot;, &quot;turn this Word doc into Markdown&quot;, &quot;crawl a web page to Markdown&quot;, &quot;extract tables from this document&quot;. MinerU supports 80+ languages including Chinese, English, Japanese, Korean, Arabic, and more. Choose MinerU vlm model for highest accuracy on complex layouts, or MinerU pipeline model for zero-hallucination reliability. Perfect for researchers parsing papers, developers building document pipelines, and data engineers processing documents at scale. MinerU文档提取工具，PDF转Markdown、扫描件OCR、表格识别、公式识别、批量PDF处理、Word转Markdown、Excel转Markdown、网页爬取、图片OCR、学术论文解析。MinerU支持PDF、Word、PPT、Excel（XLS/XLSX）、图片等多格式文档智能转换，命令行一键提取，免登录快速模式或高精度专业模式。\n</description>\n    <location>/Users/wxk/.agents/skills/mineru-document-extractor/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pdf</name>\n    <description>Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.</description>\n    <location>/Users/wxk/.agents/skills/pdf/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pptx</name>\n    <description>Use this skill any time a .pptx or .potx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx or .potx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates (.potx), layouts, speaker notes, or comments. Trigger whenever the user mentions &quot;deck,&quot; &quot;slides,&quot; &quot;presentation,&quot; or references a .pptx or .potx filename, regardless of what they plan to do with the content afterward. If a .pptx or .potx file needs to be opened, created, or touched, use this skill.</description>\n    <location>/Users/wxk/.agents/skills/pptx/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand</name>\n    <description>Analyze a codebase to produce an interactive knowledge graph for understanding architecture, components, and relationships</description>\n    <location>/Users/wxk/.agents/skills/understand/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-chat</name>\n    <description>Use when you need to ask questions about a codebase or understand code using a knowledge graph</description>\n    <location>/Users/wxk/.agents/skills/understand-chat/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-dashboard</name>\n    <description>Launch the interactive web dashboard to visualize a codebase&apos;s knowledge graph</description>\n    <location>/Users/wxk/.agents/skills/understand-dashboard/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-diff</name>\n    <description>Use when you need to analyze git diffs or pull requests to understand what changed, affected components, and risks</description>\n    <location>/Users/wxk/.agents/skills/understand-diff/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-domain</name>\n    <description>Extract business domain knowledge from a codebase and generate an interactive domain flow graph. Works standalone (lightweight scan) or derives from an existing /understand knowledge graph.</description>\n    <location>/Users/wxk/.agents/skills/understand-domain/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-explain</name>\n    <description>Use when you need a deep-dive explanation of a specific file, function, or module in the codebase</description>\n    <location>/Users/wxk/.agents/skills/understand-explain/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-knowledge</name>\n    <description>Analyze a Karpathy-pattern LLM wiki knowledge base and generate an interactive knowledge graph with entity extraction, implicit relationships, and topic clustering.</description>\n    <location>/Users/wxk/.agents/skills/understand-knowledge/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>understand-onboard</name>\n    <description>Use when you need to generate an onboarding guide for new team members joining a project</description>\n    <location>/Users/wxk/.agents/skills/understand-onboard/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>xlsx</name>\n    <description>Use this skill any time a spreadsheet file is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .xlsx, .xlsm, .xltx, .csv, or .tsv file (e.g., adding columns, computing formulas, formatting, charting, cleaning messy data); create a new spreadsheet from scratch or from other data sources; or convert between tabular file formats. Trigger especially when the user references a spreadsheet file by name or path — even casually (like &quot;the xlsx in my downloads&quot;) — and wants something done to it or produced from it. Also trigger for cleaning or restructuring messy tabular data files (malformed rows, misplaced headers, junk data) into proper spreadsheets. The deliverable must be a spreadsheet file. Do NOT trigger when the primary deliverable is a Word document, HTML report, standalone Python script, database pipeline, or Google Sheets API integration, even if tabular data is involved.</description>\n    <location>/Users/wxk/.agents/skills/xlsx/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>council-mode</name>\n    <description>Run a bounded supervisor-mediated advisor council. Use when the user asks for council mode, asks to convene advisors, debate a decision, cross-examine recommendations, or run /council.</description>\n    <location>/Users/wxk/.pi/agent/npm/node_modules/pi-subagents/skills/council-mode/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-subagents</name>\n    <description>Technical guidance for operator-requested delegation to builtin or custom\nsubagents: bounded handoffs, parallel review, scripted workflows, async work,\nforked context, isolation, and coordinated execution.\n</description>\n    <location>/Users/wxk/.pi/agent/npm/node_modules/pi-subagents/skills/pi-subagents/SKILL.md</location>\n  </skill>\n</available_skills>\n</skills>",
+    "cwd": "<cwd>\n/private/tmp/piggy-smoke\n</cwd>"
+   },
+   "timestamp": 1790005469468,
+   "toolsAdded": [
+    {
+     "name": "read",
+     "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to read (relative or absolute)"
+       },
+       "offset": {
+        "type": "number",
+        "description": "Line number to start reading from (1-indexed)"
+       },
+       "limit": {
+        "type": "number",
+        "description": "Maximum number of lines to read"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "bash",
+     "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "command"
+      ],
+      "properties": {
+       "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+       },
+       "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds (optional, no default timeout)"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "edit",
+     "description": "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path",
+       "edits"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to edit (relative or absolute)"
+       },
+       "edits": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "oldText",
+          "newText"
+         ],
+         "properties": {
+          "oldText": {
+           "type": "string",
+           "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."
+          },
+          "newText": {
+           "type": "string",
+           "description": "Replacement text for this targeted edit."
+          }
+         }
+        },
+        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead."
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "write",
+     "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "path",
+       "content"
+      ],
+      "properties": {
+       "path": {
+        "type": "string",
+        "description": "Path to the file to write (relative or absolute)"
+       },
+       "content": {
+        "type": "string",
+        "description": "Content to write to the file"
+       }
+      }
+     },
+     "constrainedSampling": {
+      "type": "json_schema",
+      "strict": "prefer"
+     }
+    },
+    {
+     "name": "subagent",
+     "description": "Delegate one child with {agent,task?}; otherwise choose exactly one of {workflowScript,args?}, {workflowScriptPath,args?} or {workflow,args}. agent/task exclude workflow inputs; task excludes action. agent may target management actions. action is management/control; validate accepts either script without launching. workflowScriptPath loads from request cwd before sandbox execution.\nScripts: JavaScript statement bodies with explicit return, top-level await, plain helpers/Promise chains; nested async function/arrow/method helpers are rejected. Await runs.run('key',{agent,task}) before .output; await runs.all([{key,agent,task},...]) for an ordered array, not a key map. Observe every stored run promise with direct await, Promise.race or Promise.all. Await/return runs.steer(key,message,options?) for a prior key, never raw run ids; queued/delivered/missed/failed receipts are not compliance proof.\nBefore advanced orchestration (runs.lanes, rolling fanout, mission state, handoffs), read {action:\"guide\",topic:\"workflows\"} or the pi-subagents skill. Raw-script sandboxes add deeply frozen args; all sandboxes provide runs, emit, console, JavaScript and enabled mission state, with no filesystem/shell/Pi tools/host globals. External CLI agents support native options only when their runner declares them; read guide tool-reference before passing model, structured output, acceptance/agentContract, tool budget, fast, fork context or skills/tools.\nModel override: first call {action:\"models\"}; copy exact provider/id, not agent names. Thinking uses model suffix, not watchdog-only thinking.\nNamed resources: {workflow:'review',args:{task:'...'}} or {workflow:'run-ci',args:{command:'npm test'}}. Raw scripts also accept bounded plain-data args; raw-script args persist as evidence, so never include secrets. worktree:true requires clean source; baseRef defaults to HEAD at allocation or a supported named ref, never full 40/64-character commit IDs or revision expressions.\n\nSAFETY-CRITICAL SUBAGENT GUIDANCE:\n• Direct parent execution is the default. Invoke subagents only when delegation is authorized by the operator's current request or applicable user/project instructions; task size, complexity, risk, tool-call count, or recipe fit do not independently authorize delegation.\n• First call {action:\"list\",capabilities:true}: executable, non-disabled agents only; external-cli requires runner.available === true. Passive PATH/PATHEXT/X_OK is not authentication/version/launch proof; preflight is authoritative.\n• Workflow, child launch, prompt runtime, extension load or child tooling failure is a lane infrastructure blocker. Stop; report exact failure, run/status and repo/cwd/worktree/branch/ref; verify clean worktree or capture partial diff before same-protocol retry or asking the owner. Never silently switch to interactive_shell, pi -ne, Codex/Claude/Cursor CLI or foreground/external mode: governed-workflow fallback requires explicit owner approval, not Pi core's generic pi -ne hint. Explicit foreground/CLI requests and work outside that protocol remain valid.\n• Omit action for execution. For an authorized delegated multi-step/parallel workflow: exactly one top-level subagent workflow call with async:true; children launch only inside it.\n• Async follows asyncByDefault (normally true); async:false only to block the parent, not for final reviews/gates. Consume results at dependency barriers. Native async completion wakes this session: return control, no sleep/poll or bg_wait merely for a wake. bg_wait is for provider/detached work without native notification needing a same-turn result.\n• Ordinary child subagents are not orchestrators; only configured fanout within depth/session limits. For an authorized delegated workflow, keep one writer per cwd/worktree and isolate concurrent writers. Use fresh-context read-only reviewers when independent review was requested, then parent synthesis/fixes. Oracle/advisor unknowns use supervisor dialogue; one-shot only when requested.\n• Bind durable output on runs.run/runs.all, not task filename prose; return actual outputReference/outputPathMapping/artifactPaths, evidence and residual risks.\n• children.list: resume only resumable rows. {action:\"resume\",id,message} detaches a follow-up/challenge with stored agent/model/tool contract. If none is resumable, label a same-role fallback challenge. Scripts await runs.run(newKey,{resume:runId,task}); continue from latest returned runId. Each distinct resume pass needs a new stable key; same-key reuse requires identical launch parameters.\n• Named resources own authority; raw workflowScript/workflowScriptPath cannot use runs.host. Granted commands/relative outputs use workflow cwd, never per-step cwd.\n• Inspect asyncId/asyncDir (status.json, events.jsonl, logs) with status/debug.run; control with interrupt/stop/resume/steer. Read {action:\"guide\",topic:\"tool-reference\"} for controls/evidence gates.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "agent": {
+        "type": "string",
+        "description": "One-child agent or management target."
+       },
+       "task": {
+        "type": "string",
+        "description": "One-child task; requires agent."
+       },
+       "extensionBindings": {
+        "type": "object",
+        "maxProperties": 16,
+        "additionalProperties": true,
+        "description": "Child-only bounded JSON; namespaces package.name/1."
+       },
+       "action": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Management/control only; omit for execution. validate accepts either script input. Discover actions with guide topic tool-reference."
+       },
+       "capabilities": {
+        "type": "boolean",
+        "description": "list: compact capability rows/details without system prompts."
+       },
+       "name": {
+        "type": "string",
+        "description": "schedule.create name."
+       },
+       "id": {
+        "type": "string",
+        "description": "Run id/prefix for status/control."
+       },
+       "runId": {
+        "type": "string",
+        "description": "Target run ID; prefer id."
+       },
+       "dir": {
+        "type": "string",
+        "description": "Async directory for status/control."
+       },
+       "handoffPath": {
+        "type": "string",
+        "description": "Existing manifest for worktree/lane actions."
+       },
+       "repo": {
+        "type": "string",
+        "description": "worktree.cleanup repo; default cwd."
+       },
+       "planId": {
+        "type": "string",
+        "description": "Reserved; cleanup is plan-only."
+       },
+       "laneId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Exact manifest run id for lane actions."
+       },
+       "merge": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "lane.recordMerge evidence; read guide tool-reference."
+       },
+       "supersession": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "lane.recordSupersession evidence; read guide tool-reference."
+       },
+       "index": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Zero-based child/transcript index."
+       },
+       "childId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "description": "Child-scoped stop identity."
+       },
+       "view": {
+        "type": "string",
+        "enum": [
+         "fleet",
+         "transcript"
+        ],
+        "description": "status view: fleet overview or transcript tail with id/dir and optional index."
+       },
+       "lines": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 500,
+        "description": "Transcript tail lines; default 80."
+       },
+       "topic": {
+        "type": "string"
+       },
+       "message": {
+        "type": "string",
+        "description": "resume/steer guidance or project.open prompt."
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "steer",
+         "follow_up",
+         "auto",
+         "plan",
+         "apply"
+        ],
+        "description": "steer delivery mode; worktree.cleanup supports plan only, no apply/removal."
+       },
+       "steeringRecovery": {
+        "type": "boolean",
+        "description": "steer: pause/revive after missed acknowledgment; default true in direct steer mode, forced false by extension RPC for exact ownership."
+       },
+       "additional": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "grant-spawn-budget: root interactive parent + native user confirmation only; total grants capped at original configured cap."
+       },
+       "scope": {
+        "type": "string",
+        "enum": [
+         "session",
+         "user",
+         "project"
+        ],
+        "description": "watchdog.configure scope; default session, persistent only if explicit."
+       },
+       "target": {
+        "type": "string",
+        "enum": [
+         "main",
+         "children",
+         "child"
+        ],
+        "description": "Watchdog target."
+       },
+       "focus": {
+        "type": "boolean",
+        "description": "Focus inspector.open/project.open pane."
+       },
+       "thinking": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "watchdog.configure only: off/minimal/low/medium/high/xhigh/max, inherit, false=off; true invalid. Dispatch ignores this; use model suffix."
+       },
+       "at": {
+        "type": "string",
+        "description": "schedule.create: delay (+10m) or zoned ISO timestamp."
+       },
+       "every": {
+        "type": "string",
+        "description": "schedule.create interval, e.g. 30m/6h/2d/2w."
+       },
+       "sessionOnly": {
+        "type": "boolean"
+       },
+       "quiet": {
+        "type": "boolean"
+       },
+       "on": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "integer"
+         }
+        ],
+        "description": "Reserved calendar selector."
+       },
+       "timezone": {
+        "type": "string"
+       },
+       "overlap": {
+        "type": "string",
+        "enum": [
+         "skip"
+        ]
+       },
+       "catchUp": {
+        "type": "string",
+        "enum": [
+         "none",
+         "latest"
+        ],
+        "description": "Missed schedule occurrences; default latest."
+       },
+       "missionId": {
+        "type": "string"
+       },
+       "mission": {
+        "anyOf": [
+         {
+          "type": "object",
+          "additionalProperties": true
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "false disables; true invalid. Object: exactly one non-empty title or summary; objective/labels optional; goal only true, requires budget.tokens."
+       },
+       "missionUpdate": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Mission patch; read guide missions."
+       },
+       "missionStatus": {
+        "type": "string"
+       },
+       "missionScope": {
+        "type": "string",
+        "description": "project (default) or global pointer index."
+       },
+       "runMode": {
+        "type": "string",
+        "description": "Attached run mode."
+       },
+       "runStatus": {
+        "type": "string",
+        "description": "Attached run status."
+       },
+       "summary": {
+        "type": "string",
+        "description": "Mission close summary."
+       },
+       "config": {
+        "anyOf": [
+         {
+          "type": "object",
+          "additionalProperties": true
+         },
+         {
+          "type": "string"
+         }
+        ],
+        "description": "create/update agent config; object or JSON string."
+       },
+       "workflow": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Extension-owned workflow resource."
+       },
+       "args": {
+        "type": "object",
+        "maxProperties": 16,
+        "additionalProperties": true,
+        "description": "Bounded plain-JSON args for named, inline, or file-backed workflows; raw-script args are exposed deeply frozen and persisted, so do not include secrets."
+       },
+       "workflowScript": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Inline JavaScript statement body; raw/unknown provenance, no runs.host. Use explicit return and top-level await; see tool guidance/guide workflows."
+       },
+       "workflowScriptPath": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Raw script file; host reads from request cwd before sandbox. Mutually exclusive with workflowScript and workflow."
+       },
+       "globalConcurrencyLimit": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "maxSubagentSpawnsPerRun": {
+        "type": "integer",
+        "minimum": 1
+       },
+       "preflight": {
+        "type": "object",
+        "required": [
+         "version",
+         "lanes"
+        ],
+        "properties": {
+         "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+         },
+         "coverage": {
+          "type": "string",
+          "enum": [
+           "complete",
+           "partial"
+          ]
+         },
+         "lanes": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "required": [
+            "key"
+           ],
+           "properties": {
+            "key": {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 128
+            },
+            "mode": {
+             "type": "string",
+             "enum": [
+              "mutation",
+              "review",
+              "scout",
+              "gate"
+             ]
+            },
+            "decision": {
+             "type": "string",
+             "maxLength": 256
+            },
+            "claims": {
+             "type": "array",
+             "items": {
+              "type": "string",
+              "maxLength": 256
+             },
+             "maxItems": 16
+            },
+            "expectedOutput": {
+             "type": "string",
+             "maxLength": 256
+            },
+            "independence": {
+             "type": "string",
+             "maxLength": 256
+            }
+           },
+           "additionalProperties": false
+          },
+          "maxItems": 64
+         }
+        },
+        "additionalProperties": false,
+        "description": "Display-only lane hints; coverage mismatches warn, never change authority/execution."
+       },
+       "chatProgress": {
+        "type": "string",
+        "enum": [
+         "auto",
+         "off",
+         "live-card"
+        ],
+        "description": "auto: live card only for watched foreground in same Git repository. live-card requires same-repo async:false; async: omit or auto/off."
+       },
+       "isolation": {
+        "type": "string",
+        "enum": [
+         "none",
+         "worktree"
+        ],
+        "description": "Shared cwd or managed git worktrees."
+       },
+       "worktree": {
+        "type": "boolean",
+        "description": "Isolate each workflow child in a managed git worktree; child worktree:false overrides default."
+       },
+       "baseRef": {
+        "type": "string"
+       },
+       "lane": {
+        "type": "object",
+        "required": [
+         "version",
+         "key"
+        ],
+        "properties": {
+         "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+         },
+         "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+         },
+         "mode": {
+          "type": "string",
+          "enum": [
+           "mutation",
+           "review",
+           "scout",
+           "gate"
+          ]
+         },
+         "sourceRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+         },
+         "claims": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 160
+          },
+          "maxItems": 20
+         },
+         "outputPaths": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 256
+          },
+          "maxItems": 10
+         }
+        },
+        "additionalProperties": false,
+        "description": "Display/triage only; sourceRef is opaque, never resolved by status."
+       },
+       "context": {
+        "type": "string",
+        "enum": [
+         "fresh",
+         "fork",
+         "profile"
+        ],
+        "description": "fresh/fork overrides every child; profile requires agent's declared defaultContext, ignoring config. Omitted: defaultSubagentContext wins over each agent defaultContext; implicit fork needs persisted parent + leaf, else fresh. forkContext may prune forks before spawn."
+       },
+       "async": {
+        "type": "boolean",
+        "description": "Background; default asyncByDefault. false only to block parent."
+       },
+       "timeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Timeout. Foreground and single async runs use config timeoutMs, else 30m; async composites have no default parent deadline. Alias maxRuntimeMs."
+       },
+       "maxRuntimeMs": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Alias timeoutMs (same defaults)."
+       },
+       "checkpointBeforeDeadlineMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2147483647,
+        "description": "Async single-agent runs only: the runner requests that the child checkpoint and stop this many ms before the run deadline (best-effort; the deadline kill still applies)."
+       },
+       "toolTimeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Per-tool deadline (ms); fast builtins default 5m."
+       },
+       "toolBudget": {
+        "type": "object",
+        "required": [
+         "hard"
+        ],
+        "properties": {
+         "soft": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "hard": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "block": {
+          "anyOf": [
+           {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+             "type": "string",
+             "minLength": 1
+            }
+           },
+           {
+            "type": "string",
+            "enum": [
+             "*"
+            ]
+           }
+          ]
+         }
+        },
+        "additionalProperties": false,
+        "description": "soft nudges; after hard, block tools (default read/grep/find/ls, '*' for all) so child can finalize."
+       },
+       "usageBudget": {
+        "type": "object",
+        "properties": {
+         "tokens": {
+          "type": "object",
+          "required": [
+           "hard"
+          ],
+          "properties": {
+           "soft": {
+            "type": "number",
+            "exclusiveMinimum": 0
+           },
+           "hard": {
+            "type": "number",
+            "exclusiveMinimum": 0
+           }
+          },
+          "additionalProperties": false
+         },
+         "costUsd": {
+          "type": "object",
+          "required": [
+           "hard"
+          ],
+          "properties": {
+           "soft": {
+            "type": "number",
+            "exclusiveMinimum": 0
+           },
+           "hard": {
+            "type": "number",
+            "exclusiveMinimum": 0
+           }
+          },
+          "additionalProperties": false
+         }
+        },
+        "additionalProperties": false,
+        "description": "Root-only reported usage; hard prevents later launches. Running children are not stopped."
+       },
+       "agentScope": {
+        "type": "string",
+        "description": "user/project/both (default); project wins collisions."
+       },
+       "cwd": {
+        "type": "string",
+        "description": "Execution/project-pane directory."
+       },
+       "machine": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Herdr saved machine id or label; runs an external CLI agent there. cwd then means the directory on that machine."
+       },
+       "artifacts": {
+        "type": "boolean",
+        "description": "Debug artifacts; default true."
+       },
+       "includeProgress": {
+        "type": "boolean",
+        "description": "Full result progress; default false."
+       },
+       "share": {
+        "type": "boolean",
+        "description": "Upload session to GitHub Gist; default false."
+       },
+       "sessionDir": {
+        "type": "string",
+        "description": "Session log directory; default temp, independent of share."
+       },
+       "control": {
+        "type": "object",
+        "properties": {
+         "enabled": {
+          "type": "boolean"
+         },
+         "needsAttentionAfterMs": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "activeNoticeAfterMs": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "activeNoticeAfterTurns": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "activeNoticeAfterTokens": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "failedToolAttemptsBeforeAttention": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "notifyOn": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "active_long_running",
+            "needs_attention"
+           ]
+          }
+         },
+         "notifyChannels": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "event",
+            "async",
+            "intercom"
+           ]
+          }
+         }
+        }
+       },
+       "output": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "Child output path or false; relative workflow paths use managed artifact routing. Bind durable output here, not task prose; return outputReference/outputPathMapping/artifactPaths."
+       },
+       "outputMode": {
+        "type": "string",
+        "enum": [
+         "inline",
+         "file-only"
+        ],
+        "description": "Default inline; file-only requires output path."
+       },
+       "skill": {
+        "anyOf": [
+         {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         {
+          "type": "boolean"
+         },
+         {
+          "type": "string"
+         }
+        ],
+        "description": "Skills: names/CSV/array; false disables, true uses default."
+       },
+       "model": {
+        "type": "string",
+        "description": "Child model provider/id; bare id only if unique. Suffix :off/minimal/low/medium/high/xhigh/max overrides agent thinking default."
+       },
+       "fast": {
+        "type": "boolean",
+        "description": "Native OpenAI-Codex priority tier; default false, may cost more/quota."
+       },
+       "outputSchema": {
+        "anyOf": [
+         {
+          "type": "object",
+          "additionalProperties": true
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "Structured output schema override; false disables an agent default."
+       },
+       "agentContract": {
+        "type": "object",
+        "required": [
+         "version"
+        ],
+        "properties": {
+         "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+         }
+        },
+        "additionalProperties": false,
+        "description": "Compatibility behavior. Omit for the default behavior."
+       },
+       "acceptance": {
+        "anyOf": [
+         {
+          "type": "string",
+          "enum": [
+           "auto",
+           "attested",
+           "checked"
+          ]
+         },
+         {
+          "type": "string",
+          "enum": [
+           "reviewed"
+          ],
+          "deprecated": true
+         },
+         {
+          "type": "string",
+          "pattern": "^\\s*\\{"
+         },
+         {
+          "type": "boolean"
+         },
+         {
+          "type": "object",
+          "additionalProperties": true
+         }
+        ],
+        "description": "Evidence policy; omit for read-only/review. false disables; true invalid. Prefer object; see guide tool-reference for levels, evidence and review.required."
+       },
+       "gate": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1
+         },
+         {
+          "type": "object",
+          "properties": {
+           "command": {
+            "type": "string",
+            "minLength": 1
+           },
+           "output": {
+            "type": "string",
+            "enum": [
+             "json"
+            ]
+           },
+           "schema": {
+            "type": "object"
+           },
+           "timeoutMs": {
+            "type": "integer",
+            "minimum": 1
+           }
+          },
+          "required": [
+           "command"
+          ],
+          "additionalProperties": false
+         }
+        ],
+        "description": "Host gate command run after the child finishes: a string, or { command, output: \"json\", schema?, timeoutMs? } whose passing stdout becomes structuredOutput (not with outputSchema). Cannot be combined with acceptance; an explicit acceptance of false is treated as omitted."
+       }
+      }
+     }
+    },
+    {
+     "name": "bg_wait",
+     "description": "Wait for background, provider, or detached work that has no native completion notification, then return.\n\nOrdinary async subagent runs already notify this session natively when they complete or need attention. In an interactive chat, return control instead of calling this merely to wait. Use this tool for provider jobs, remembered detached foreground runs, or other background work without a native notification path. Headless runs auto-drain current-session subagent work at agent_end; use this tool only when the current turn must receive non-notifying background work results.\n\n• { } — return when the first initially active async run or registered provider item finishes, or when a subagent needs attention.\n• { all: true } — wait for every async run, provider item, and remembered detached foreground descendant that was active when the call began.\n• { id: \"...\" } — wait for one async or remembered detached foreground subagent run (id or prefix). Named async runs that already finished return their terminal result references.\n• { id: \"...\", nonBlocking: true } — resolve the prefix once, persist an exact-run wake subscription, and return immediately. Use this for detached work without native completion delivery; the originating interactive session wakes on completion, failure, attention, reconciliation failure, or timeout.\n• { stopOnAttention: false } — for blocking waits only, keep waiting through idle or long-thinking attention; supervisor/contact requests still stop the wait.\n• { timeoutMs: 600000 } — stop waiting after N ms; active work keeps running. Omitted values use waitTool.defaultTimeoutMs, then 30 minutes. Window expiry returns a non-error window_elapsed result with active work identities.\n\nNon-blocking subscriptions are visible in subagent status and differ from disabling waitTool: waitTool.enabled=false returns immediately without registering any future wake. Provider jobs are session-scoped and identified exactly, so replacing one job with another cannot hide a completion. Provider extensions must be explicitly loaded in this process. In a child agent, keep `bg_wait` in the child tool allowlist and load each provider through the agent's extensions or subagentOnlyExtensions; this tool never loads providers or grants tools itself.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "description": "Async run or remembered detached foreground run id/prefix to wait for one specific run. Ordinary async subagent runs already notify this session natively; use bg_wait for provider, detached, or other background work without native notification, or when same-turn blocking results are truly needed. Omit to wait across every active async run started in this session only when a same-turn wait is truly needed."
+       },
+       "nonBlocking": {
+        "type": "boolean",
+        "description": "When true, resolve id to one exact run, persist a wake subscription, and return immediately. Use this only for provider, detached, or other background work without a native completion notification; ordinary async subagent runs already notify this session natively and do not need a subscription. The originating session is woken on completion, failure, attention, reconciliation failure, or timeout. Requires id and cannot be combined with all."
+       },
+       "all": {
+        "type": "boolean",
+        "description": "Wait for ALL active runs to finish. Ordinary async subagent runs already notify this session natively; use all only when a same-turn result from tracked background work is truly needed. Default false: return when the first tracked run or provider item finishes or needs attention. Ignored when id targets a single run."
+       },
+       "timeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Give up waiting after this many milliseconds (the runs keep going regardless). Ordinary async subagent runs already notify this session natively; use a wait timeout only when same-turn results are truly needed for provider, detached, or other background work without native notification. Defaults to config waitTool.defaultTimeoutMs, then 1800000 (30 minutes). Window expiry is a non-error active-work result."
+       },
+       "stopOnAttention": {
+        "type": "boolean",
+        "description": "For a blocking wait that is truly needed, stop when a run needs attention by default. Set false to keep waiting through idle or long-thinking attention; supervisor/contact requests still stop the wait."
+       }
+      }
+     }
+    },
+    {
+     "name": "web_search",
+     "description": "Search the web with OpenAI, Brave, Parallel, Parallel MCP, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SearXNG, DuckDuckGo, Perplexity, Gemini, Kimi, Exa, SERPdive, Kagi, Ollama, Anysearch, xAI, Mistral, Bright Data, SerpBase, SerpApi, Serper, Serply, Valyu, Bocha, XCrawl. Provider arrays run simultaneously; all searches eligible allowed providers (OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SearXNG, Perplexity, Gemini, Exa, SERPdive, Kagi, Ollama, Bocha); explicit-only allowed providers (Parallel MCP, DuckDuckGo, Kimi, Anysearch, xAI, Mistral, Bright Data, SerpBase, SerpApi, Serper, Serply, Valyu, XCrawl) remain excluded. By default, returns source-linked search results or provider answers. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query. When includeContent is true, full page content is fetched in the background. Searches return without the interactive browser curator by default; set workflow to \"summary-review\" to open the curator with an auto-generated summary draft or \"auto-summary\" to generate a summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead."
+       },
+       "queries": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Multiple queries searched concurrently (up to three at a time), each returning source-linked search results or a provider answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)."
+       },
+       "numResults": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "description": "Results per query (default: 5, max: 20)"
+       },
+       "includeContent": {
+        "type": "boolean",
+        "description": "Fetch full page content (async)"
+       },
+       "recencyFilter": {
+        "type": "string",
+        "enum": [
+         "day",
+         "week",
+         "month",
+         "year"
+        ],
+        "description": "Filter by recency"
+       },
+       "domainFilter": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Limit to domains (prefix with - to exclude)"
+       },
+       "provider": {
+        "anyOf": [
+         {
+          "type": "string",
+          "enum": [
+           "auto",
+           "all",
+           "openai",
+           "brave",
+           "parallel",
+           "parallel-mcp",
+           "tinyfish",
+           "search1api",
+           "searchinfinity",
+           "querit",
+           "tavily",
+           "firecrawl",
+           "jina",
+           "searxng",
+           "duckduckgo",
+           "perplexity",
+           "gemini",
+           "kimi",
+           "exa",
+           "serpdive",
+           "kagi",
+           "ollama",
+           "anysearch",
+           "xai",
+           "mistral",
+           "brightdata",
+           "serpbase",
+           "serpapi",
+           "serper",
+           "serply",
+           "valyu",
+           "bocha",
+           "xcrawl"
+          ]
+         },
+         {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "openai",
+            "brave",
+            "parallel",
+            "parallel-mcp",
+            "tinyfish",
+            "search1api",
+            "searchinfinity",
+            "querit",
+            "tavily",
+            "firecrawl",
+            "jina",
+            "searxng",
+            "duckduckgo",
+            "perplexity",
+            "gemini",
+            "kimi",
+            "exa",
+            "serpdive",
+            "kagi",
+            "ollama",
+            "anysearch",
+            "xai",
+            "mistral",
+            "brightdata",
+            "serpbase",
+            "serpapi",
+            "serper",
+            "serply",
+            "valyu",
+            "bocha",
+            "xcrawl"
+           ]
+          },
+          "minItems": 1
+         }
+        ],
+        "description": "Search provider or non-empty list of allowed providers to search simultaneously; all searches eligible allowed providers (OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SearXNG, Perplexity, Gemini, Exa, SERPdive, Kagi, Ollama, Bocha); explicit-only allowed providers (Parallel MCP, DuckDuckGo, Kimi, Anysearch, xAI, Mistral, Bright Data, SerpBase, SerpApi, Serper, Serply, Valyu, XCrawl) remain excluded; omit this field to use the configured provider, or use auto when none is configured"
+       },
+       "workflow": {
+        "type": "string",
+        "enum": [
+         "none",
+         "summary-review",
+         "auto-summary"
+        ],
+        "description": "Search workflow mode: none = no curator (default), summary-review = open curator with auto summary draft, auto-summary = generate summary without opening curator"
+       },
+       "proxy": {
+        "type": "string",
+        "description": "http(s) or socks proxy URL (e.g. http://host:port or socks5h://host:port) used for every outbound request in this call (search APIs and content fetches). Node fetch ignores HTTP(S)_PROXY env vars, so set this (or `proxy` in web-search.json) when direct access is blocked; empty string forces direct access."
+       }
+      }
+     }
+    },
+    {
+     "name": "source_check",
+     "description": "Gather web sources for a claim and return a bounded machine-readable research artifact with exact passage citations for manual review.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "claim"
+      ],
+      "properties": {
+       "claim": {
+        "type": "string",
+        "description": "The assertion to gather web sources for."
+       },
+       "queries": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Search queries (default: the claim)."
+       },
+       "numResults": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "description": "Results per query (default: 5, max: 20)."
+       },
+       "fetchContent": {
+        "type": "boolean",
+        "description": "Fetch up to 5 result pages for exact passage extraction."
+       },
+       "recencyFilter": {
+        "type": "string",
+        "enum": [
+         "day",
+         "week",
+         "month",
+         "year"
+        ],
+        "description": "Filter by recency."
+       },
+       "domainFilter": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Limit to domains; prefix with - to exclude."
+       },
+       "provider": {
+        "anyOf": [
+         {
+          "type": "string",
+          "enum": [
+           "auto",
+           "all",
+           "openai",
+           "brave",
+           "parallel",
+           "parallel-mcp",
+           "tinyfish",
+           "search1api",
+           "searchinfinity",
+           "querit",
+           "tavily",
+           "firecrawl",
+           "jina",
+           "searxng",
+           "duckduckgo",
+           "perplexity",
+           "gemini",
+           "kimi",
+           "exa",
+           "serpdive",
+           "kagi",
+           "ollama",
+           "anysearch",
+           "xai",
+           "mistral",
+           "brightdata",
+           "serpbase",
+           "serpapi",
+           "serper",
+           "serply",
+           "valyu",
+           "bocha",
+           "xcrawl"
+          ]
+         },
+         {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "openai",
+            "brave",
+            "parallel",
+            "parallel-mcp",
+            "tinyfish",
+            "search1api",
+            "searchinfinity",
+            "querit",
+            "tavily",
+            "firecrawl",
+            "jina",
+            "searxng",
+            "duckduckgo",
+            "perplexity",
+            "gemini",
+            "kimi",
+            "exa",
+            "serpdive",
+            "kagi",
+            "ollama",
+            "anysearch",
+            "xai",
+            "mistral",
+            "brightdata",
+            "serpbase",
+            "serpapi",
+            "serper",
+            "serply",
+            "valyu",
+            "bocha",
+            "xcrawl"
+           ]
+          },
+          "minItems": 1
+         }
+        ],
+        "description": "Search provider or non-empty list of allowed providers to search simultaneously; all searches eligible allowed providers (OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SearXNG, Perplexity, Gemini, Exa, SERPdive, Kagi, Ollama, Bocha); explicit-only allowed providers (Parallel MCP, DuckDuckGo, Kimi, Anysearch, xAI, Mistral, Bright Data, SerpBase, SerpApi, Serper, Serply, Valyu, XCrawl) remain excluded"
+       },
+       "proxy": {
+        "type": "string",
+        "description": "http(s) or socks proxy URL (e.g. http://host:port or socks5h://host:port) used for every outbound request in this call (search APIs and result-page fetches). Empty string forces direct access."
+       }
+      }
+     }
+    },
+    {
+     "name": "fetch_content",
+     "description": "Fetch URL(s). Available modes: readable (default): extract readable content as markdown; raw: return the exact textual body using direct HTTP only; answer: answer a prompt using only fetched content. Direct image URLs return resized image content when supported by the selected mode. Supports YouTube transcripts, GitHub repositories, PDFs, and local videos when supported by the selected mode. Full original content is stored for retrieval with get_search_content.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "url": {
+        "type": "string",
+        "description": "Single URL to fetch"
+       },
+       "urls": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Multiple URLs (parallel)"
+       },
+       "forceClone": {
+        "type": "boolean",
+        "description": "Force cloning large GitHub repositories that exceed the size threshold"
+       },
+       "prompt": {
+        "type": "string",
+        "description": "Question or instruction for video analysis, or the page-local question required by answer mode."
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "readable",
+         "raw",
+         "answer"
+        ],
+        "description": "Fetch mode. readable (default): extract readable content as markdown; raw: return the exact textual body using direct HTTP only; answer: answer a prompt using only fetched content."
+       },
+       "answerModel": {
+        "type": "string",
+        "description": "Optional provider/model-id override for answer mode. Defaults to fetch.answerProvider + fetch.answerModel when configured, otherwise the current Pi model."
+       },
+       "timestamp": {
+        "type": "string",
+        "description": "Extract video frame(s) at a timestamp or time range. Single: '1:23:45', '23:45', or '85' (seconds). Range: '23:41-25:00' extracts evenly-spaced frames across that span (default 6). Use frames with ranges to control density; single+frames uses a fixed 5s interval. YouTube requires yt-dlp + ffmpeg; local videos require ffmpeg. Use a range when you know the approximate area but not the exact moment — you'll get a contact sheet to visually identify the right frame."
+       },
+       "frames": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 12,
+        "description": "Number of frames to extract. Use with timestamp range for custom density, with single timestamp to get N frames at 5s intervals, or alone to sample across the entire video. Requires yt-dlp + ffmpeg for YouTube, ffmpeg for local video."
+       },
+       "model": {
+        "type": "string",
+        "description": "Override the Gemini model for video/YouTube analysis (e.g. 'gemini-3.6-flash'). Defaults to config or gemini-3.6-flash."
+       },
+       "auth": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "Opt into an authFetch profile for local browser-cookie fetching. Use a profile name, or true only when exactly one profile exists."
+       },
+       "proxy": {
+        "type": "string",
+        "description": "http(s) or socks proxy URL (e.g. http://host:port or socks5h://host:port) used for this fetch. Needed when the target is unreachable directly; localhost and NO_PROXY hosts always bypass the proxy. Empty string forces direct access."
+       }
+      }
+     }
+    },
+    {
+     "name": "get_search_content",
+     "description": "Retrieve bounded content slices or find matching passages in a previous web_search, source_check, or fetch_content call.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "responseId"
+      ],
+      "properties": {
+       "responseId": {
+        "type": "string",
+        "description": "The responseId from web_search, source_check, or fetch_content"
+       },
+       "query": {
+        "type": "string",
+        "description": "Get content for this query (web_search)"
+       },
+       "queryIndex": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Get content for query at index"
+       },
+       "url": {
+        "type": "string",
+        "description": "Get content for this URL"
+       },
+       "urlIndex": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Get content for URL at index"
+       },
+       "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Character offset for fetched URL content slices (default 0). Ignored when findText is supplied."
+       },
+       "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30000,
+        "description": "Maximum characters to return for fetched URL content slices (default and max are set by maxInlineContentChars). Ignored when findText is supplied."
+       },
+       "findText": {
+        "anyOf": [
+         {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         },
+         {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 500
+          },
+          "minItems": 1,
+          "maxItems": 10
+         }
+        ],
+        "description": "Text or texts to find in the selected stored content. When supplied, offset and limit are ignored."
+       },
+       "findMode": {
+        "type": "string",
+        "enum": [
+         "exact",
+         "case-insensitive",
+         "fuzzy"
+        ],
+        "description": "Matching mode for findText (default: case-insensitive). Requires findText."
+       }
+      }
+     }
+    },
+    {
+     "name": "subagent_supervisor",
+     "description": "Native pi-subagents supervisor channel. Use reply/pending/status to answer child subagent requests without overriding pi-intercom.",
+     "parameters": {
+      "type": "object",
+      "required": [
+       "action"
+      ],
+      "properties": {
+       "action": {
+        "type": "string",
+        "enum": [
+         "list",
+         "pending",
+         "status",
+         "reply"
+        ]
+       },
+       "to": {
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       },
+       "replyTo": {
+        "type": "string"
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Run this exact bash command: echo piggy-m0-test. Then reply with exactly: OK"
+    }
+   ],
+   "timestamp": 1790005469466
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "thinking",
+     "thinking": "The user wants me to run the exact bash command `echo piggy-m0-test` and then reply with exactly `OK`.",
+     "thinkingSignature": "3263170048b94aa7aaae3d96"
+    },
+    {
+     "type": "toolCall",
+     "id": "call_bbf3ba678a984751a3362429",
+     "name": "bash",
+     "arguments": {
+      "command": "echo piggy-m0-test"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "cc-switch-zhipu-glm",
+   "model": "glm-5.3-flash",
+   "usage": {
+    "input": 13423,
+    "output": 42,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 13465,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "toolUse",
+   "timestamp": 1790005469482,
+   "responseId": "msg_202609212344309221ca1e80554a03",
+   "rawStopReason": "tool_use"
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_bbf3ba678a984751a3362429",
+   "toolName": "bash",
+   "content": [
+    {
+     "type": "text",
+     "text": "piggy-m0-test\n"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1790005475152
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "OK"
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "cc-switch-zhipu-glm",
+   "model": "glm-5.3-flash",
+   "usage": {
+    "input": 12771,
+    "output": 3,
+    "cacheRead": 704,
+    "cacheWrite": 0,
+    "totalTokens": 13478,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1790005475157,
+   "responseId": "msg_20260921234435ad4470a14b334ba3",
+   "rawStopReason": "end_turn"
+  }
+ ],
+ "willRetry": false
+}
