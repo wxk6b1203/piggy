@@ -30,7 +30,10 @@ Piggy 实现约定：
 
 1. Piggy 设置中的显式路径（`piPath`）；
 2. 环境变量 `PI_BIN`；
-3. `PATH` 上的 `pi`（Windows 为 `pi.exe` / `pi.cmd`）。
+3. **应用内置 pi（捆绑官方 standalone，M2 起默认存在，08 §7.1）**；
+4. `PATH` 上的 `pi`（Windows 为 `pi.exe` / `pi.cmd`）。
+
+内置优先于 PATH 的理由：**发布确定性**——每个 Piggy 版本与契约矩阵验证过的 pi 版本成对发布；追求最新版的用户可在设置开启"优先使用系统 pi"。捆绑使最终用户**零前置安装**（无需 Node/npm/pi）。
 
 启动时执行 `pi --version` 做版本门禁：低于契约锚定版本（见 §9）时 UI 警告并阻止创建会话（给出升级命令）。未找到二进制时进入引导页（含 `curl -fsSL https://pi.dev/install.sh | sh` 与 `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` 两种安装指引）。
 

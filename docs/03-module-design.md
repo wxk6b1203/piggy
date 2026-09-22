@@ -47,7 +47,7 @@ pub fn discover(override: Option<&Path>) -> Result<PiBinary, DiscoveryError>;
 pub fn check_compat(v: &Version) -> Compatibility;   // Ok / Warn / Block
 ```
 
-- 顺序：设置 → `PI_BIN` → PATH（02 §2.1）；缓存结果，设置变更时重验。
+- 顺序：设置 → `PI_BIN` → **内置 resources**（M2 起，08 §7.1）→ PATH（02 §2.1）；缓存结果，设置变更时重验。
 
 ### 2.2 `pi/codec.rs` — JSONL 分帧器
 

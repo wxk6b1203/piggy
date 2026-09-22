@@ -63,7 +63,8 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 
 - 空闲回收 + maxWorkers + 休眠标签；
 - 性能场景库 S1–S6 + nightly 工作流 + 预算断言；
-- Shiki 按需化、图片 asset 协议、content-visibility 全量落位（04 §5、05 §5）。
+- Shiki 按需化、图片 asset 协议、content-visibility 全量落位（04 §5、05 §5）；
+- **独立发布**：捆绑 pi 官方 standalone（08 §7.1：下载 + SHA256 校验进 bundle.resources，发现顺序插入内置档，full/lite 双 SKU）。
 
 **验收**：05 §2 预算表逐条达标并留有 CI 证据链接；`perf-lite`（S1/S3 缩短版）进 PR 必跑。
 

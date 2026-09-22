@@ -12,7 +12,7 @@
 
 - Node ≥ 20（开发用 24）、pnpm ≥ 10
 - Rust stable（≥ 1.80）
-- **pi 在 PATH 上**（`pi --version`，当前契约锚定 0.86.1）；或设置 `PI_BIN`
+- **pi 在 PATH 上**（`pi --version`，当前契约锚定 0.87.0；M2 起应用可内置官方 standalone，免安装 pi）；或设置 `PI_BIN`
 
 ## 快速开始
 
