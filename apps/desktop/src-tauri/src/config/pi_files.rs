@@ -3,6 +3,57 @@
 
 use std::path::PathBuf;
 
+fn expand_home(p: &str) -> PathBuf {
+    if p == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    }
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// 会话根目录：settings.json 的 `sessionDir`（绝对/~ 路径）优先，
+/// 否则默认 `~/.pi/agent/sessions`（docs/02 §6.1；相对路径 pi 语义为"随项目 cwd"，
+/// 扫描器无法枚举，M1 回退默认并注明）。
+pub fn sessions_root() -> PathBuf {
+    let default = agent_dir().join("sessions");
+    let Ok(raw) = std::fs::read_to_string(agent_dir().join("settings.json")) else {
+        return default;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return default;
+    };
+    match v.get("sessionDir").and_then(|x| x.as_str()) {
+        Some(s) if !s.trim().is_empty() => {
+            let expanded = expand_home(s.trim());
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                default // 相对路径：pi 侧随项目 cwd 落盘，扫描器回退默认
+            }
+        }
+        _ => default,
+    }
+}
+
+/// 当前生效会话目录（GUI 展示用）：{ dir, isCustom, raw }。
+pub fn session_dir_effective() -> Result<serde_json::Value, String> {
+    let settings = read_json(&agent_dir().join("settings.json"))?;
+    let raw = settings
+        .get("sessionDir")
+        .and_then(|x| x.as_str())
+        .map(String::from);
+    let dir = sessions_root();
+    Ok(serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "isCustom": raw.is_some(),
+        "raw": raw,
+    }))
+}
+
 fn agent_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)

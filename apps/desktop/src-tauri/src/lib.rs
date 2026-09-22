@@ -11,7 +11,6 @@ use crate::sessions::registry::Registry;
 use std::sync::{Arc, OnceLock};
 use tauri::Manager;
 
-static WATCHER: OnceLock<Arc<dyn notify::Watcher + Send + Sync>> = OnceLock::new();
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 fn now_ms() -> u64 {
@@ -37,22 +36,25 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             APP_HANDLE.set(app.handle().clone()).ok();
-            // 会话目录 watcher：变化 → sessions:changed（docs/02 §6.2；pi 不随 stdin EOF 退出同理：句柄保活）
-            let home = std::env::var("HOME").unwrap_or_default();
-            let root = std::path::PathBuf::from(home).join(".pi/agent/sessions");
-            let handle = app.handle().clone();
-            match crate::sessions::list::spawn_sessions_watcher(root, move || {
-                use tauri::Emitter;
-                let sink = TauriSink { app: handle.clone() };
-                sink.emit_json("sessions:changed", serde_json::json!({ "at": now_ms() }));
-            }) {
-                Ok(h) => {
-                    WATCHER.set(h).ok();
+            // 会话目录 watcher：变化 → sessions:changed（根目录随 sessionDir，见 commands::restart_sessions_watcher）
+            let app2 = app.handle().clone();
+            let state = app.state::<crate::commands::AppState>();
+            tauri::async_runtime::block_on(async move {
+                let watcher_slot = state.watcher.clone();
+                let home = std::env::var("HOME").unwrap_or_default();
+                let root = std::path::PathBuf::from(home).join(".pi/agent");
+                let handle = app2.clone();
+                match crate::sessions::list::spawn_sessions_watcher(root, move || {
+                    use tauri::Emitter;
+                    let _ = handle.emit("sessions:changed", serde_json::json!({ "at": 0 }));
+                }) {
+                    Ok(w) => {
+                        *watcher_slot.lock().await = Some(w);
+                        eprintln!("[piggy] sessions watcher 已启动");
+                    }
+                    Err(e) => eprintln!("[piggy] sessions watcher 不可用: {e}"),
                 }
-                Err(e) => {
-                    eprintln!("[piggy] sessions watcher 不可用: {e}");
-                }
-            }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -72,6 +74,7 @@ pub fn run() {
         })
         .manage(AppState {
             registry: Arc::new(tokio::sync::Mutex::new(Registry::new(pi_bin))),
+            watcher: Arc::new(tokio::sync::Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::boot_reset,
@@ -91,6 +94,7 @@ pub fn run() {
             commands::ui_reply,
             commands::pi_stderr_tail,
             commands::session_list,
+            commands::session_dir_effective,
             commands::session_delete,
             commands::session_rename,
             commands::layout_load,

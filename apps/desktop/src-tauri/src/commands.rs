@@ -13,6 +13,37 @@ use tauri::{AppHandle, State};
 
 pub struct AppState {
     pub registry: SharedRegistry,
+    pub watcher: Arc<tokio::sync::Mutex<Option<Arc<dyn notify::Watcher + Send + Sync>>>>,
+}
+
+/// 启动/重启会话目录 watcher（settings_write 变更 sessionDir 后调用）
+pub async fn restart_sessions_watcher(app: &AppHandle, state: &State<'_, AppState>) {
+    let new_watcher = {
+        let mut slot = state.watcher.lock().await;
+        if let Some(old) = slot.take() {
+            drop(old); // 旧 watcher 停止
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let root = std::path::PathBuf::from(home).join(".pi/agent"); // 根下含 settings.json 变更
+        let handle = app.clone();
+        match list::spawn_sessions_watcher(root, move || {
+            use tauri::Emitter;
+            let _ = handle.emit("sessions:changed", serde_json::json!({ "at": now_ms() }));
+        }) {
+            Ok(w) => {
+                *slot = Some(w);
+                eprintln!("[piggy] sessions watcher 已启动");
+            }
+            Err(e) => eprintln!("[piggy] watcher 启动失败: {e}"),
+        }
+    };
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn sink(app: &AppHandle) -> Arc<dyn EventSink> {
@@ -463,8 +494,24 @@ pub async fn settings_read() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn settings_write(value: Value) -> Result<(), String> {
+pub async fn settings_write(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    value: Value,
+) -> Result<(), String> {
     tokio::task::spawn_blocking(move || pi_files::settings_write(&value))
+        .await
+        .map_err(|e| e.to_string())??;
+    // 会话目录可能变更：重启 watcher（根目录随 sessionDir）+ 通知前端
+    restart_sessions_watcher(&app, &state).await;
+    use tauri::Emitter;
+    let _ = app.emit("sessions:changed", serde_json::json!({ "reason": "settings" }));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn session_dir_effective() -> Result<Value, String> {
+    tokio::task::spawn_blocking(pi_files::session_dir_effective)
         .await
         .map_err(|e| e.to_string())?
 }

@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// 测试产生的会话文件清理（防污染用户 ~/.pi/agent/sessions，M1 修正记录）
+fn cleanup_session(file: &str) {
+    let _ = std::fs::remove_file(file);
+    if let Some(parent) = Path::new(file).parent() {
+        let _ = std::fs::remove_dir(parent); // 仅空目录会成功
+    }
+}
+
 fn pi_bin() -> PathBuf {
     discover(None).expect("pi not found").path
 }
@@ -62,6 +70,7 @@ async fn c1_session_flag() {
     eprintln!("C1: --session={} => sessionFile={}", file, actual);
     assert!(actual == file, "C1 FAIL: expected {file}, got {actual}");
     w.shutdown().await;
+    cleanup_session(&file);
 }
 
 /// C2：Windows spawn 包装——macOS 上跳过，待 Windows CI。
@@ -190,6 +199,7 @@ async fn c5_cursor_incremental() {
     eprintln!("C5: 非法 since => {:?}", bad.as_ref().err().unwrap_or(&"success:true?!".to_string()));
     assert!(bad.is_err(), "C5: 非法 since 应 success:false");
     c.shutdown().await;
+    cleanup_session(&file);
 }
 
 /// C6：--no-session 下 get_state 的 sessionFile/sessionId 形态。
@@ -256,6 +266,7 @@ async fn c8_export_html_default() {
         Err(e) => eprintln!("C8: export_html(无路径) 失败 => {e}"),
     }
     w.shutdown().await;
+    cleanup_session(&file);
 }
 
 /// C9：prompt.images 的接受度（随后 abort，最小消耗）。
@@ -386,4 +397,5 @@ async fn e2e_crash_recovery() {
     eprintln!("CRASH-RECOVERY: Crashed 检出 ✓, 复活后游标增量 = {n} 条");
     assert_eq!(n, 0, "崩溃后无新增（游标即崩溃前 leaf）");
     w2.shutdown().await;
+    cleanup_session(&file);
 }

@@ -4,6 +4,7 @@
 //! - 头部 64KB：SessionHeader（id/cwd/timestamp）+ 首条用户消息（未命名会话的展示文案）；
 //! - 尾部 16KB：`session_info` 条目（set_session_name 追加在尾部，最新名字优先）。
 
+use crate::config::pi_files;
 use notify::{Event, RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::Value;
@@ -24,15 +25,13 @@ pub struct SessionMeta {
     pub first_message: Option<String>,
     pub mtime_ms: u64,
     pub size: u64,
+    /// 项目目录已不存在（打开会失败）
+    pub cwd_missing: bool,
 }
 
-/// 扫描默认会话目录（`~/.pi/agent/sessions`）；目录缺失视为空。
+/// 扫描生效会话目录（settings.json `sessionDir` 优先，docs/09 M1 WP5）。
 pub fn scan_sessions() -> Vec<SessionMeta> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return Vec::new();
-    };
-    let root = home.join(".pi/agent/sessions");
-    scan_dir(&root)
+    scan_dir(&pi_files::sessions_root())
 }
 
 pub fn scan_dir(root: &Path) -> Vec<SessionMeta> {
@@ -124,6 +123,10 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
+    let cwd_missing = header_cwd
+        .as_ref()
+        .map(|c| !Path::new(c).exists())
+        .unwrap_or(true);
     Some(SessionMeta {
         path: path.to_string_lossy().into_owned(),
         file_name: path.file_name()?.to_string_lossy().into_owned(),
@@ -133,6 +136,7 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         first_message: first_user,
         mtime_ms: mtime,
         size: md.len(),
+        cwd_missing,
     })
 }
 

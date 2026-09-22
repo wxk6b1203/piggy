@@ -95,12 +95,6 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-interface TreeNode {
-  id: string;
-  parentId?: string | null;
-  entry?: { role?: string; content?: unknown };
-}
-
 function TreeView({ tabId }: { tabId: string | null }) {
   const [nodes, setNodes] = useState<DataNode[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +102,7 @@ function TreeView({ tabId }: { tabId: string | null }) {
   useEffect(() => {
     if (!tabId) return;
     setNodes([]);
-    void cmd<{ tree?: TreeNode[] }>('pi_get_tree', { tabId })
+    void cmd<{ tree?: RawTreeNode[] }>('pi_get_tree', { tabId })
       .then((r) => setNodes(toAntdTree(r.tree ?? [])))
       .catch((e) => setError(String(e)));
   }, [tabId]);
@@ -122,32 +116,42 @@ function TreeView({ tabId }: { tabId: string | null }) {
   );
 }
 
-function toAntdTree(tree: TreeNode[]): DataNode[] {
+/** get_tree 节点形状：{ entry, children }（id 在 entry 内，docs/02 §5.2） */
+interface RawTreeNode {
+  id?: string;
+  entry?: { id?: string; role?: string; content?: unknown };
+  children?: RawTreeNode[];
+}
+
+function textSnippet(content: unknown): string {
+  if (typeof content === 'string') return content.slice(0, 40);
+  if (Array.isArray(content)) {
+    for (const b of content) {
+      if ((b as { type?: string }).type === 'text')
+        return ((b as { text?: string }).text ?? '').slice(0, 40);
+    }
+  }
+  return '';
+}
+
+function toAntdTree(tree: RawTreeNode[]): DataNode[] {
   let count = 0;
-  const walk = (n: TreeNode): DataNode => {
+  const convert = (n: RawTreeNode): DataNode => {
     count += 1;
-    const role = n.entry?.role ?? n.id.slice(0, 6);
-    const label = n.entry ? `${role}` : n.id.slice(0, 8);
-    return {
-      key: n.id,
-      title: `${label} · ${n.id.slice(0, 6)}`,
-      children: [],
-    };
-  };
-  // get_tree 是嵌套 {entry, children}；这里保守渲染（≤500 节点）
-  const convert = (n: { id: string; entry?: { role?: string }; children?: unknown[] }): DataNode => {
-    count += 1;
+    const id = n.entry?.id ?? n.id ?? `node-${count}`;
     const role = n.entry?.role;
+    const snippet =
+      role === 'user' || role === 'assistant' ? ` ${textSnippet(n.entry?.content)}` : '';
     const node: DataNode = {
-      key: n.id,
-      title: role ? `${role} · ${n.id.slice(0, 6)}` : n.id.slice(0, 8),
+      key: id,
+      title: role ? `${role} · ${id.slice(0, 6)}${snippet}` : id.slice(0, 8),
       children: [],
     };
     if (count < 500 && Array.isArray(n.children)) {
-      node.children = (n.children as never[]).map(convert);
+      node.children = n.children.map(convert);
     }
     return node;
   };
-  void walk;
-  return tree.map((n) => convert(n as never));
+  return tree.map(convert);
 }
+

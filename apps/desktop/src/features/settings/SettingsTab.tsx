@@ -186,6 +186,8 @@ function ModelsSection() {
 function SettingsSection() {
   const [text, setText] = useState('{}');
   const [dirty, setDirty] = useState(false);
+  const [sessionDir, setSessionDir] = useState<{ dir: string; isCustom: boolean; raw: string | null } | null>(null);
+  const [dirInput, setDirInput] = useState('');
 
   const reload = useCallback(() => {
     void cmd<Record<string, unknown>>('settings_read')
@@ -194,11 +196,17 @@ function SettingsSection() {
         setDirty(false);
       })
       .catch((e) => antdMessage.error(String(e)));
+    void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
+      .then((v) => {
+        setSessionDir(v);
+        setDirInput(v.raw ?? '');
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(reload, [reload]);
 
-  const save = async () => {
+  const saveRaw = async () => {
     try {
       const v = JSON.parse(text);
       await cmd('settings_write', { value: v });
@@ -209,20 +217,58 @@ function SettingsSection() {
     }
   };
 
+  const applySessionDir = async () => {
+    try {
+      const v = JSON.parse(text);
+      const trimmed = dirInput.trim();
+      if (trimmed) v.sessionDir = trimmed;
+      else delete v.sessionDir;
+      await cmd('settings_write', { value: v });
+      setText(JSON.stringify(v, null, 2));
+      setDirty(false);
+      antdMessage.success('会话目录已更新（新会话生效）');
+      void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
+        .then((v2) => {
+          setSessionDir(v2);
+          setDirInput(v2.raw ?? '');
+        })
+        .catch(() => {});
+    } catch (e) {
+      antdMessage.error(`保存失败: ${e}`);
+    }
+  };
+
   return (
     <div className="pg-settings-editor">
       <div className="pg-settings-row">
-        <Button type="primary" disabled={!dirty} onClick={() => void save()}>
+        <span className="pg-settings-label">基础会话目录</span>
+        <Input
+          style={{ maxWidth: 420 }}
+          placeholder="默认 ~/.pi/agent/sessions（支持绝对路径与 ~）"
+          value={dirInput}
+          onChange={(e) => setDirInput(e.target.value)}
+          onPressEnter={() => void applySessionDir()}
+        />
+        <Button onClick={() => void applySessionDir()}>应用</Button>
+        {sessionDir && (
+          <span className="pg-fg-dim">
+            当前生效：{sessionDir.dir}
+            {sessionDir.isCustom ? '（自定义）' : '（默认）'}
+          </span>
+        )}
+      </div>
+      <div className="pg-settings-row">
+        <Button type="primary" disabled={!dirty} onClick={() => void saveRaw()}>
           保存 settings.json
         </Button>
         <Button onClick={reload}>放弃更改</Button>
-        <span className="pg-fg-dim">全局设置（~/.pi/agent/settings.json）；表单化常用项 = M2</span>
+        <span className="pg-fg-dim">已有会话不会移动，新会话写入新目录</span>
       </div>
       <div className="pg-settings-mono">
         <MonacoHost
           value={text}
           language="json"
-          height="420px"
+          height="380px"
           onChange={(v) => {
             setText(v);
             setDirty(true);

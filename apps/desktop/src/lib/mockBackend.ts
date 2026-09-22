@@ -159,6 +159,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     content: '// mock 预览内容\nexport const ok = true;\n',
   }),
   pi_stderr_tail: () => [],
+  session_dir_effective: () => ({ dir: '/Users/mock/.pi/agent/sessions', isCustom: false, raw: null }),
   auth_list: () => ({
     providers: [
       { provider: 'mock-anthropic', kind: 'api_key', masked: 'sk-ant…Xk2f' },

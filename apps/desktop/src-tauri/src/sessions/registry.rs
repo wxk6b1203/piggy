@@ -142,6 +142,7 @@ impl Registry {
                 let args = build(self.resolve_bin()?);
                 spawn_worker(tab_id, args, sink).await
             }
+            // SESSION_CWD_MISSING（项目目录已删）等：不重试，直接透传
             Err(e) => Err(e),
         }
     }

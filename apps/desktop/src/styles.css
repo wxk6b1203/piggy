@@ -347,3 +347,5 @@ body {
 .ant-modal .ant-modal-header { background: transparent; }
 .ant-modal .ant-modal-title { color: var(--pg-fg); }
 .pg-help-row { color: var(--pg-fg); }
+.pg-linkish { background: none; border: none; text-align: left; width: 100%; cursor: pointer; text-decoration: underline; }
+.pg-settings-label { font-size: 12.5px; font-weight: 600; }
