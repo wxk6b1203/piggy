@@ -4,7 +4,6 @@ import { Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { cmd } from '@/lib/ipc';
 import { windowEvents } from '@/lib/windowEvents';
-import { useTabs } from '@/stores/tabs';
 
 type RightView = 'stats' | 'tree';
 

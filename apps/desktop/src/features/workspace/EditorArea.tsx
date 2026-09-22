@@ -11,11 +11,13 @@ import {
   type IDockviewPanelHeaderProps,
 } from 'dockview-react';
 import { useStore } from 'zustand';
+import type { DockviewTheme } from 'dockview';
 import { debounce } from '@/lib/debounce';
 import { cmd } from '@/lib/ipc';
 import { disposeTabListeners } from '@/lib/tabEvents';
 import { disposeLive } from '@/lib/live';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
+import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
 import { SessionWorkspace } from '@/features/chat/SessionWorkspace';
 import { SettingsTab } from '@/features/settings/SettingsTab';
@@ -178,18 +180,29 @@ export function openPreviewTab(key: string, path: string, title: string) {
   api?.addPanel({ id, component: 'preview', title: `✦ ${title}`, params: { kind: 'preview', path } });
 }
 
+export function closeActivePanel() {
+  if (!api) return;
+  const active = api.activePanel ?? api.panels.find((x) => x.id === `session:${useTabs.getState().activeTabId}`);
+  active?.api.close();
+}
+
 export async function openWelcome() {
   if (api?.getPanel('welcome')) return;
   api?.addPanel({ id: 'welcome', component: 'welcome', title: 'Piggy', params: {} });
 }
 
+const darkTheme: DockviewTheme = { name: 'piggy-dark', className: 'pg-dv-theme-dark', colorScheme: 'dark' };
+const lightTheme: DockviewTheme = { name: 'piggy-light', className: 'pg-dv-theme-light', colorScheme: 'light' };
+
 export function EditorArea() {
+  const themeName = useUi((s) => s.theme);
   return (
     <div className="pg-editor-area">
       <DockviewReact
         components={components}
         tabComponents={{ default: PgTab }}
         onReady={onReady}
+        theme={themeName === 'dark' ? darkTheme : lightTheme}
         className="pg-dv"
       />
     </div>

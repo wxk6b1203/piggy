@@ -85,6 +85,7 @@ pub fn run() {
             commands::session_rename,
             commands::layout_load,
             commands::layout_save,
+            commands::pi_get_entries,
             commands::pi_get_tree,
             commands::pi_get_fork_messages,
             commands::pi_fork,
@@ -95,6 +96,16 @@ pub fn run() {
             commands::pi_get_commands,
             commands::fs_preview_read,
             commands::pi_export_html,
+            commands::auth_list,
+            commands::auth_set_key,
+            commands::auth_remove,
+            commands::models_read,
+            commands::models_write,
+            commands::settings_read,
+            commands::settings_write,
+            commands::pi_compact,
+            commands::pi_abort_bash,
+            commands::pi_bash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

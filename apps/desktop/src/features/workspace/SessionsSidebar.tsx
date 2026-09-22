@@ -1,5 +1,6 @@
 /** 会话侧栏（WP2，docs/04 §1.5）：项目分组 + 相对时间 + 搜索 + 新建/删除/导出/重命名 */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { windowEvents } from '@/lib/windowEvents';
 import { message as antdMessage, Modal, Input } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { createTab, useTabs } from '@/stores/tabs';
@@ -16,9 +17,16 @@ export function SessionsSidebar() {
   const [renameText, setRenameText] = useState('');
   const [newProject, setNewProject] = useState<{ open: boolean; cwd: string }>({ open: false, cwd: '' });
 
+  const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     void load();
+    return windowEvents.on('focus-session-search', () => {
+      setSidebarOpenIfClosed();
+      searchRef.current?.focus();
+    });
   }, [load]);
+  function setSidebarOpenIfClosed() {
+    /* 侧栏开合在 AppFrame；此处聚焦即可（折叠态下搜索框不可见时由用户先展开） */ }
 
   const tabs = useTabs((s) => s.tabs);
   const activeFiles = new Set(Object.values(tabs).map((t) => t.sessionFile));
@@ -109,6 +117,7 @@ export function SessionsSidebar() {
         </button>
       </div>
       <input
+        ref={searchRef}
         className="pg-sidebar-search"
         placeholder="搜索会话…"
         value={query}

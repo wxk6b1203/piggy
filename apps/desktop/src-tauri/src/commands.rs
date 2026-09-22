@@ -1,6 +1,6 @@
 //! IPC 命令层（docs/03 §1 原则 2）：参数校验 + 转发，不含业务逻辑。
 
-use crate::config::app;
+use crate::config::{app, pi_files};
 use crate::events::{EventSink, TauriSink};
 use crate::pi::discovery::discover;
 use crate::pi::process::{self, SessionTarget};
@@ -300,6 +300,16 @@ pub async fn layout_save(value: Value) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn pi_get_entries(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    since: Option<String>,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.get_entries(since.as_deref()).await
+}
+
+#[tauri::command]
 pub async fn pi_get_tree(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -405,4 +415,85 @@ pub async fn fs_preview_read(path: String) -> Result<Value, String> {
         "lines": body.lines().count(),
         "content": body,
     }))
+}
+
+/* ---------------- M1 WP5：pi 配置文件（auth/models/settings） ---------------- */
+
+#[tauri::command]
+pub async fn auth_list() -> Result<Value, String> {
+    tokio::task::spawn_blocking(pi_files::auth_list)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn auth_set_key(provider: String, api_key: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || pi_files::auth_set_key(&provider, &api_key))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn auth_remove(provider: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || pi_files::auth_remove(&provider))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn models_read() -> Result<Value, String> {
+    tokio::task::spawn_blocking(pi_files::models_read)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn models_write(value: Value) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || pi_files::models_write(&value))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn settings_read() -> Result<Value, String> {
+    tokio::task::spawn_blocking(pi_files::settings_read)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn settings_write(value: Value) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || pi_files::settings_write(&value))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pi_compact(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    custom_instructions: Option<String>,
+) -> Result<Value, String> {
+    let worker = worker_of(&app, &state, &tab_id).await?;
+    worker.compact(custom_instructions.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn pi_abort_bash(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.abort_bash().await
+}
+
+#[tauri::command]
+pub async fn pi_bash(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    command: String,
+) -> Result<Value, String> {
+    worker_of(&app, &state, &tab_id).await?.bash(&command).await
 }

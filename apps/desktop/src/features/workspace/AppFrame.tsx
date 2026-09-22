@@ -1,6 +1,11 @@
 /** AppFrame（WP1，docs/04 §1）：外框 react-resizable-panels + 编辑区 dockview + 状态栏 */
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { cmd } from '@/lib/ipc';
+import { windowEvents } from '@/lib/windowEvents';
+import { useAppCommands } from '@/lib/appCommands';
+import { CommandPalette } from '@/features/palette/CommandPalette';
+import { HelpOverlay } from '@/features/palette/HelpOverlay';
+import { BashPanel } from './BashPanel';
 import { useEffect, useState } from 'react';
 import { useTabMsg } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
@@ -8,7 +13,7 @@ import { useUi } from '@/stores/ui';
 import { EditorArea, openSessionTab } from './EditorArea';
 import { SessionsSidebar } from './SessionsSidebar';
 import { RightBar } from './RightBar';
-import { ModelThinkingControls } from '@/features/chat/ModelThinking';
+import { ModelThinkingControls } from '@/features/workspace/ModelThinking';
 import { DialogRouter } from '@/features/dialogs/DialogRouter';
 import { createTab } from '@/stores/tabs';
 import { ensureTabListeners } from '@/lib/tabEvents';
@@ -27,10 +32,25 @@ export function AppFrame() {
   const banner = useTabs((s) => s.banner);
   const theme = useUi((s) => s.theme);
   const toggleTheme = useUi((s) => s.toggleTheme);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [stats] = useState('');
+  const sidebarOpen = useUi((s) => s.sidebarOpen);
+  const setSidebarOpen = useUi((s) => s.setSidebarOpen);
+  const [bashOpen, setBashOpen] = useState(false);
 
-  // 启动：恢复布局（EditorArea.initEditorArea 处理 dockview 部分）；无会话面板则建新 tab
+  useAppCommands();
+
+  // 事件：关闭活动 tab / 切终端面板
+  useEffect(() => {
+    const off1 = windowEvents.on('close-active-tab', () => {
+      import('./EditorArea').then(({ closeActivePanel }) => closeActivePanel());
+    });
+    const off2 = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
+    return () => {
+      off1();
+      off2();
+    };
+  }, []);
+
+  // 启动：恢复布局（EditorArea.restore 处理 dockview 部分）；无会话面板则建新 tab
   // 单例 promise：StrictMode 双 effect 只执行一次（docs/09 M0 修正记录）
   useEffect(() => {
     if (!bootPromise) {
@@ -75,7 +95,7 @@ export function AppFrame() {
         <button
           className="pg-btn pg-rail-toggle"
           title="切换侧栏（⌘B）"
-          onClick={() => setSidebarOpen((v) => !v)}
+          onClick={() => setSidebarOpen(!sidebarOpen)}
         >
           ☰
         </button>
@@ -94,17 +114,29 @@ export function AppFrame() {
         <Group orientation="horizontal" className="pg-group-h">
           {sidebarOpen && (
             <>
-              <Panel defaultSize={20} minSize={12} maxSize={38} className="pg-pane-sidebar">
+              <Panel defaultSize="20%" minSize="13%" maxSize="38%" className="pg-pane-sidebar">
                 <SessionsSidebar />
               </Panel>
               <Separator className="pg-sash" />
             </>
           )}
-          <Panel minSize={30}>
-            <EditorArea />
+          <Panel minSize="40%">
+            <Group orientation="vertical" className="pg-group-v">
+              <Panel minSize="30%">
+                <EditorArea />
+              </Panel>
+              {bashOpen && (
+                <>
+                  <Separator className="pg-sash" />
+                  <Panel defaultSize="35%" minSize="15%" maxSize="75%">
+                    <BashPanel tabId={activeTabId} />
+                  </Panel>
+                </>
+              )}
+            </Group>
           </Panel>
           <Separator className="pg-sash" />
-          <Panel defaultSize={18} minSize={12} maxSize={34}>
+          <Panel defaultSize="18%" minSize="13%" maxSize="34%">
             <RightBar tabId={activeTabId} />
           </Panel>
         </Group>
@@ -113,10 +145,28 @@ export function AppFrame() {
         <span>
           {order.length} 会话 tab · {active ? active.cwd : ''}
         </span>
-        <span className="pg-hint">{stats || 'M1 WP1-4'}</span>
+        <StatusSlots />
+        <span className="pg-hint">M1 WP1–8</span>
       </footer>
       <DialogRouter />
+      <CommandPalette />
+      <HelpOverlay />
     </div>
+  );
+}
+
+function StatusSlots() {
+  const slots = useUi((s) => s.statusSlots);
+  const entries = Object.entries(slots);
+  if (entries.length === 0) return null;
+  return (
+    <span className="pg-status-slots">
+      {entries.map(([k, v]) => (
+        <span key={k} className="pg-status-slot" title={k}>
+          {v}
+        </span>
+      ))}
+    </span>
   );
 }
 

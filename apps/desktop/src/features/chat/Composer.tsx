@@ -2,11 +2,10 @@
  * Composer v2（WP3，docs/04 §7）：图片粘贴/拖拽、斜杠补全、队列、Esc 中断还原。
  * 协议语义：流式中发送必须带 streamingBehavior（docs/02 §7.2）。
  */
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { message as antdMessage } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { useTabMsg } from '@/stores/messages';
-import { useTabs } from '@/stores/tabs';
 
 interface PendingImage {
   data: string; // base64（无 data: 前缀）

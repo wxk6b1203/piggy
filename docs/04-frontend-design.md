@@ -172,7 +172,8 @@ liveStore 只登记"哪个 tab 的哪个 contentIndex 挂在哪个 DOM 句柄"�
 ### 3.3 store 之外的规则
 
 - 一切"当前输入框草稿"等 UI 态放组件局部 state / uiStore，不进 messagesStore；
-- React Compiler 负责组件级 memoization；**禁止**手写 `useMemo` 包 store 派生（除非 profiling 证明必要），保持代码可被编译器分析。
+- React Compiler 负责组件级 memoization；**禁止**手写 `useMemo` 包 store 派生（除非 profiling 证明必要），保持代码可被编译器分析；
+- **外部可变状态红线（M1 实测）**：render 中读取模块级可变状态（registry/Map/数组缓存）会被编译器当纯函数缓存首帧结果——此类读取必须走 store 订阅，或文件顶部声明 `"use no memo"`（案例：CommandRegistry 面板空列表，09 §3.2）。
 
 ## 4. 流式渲染管线（渲染分帧核心）
 

@@ -54,7 +54,6 @@ export function MonacoHost(props: {
       ed.dispose();
       liveInstances = Math.max(0, liveInstances - 1);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mod, el]);
 
   // 主题热切换

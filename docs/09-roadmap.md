@@ -65,12 +65,28 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 | 2 | 会话管理：sessions/list.rs（扫描+watcher）+ 侧栏会话视图 + new/switch/rename/delete/export/fork/clone | G2 核心；依赖 WP1 侧栏 | ✅ |
 | 3 | 模型/Thinking + Composer 完整态：Cmd+L 选择器、thinking 循环、图片粘贴/拖拽、斜杠补全 | 小而高频，提前保持日常可用 | ✅ |
 | 4 | Monaco 基座：worker/CSP/懒加载/实例池/主题注册（风险 spike 前置） | M1 最大技术未知数，尽早排雷 | ✅ |
-| 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | |
-| 6 | 快捷键 v1 + 命令面板（CommandRegistry/KeymapService/Cmd+K） | 独立性强 | |
-| 7 | 轨迹视图 v1（对话\|轨迹页签、事件流、context_edit 渲染） | 数据源现成 | |
-| 8 | 收尾验收：bash 面板、setStatus/setWidget 槽位、三条用户故事 E2E、rpc-demo 实测、G2 勾验 | 对齐 M1 五条验收 | |
+| 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | ✅（schema 校验 M2） |
+| 6 | 快捷键 v1 + 命令面板（CommandRegistry/KeymapService/Cmd+K） | 独立性强 | ✅（含改绑 UI + 冲突检测） |
+| 7 | 轨迹视图 v1（对话\|轨迹页签、事件流、context_edit 渲染） | 数据源现成 | ✅ |
+| 8 | 收尾验收：bash 面板、setStatus/setWidget 槽位、三条用户故事 E2E、rpc-demo 实测、G2 勾验 | 对齐 M1 五条验收 | ✅（bash=RPC pre 流，xterm M2；E2E=Playwright mock 冒烟，tauri-driver 实机 E2E M2） |
 
 > 用户调整顺序：1 → 3 → 2 → 4（小赢前置）；5–8 顺延。
+
+### 3.2 M1 验收记录（2026-09-22）
+
+1. ✅ 用户故事 1/2/3（mock 模式 Playwright 冒烟：`scripts/verify-m1.mjs` / `scripts/shot.mjs`）；tauri-driver 实机 E2E 排 M2；
+2. ✅ G2 对照 02 §3.2 映射表：对话/模型/会话/压缩/统计/导出/命令面板全通（M1 范围内逐行勾验；auth/models/settings 写入即落盘，新会话生效）；
+3. ✅ Extension UI：五类 dialog + notify/setStatus/setWidget/setTitle/set_editor_text 全部有落点（02 §8 表）；
+4. ✅ 三文件回归：auth/models/settings 写入为 pi 标准文件（原子写 + .bak）；
+5. ✅ 工作区：tab 预览/固定/徽标语义 + 布局持久化跨重启（dockview toJSON + remap）。
+
+M1 修正记录（实现期发现）：
+
+- **React Compiler 缓存外部可变状态**：render 中读取模块级 registry（`allCommands()`）被编译器当纯函数缓存，首帧空数组永久复用 → 该类文件加 `"use no memo"` 或改为 store 订阅（04 §3.3 增补红线）；
+- **webview 重载孤儿 worker**：pi 不随 stdin EOF 退出 → `boot_reset` 命令由新 JS 上下文首先调用收割；
+- **monaco exports map 重写错误**：vite alias 直达 `node_modules/monaco-editor/esm` + 类型 shim（10 §2.2 落地记录）；
+- **布局尺寸**：react-resizable-panels v4 的 `defaultSize` 必须带单位（`"20%"`），纯数字按像素；
+- **dockview v8 主题**：`DockviewReact` 必须显式传 `theme`（对象形式），否则内容不渲染。
 
 ## 4. M2 · 性能达标（约 2 周，可与 M1 部分并行）
 

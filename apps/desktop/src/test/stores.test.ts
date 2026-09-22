@@ -5,7 +5,8 @@ import { useMessages } from '@/stores/messages';
 
 const TAB = 'tab-1';
 const fixtures = join(import.meta.dirname, '../../../../packages/pi-protocol/fixtures');
-const fixture = (name: string): any => JSON.parse(readFileSync(join(fixtures, name), 'utf8'));
+const fixture = (name: string): Record<string, unknown> =>
+  JSON.parse(readFileSync(join(fixtures, name), 'utf8')) as Record<string, unknown>;
 
 function resetStore() {
   useMessages.setState({ tabs: {} });
@@ -17,9 +18,9 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
   it('message_end → append（user/assistant/toolResult 各归位）', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
-    s.applyCommit(TAB, fixture('event_message_end_assistant_toolcall.json'));
-    s.applyCommit(TAB, fixture('event_message_end_toolresult.json'));
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
+    s.applyCommit(TAB, fixture('event_message_end_assistant_toolcall.json') as never);
+    s.applyCommit(TAB, fixture('event_message_end_toolresult.json') as never);
     const tab = useMessages.getState().tabs[TAB]!;
     expect(tab.ids.length).toBe(3);
     expect(tab.byId[tab.ids[0]!]!.role).toBe('user');
@@ -30,10 +31,10 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
   it('system 消息跳过；重复 message_end（同 role+timestamp）去重', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
-    s.applyCommit(TAB, fixture('event_message_end_system.json'));
+    s.applyCommit(TAB, fixture('event_message_end_system.json') as never);
     expect(useMessages.getState().tabs[TAB]!.ids.length).toBe(0);
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
     expect(useMessages.getState().tabs[TAB]!.ids.length).toBe(1);
   });
 
@@ -41,7 +42,7 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
     s.ensure('tab-2');
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
     expect(useMessages.getState().tabs['tab-2']!.ids.length).toBe(0);
     expect(useMessages.getState().tabs[TAB]!.ids.length).toBe(1);
   });
@@ -60,7 +61,7 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
   it('piggy:resync 合并未见条目、跳过已知（timestamp 去重）', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
     const userMsg = fixture('event_message_end_user.json').message;
     s.applyCommit(TAB, {
       type: 'piggy:resync',
@@ -84,7 +85,7 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
   it('remove 清空该 tab', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
-    s.applyCommit(TAB, fixture('event_message_end_user.json'));
+    s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
     s.remove(TAB);
     expect(useMessages.getState().tabs[TAB]).toBeUndefined();
   });

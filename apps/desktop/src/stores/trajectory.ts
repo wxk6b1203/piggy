@@ -1,0 +1,151 @@
+/** 轨迹（WP7，docs/04 §1.10）：get_entries 快照 + 实时 commit 追加，per-tab 行缓冲 */
+import { create } from 'zustand';
+import { immer } from 'zustand/middleware/immer';
+import { cmd } from '@/lib/ipc';
+import type { AgentMessage } from '@piggy/pi-protocol';
+
+export type TrajKind =
+  | 'user'
+  | 'assistant'
+  | 'tool'
+  | 'system'
+  | 'context_edit'
+  | 'compaction'
+  | 'label'
+  | 'other';
+
+export interface TrajRow {
+  id: string;
+  kind: TrajKind;
+  text: string;
+  detail?: string;
+  ts?: number;
+  running?: boolean;
+}
+
+interface TrajectoryState {
+  rows: Record<string, TrajRow[]>;
+  loaded: Record<string, boolean>;
+  load(tabId: string): Promise<void>;
+  appendCommit(tabId: string, ev: { type: string } & Record<string, unknown>): void;
+  clear(tabId: string): void;
+}
+
+let seq = 0;
+const rid = () => `traj-${Date.now()}-${seq++}`;
+
+function textOf(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => {
+        const t = (b as { type?: string }).type;
+        if (t === 'text') return (b as { text?: string }).text ?? '';
+        if (t === 'toolCall')
+          return `⚙ ${(b as { name?: string }).name} ${JSON.stringify((b as { arguments?: unknown }).arguments ?? {}).slice(0, 160)}`;
+        return '';
+      })
+      .filter(Boolean)
+      .join('  ');
+  }
+  return '';
+}
+
+function entryToRow(e: Record<string, unknown>): TrajRow | null {
+  const type = String(e.type ?? '');
+  const ts = Date.parse(String(e.timestamp ?? '')) || undefined;
+  if (type === 'message') {
+    const m = e.message as AgentMessage | undefined;
+    const role = (m as { role?: string })?.role;
+    if (role === 'system') return { id: rid(), kind: 'system', text: '(系统上下文)', ts };
+    if (role === 'user') return { id: rid(), kind: 'user', text: textOf(m?.content), ts };
+    if (role === 'assistant') return { id: rid(), kind: 'assistant', text: textOf(m?.content), ts };
+    if (role === 'toolResult') {
+      const rm = m as { toolName?: string; content?: unknown; isError?: boolean };
+      return {
+        id: rid(),
+        kind: 'tool',
+        text: `${rm.toolName ?? 'tool'} → ${textOf(rm.content).slice(0, 200)}`,
+        ts,
+      };
+    }
+    return { id: rid(), kind: 'other', text: `(message role=${role})`, ts };
+  }
+  if (type === 'compaction') return { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩', ts };
+  if (type === 'context_edit')
+    return {
+      id: rid(),
+      kind: 'context_edit',
+      text: `✎ 上下文编辑 → ${String(e.targetId ?? '').slice(0, 8)}${e.replacement ? '（替换）' : '（省略）'}`,
+      ts,
+    };
+  if (type === 'session_info')
+    return { id: rid(), kind: 'label', text: `🏷 命名：${String(e.name ?? '')}`, ts };
+  if (type === 'label') return { id: rid(), kind: 'label', text: `🏷 ${String(e.label ?? e.id ?? '')}`, ts };
+  return { id: rid(), kind: 'other', text: `(${type})`, ts };
+}
+
+export const useTrajectory = create<TrajectoryState>()(
+  immer((set) => ({
+  rows: {},
+  loaded: {},
+
+  async load(tabId) {
+    try {
+      const data = await cmd<{ entries?: Array<Record<string, unknown>> }>('pi_get_entries', { tabId });
+      const rows = (data.entries ?? []).map(entryToRow).filter((r): r is TrajRow => r !== null);
+      set((s) => {
+        s.rows[tabId] = rows;
+        s.loaded[tabId] = true;
+      });
+    } catch (e) {
+      console.error('轨迹加载失败', e);
+      set((s) => {
+        s.loaded[tabId] = true;
+      });
+    }
+  },
+
+  appendCommit(tabId, ev) {
+    const e = ev as { type: string } & Record<string, unknown>;
+    let row: TrajRow | null = null;
+    switch (e.type) {
+      case 'message_end': {
+        const m = e.message as AgentMessage;
+        const role = (m as { role?: string }).role;
+        if (role === 'user') row = { id: rid(), kind: 'user', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
+        else if (role === 'assistant')
+          row = { id: rid(), kind: 'assistant', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
+        else if (role === 'toolResult') {
+          const rm = m as { toolName?: string; content?: unknown };
+          row = { id: rid(), kind: 'tool', text: `${rm.toolName ?? 'tool'} → ${textOf(rm.content).slice(0, 200)}` };
+        }
+        break;
+      }
+      case 'tool_execution_start': {
+        const t = e as unknown as { toolCallId: string; toolName: string };
+        row = { id: rid(), kind: 'tool', text: `${t.toolName} (运行中…)`, running: true };
+        break;
+      }
+      case 'compaction_start':
+        row = { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩…', running: true };
+        break;
+      case 'compaction_end':
+        row = { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩完成' };
+        break;
+      default:
+        return;
+    }
+    if (!row) return;
+    set((s) => {
+      (s.rows[tabId] ??= []).push(row!);
+    });
+  },
+
+  clear(tabId) {
+    set((s) => {
+      delete s.rows[tabId];
+      delete s.loaded[tabId];
+    });
+  },  }))
+);

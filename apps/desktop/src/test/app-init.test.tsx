@@ -9,6 +9,7 @@ import { act } from 'react';
 const invokeMock = vi.fn();
 const listenMock = vi.fn().mockResolvedValue(() => {});
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
+vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listenMock(...a) }));
 
 import App from '@/App';
@@ -27,7 +28,7 @@ describe('App 初始化（mock IPC）', () => {
   });
 
   it('挂载后调用 tab_create 并拉取消息', async () => {
-    invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+    invokeMock.mockImplementation(async (name: string) => {
       if (name === 'tab_create') {
         return {
           tab_id: 't-1', cwd: '/tmp', session_id: 's1', session_file: null,

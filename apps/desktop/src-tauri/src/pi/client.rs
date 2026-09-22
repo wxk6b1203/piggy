@@ -291,6 +291,19 @@ impl WorkerInner {
             .await
     }
 
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<Value, String> {
+        let mut p = json!({});
+        if let Some(ci) = custom_instructions {
+            p["customInstructions"] = json!(ci);
+        }
+        self.request_checked("compact", p, None).await
+    }
+
+    pub async fn abort_bash(&self) -> Result<Value, String> {
+        self.request_checked("abort_bash", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
+    }
+
     pub async fn raw_request(
         &self,
         command: &str,

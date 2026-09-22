@@ -9,6 +9,8 @@ import { useTabs } from '@/stores/tabs';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
 import { handleFireAndForget } from '@/features/dialogs/DialogRouter';
 import { windowEvents } from '@/lib/windowEvents';
+import { useTrajectory } from '@/stores/trajectory';
+import { useBash } from '@/stores/bash';
 import type { Frame } from '@piggy/pi-protocol';
 
 const DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor']);
@@ -30,6 +32,11 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     un.push(
       await on(`pi:commit:${tabId}`, (ev: { type: string }) => {
         useMessages.getState().applyCommit(tabId, ev);
+        useTrajectory.getState().appendCommit(tabId, ev);
+        if (ev.type === 'bash_execution_update') {
+          const b = ev as unknown as { delta?: string };
+          useBash.getState().append(tabId, b.delta ?? '');
+        }
         if (ev.type === 'agent_settled') {
           const t = useTabs.getState();
           if (t.activeTabId !== tabId) t.markUnread(tabId);
