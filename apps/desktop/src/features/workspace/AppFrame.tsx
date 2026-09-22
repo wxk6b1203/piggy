@@ -15,6 +15,11 @@ import { ensureTabListeners } from '@/lib/tabEvents';
 
 let bootPromise: Promise<void> | null = null;
 
+/** @internal 仅供测试/重试：清除启动单例 */
+export function resetBootForTest() {
+  bootPromise = null;
+}
+
 export function AppFrame() {
   const activeTabId = useTabs((s) => s.activeTabId);
   const order = useTabs((s) => s.order);
@@ -45,8 +50,16 @@ export function AppFrame() {
             (p) => p.params?.kind === 'session',
           );
           if (!hasSession) await createFreshTab();
-        } catch {
-          await createFreshTab();
+        } catch (e) {
+          // 失败可重试：清空单例（下次触发重新 boot）
+          bootPromise = null;
+          try {
+            await createFreshTab();
+          } catch (e2) {
+            void e2;
+            bootPromise = null;
+          }
+          void e;
         }
       })();
     }

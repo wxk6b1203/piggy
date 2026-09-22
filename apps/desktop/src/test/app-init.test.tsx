@@ -12,11 +12,13 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listenMock(...a) }));
 
 import App from '@/App';
+import { resetBootForTest } from '@/features/workspace/AppFrame';
 import { useTabs } from '@/stores/tabs';
 import { useMessages } from '@/stores/messages';
 
 describe('App 初始化（mock IPC）', () => {
   beforeEach(() => {
+    resetBootForTest();
     invokeMock.mockReset();
     listenMock.mockClear();
     listenMock.mockResolvedValue(() => {});
