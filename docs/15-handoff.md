@@ -12,11 +12,12 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **245/245**：apps/desktop **178**（19 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、**5 条子代理委派开关**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `vitest` | **253/253**：apps/desktop **186**（20 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、**8 条预览语言表**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
 | `cargo test` | **94 + 3 + 1** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
+| `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
 
@@ -208,6 +209,20 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     - 在 `before_agent_start` 里 `setActiveTools`，**本次请求的工具表已经定死**，
       要从下一轮才生效。`systemPromptOptions.selectedTools` 在此之前就取好快照了。
 
+25. **"声明"和"结果"要分开量：配了 ≠ 生效，这类 bug 全是静默降级。**
+    用户截图："打开 README.md，语言条写着 `markdown`，正文一行都不上色。"
+    查下来：Monaco 的 ESM 发行版**一门语言都不带**，而本项目只静态引了 json
+    —— 除 `.json` 外所有文件都被 `LanguageService` 那句
+    `Fall back to plain text if language is unknown` 悄悄降级成纯文本。
+    **不抛错、不警告、语言条还是照写**，所以肉眼和"看代码"都发现不了。
+    做法：断言**结果**而不是断言**声明** —— `ui:startup` 第 5 段数的是真实 DOM 里
+    `.view-line span[class^=mtk]` 的**类数与颜色数**（markdown 3 色 / go 9 色），
+    外加一个"语言条声称 X、正文却只有一个色"的静默失败计数器。
+    通则：凡是"声明式配置 + 缺省回退"的地方（语言、主题、字体、图标集、权限档），
+    都要有一条量结果的断言；否则改坏了永远是"看起来没问题"。
+    这条与规则 22 是**同一类根因的第二次**：Vite 解析不了的东西（裸说明符 + 变量）
+    也是构建期静默、运行期才炸 —— 现在那条源码门扫的是整个 `src/`。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -216,6 +231,8 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
+| **`pnpm lint` 是空转** | docs/08 §4 与 docs/10 §2.2 都写着某些红线"lint 强制"，但 `apps/desktop/package.json` **没有 `lint` 脚本**，`pnpm -r --if-present lint` 一个文件都扫不到。手工 `npx eslint .` 现存 **189 error / 35 warning**（含 `no-undef` 打在 `src-tauri/resources/*.js` 这类构建产物上）。二选一：①接上 lint 并清存量（要先把构建产物加进 ignores）；②把文档里的"lint 强制"改成实际执行者（本轮预览语言表那条红线就是这么办的——由 `src/test/preview-lang.test.ts` 承担） |
+| `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
 | **WebKit 渲染** | 未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是启动路径，不等于逐像素复核 |
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`（`SpawnArgs.envs` 已具备透传能力，只差设置项）。要支持需加设置项（docs/17 §2.3） |

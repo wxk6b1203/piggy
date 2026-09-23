@@ -22,6 +22,12 @@
  *
  * 前置：`pnpm dev`（Vite :5195）已在跑。
  * 用法：`pnpm --filter @piggy/desktop ui:startup`
+ *
+ * 除了上面这三段，脚本后半还有两段独立核对（各自带起因注释）：
+ *   4. **Fleet 面板**（A 层启动 + B 层 PIGGY:1 数据面）、**斜杠补全真滚动**、**代码块真高亮**；
+ *   5. **文件预览真高亮**（markdown / go 的 token 颜色 + 未知扩展名必须老实纯文本）。
+ * 这两段的共同点：量的是**真实 DOM 的颜色**，jsdom 里量不到（没有布局/worker），
+ * 而它们要拦的 bug 恰恰是"界面上看不出错、但一个字都没上色"。
  */
 import { chromium } from 'playwright';
 
@@ -309,8 +315,88 @@ const fleet = await page.evaluate(async () => {
   };
 });
 
+/* ---------- 5. 文件预览：语法高亮（真浏览器，走应用自己的代码） ---------- */
+// 起因（用户截图）：打开 README.md，头部语言条写着 `markdown`，正文**一行都不上色**。
+// 根因：Monaco 的 ESM 发行版一门语言都不带，而本项目此前只静态引了 json
+// —— 除 .json 外的所有文件都静默降级成 plaintext，不报错、不警告。
+//
+// 为什么必须在这里立：`monaco.editor.create({language})` 对**未注册**的 id 会
+// 静默退回纯文本（LanguageService: "Fall back to plain text if language is unknown"），
+// 单测里没有 Monaco 的布局与 worker，断言颜色只会假过。所以断言打在真实 DOM 上：
+// 打开的每个文件都要**不止一种 token 类/颜色**，且"语言条声称 X、正文却没有 X 的着色"
+// 这种静默失败计数必须为 0 —— 它正是这条 bug 的形态。
+await page.addInitScript(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.dv-tab', { timeout: 15000 });
+await page.waitForTimeout(800);
+
+/**
+ * 顺带核实"按需"这个claim：打开两个文件，**只许**下这两个语言的定义。
+ * 拦的是"有人图省事把 84 门一次全注册"（docs/10 §2.2 红线）——
+ * 那种改动在界面上完全看不出来，只会让每次开预览都多下几百 KB。
+ * 说明：语言名只出现在 dev 的 dep URL 里（`monaco-editor_languages_definitions_go_register.js`），
+ * 产物里是 `register-<hash>.js` 认不出语言，所以这条只能在 dev 下量（ui:startup 本来就跑在 dev 上）。
+ */
+const langDeps = new Set();
+const onLangDep = (r) => {
+  const m = r.url().match(/languages[\/_]definitions[\/_]([a-z0-9-]+)[\/_]register/);
+  if (m) langDeps.add(m[1]);
+};
+page.on('response', onLangDep);
+
+const preview = await page.evaluate(async () => {
+  const editor = await import('/src/features/workspace/EditorArea.tsx');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** 打开一个预览并等它**真的**出现 token（首次要下 monaco core + 语言 chunk，给足 20s）。 */
+  async function openAndMeasure(path, title, waitMs) {
+    editor.openPreviewTab('probe', path, title); // 同 key = 替换上一个，DOM 里只会有一份
+    const t0 = Date.now();
+    let root = null;
+    while (Date.now() - t0 < waitMs) {
+      await sleep(100);
+      const panes = [...document.querySelectorAll('.pg-preview')];
+      const last = panes.at(-1);
+      if (!last || !last.querySelector('.monaco-editor')) continue; // 编辑器还没挂进来
+      if (last.querySelectorAll('.view-line span[class^="mtk"]').length > 0) {
+        root = last;
+        break;
+      }
+    }
+    if (!root) return { path, mounted: false };
+    await sleep(250); // tokenization 是异步的，等它落定
+    const spans = [...root.querySelectorAll('.view-line span[class^="mtk"]')];
+    const colorOf = (el) => getComputedStyle(el).color;
+    return {
+      path,
+      mounted: true,
+      lang: root.querySelector('.pg-preview-lang')?.textContent ?? null,
+      tokenSpans: spans.length,
+      classes: [...new Set(spans.map((s) => s.className))].length,
+      colors: [...new Set(spans.map(colorOf).filter(Boolean))].length,
+      // 语言条声称有语言，正文却只有一种 token 类 = 静默降级（本次 bug 的形态）。
+      // plaintext 只有一种类是应该的，不算。
+      silentFallback:
+        (root.querySelector('.pg-preview-lang')?.textContent ?? '') !== 'plaintext' &&
+        spans.length > 0 &&
+        new Set(spans.map((s) => s.className)).size < 2,
+      firstLine: root.querySelector('.view-line')?.textContent ?? '',
+      sampleColors: [...new Set(spans.map(colorOf).filter(Boolean))].slice(0, 6),
+    };
+  }
+
+  // ① markdown（用户截图里那个）② go（多 token 类型）③ 认不出的扩展名（必须老老实实纯文本）
+  const markdown = await openAndMeasure('/Users/mock/proj/README.md', 'README.md', 20000);
+  const go = await openAndMeasure('/Users/mock/proj/main.go', 'main.go', 15000);
+  const unknown = await openAndMeasure('/Users/mock/proj/notes.zzz', 'notes.zzz', 8000);
+  return { markdown, go, unknown };
+});
+page.off('response', onLangDep);
 await browser.close();
-console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet }, null, 1));
+console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet, preview }, null, 1));
 
 if (probe.storeIds.length === 0) bad.push('恢复后 useTabs 为空（布局恢复把标签全关了）★');
 if (probe.driftedPanelIds === 0) bad.push('面板 id 与 params.tabId 没有分叉，这条核对失去意义');
@@ -373,6 +459,46 @@ else {
   }
   if (!cb.collapsedHidden) bad.push('代码块：60 行的块没有默认折叠 ★');
   if (cb.silentFail) bad.push(`代码块：有 ${cb.silentFail} 张卡"声称有语言、没高亮、也不吭声"（静默失败又回来了）★`);
+}
+if (!preview.markdown?.mounted) bad.push('预览：markdown 文件连 Monaco 都没挂上（core chunk 没加载？）★');
+else {
+  if (preview.markdown.lang !== 'markdown') {
+    bad.push(`预览：README.md 的语言条是 ${preview.markdown.lang}，应为 markdown ★`);
+  }
+  if (preview.markdown.colors < 2 || preview.markdown.classes < 2) {
+    bad.push(
+      `预览：README.md 只有 ${preview.markdown.colors} 种颜色 / ${preview.markdown.classes} 种 token 类，` +
+        `等于没高亮（语言定义没注册？）★`,
+    );
+  }
+  if (preview.markdown.silentFallback) {
+    bad.push('预览：README.md 语言条写着 markdown，正文却全一个色 —— 静默降级成纯文本了 ★');
+  }
+}
+if (!preview.go?.mounted) bad.push('预览：go 文件连 Monaco 都没挂上 ★');
+else {
+  if (preview.go.lang !== 'go') bad.push(`预览：main.go 的语言条是 ${preview.go.lang}，应为 go ★`);
+  // 字符串/注释/关键字至少三种，一种色 = 没高亮
+  if (preview.go.colors < 3) {
+    bad.push(`预览：main.go 只有 ${preview.go.colors} 种 token 颜色（${JSON.stringify(preview.go.sampleColors)}），等于没高亮 ★`);
+  }
+}
+if (!preview.unknown?.mounted) bad.push('预览：未知扩展名的文件没渲染出来 ★');
+else {
+  if (preview.unknown.lang !== 'plaintext') {
+    bad.push(`预览：notes.zzz 的语言条是 ${preview.unknown.lang}，应为 plaintext（不许乱猜）★`);
+  }
+  if (preview.unknown.colors > 1) {
+    bad.push(`预览：notes.zzz 出现了 ${preview.unknown.colors} 种颜色，纯文本不该有高亮 ★`);
+  }
+}
+/* 按需：开了 markdown + go 两个文件，就只该下这两门语言的定义 */
+const deps = [...langDeps].sort();
+if (!deps.includes('markdown') || !deps.includes('go')) {
+  bad.push(`预览：语言定义没按需下载（只见到 ${JSON.stringify(deps)}）—— 高亮可能根本没加载 ★`);
+}
+if (deps.length > 2) {
+  bad.push(`预览：开了 2 个文件却下了 ${deps.length} 门语言定义 ${JSON.stringify(deps)}（有人把全语言注册接回来了？）★`);
 }
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 

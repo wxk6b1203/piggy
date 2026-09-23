@@ -44,10 +44,14 @@ VS Code 是同类产品里被验证最充分的"代码工作台"设计。本文�
 
 ### 2.2 打包与加载
 
-1. **ESM 按需**：`monaco-editor/esm/vs/editor/editor.api` + 显式语言贡献（json/typescript/javascript/markdown/python/css/html/shell 等白名单 ≤10 门），**禁止全语言打包**（lint 强制，08 §4）；
+1. **ESM 按需 + 语言逐门懒加载**：`monaco-editor/editor/editor.api` **一门语言都不带**（这不是缺陷，是 ESM 发行版的默认形态）。语言定义在 `src/features/common/monaco-langs.ts` 里逐门写成 `import('monaco-editor/languages/definitions/<lang>/register')` 的**字面量**，Vite 才会为每门语言切**独立 chunk**，只有真的打开该语言的文件时才下载。当前白名单 **55 门**（go/python/rust/ts/js/java/c/cpp/md/json/yaml/toml≈ini/sql/sh/dockerfile/…），认不出的扩展名 = `plaintext`、一个字节都不下。
+   **禁全语言注册**（`basic-languages/monaco.contribution` / `languages/register.all`，一次进 84 门）：这条红线由 `src/test/preview-lang.test.ts` 的源码门在每次 `pnpm test` 时拦。
+   ⚠️ 本行此前写的是"lint 强制"——**当时并没有任何东西在执行它**：`apps/desktop/package.json` 里根本没有 `lint` 脚本，`pnpm lint` 一个文件都扫不到（`eslint.config.js` 里现在确实有这条规则，等 lint 接上即生效）。教训：**写在文档里的"强制"必须能指出是哪条命令在强制**。
+   ⚠️ 另一个同类坑：``import(`monaco-editor/languages/definitions/${id}/register`)`` 这种**裸说明符 + 变量**，Vite 的 dynamic-import-vars **不分析裸说明符**，构建期连 warning 都不给、产物里原样保留，运行期才抛（docs/15 规则 22）。代码块高亮就是这么静默死了很久。
 2. **Workers**：editor/json/ts worker 经 Vite `?worker` 打成独立 chunk；`MonacoEnvironment.getWorker` 手动映射；CSP 增 `worker-src 'self' blob:`（Tauri 配置，WKWebView/WebView2 均验证通过才可发版）；
-3. **React 封装**：`@monaco-editor/react` 仅作受控组件，`loader.config({ monaco })` 指向**本地 bundle**（禁 CDN 加载器默认行为）；
-4. **懒加载**：Monaco 全家（core+workers+语言）为独立异步 chunk，首次打开预览/设置/diff 才加载——空载会话不付一分钱（05 §5.5）。
+3. **React 封装**：`MonacoHost` 直接持有 `monaco-editor` 实例。`@monaco-editor/react` 在依赖表里但**当前没有任何 import**（待清理项）；
+4. **懒加载**：Monaco 全家（core+workers+语言）为独立异步 chunk，首次打开预览/设置/diff 才加载——空载会话不付一分钱（05 §5.5）；
+5. **创建顺序**：语言定义必须在 `editor.create({language})` **之前** await 完。未注册的 language id 会被 `LanguageService._createAndGetLanguageIdentifier` **静默降级成 plaintext**（源码原话 `Fall back to plain text if language is unknown`）——界面上就是"语言条写着 `go`、正文一片白"，而且不报任何错。（事后 `setModelLanguage` 其实能救回来，但那是"先错后改"：白跑一次 tokenize，还得把 ready 时序接出来。）调用点见 `monaco-setup.ensureLanguage` + `MonacoHost`。
 
 ### 2.3 实例纪律（过预算的关键）
 

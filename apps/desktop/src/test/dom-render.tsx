@@ -16,6 +16,12 @@
  * 是让人不再相信测试结果：分不清是真回归还是又抖了一次。
  *
  * 解法：在 jsdom **还活着**的时候把队列跑空（`drainReact`），再拆环境。
+ *
+ * ⚠️ 2026-09-23 复测（做预览高亮时又撞上）：原版 **2/6 中**；把 `drainReact` 加一轮
+ * `setImmediate`（scheduler 排的是 Node 的 check 队列，跟 `setTimeout` 不是同一条）
+ * 并加到 3 轮后 **4/8 中** —— **没有帮助，已还原**。初步怀疑残留触发者是 rc-motion 那类
+ * **百毫秒级**定时器（drain 只给了 0ms 的轮转），但没验证，所以这里不写"已修"。
+ * 结论：这条 flake 还在，`pnpm test` 偶发非零退出 ≠ 有回归（先单跑那个文件确认）。
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';

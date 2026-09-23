@@ -387,6 +387,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       md: `# Piggy\n\n**pi 的图形驾驶舱**：以 pi 为引擎、Tauri 2 为壳。\n\n- 流式渲染\n- 工具调用卡片\n- 行内 code：\u0060tabId\u0060\n`,
 
       css: `:root {\n  --pg-bg-app: rgb(21, 21, 23);\n}\n\n.pg-app {\n  display: flex;\n  height: 100vh;\n}\n`,
+      // 每种 token 都来一点（注释/关键字/字符串/数字/标识符）：ui:startup 第 5 节要断言
+      // "预览里真的出现了不止一种 token 颜色"，样本太单调的话断言等于没断言
+      go: `// mock 预览内容\npackage main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nconst version = "0.1.0"\n\nfunc main() {\n\tif len(os.Args) < 2 {\n\t\tfmt.Println("usage: demo <name>")\n\t\tos.Exit(1)\n\t}\n\tfmt.Printf("hello %s\\n", os.Args[1])\n}\n`,
     };
     const content = samples[ext] ?? `// ${path}\n`;
     return {
