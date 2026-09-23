@@ -1,7 +1,9 @@
-// monaco-editor 的 exports map 使 esm 子路径的 TS 类型不可达（./* 目标重写错误），
-// 运行时 vite 可正常解析；这里给出精确的类型面（WP5 schema 接入时按需扩充）。
-declare module 'monaco-editor/esm/vs/editor/editor.api.js' {
-  import * as monaco from 'monaco-editor';
-  export = monaco;
-}
-declare module 'monaco-editor/esm/vs/language/json/monaco.contribution.js';
+/**
+ * monaco-editor 的 exports map 是 `"./*": "./esm/vs/*.js"`，
+ * 因此**规范说明符**是 `monaco-editor/editor/editor.api`（而不是 `monaco-editor/esm/vs/...`：
+ * 后者会被重写成 `esm/vs/esm/vs/...`，即 docs/13 E6 记的双写问题）。
+ * 用规范说明符后类型可直接从包声明解析，本 shim 不再需要。
+ *
+ * 保留本文件仅作为上述结论的书面记录；如无引用可安全删除。
+ */
+export {};

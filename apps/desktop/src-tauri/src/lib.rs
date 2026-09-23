@@ -1,17 +1,39 @@
 pub mod commands;
 pub mod config;
 pub mod events;
+pub mod fleet;
+pub mod fs_guard;
 pub mod pi;
+pub mod pty;
 pub mod sessions;
 
 use crate::commands::AppState;
-use crate::events::{EventSink, TauriSink};
+use crate::events::TauriSink;
 use crate::pi::discovery::discover;
 use crate::sessions::registry::Registry;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tauri::Manager;
 
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// panic hook（docs/09 M4）：崩溃转储到 ~/.piggy/logs/（Rust panic hook → 本地日志），
+/// 再交回默认 hook（保留原 stderr 行为）。
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(dir) = std::env::var_os("HOME").map(PathBuf::from).map(|h| h.join(".piggy/logs")) {
+            let _ = std::fs::create_dir_all(&dir);
+            let ts = now_ms();
+            let msg = format!(
+                "panic @{ts}: {info}\nlocation: {:?}\n---\n",
+                info.location()
+            );
+            let _ = std::fs::write(dir.join(format!("panic-{ts}.log")), msg);
+        }
+        default(info);
+    }));
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -20,10 +42,24 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 内置 pi 路径启发式（08 §7.1）：macOS bundle = Contents/Resources/resources/pi/pi，
+/// windows/linux = exe 同级 resources/pi/pi。setup 里会以 resource_dir 权威值覆盖。
+fn builtin_pi_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let base = if cfg!(target_os = "macos") {
+        exe.parent()?.parent()?.join("Resources")
+    } else {
+        exe.parent()?.to_path_buf()
+    }
+    .join("resources/pi");
+    Some(if cfg!(windows) { base.join("pi.exe") } else { base.join("pi") })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook(); // M4：崩溃安全
     // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
-    let pi_bin = match discover(None) {
+    let pi_bin = match discover(None, builtin_pi_path().as_deref()) {
         Ok(b) => {
             eprintln!("[piggy] pi: {} ({})", b.path.display(), b.version);
             Some(b)
@@ -34,25 +70,104 @@ pub fn run() {
         }
     };
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // 托盘（docs/09 M4）：显示/隐藏 + 退出
+            use tauri::{
+                menu::{Menu, MenuItem},
+                tray::TrayIconBuilder,
+            };
+            let show_hide = MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_hide, &quit])?;
+            TrayIconBuilder::with_id("piggy-tray")
+                .icon(app.default_window_icon().cloned().ok_or_else(|| tauri::Error::AssetNotFound("icon".into()))?)
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "toggle" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+            // 全局唤起（docs/09 M4）：Cmd/Ctrl+Shift+P 显示并聚焦主窗
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_shortcuts(["CmdOrCtrl+Shift+P"])?
+                        .with_handler(|app, _shortcut, _event| {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        })
+                        .build(),
+                )?;
+            }
             APP_HANDLE.set(app.handle().clone()).ok();
+            // 内置 pi（08 §7.1）：以 resource_dir 为权威，覆盖 run() 时的启发式
+            let app4 = app.handle().clone();
+            tauri::async_runtime::block_on(async move {
+                let state = app4.state::<crate::commands::AppState>();
+                if let Ok(rd) = app4.path().resource_dir() {
+                    let builtin = if cfg!(windows) {
+                        rd.join("resources/pi/pi.exe")
+                    } else {
+                        rd.join("resources/pi/pi")
+                    };
+                    state.registry.lock().await.builtin = Some(builtin);
+                }
+            });
             // 会话目录 watcher：变化 → sessions:changed（根目录随 sessionDir，见 commands::restart_sessions_watcher）
             let app2 = app.handle().clone();
             let state = app.state::<crate::commands::AppState>();
             tauri::async_runtime::block_on(async move {
                 let watcher_slot = state.watcher.clone();
-                let home = std::env::var("HOME").unwrap_or_default();
-                let root = std::path::PathBuf::from(home).join(".pi/agent");
                 let handle = app2.clone();
-                match crate::sessions::list::spawn_sessions_watcher(root, move || {
-                    use tauri::Emitter;
-                    let _ = handle.emit("sessions:changed", serde_json::json!({ "at": 0 }));
-                }) {
+                match crate::sessions::list::spawn_sessions_watcher(
+                    crate::commands::watcher_roots(),
+                    move || {
+                        use tauri::Emitter;
+                        let _ = handle.emit("sessions:changed", serde_json::json!({ "at": 0 }));
+                    },
+                ) {
                     Ok(w) => {
                         *watcher_slot.lock().await = Some(w);
                         eprintln!("[piggy] sessions watcher 已启动");
                     }
                     Err(e) => eprintln!("[piggy] sessions watcher 不可用: {e}"),
+                }
+            });
+            Ok(())
+        })
+        // 空闲回收定时器（05 §3.1/§4.1）：全应用唯一周期任务，60s 一 tick
+        .setup(|app| {
+            let app3 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app3.state::<crate::commands::AppState>();
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    tick.tick().await;
+                    let timeout_min = state.perf.read().map(|p| p.idle_timeout_min).unwrap_or(10);
+                    if timeout_min == 0 {
+                        continue; // 0 = 永不回收
+                    }
+                    let mut reg = state.registry.lock().await;
+                    let reaped = reg.reap_idle(timeout_min as u64 * 60).await;
+                    for id in reaped {
+                        eprintln!("[piggy] idle worker reaped: {id}");
+                    }
                 }
             });
             Ok(())
@@ -75,12 +190,21 @@ pub fn run() {
         .manage(AppState {
             registry: Arc::new(tokio::sync::Mutex::new(Registry::new(pi_bin))),
             watcher: Arc::new(tokio::sync::Mutex::new(None)),
+            perf: Arc::new(std::sync::RwLock::new(config::app::perf_config_load())),
+            fleet: Arc::new(fleet::FleetManager::new()),
+            pty: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         })
         .invoke_handler(tauri::generate_handler![
             commands::boot_reset,
             commands::pi_discover,
+            commands::pick_directory,
+            commands::webview_log,
             commands::tab_create,
             commands::tab_close,
+            commands::tab_sleep,
+            commands::tab_sleep_idlest,
+            commands::perf_config_load,
+            commands::perf_config_save,
             commands::pi_prompt,
             commands::pi_abort,
             commands::pi_clear_queue,
@@ -109,6 +233,8 @@ pub fn run() {
             commands::pi_cycle_thinking,
             commands::pi_get_commands,
             commands::fs_preview_read,
+            commands::fs_list_dir,
+            commands::fs_write_edit,
             commands::pi_export_html,
             commands::auth_list,
             commands::auth_set_key,
@@ -120,6 +246,16 @@ pub fn run() {
             commands::pi_compact,
             commands::pi_abort_bash,
             commands::pi_bash,
+            commands::fleet_templates,
+            commands::fleet_list,
+            commands::fleet_start,
+            commands::fleet_abort,
+            commands::fleet_steer,
+            commands::fleet_open_lane,
+            commands::pty_open,
+            commands::pty_write,
+            commands::pty_resize,
+            commands::pty_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
