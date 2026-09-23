@@ -9,7 +9,14 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "ui:debug": "node scripts/ui-debug.mjs",
+    "ui:shot": "node scripts/shot.mjs",
+    "ui:smoke": "node scripts/verify-m1.mjs",
+    "icons:gen": "node scripts/gen-codicons.mjs",
+    "tokens:extract": "node scripts/extract-dsh-tokens.mjs",
+    "icons:seti": "node scripts/sync-seti-icons.mjs",
+    "themes:sync": "node scripts/sync-vscode-themes.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
@@ -17,6 +24,9 @@
     "@piggy/pi-protocol": "workspace:*",
     "@tanstack/react-virtual": "^3.13.0",
     "@tauri-apps/api": "^2.9.0",
+    "@vscode/codicons": "0.0.46-24",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "antd": "^6.6.5",
     "dockview": "^8.3.1",
     "dockview-react": "8.3.1",
@@ -25,6 +35,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-resizable-panels": "^4.13.1",
+    "shiki": "^1.29.2",
     "zod": "^3.25.0",
     "zustand": "^5.0.8"
   },
