@@ -15,6 +15,7 @@ DSH UI 对齐改造**已完成并验证**，全部提交（`327f3fc..6f9a4a8`，
 | `vite build` | 通过 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题 |
 | `tauri build --bundles app` | 通过，打包版启动 0 条 webview 错误 |
+| **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23）——这是唯一无法由 agent 自动验证的一环 |
 
 ## 2. 常用命令
 
@@ -58,6 +59,8 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 
 ## 5. 验收方式
 
-我没有窗口截图能力（见上）。**最后一步只能人工确认**：
-`pnpm tauri dev` 起窗，肉眼确认渲染正常。若仍有问题，终端会打出
-`[piggy][webview][ERROR] ...`，把那段贴出来即可定位。
+**已完成。** `pnpm tauri dev` 起窗、人工确认渲染正常（2026-09-23）。
+
+agent 侧没有窗口截图能力（本机缺"屏幕录制"权限，见第 4 节），因此这一步必须人工做。
+后续若再遇到界面异常，终端会直接打出 `[piggy][webview][ERROR] ...`（`ErrorBoundary`
+与全局 handler 经 `webview_log` 转发），把那段贴出来即可定位，不必靠猜。

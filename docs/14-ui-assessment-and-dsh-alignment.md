@@ -5,7 +5,7 @@
 
 ## 0. 执行结果（2026-09-23 完成）
 
-> **验收证据**（全部可复现）：
+> **验收证据**（全部可复现；`pnpm tauri dev` 已由用户人工确认渲染正常）：
 > `tsc --noEmit` 通过 · `vitest` **44/44** 通过 · `vite build` 通过 ·
 > `ui:debug --strict` 零 pageerror / 零 console error / 零布局问题 ·
 > `tauri build --bundles app` 通过，打包版 `Piggy.app` 启动无 panic（`tab_create ok` ×6）。
