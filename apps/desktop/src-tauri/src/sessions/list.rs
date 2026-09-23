@@ -23,7 +23,15 @@ pub struct SessionMeta {
     pub cwd: Option<String>,
     pub name: Option<String>,
     pub first_message: Option<String>,
+    /// 文件 mtime（最后写入时间）。列表**不再用它排序**，但仍保留：
+    /// 它表达"最后活动"，而 `created_ms` 表达"何时创建"。
     pub mtime_ms: u64,
+    /// 会话创建时间（毫秒）。来源优先级：SessionHeader.timestamp → 文件名里的 ISO 时间 → mtime。
+    ///
+    /// 为什么不用 mtime 排序：mtime 会随每次写入变化，于是"老会话被追加一条消息"
+    /// 就跳到列表顶部，用户看到的就是**顺序经常变**。创建时间一旦写下就不再改变，
+    /// 列表因此稳定。
+    pub created_ms: u64,
     pub size: u64,
     /// 项目目录已不存在（打开会失败）
     pub cwd_missing: bool,
@@ -57,12 +65,15 @@ pub fn scan_dir(root: &Path) -> Vec<SessionMeta> {
             }
         }
     }
-    out.sort_by_key(|m| std::cmp::Reverse(m.mtime_ms));
+    // 按**创建时间**降序。用 mtime 排会随写入变化，顺序看起来经常变（用户报过）。
+    out.sort_by_key(|m| std::cmp::Reverse(m.created_ms));
     out
 }
 
 pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
     let md = std::fs::metadata(path).ok()?;
+    // 头部 SessionHeader 的创建时间戳（解析失败为 None）
+    let mut header_ts: Option<u64> = None;
     let mut file = std::fs::File::open(path).ok()?;
     use std::io::{Seek, SeekFrom};
 
@@ -88,6 +99,8 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
             Some("session") => {
                 header_id = v["id"].as_str().map(String::from);
                 header_cwd = v["cwd"].as_str().map(String::from);
+                // 创建时间就写在头部，此前读出来却被丢掉了
+                header_ts = v["timestamp"].as_str().and_then(parse_iso8601_ms);
             }
             Some("message") if v["message"]["role"] == "user" && first_user.is_none() => {
                 first_user = extract_text(&v["message"]["content"]);
@@ -134,14 +147,20 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         .as_ref()
         .map(|c| !Path::new(c).exists())
         .unwrap_or(true);
+    let file_name = path.file_name()?.to_string_lossy().into_owned();
+    // 创建时间：头部 -> 文件名 -> mtime（逐级兜底，保证总有值）
+    let created_ms = header_ts
+        .or_else(|| filename_timestamp_ms(&file_name))
+        .unwrap_or(mtime);
     Some(SessionMeta {
         path: path.to_string_lossy().into_owned(),
-        file_name: path.file_name()?.to_string_lossy().into_owned(),
+        file_name,
         session_id: Some(header_id),
         cwd: header_cwd,
         name,
         first_message: first_user,
         mtime_ms: mtime,
+        created_ms,
         size: md.len(),
         cwd_missing,
     })
@@ -238,6 +257,82 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// days-from-civil（Hinnant 算法的逆运算），与上面的 `civil_from_days` 配成一对。
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
+    let doy = (153 * mp + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe as i64 - 719_468
+}
+
+/// 解析 pi 写的 ISO-8601 UTC 时间戳 → epoch ms。
+///
+/// 只接受 pi 实际产出的形状（`YYYY-MM-DDTHH:MM:SS[.mmm]Z`，秒的小数位可有可无）：
+/// session 头部的 `timestamp` 与文件名里的时间戳都来自这里。
+/// 解析不了就返回 `None`，由调用方兜底到下一级来源 —— **不要 panic**。
+pub(crate) fn parse_iso8601_ms(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || (b[10] | 0x20) != b't' {
+        return None;
+    }
+    let num = |from: usize, to: usize| -> Option<i64> {
+        let part = s.get(from..to)?;
+        if !part.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        part.parse::<i64>().ok()
+    };
+    let y = num(0, 4)?;
+    let mo = num(5, 7)? as u32;
+    let d = num(8, 10)? as u32;
+    let h = num(11, 13)?;
+    let mi = num(14, 16)?;
+    let sec = num(17, 19)?;
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // 毫秒：'.' 后跟若干数字（pi 写 3 位，但别假设）
+    let mut ms: i64 = 0;
+    if b.get(19) == Some(&b'.') {
+        let frac = &s[20..];
+        let digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            let mut padded = digits.clone();
+            padded.truncate(3);
+            while padded.len() < 3 {
+                padded.push('0');
+            }
+            ms = padded.parse().ok()?;
+        }
+    }
+    let days = days_from_civil(y, mo, d);
+    let total = days * 86_400 + h * 3_600 + mi * 60 + sec;
+    u64::try_from(total * 1000 + ms).ok()
+}
+
+/// 从 pi 的会话文件名里取创建时间：`2026-09-23T06-00-07-100Z_<uuid>.jsonl`。
+/// 把时间部分的 `-` 还原成 `:` / `.` 后复用 `parse_iso8601_ms`，避免写第二套解析。
+fn filename_timestamp_ms(file_name: &str) -> Option<u64> {
+    let head = file_name.get(0..24)?;
+    let bytes = head.as_bytes();
+    // 必须是 2026-09-23T06-00-07-100Z 这个形状
+    if bytes[10] != b'T' || bytes[13] != b'-' || bytes[16] != b'-' || bytes[19] != b'-' || bytes[23] != b'Z' {
+        return None;
+    }
+    let mut iso = String::with_capacity(24);
+    for (i, c) in head.chars().enumerate() {
+        iso.push(match i {
+            13 | 16 => ':',
+            19 => '.',
+            _ => c,
+        });
+    }
+    parse_iso8601_ms(&iso)
 }
 
 /// fs watcher（02 §6.2）：递归监听一组根目录（agent 目录 + 生效会话根，可含自定义
@@ -379,5 +474,114 @@ mod tests {
         let p2 = precreate_session_file_in(&root, cwd).expect("precreate 2");
         assert_ne!(p, p2);
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod created_time_tests {
+    use super::*;
+
+    /// 与 `iso_timestamp_filename` 互为逆运算 —— 编解码必须对齐。
+    /// 注意走的是 `filename_timestamp_ms`：文件名用的是 `-` 分隔，
+    /// `parse_iso8601_ms` 只吃标准 ISO（两种形状都由 pi 产出，别混用）。
+    #[test]
+    fn filename_timestamp_round_trips() {
+        for ms in [0u64, 1, 999, 1_790_052_800_088, 951_912_000_500, 1_800_000_000_000] {
+            let name = format!("{}_{}.jsonl", iso_timestamp_filename(ms), "uuid");
+            let back = filename_timestamp_ms(&name).unwrap_or_else(|| panic!("解析失败: {name}"));
+            assert_eq!(back, ms, "往返不一致: {name}");
+        }
+    }
+
+    #[test]
+    fn parses_the_shapes_pi_actually_writes() {
+        // session 头部：带毫秒
+        assert_eq!(parse_iso8601_ms("2026-09-22T01:00:00.000Z"), Some(1_790_038_800_000));
+        // 不带毫秒
+        assert_eq!(parse_iso8601_ms("2026-09-22T01:00:00Z"), Some(1_790_038_800_000));
+        // 多于 3 位小数：截断而不是报错
+        assert_eq!(parse_iso8601_ms("2026-09-22T01:00:00.123456Z"), Some(1_790_038_800_123));
+        // 少于 3 位：右侧补零
+        assert_eq!(parse_iso8601_ms("2026-09-22T01:00:00.5Z"), Some(1_790_038_800_500));
+    }
+
+    #[test]
+    fn rejects_garbage_without_panicking() {
+        for bad in [
+            "", "not-a-date", "2026-09-22", "2026-13-01T00:00:00Z", "2026-09-32T00:00:00Z",
+            "2026-09-22T25:00:00Z", "2026-09-22T00:61:00Z", "2026-09-22X01:00:00Z",
+            "20x6-09-22T01:00:00Z",
+        ] {
+            assert!(parse_iso8601_ms(bad).is_none(), "不该解析成功: {bad:?}");
+        }
+    }
+
+    /// 文件名兜底：pi 的 `-` 分隔形式要能还原
+    #[test]
+    fn filename_timestamp_is_parsed() {
+        let got = filename_timestamp_ms("2026-09-22T04-53-20-088Z_abc123.jsonl");
+        assert_eq!(got, Some(1_790_052_800_088));
+        // 形状不对 → None（由调用方兜底到 mtime）
+        assert_eq!(filename_timestamp_ms("random-name.jsonl"), None);
+        assert_eq!(filename_timestamp_ms("2026-09-22_04-53-20.jsonl"), None);
+    }
+
+    /// 端到端：解析一个真实形状的会话文件，创建时间要来自**头部**而不是文件 mtime。
+    #[test]
+    fn header_timestamp_wins_over_mtime() {
+        let dir = std::env::temp_dir().join("piggy-created-ms-test");
+        let proj = dir.join("--proj--");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join("2020-01-01T00-00-00-000Z_hdr.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2021-06-01T12:00:00.000Z\",\"cwd\":\"/tmp\"}\n",
+        )
+        .unwrap();
+        let m = parse_session_file(&path).expect("应能解析");
+        // 头部时间：2021-06-01T12:00:00Z
+        assert_eq!(m.created_ms, 1_622_548_800_000, "应取头部 timestamp");
+        // 文件名时间是 2020，mtime 是"现在" —— 都不能覆盖头部
+        assert_ne!(m.created_ms, m.mtime_ms);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 头部没有 timestamp 时退到文件名里的时间。
+    #[test]
+    fn falls_back_to_filename_timestamp() {
+        let dir = std::env::temp_dir().join("piggy-created-ms-fallback");
+        let proj = dir.join("--proj--");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join("2019-03-04T05-06-07-008Z_nohdr.jsonl");
+        std::fs::write(&path, "{\"type\":\"session\",\"version\":3,\"id\":\"s2\",\"cwd\":\"/tmp\"}\n").unwrap();
+        let m = parse_session_file(&path).expect("应能解析");
+        assert_eq!(m.created_ms, filename_timestamp_ms("2019-03-04T05-06-07-008Z_nohdr.jsonl").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 扫描顺序：按创建时间降序，**不受 mtime 影响**。
+    #[test]
+    fn scan_sorts_by_created_not_mtime() {
+        let dir = std::env::temp_dir().join("piggy-created-ms-sort");
+        let proj = dir.join("--proj--");
+        std::fs::create_dir_all(&proj).unwrap();
+        // 先写"创建晚"的，再写"创建早"的 —— 这样创建早的那个 mtime 反而更新，
+        // 正好复现用户看到的现象：老会话被写入一次就冒到列表顶部。
+        let new = proj.join("2024-01-01T00-00-00-000Z_new.jsonl");
+        let old = proj.join("2020-01-01T00-00-00-000Z_old.jsonl");
+        std::fs::write(&new, "{\"type\":\"session\",\"version\":3,\"id\":\"new\",\"cwd\":\"/tmp\"}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(&old, "{\"type\":\"session\",\"version\":3,\"id\":\"old\",\"cwd\":\"/tmp\"}\n").unwrap();
+
+        let list = scan_dir(&dir);
+        assert_eq!(list.len(), 2, "应扫到 2 个会话");
+        assert_eq!(list[0].session_id.as_deref(), Some("new"), "创建晚的排前面");
+        assert_eq!(list[1].session_id.as_deref(), Some("old"));
+        // 也就是说：mtime 更大的 old **没有**因为"刚被写过"而冒到顶部
+        assert!(
+            list[1].mtime_ms > list[0].mtime_ms,
+            "本用例前提：创建早的 old 反而 mtime 更晚（否则测不出区别）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

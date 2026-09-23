@@ -7,7 +7,14 @@ import { cmd } from '@/lib/ipc';
 import { pickDirectory } from '@/lib/picker';
 import { createTabGuarded } from '@/lib/tabCreate';
 import { createTab, useTabs } from '@/stores/tabs';
-import { useSessions, sessionTitle, relTime, buildSidebar, type SessionMeta } from '@/stores/sessions';
+import {
+  useSessions,
+  sessionTitle,
+  relTime,
+  createdMs,
+  buildSidebar,
+  type SessionMeta,
+} from '@/stores/sessions';
 import { openSessionTab, openSettingsTab, focusSessionTab } from './EditorArea';
 import { Icon } from '@/features/common/Icon';
 import { toast, confirm } from '@/lib/feedback';
@@ -231,7 +238,13 @@ export function SessionsSidebar() {
                         {sessionTitle(m)}
                         {m.cwd_missing ? ' ⚠' : ''}
                       </span>
-                      <span className="pg-session-time">{relTime(m.mtime_ms)}</span>
+                      {/* 显示**创建**时间，与排序口径一致；最后活动时间放 title 里不丢信息 */}
+                      <span
+                        className="pg-session-time"
+                        title={`创建于 ${new Date(createdMs(m)).toLocaleString()}\n最后活动 ${new Date(m.mtime_ms).toLocaleString()}`}
+                      >
+                        {relTime(createdMs(m))}
+                      </span>
                       <span className="pg-session-ops">
                         <button
                           title="重命名"

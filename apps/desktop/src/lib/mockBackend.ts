@@ -81,14 +81,25 @@ const messages = [
   },
 ];
 
-const sessionMeta = (cwd: string, name: string, mins: number, first: string) => ({
+/**
+ * 会话 meta 的 mock。`createdMins` 与 `mtimeMins` **刻意分开**：
+ * 侧栏按创建时间排序，若 mock 里两者一致就测不出"顺序随写入跳动"这个问题。
+ */
+const sessionMeta = (
+  cwd: string,
+  name: string,
+  mtimeMins: number,
+  first: string,
+  createdMins = mtimeMins,
+) => ({
   path: `/Users/mock/.pi/agent/sessions/--${cwd.replace(/\//g, '-')}--/2026-09-22_${name}.jsonl`,
   file_name: `2026-09-22_${name}.jsonl`,
   session_id: `sid-${name}`,
   cwd,
   name: null,
   first_message: first,
-  mtime_ms: now() - mins * 60_000,
+  mtime_ms: now() - mtimeMins * 60_000,
+  created_ms: now() - createdMins * 60_000,
   size: 12_345,
 });
 
@@ -214,9 +225,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     ],
   }),
   session_list: () => [
-    sessionMeta('/Users/mock/proj', 'streaming-fix', 2, '帮我看看这个项目的流式渲染管线'),
-    sessionMeta('/Users/mock/proj', 'layout-wp1', 40, '工作区布局 v1 落地'),
-    sessionMeta('/Users/mock/testpilot', 'nightly-audit', 3_000, '审核夜间构建'),
+    // streaming-fix：创建最早（180 分钟前）但刚被写过（2 分钟前）
+    // layout-wp1  ：创建更晚（40 分钟前）、写入也早
+    // 按 mtime 排会把 streaming-fix 顶到最前；按创建时间排应该是 layout-wp1 在前。
+    sessionMeta('/Users/mock/proj', 'streaming-fix', 2, '帮我看看这个项目的流式渲染管线', 180),
+    sessionMeta('/Users/mock/proj', 'layout-wp1', 40, '工作区布局 v1 落地', 40),
+    sessionMeta('/Users/mock/testpilot', 'nightly-audit', 3_000, '审核夜间构建', 5_000),
   ],
   session_delete: () => {},
   session_rename: () => {},

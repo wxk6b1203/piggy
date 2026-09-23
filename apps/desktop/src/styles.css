@@ -1040,14 +1040,28 @@ body {
 .pg-runtime-note { margin: var(--pg-sp-2) 0 0; font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
 .pg-settings-editor .ant-input { max-width: 420px; }
 
-/* 标签栏右端操作（关闭全部）。放在 dockview 的 right-actions 容器里，
-   与溢出下拉并列；数量 ≤1 时组件返回 null，不占位。 */
-.pg-tab-actions { display: flex; align-items: center; height: 100%; padding: 0 var(--pg-sp-3); }
+/* 标签栏右端操作（关闭全部）。放在 dockview 的 right-actions 容器里，与溢出下拉并列；
+   数量 ≤1 时组件返回 null，不占位。
+ *
+ * 这里的三处 flex/nowrap 都是必需的：dockview 的 `.dv-right-actions-container` 只有
+ * `display:flex`、没有 `flex:none`，标签一多就会把它挤扁；而按钮自身默认
+ * `flex: 0 1 auto` + `white-space: normal`，被挤到就换行，而标签栏只有 35px 高
+ * —— 换行即溢出到面板上（用户截图里的"确认关闭/全部"两行就是这个）。 */
+.pg-dv-theme-dark .dv-right-actions-container,
+.pg-dv-theme-light .dv-right-actions-container {
+  flex: none;
+}
+.pg-tab-actions {
+  display: flex; align-items: center; flex: none;
+  height: 100%; padding: 0 var(--pg-sp-2);
+}
 .pg-tab-action {
   display: inline-flex; align-items: center; gap: var(--pg-sp-2);
+  flex: none; white-space: nowrap;
   height: 22px; padding: 0 var(--pg-sp-3);
   background: none; border: none; border-radius: var(--pg-r-sm);
   color: var(--pg-fg-dim); font: inherit; font-size: var(--pg-fs-12); cursor: pointer;
 }
 .pg-tab-action:hover { background: var(--pg-hover); color: var(--pg-fg); }
-.pg-tab-action-danger { color: var(--pg-error); }
+.pg-tab-action-danger { color: var(--pg-error); font-weight: 600; }
+.pg-tab-action-danger:hover { color: var(--pg-error); background: color-mix(in srgb, var(--pg-error) 16%, transparent); }

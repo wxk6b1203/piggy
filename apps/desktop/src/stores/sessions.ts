@@ -9,7 +9,10 @@ export interface SessionMeta {
   cwd: string | null;
   name: string | null;
   first_message: string | null;
+  /** 文件 mtime（最后写入时间）。**不用于排序**，仅作信息展示/兜底。 */
   mtime_ms: number;
+  /** 会话创建时间（SessionHeader.timestamp → 文件名 → mtime）。排序与展示都用它。 */
+  created_ms?: number;
   size: number;
   /** 项目目录已不存在（打开会失败，Rust scan 标记） */
   cwd_missing?: boolean;
@@ -51,8 +54,10 @@ export const useSessions = create<SessionsState>()((set, get) => ({
       const groups: SessionGroup[] = [...byCwd.entries()]
         .map(([cwd, sessions]) => ({ cwd, label: groupLabel(cwd), sessions }))
         .sort((a, b) => {
-          const am = a.sessions[0]?.mtime_ms ?? 0;
-          const bm = b.sessions[0]?.mtime_ms ?? 0;
+          // 用**创建时间**而不是 mtime：mtime 会随写入变化，
+          // 于是"老会话被追加一条消息"就跳到顶部，顺序看起来经常变（用户报过）。
+          const am = a.sessions[0] ? createdMs(a.sessions[0]) : 0;
+          const bm = b.sessions[0] ? createdMs(b.sessions[0]) : 0;
           return bm - am;
         });
       set({ groups, total: metas.length, loaded: true });
@@ -70,6 +75,11 @@ export const useSessions = create<SessionsState>()((set, get) => ({
     }));
   },
 }));
+
+/** 排序与展示统一用创建时间；缺字段时回落到 mtime（老 mock / 老后端）。 */
+export function createdMs(m: SessionMeta): number {
+  return m.created_ms ?? m.mtime_ms ?? 0;
+}
 
 /** 会话显示标题：name > 首条用户消息 > 文件名 */
 export function sessionTitle(m: SessionMeta): string {
@@ -111,7 +121,7 @@ export interface SessionGroupView {
 export const PREVIEW_LIMIT = 3;
 
 /**
- * 侧栏分组视图（docs/09 DSH 参考）：组按最新会话 mtime 降序；组内会话 mtime 降序；
+ * 侧栏分组视图（docs/09 DSH 参考）：组与组内会话一律按**创建时间**降序（稳定，不随写入跳动）；
  * collapsedGroups 整组收起；expandedGroups 超过 PREVIEW_LIMIT 时展开全部，否则显示前 3 + 折叠计数。
  */
 export function buildSidebar(
@@ -122,9 +132,13 @@ export function buildSidebar(
   const sorted = [...groups]
     .map((g) => ({
       ...g,
-      sessions: [...g.sessions].sort((a, b) => b.mtime_ms - a.mtime_ms),
+      sessions: [...g.sessions].sort((a, b) => createdMs(b) - createdMs(a)),
     }))
-    .sort((a, b) => (b.sessions[0]?.mtime_ms ?? 0) - (a.sessions[0]?.mtime_ms ?? 0));
+    .sort((a, b) => {
+      const am = a.sessions[0] ? createdMs(a.sessions[0]) : 0;
+      const bm = b.sessions[0] ? createdMs(b.sessions[0]) : 0;
+      return bm - am;
+    });
   return sorted.map((g) => {
     if (collapsedGroups[g.cwd]) {
       return { cwd: g.cwd, label: g.label, sessions: g.sessions, visible: [], hiddenCount: g.sessions.length };

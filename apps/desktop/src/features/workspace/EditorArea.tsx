@@ -371,11 +371,17 @@ function TabActions({ panels }: IDockviewHeaderActionsProps) {
       <button
         type="button"
         className={`pg-tab-action${confirming ? ' pg-tab-action-danger' : ''}`}
-        title={confirming ? `再点一次确认关闭全部 ${panels.length} 个标签` : `关闭全部标签（${panels.length}）`}
+        title={
+          confirming
+            ? `再点一次确认关闭全部 ${panels.length} 个标签（会关停它们的会话进程）`
+            : `关闭全部标签（${panels.length}）`
+        }
+        aria-label={confirming ? '确认关闭全部标签' : '关闭全部标签'}
         onClick={run}
       >
         <Icon name={confirming ? 'alert' : 'close-all'} size={13} />
-        {confirming ? '确认关闭全部' : null}
+        {/* 确认态用短文案 + 红色：长文案在窄窗口会把标签栏挤到溢出 */}
+        {confirming ? '确认关闭' : null}
       </button>
     </div>
   );
