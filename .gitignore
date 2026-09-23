@@ -6,7 +6,10 @@ target/
 apps/desktop/src-tauri/gen/
 .vite/
 coverage/
-.recovery/
 
 # 性能基准产物（本地生成，由 perf-run.mjs 写出）
 apps/desktop/perf-results/
+
+# 下载的 pi standalone（由 scripts/fetch-pi-standalone.mjs 落位，体积大且可重新下载）
+# 注意：resources/piggy-guard.js 是**源码**，必须提交，不要一起忽略
+apps/desktop/src-tauri/resources/pi/
