@@ -131,8 +131,10 @@ export function ModelPicker({ tabId }: { tabId: string }) {
         loading={loading && models === null}
         emptyText="无可用模型（检查认证 / models 配置）"
       >
+        {/* 模型胶囊只显示模型名。这里曾同时渲染 thinking 档位，
+            而紧挨着右边就有一个专门的思考强度胶囊 —— 同一信息出现两遍。
+            DSH 的 `.select` 也只放模型名。 */}
         <span className="pg-pill-strong">{model?.id ?? '选择模型'}</span>
-        {thinking ? <span className="pg-pill-dim">{thinkLabel(thinking)}</span> : null}
         <Icon name="chevron-down" size={12} />
       </Picker>
 

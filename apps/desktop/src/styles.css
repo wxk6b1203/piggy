@@ -183,7 +183,6 @@ body {
 /* `.select` 模型胶囊：max-width220 / h28 / r8 / padding 0 20 0 8 / 透明底 */
 .pg-model-select { max-width: 220px; padding: 0 var(--pg-sp-6) 0 var(--pg-sp-4); border-color: transparent; }
 .pg-pill-strong { color: var(--pg-fg); overflow: hidden; text-overflow: ellipsis; }
-.pg-pill-dim { color: var(--pg-fg-dim); }
 /* 权限胶囊与左侧 `+` 之间的竖直发丝线（DSH 工具行同款分隔） */
 .pg-composer-sep { width: 1px; height: 16px; flex: none; background: var(--pg-border-l2); }
 
