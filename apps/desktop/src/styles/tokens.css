@@ -1,0 +1,249 @@
+/**
+ * Piggy 设计 token —— **数值直接取自 DSH 源码**，不是截图取样。
+ *
+ * 来源：`deepseek-harness/packages/client/ui-theme/src/styles/`
+ *   - `design-platform.css`  调色板 + 语义 alias（亮/暗两套）
+ *   - `base.css`             字体栈
+ *   - `gradient-shadow-text.css`  排版阶梯
+ *   - `corner-shape.css` / `scrollbar.css`  圆角曲率与滚动条
+ *
+ * 重新生成：
+ *   node scripts/extract-dsh-tokens.mjs \
+ *     /Users/wxk/Documents/Project/deepseek-harness/packages/client/ui-theme/src/styles/design-platform.css \
+ *     /tmp/dsh-tokens.json
+ *
+ * 约定：变量名用 Piggy 自己的 `--pg-*` 命名空间，但每行注释标出对应的 DSH 令牌名，
+ * 便于 DSH 升级时逐行对拍。组件 CSS 一律只引用本文件变量，不写字面色值。
+ */
+
+:root {
+  /* ================= 排版（DSH base.css + gradient-shadow-text.css） ================= */
+  --pg-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  /* DSH 注释：code 字体栈**故意不写裸 `monospace` 兜底**，否则 Windows 中文会掉到 SimSun */
+  --pg-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier,
+    'PingFang SC', 'Microsoft YaHei';
+
+  /* 正文基准 14px/24px（DSH --dsh-content-font-size 默认 14） */
+  --pg-fs-base: 14px;
+  --pg-lh-base: 24px;
+  /* secondary = min(size-1, max(13, size-2)) → 14px 时 = 13px */
+  --pg-fs-secondary: 13px;
+  --pg-lh-secondary: 20px;
+
+  --pg-fs-11: 11px;
+  --pg-lh-11: 14px;
+  --pg-fs-12: 12px;
+  --pg-lh-12: 18px;
+  --pg-fs-13: 13px;
+  --pg-lh-13: 20px;
+  --pg-fs-14: 14px;
+  --pg-lh-14: 22px;
+  --pg-fs-16: 16px;
+  --pg-lh-16: 24px;
+  --pg-fs-18: 16px; /* --dsw-font-m-18 = 500 16px/28px */
+  --pg-lh-18: 28px;
+  --pg-fs-20: 20px;
+  --pg-lh-20: 28px;
+
+  /* markdown 代码 */
+  --pg-fs-code: 12px;
+  --pg-lh-code: 19px;
+  --pg-fs-code-block: 11px;
+
+  /* ================= 间距（4 基；DSH 组件里 8/12/16 为主） ================= */
+  --pg-sp-1: 2px;
+  --pg-sp-2: 4px;
+  --pg-sp-3: 6px;
+  --pg-sp-4: 8px;
+  --pg-sp-5: 12px;
+  --pg-sp-6: 16px;
+  --pg-sp-7: 20px;
+  --pg-sp-8: 24px;
+
+  /* ================= 圆角（DSH 组件实测值） ================= */
+  --pg-r-sm: 4px;
+  --pg-r-md: 6px;
+  --pg-r-lg: 8px; /* 模型胶囊 */
+  --pg-r-xl: 22px; /* Composer 卡片 */
+  --pg-r-pill: 999px; /* 胶囊 / 圆形按钮 */
+
+  /* ================= 动效（DSH base.css） ================= */
+  --pg-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --pg-dur: 0.2s;
+  --pg-dur-fast: 0.1s;
+  --pg-dur-slow: 0.3s;
+
+  /* ================= 布局尺度 ================= */
+  --pg-titlebar-h: 36px;
+  --pg-rail-w: 40px;
+  --pg-row-h: 30px;
+  --pg-statusbar-h: 24px;
+  --pg-scrollbar-w: 5px; /* --dsh-scrollbar-width */
+  --pg-composer-max-w: 760px;
+}
+
+/* ===================================================================
+   暗色主题（DSH <body data-ds-dark-theme>）
+   =================================================================== */
+:root,
+:root[data-theme='dark'] {
+  /* 表面 */
+  --pg-bg-app: rgb(21, 21, 23); /* alias-bg-base */
+  --pg-bg-layer-1: rgb(35, 35, 36); /* alias-bg-layer-1 */
+  --pg-bg-layer-2: rgb(44, 44, 46); /* alias-bg-layer-2 */
+  --pg-bg-layer-3: rgb(53, 54, 56); /* alias-bg-layer-3 */
+  --pg-bg-sidebar: rgb(27, 27, 28); /* specific-sidebar-fill */
+  --pg-bg-overlay: rgb(97, 102, 107); /* alias-bg-overlay */
+
+  /* 边框：DSH 用 alpha 白发丝线，不用实色 */
+  --pg-border-l1: rgba(255, 255, 255, 0.06);
+  --pg-border-l2: rgba(255, 255, 255, 0.12);
+  --pg-border-l3: rgba(255, 255, 255, 0.16);
+  --pg-border-l4: rgba(255, 255, 255, 0.2);
+
+  /* 文字 */
+  --pg-fg: rgb(249, 250, 251); /* alias-label-primary（近白，非 #E8E8E8） */
+  --pg-fg-secondary: rgb(207, 211, 214);
+  --pg-fg-dim: rgb(173, 178, 184); /* alias-label-tertiary */
+  --pg-fg-caption: rgb(129, 133, 140); /* 占位符 */
+  --pg-fg-faint: rgb(67, 69, 74); /* alias-label-dimmed */
+  --pg-fg-on-accent: #fff;
+  --pg-fg-inverse: rgb(15, 17, 21); /* alias-label-primary-foreground */
+
+  /* 交互态 */
+  --pg-hover: rgba(255, 255, 255, 0.08);
+  --pg-active: rgba(255, 255, 255, 0.14);
+  --pg-hover-solid: rgb(53, 54, 56);
+  --pg-sidebar-item-active: rgb(67, 69, 74);
+  --pg-sidebar-item-hover: rgb(44, 44, 46);
+
+  /* 品牌 / 强调 */
+  --pg-accent: rgb(122, 170, 255); /* state-business-primary */
+  --pg-accent-hover: rgb(65, 118, 230);
+  --pg-link: rgb(122, 170, 255);
+  --pg-brand: rgb(249, 250, 251);
+
+  /* 状态 */
+  --pg-ok: rgb(34, 197, 94);
+  --pg-warn: rgb(245, 158, 11);
+  --pg-error: rgb(242, 90, 90);
+  --pg-idle: rgb(84, 85, 87);
+
+  /* 产品专属表面 */
+  --pg-input-major: rgb(44, 44, 46); /* specific-input-major：Composer 卡底 */
+  --pg-selector: rgb(53, 54, 56); /* specific-selector：`+` 圆钮底 */
+  --pg-bubble: rgb(44, 44, 46); /* specific-bubble：用户气泡 */
+  --pg-menu: rgba(48, 49, 54, 0.5); /* specific-menu（配 backdrop-filter） */
+  --pg-tip: rgb(53, 54, 56);
+  --pg-tooltip: rgb(67, 69, 74);
+  --pg-codeblock: rgb(27, 27, 28);
+  --pg-codeblock-banner: rgb(44, 44, 46);
+  --pg-inline-code: rgb(41, 41, 41);
+
+  /* 滚动条 */
+  --pg-scrollbar: rgb(60, 60, 61);
+  --pg-scrollbar-hover: rgb(84, 85, 87);
+
+  color-scheme: dark;
+}
+
+/* ===================================================================
+   亮色主题（DSH <body> 无 data-ds-dark-theme）
+   =================================================================== */
+:root[data-theme='light'] {
+  --pg-bg-app: rgb(255, 255, 255);
+  --pg-bg-layer-1: rgb(255, 255, 255);
+  --pg-bg-layer-2: rgb(255, 255, 255);
+  --pg-bg-layer-3: rgb(255, 255, 255);
+  --pg-bg-sidebar: rgb(249, 250, 251);
+  --pg-bg-overlay: rgb(233, 236, 242);
+
+  --pg-border-l1: rgba(0, 0, 0, 0.04);
+  --pg-border-l2: rgba(0, 0, 0, 0.1);
+  --pg-border-l3: rgba(0, 0, 0, 0.12);
+  --pg-border-l4: rgba(0, 0, 0, 0.16);
+
+  --pg-fg: rgb(15, 17, 21);
+  --pg-fg-secondary: rgb(97, 102, 107);
+  --pg-fg-dim: rgb(129, 133, 140);
+  --pg-fg-caption: rgb(173, 178, 184);
+  --pg-fg-faint: rgb(225, 229, 238);
+  --pg-fg-on-accent: #fff;
+  --pg-fg-inverse: rgb(255, 255, 255);
+
+  --pg-hover: rgba(38, 49, 72, 0.06);
+  --pg-active: rgba(38, 49, 72, 0.1);
+  --pg-hover-solid: rgb(241, 243, 245);
+  --pg-sidebar-item-active: rgb(235, 238, 242);
+  --pg-sidebar-item-hover: rgb(241, 243, 245);
+
+  --pg-accent: rgb(65, 118, 230);
+  --pg-accent-hover: rgb(122, 170, 255);
+  --pg-link: rgb(65, 118, 230);
+  --pg-brand: rgb(15, 17, 21);
+
+  --pg-ok: rgb(34, 197, 94);
+  --pg-warn: rgb(245, 158, 11);
+  --pg-error: rgb(236, 19, 19);
+  --pg-idle: rgb(212, 212, 212);
+
+  --pg-input-major: rgb(255, 255, 255);
+  --pg-selector: rgb(245, 246, 247);
+  --pg-bubble: rgb(237, 243, 254);
+  --pg-menu: rgba(248, 249, 250, 0.58);
+  --pg-tip: rgb(245, 246, 247);
+  --pg-tooltip: rgb(44, 44, 46);
+  --pg-codeblock: rgb(249, 250, 251);
+  --pg-codeblock-banner: rgb(249, 250, 251);
+  --pg-inline-code: rgb(250, 250, 250);
+
+  --pg-scrollbar: rgb(229, 229, 229);
+  --pg-scrollbar-hover: rgb(212, 212, 212);
+
+  color-scheme: light;
+}
+
+/* ===================================================================
+   全局基座
+   =================================================================== */
+
+/* DSH corner-shape.css：超椭圆圆角；所有"胶囊"必须显式配 corner-shape: round 否则被切方角 */
+@supports (corner-shape: superellipse(1.5)) {
+  *,
+  *::before,
+  *::after {
+    corner-shape: superellipse(1.5);
+  }
+  .pg-pill,
+  .pg-round-btn,
+  .pg-send-btn,
+  .pg-mode-pill,
+  .pg-session-row,
+  .pg-ctx-ring {
+    corner-shape: round;
+  }
+}
+
+/* DSH scrollbar.css：两条路径互斥，同时声明会让 Chromium 丢弃全部 ::-webkit-scrollbar* */
+::-webkit-scrollbar {
+  width: var(--pg-scrollbar-w);
+  height: var(--pg-scrollbar-w);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--pg-scrollbar);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--pg-scrollbar-hover);
+}
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--pg-scrollbar) transparent;
+  }
+}

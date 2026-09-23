@@ -1,11 +1,19 @@
 /**
- * Composer v2（WP3，docs/04 §7）：图片粘贴/拖拽、斜杠补全、队列、Esc 中断还原。
- * 协议语义：流式中发送必须带 streamingBehavior（docs/02 §7.2）。
+ * Composer v3（WP3，docs/04 §7 / docs/12 §3.8）：图片粘贴/拖拽、斜杠补全、队列、Esc 中断还原。
+ * 呈现层对齐 DSH：圆角卡片（r22）+ 占位行 + 工具行（`+` / 权限胶囊 ｜ 模型胶囊 / 圆形发送）；
+ * 状态行与上下文环在卡**下方**的 dock（DSH 无底部状态栏）。
+ * 协议语义未改：流式中发送必须带 streamingBehavior（docs/02 §7.2）。
  */
 import { useRef, useState } from 'react';
-import { message as antdMessage } from 'antd';
+import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
+import { wakeIfNeeded } from '@/lib/sleep';
+import { windowEvents } from '@/lib/windowEvents';
 import { useTabMsg } from '@/stores/messages';
+import { useTabs } from '@/stores/tabs';
+import { useSessionStats } from '@/stores/stats';
+import { Icon } from '@/features/common/Icon';
+import { SessionStatusLine } from './SessionStatusLine';
 
 interface PendingImage {
   data: string; // base64（无 data: 前缀）
@@ -39,6 +47,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const [slash, setSlash] = useState<{ items: SlashCommand[]; query: string } | null>(null);
   const [commands, setCommands] = useState<SlashCommand[] | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
   const queue = useTabMsg(tabId, (t) => t.queue);
   const banner = useTabMsg(tabId, (t) => t.banner);
@@ -47,6 +56,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     const value = text.trim();
     if (!value && images.length === 0) return;
     try {
+      await wakeIfNeeded(tabId); // 休眠标签：发送即透明唤醒（05 §4.3）
       await cmd<boolean>('pi_prompt', {
         tabId,
         message: value || '（见图片）',
@@ -57,7 +67,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
       setImages([]);
       setSlash(null);
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -68,9 +78,9 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
       const restored = [...(q.steering ?? []), ...(q.followUp ?? [])].join('\n');
       await cmd('pi_abort', { tabId });
       if (restored) setText(restored);
-      antdMessage.info('已中断，排队消息已还原');
+      toast.info('已中断，排队消息已还原');
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -172,69 +182,189 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
         <div className="pg-imgs">
           {images.map((im, i) => (
             <span key={i} className="pg-img-chip" title={im.name}>
-              🖼 {im.name}
+              <Icon name="file-media" size={12} /> {im.name}
               <button
                 className="pg-img-remove"
                 onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
               >
-                ×
+                <Icon name="close" size={11} />
               </button>
             </span>
           ))}
         </div>
       )}
-      <div className="pg-composer-box">
-        <textarea
-          ref={areaRef}
-          className="pg-textarea"
-          value={text}
-          placeholder={
-            streaming
-              ? '输入转向指令…（⌘↵ steer / ⌘⇧↵ follow-up / Esc 中断）'
-              : '发消息，/ 调用指令，粘贴或拖入图片'
-          }
-          onChange={(e) => {
-            setText(e.target.value);
-            refreshSlash(e.target.value);
-          }}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          rows={Math.min(6, Math.max(1, text.split('\n').length))}
-        />
-        {slash && slash.items.length > 0 && (
-          <div className="pg-slash">
-            {slash.items.map((c) => (
-              <button key={c.name} className="pg-slash-item" onClick={() => applySlash(c)}>
-                <code>/{c.name}</code>
-                <span className="pg-slash-desc">{c.description ?? c.source ?? ''}</span>
-              </button>
-            ))}
+
+      {/* DSH 输入卡（docs/12 §3.8）：占位行 + 工具行同处一个 r22 卡 */}
+      <div className="pg-composer-card">
+        <div className="pg-composer-box">
+          <textarea
+            ref={areaRef}
+            className="pg-composer-input"
+            value={text}
+            placeholder={
+              streaming
+                ? '输入转向指令…（⌘↵ steer / ⌘⇧↵ follow-up / Esc 中断）'
+                : '发消息或创建任务, / 调用指令, @ 文件或对话'
+            }
+            onChange={(e) => {
+              setText(e.target.value);
+              refreshSlash(e.target.value);
+            }}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            rows={Math.min(6, Math.max(1, text.split('\n').length))}
+          />
+          {slash && slash.items.length > 0 && (
+            <div className="pg-slash">
+              {slash.items.map((c) => (
+                <button key={c.name} className="pg-slash-item" onClick={() => applySlash(c)}>
+                  <code>/{c.name}</code>
+                  <span className="pg-slash-desc">{c.description ?? c.source ?? ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="pg-composer-tools">
+          <div className="pg-composer-tools-left">
+            {/* DSH 只有 `+`；`@` / `/` 是输入框内的触发符，不是按钮（docs/12 §3.8） */}
+            <button
+              className="pg-composer-add"
+              title="添加文件或调用指令"
+              aria-haspopup="listbox"
+              onClick={() => {
+                setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}/`);
+                areaRef.current?.focus();
+              }}
+            >
+              <Icon name="add" size={14} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={async (e) => {
+                const files = Array.from(e.target.files ?? []);
+                if (files.length) {
+                  const imgs = await Promise.all(files.map(fileToBase64));
+                  setImages((prev) => [...prev, ...imgs].slice(0, 6));
+                }
+                e.target.value = '';
+              }}
+            />
+            <span
+              className="pg-pill pg-pill-static"
+              title="pi 的工具集由会话信任配置决定（docs/11 §2.2）"
+            >
+              <Icon name="shield" size={12} />
+              工作区内修改
+            </span>
           </div>
-        )}
+
+          <div className="pg-composer-tools-right">
+            {streaming ? (
+              <>
+                <button
+                  className="pg-pill pg-pill-action"
+                  onClick={() => void send({ behavior: 'steer' })}
+                  title="打断当前回合并立即插入（⌘↵）"
+                >
+                  转向
+                </button>
+                <button
+                  className="pg-pill pg-pill-action"
+                  onClick={() => void send({ behavior: 'followUp' })}
+                  title="等当前回合结束后追加（⌘⇧↵）"
+                >
+                  追加
+                </button>
+                <button
+                  className="pg-round-btn pg-round-danger"
+                  onClick={() => void abortAndRestore()}
+                  title="中断并取回排队消息（Esc）"
+                >
+                  <Icon name="debug-stop" size={14} />
+                </button>
+              </>
+            ) : null}
+            <ModelPill tabId={tabId} />
+            <button
+              className="pg-send-btn"
+              disabled={!text.trim() && images.length === 0}
+              onClick={() => void send()}
+              title="发送（↵）"
+            >
+              <Icon name="arrow-up" size={16} />
+            </button>
+          </div>
+        </div>
       </div>
-      <div className="pg-composer-actions">
-        {streaming ? (
-          <>
-            <button className="pg-btn" onClick={() => void send({ behavior: 'steer' })}>
-              Steer ⌘↵
-            </button>
-            <button className="pg-btn" onClick={() => void send({ behavior: 'followUp' })}>
-              Follow-up ⌘⇧↵
-            </button>
-            <button className="pg-btn pg-btn-danger" onClick={() => void abortAndRestore()}>
-              中断 Esc
-            </button>
-          </>
-        ) : (
-          <button
-            className="pg-btn pg-btn-primary"
-            disabled={!text.trim() && images.length === 0}
-            onClick={() => void send()}
-          >
-            发送 ↵
-          </button>
-        )}
+
+      {/* DSH dock（docs/12 §3.8/§3.9）：状态行 + 上下文环，位于输入卡**下方** */}
+      <div className="pg-composer-dock">
+        <SessionStatusLine tabId={tabId} />
+        <ContextMeter tabId={tabId} />
       </div>
     </div>
   );
+}
+
+/** 模型胶囊（DSH `.select`）：模型名 + thinking 级 + chevron。 */
+function ModelPill({ tabId }: { tabId: string }) {
+  const model = useTabs((s) => s.tabs[tabId]?.model);
+  const thinking = useTabs((s) => s.tabs[tabId]?.thinkingLevel);
+  const name = model?.id ?? '未选择模型';
+  return (
+    <button
+      className="pg-pill pg-model-select"
+      onClick={() => windowEvents.emit('open-model-picker', tabId)}
+      title="切换模型与 thinking 级别（⌘L）"
+    >
+      <span className="pg-pill-strong">{name}</span>
+      {thinking ? <span className="pg-pill-dim">{thinking}</span> : null}
+      <Icon name="chevron-down" size={12} />
+    </button>
+  );
+}
+
+/**
+ * 上下文环（DSH `ContextMeter.tsx`，docs/12 §3.10）：几何照抄——
+ * viewBox 0 0 14 14、r=5.5、C=2π·5.5、rotate(-90 7 7)；容量缺失时 DSH 返回 null，此处同。
+ */
+function ContextMeter({ tabId }: { tabId: string }) {
+  const stats = useSessionStats(tabId);
+  const pct = stats?.contextUsage?.percent;
+  if (pct == null) return null;
+
+  const value = Math.max(0, Math.min(100, pct));
+  const C = 2 * Math.PI * 5.5;
+  const title = `上下文占用 ${value}%（${fmtTokens(stats?.contextUsage?.tokens)} / ${fmtTokens(stats?.contextUsage?.contextWindow)}）`;
+
+  return (
+    <button className="pg-ctx-meter" title={title} aria-label={title}>
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+        <g transform="rotate(-90 7 7)">
+          <circle className="pg-ctx-track" cx="7" cy="7" r="5.5" />
+          <circle
+            className="pg-ctx-fill"
+            cx="7"
+            cy="7"
+            r="5.5"
+            strokeDasharray={`${(C * value) / 100} ${C}`}
+          />
+        </g>
+      </svg>
+      <span>{value}%</span>
+    </button>
+  );
+}
+
+function fmtTokens(n: number | null | undefined): string {
+  if (n == null) return '—';
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}K`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }

@@ -43,6 +43,9 @@ const messages = [
     content: [
       { type: 'thinking', thinking: '用户想验证 mock 管线。' },
       { type: 'text', text: '这是一条 mock 助手消息：**流式渲染**分两层——协议合帧（Rust）与渲染分帧（前端瞬态直写）。' },
+      { type: 'toolCall', name: 'edit', arguments: { path: 'src/lib/live.ts', oldText: 'a', newText: 'b' } },
+      { type: 'toolCall', name: 'write', arguments: { path: 'src/features/chat/Transcript.tsx', content: '…' } },
+      { type: 'toolCall', name: 'edit', arguments: { path: 'src/styles.css', oldText: 'a', newText: 'b' } },
     ],
     timestamp: now() - 59_000,
   },
@@ -70,10 +73,15 @@ const sessionMeta = (cwd: string, name: string, mins: number, first: string) => 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {},
   pi_discover: () => ({ path: '/mock/pi', version: '0.87.0' }),
+  pick_directory: () => null, // 浏览器 mock 无系统目录框：视为取消
+  perf_config_load: () => ({ max_workers: 8, idle_timeout_min: 10 }),
+  perf_config_save: () => null,
+  tab_sleep: () => null,
+  tab_sleep_idlest: () => ({ tabId: 'mock-tab-1' }),
   tab_create: (a) => {
     const s = snapshot();
-    if (a?.session_path) {
-      s.session_file = String(a.session_path);
+    if (a?.sessionPath ?? a?.session_path) {
+      s.session_file = String(a.sessionPath ?? a.session_path);
       s.session_name = '恢复的会话';
     }
     return s;
@@ -104,7 +112,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     ],
   }),
   pi_set_model: (a) => {
-    state.model = { id: String(a.model_id), name: String(a.model_id), provider: String(a.provider) };
+    const id = String(a.modelId ?? a.model_id ?? 'model');
+    state.model = { id, name: id, provider: String(a.provider ?? 'mock') };
     return state.model;
   },
   pi_get_available_thinking_levels: () => ({ levels: ['off', 'medium', 'high'] }),
@@ -152,12 +161,40 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     ],
   }),
   pi_get_fork_messages: () => ({ messages: [{ entryId: 'm1', text: 'fork 点一' }] }),
-  fs_preview_read: (a) => ({
-    path: String(a.path),
-    size: 1024,
-    lines: 20,
-    content: '// mock 预览内容\nexport const ok = true;\n',
-  }),
+  fs_list_dir: (a) => {
+    // mock 目录树：够验证懒加载/展开/打开预览，不追求像真实项目
+    const path = String(a.path);
+    const base = path.split('/').filter(Boolean).at(-1) ?? 'proj';
+    return {
+      entries: [
+        { name: 'src', isDir: true, size: 0 },
+        { name: 'docs', isDir: true, size: 0 },
+        { name: 'README.md', isDir: false, size: 2048 },
+        { name: `${base}.json`, isDir: false, size: 512 },
+      ],
+    };
+  },
+  fs_preview_read: (a) => {
+    // 内容随扩展名变化：这样语法高亮/行号/换行等渲染路径在 mock 下也**真的被走到**，
+    // 而不是所有文件都吐同一段文本（那会让高亮相关的回归悄无声息地漏掉）。
+    const path = String(a.path);
+    const ext = path.split('.').pop()?.toLowerCase() ?? '';
+    const samples: Record<string, string> = {
+      ts: `// mock 预览内容\nexport interface Live {\n  tabId: string;\n}\n\nexport function liveFor(tabId: string): Live {\n  return { tabId };\n}\n`,
+      tsx: `import { useState } from 'react';\n\nexport function Counter() {\n  const [n, setN] = useState(0);\n  return <button onClick={() => setN(n + 1)}>{n}</button>;\n}\n`,
+      json: `{\n  "name": "piggy",\n  "version": "0.1.0",\n  "private": true,\n  "count": 42,\n  "ok": false\n}\n`,
+      md: `# Piggy\n\n**pi 的图形驾驶舱**：以 pi 为引擎、Tauri 2 为壳。\n\n- 流式渲染\n- 工具调用卡片\n- 行内 code：\u0060tabId\u0060\n`,
+
+      css: `:root {\n  --pg-bg-app: rgb(21, 21, 23);\n}\n\n.pg-app {\n  display: flex;\n  height: 100vh;\n}\n`,
+    };
+    const content = samples[ext] ?? `// ${path}\n`;
+    return {
+      path,
+      size: content.length,
+      lines: content.split('\n').length,
+      content,
+    };
+  },
   pi_stderr_tail: () => [],
   session_dir_effective: () => ({ dir: '/Users/mock/.pi/agent/sessions', isCustom: false, raw: null }),
   auth_list: () => ({
@@ -183,6 +220,20 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   settings_write: () => null,
   pi_get_entries: () => ({
     entries: [
+      {
+        type: 'message',
+        id: 'e0',
+        timestamp: new Date(now() - 51_000).toISOString(),
+        message: {
+          role: 'system',
+          content: '',
+          sections: {
+            preamble: 'You are an expert coding assistant operating inside pi, a coding agent harness.',
+            tools: '<tools>\n- read: Read file contents\n- bash: Execute bash commands\n- edit: Make precise file edits\n</tools>',
+            cwd: '<cwd>\n/Users/mock/proj\n</cwd>',
+          },
+        },
+      },
       { type: 'message', id: 'e1', timestamp: new Date(now() - 50_000).toISOString(), message: { role: 'user', content: '验证轨迹视图' } },
       { type: 'message', id: 'e2', timestamp: new Date(now() - 49_000).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: '轨迹视图工作中' }] } },
       { type: 'session_info', id: 'e3', timestamp: new Date(now() - 48_000).toISOString(), name: '轨迹演示' },
@@ -192,40 +243,145 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     leafId: 'e5',
   }),
   pi_compact: () => ({ summary: 'mock 压缩摘要' }),
+  pi_export_html: () => ({ path: '/Users/mock/Downloads/session.html' }),
   pi_bash: () => ({ output: 'mock-bash-output', exitCode: 0, cancelled: false, truncated: false }),
+  /* M3 Fleet（mock 演示：启动 → 2s 后全部 settle，驱动面板） */
+  fleet_templates: () => ({
+    'parallel-review': { label: '并行评审' },
+    'scout-review-build': { label: '侦察 → 评审 + 构建' },
+    research: { label: '调研汇总' },
+    custom: { label: '自定义' },
+  }),
+  fleet_list: () => ({ runs: [] }),
+  fleet_start: (a) => {
+    const runId = `mock-run-${Date.now()}`;
+    const lanes = a.template_id === 'scout-review-build'
+      ? ['scout', 'review', 'build']
+      : a.template_id === 'research'
+        ? ['res-1', 'res-2', 'synth']
+        : ['r-correctness', 'r-tests', 'r-complexity'];
+    const snapshot = {
+      runs: [{
+        id: runId,
+        templateId: String(a.template_id),
+        task: String(a.task),
+        cwd: String(a.cwd),
+        status: 'running',
+        lanes: lanes.map((k) => ({ key: k, role: k, status: 'running', tabId: `mock-${runId}-${k}` })),
+      }],
+    };
+    setTimeout(() => emit('fleet:changed', snapshot), 400);
+    setTimeout(() => {
+      emit('fleet:changed', {
+        runs: [{
+          ...snapshot.runs[0],
+          status: 'done',
+          lanes: lanes.map((k) => ({ key: k, role: k, status: 'settled', tabId: `mock-${runId}-${k}`, resultPreview: 'mock 结论：一切正常。' })),
+        }],
+      });
+    }, 2500);
+    return runId;
+  },
+  fleet_abort: () => null,
+  fleet_steer: () => true,
+  fleet_open_lane: (a) => ({
+    tab_id: `mock-${a.runId}-${a.laneKey}`,
+    cwd: '/Users/mock/proj',
+    session_file: null,
+    session_id: null,
+    session_name: null,
+    worker_state: 'ready',
+    state: {},
+  }),
   pi_abort_bash: () => null,
 };
 
 /** prompt：脚本化流式演示（合帧后的帧节奏，docs/04 §4.1 同构） */
 async function mockPrompt(args: Record<string, unknown>) {
-  const tabId = String(args.tab_id ?? TAB);
+  // 前端 cmd() 直传 camelCase（Tauri 侧才做 snake_case 映射）
+  const tabId = String(args.tabId ?? args.tab_id ?? TAB);
   const text = String(args.message ?? '');
-  const emit = (type: string, extra: Record<string, unknown> = {}): void =>
-    void emit(`pi:commit:${tabId}`, { type, ...extra });
-  emit('agent_start');
-  emit('message_start', { message: { role: 'user', content: text, timestamp: now() } });
-  emit('message_end', { message: { role: 'user', content: text, timestamp: now() } });
-  emit('turn_start');
-  emit('message_start', { message: { role: 'assistant', content: [] } });
+  const emitCommit = (type: string, extra: Record<string, unknown> = {}): void =>
+    emit(`pi:commit:${tabId}`, { type, ...extra });
+  emitCommit('agent_start');
+  emitCommit('message_start', { message: { role: 'user', content: text, timestamp: now() } });
+  emitCommit('message_end', { message: { role: 'user', content: text, timestamp: now() } });
+  emitCommit('turn_start');
+  emitCommit('message_start', { message: { role: 'assistant', content: [] } });
   const reply = `这是 **mock 流式回复**：你发送了「${text.slice(0, 40)}」。合帧器把它切成 60Hz 帧逐段上屏。`;
   const chunk = Math.ceil(reply.length / 12);
   for (let i = 0; i < reply.length; i += chunk) {
-    emit(`pi:frame:${tabId}` as never, undefined as never); // 占位（frame 走专门通道，见下）
     emitFrame(tabId, { text: [{ contentIndex: 0, delta: reply.slice(i, i + chunk) }], usage: { totalTokens: 500 + i * 10 } });
     await new Promise((r) => setTimeout(r, 70));
   }
-  emit('message_end', {
+  emitCommit('message_end', {
     message: { role: 'assistant', content: [{ type: 'text', text: reply }], timestamp: now() },
   });
-  emit('turn_end', { message: {} });
-  emit('agent_end', { messages: [] });
-  emit('agent_settled');
+  emitCommit('turn_end', { message: {} });
+  emitCommit('agent_end', { messages: [] });
+  emitCommit('agent_settled');
 }
 function emitFrame(tabId: string, frame: unknown) {
   emit(`pi:frame:${tabId}`, frame);
 }
 
 export const isMock = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
+
+/** 性能场景钩子（05 §6.2 S1–S6，M2）：仅 mock 环境暴露，直接驱动真实渲染管线 */
+if (typeof window !== 'undefined' && isMock) {
+  (window as unknown as Record<string, unknown>).__piggyPerf = {
+    /** S1：向活动 tab 灌 delta 帧 totalMs 毫秒（16ms 一帧，走真实 live 通道） */
+    async streamFor(totalMs: number, chunkMs = 16): Promise<number> {
+      const start = performance.now();
+      emit(`pi:commit:${TAB}`, { type: 'agent_start' });
+      let i = 0;
+      while (performance.now() - start < totalMs) {
+        emit(`pi:frame:${TAB}`, {
+          text: [{ contentIndex: 0, delta: '流式渲染性能压测流。' }],
+          usage: { totalTokens: 1000 + i },
+        });
+        i += 1;
+        await new Promise((r) => setTimeout(r, chunkMs));
+      }
+      emit(`pi:commit:${TAB}`, { type: 'agent_settled' });
+      return i;
+    },
+    /** S3：hydrate n 条消息，返回耗时 ms（对应"打开大会话"路径） */
+    async hydrate(n: number): Promise<number> {
+      const { useMessages } = await import('@/stores/messages');
+      const msgs = Array.from({ length: n }, (_, i) => ({
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: [{ type: 'text', text: `消息 #${i}：性能场景压测负载。${'x'.repeat(180)}` }],
+        timestamp: 1_700_000_000_000 + i,
+      }));
+      const t0 = performance.now();
+      useMessages.getState().hydrate(TAB, msgs as never[]);
+      return performance.now() - t0;
+    },
+    /** S4：并发工具执行事件 N 组（start+end 成对） */
+    async toolRuns(n: number): Promise<void> {
+      for (let i = 0; i < n; i += 1) {
+        emit(`pi:commit:${TAB}`, { type: 'tool_execution_start', toolCallId: `t${i}`, toolName: 'read' });
+      }
+      for (let i = 0; i < n; i += 1) {
+        emit(`pi:commit:${TAB}`, { type: 'tool_execution_end', toolCallId: `t${i}`, isError: false });
+      }
+    },
+    /** S5：崩溃恢复（worker 崩溃 → resync 补齐） */
+    async crashRecover(): Promise<void> {
+      emit(`pi:state:${TAB}`, { state: 'crashed' });
+      await new Promise((r) => setTimeout(r, 100));
+      emit(`pi:commit:${TAB}`, {
+        type: 'piggy:resync',
+        entries: [
+          { type: 'message', id: 'r1', message: { role: 'user', content: '崩溃前消息', timestamp: 1_700_000_000_001 } },
+        ],
+        leafId: 'r1',
+      });
+      emit(`pi:state:${TAB}`, { state: 'ready', revived: true });
+    },
+  };
+}
 
 export async function mockInvoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
   await new Promise((r) => setTimeout(r, 30)); // 模拟 IPC 延迟

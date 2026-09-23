@@ -4,6 +4,7 @@ import { Input, Modal, notification } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
 import { useTabs } from '@/stores/tabs';
+import { useFleet } from '@/stores/fleet';
 
 export function DialogRouter() {
   const current = useDialogs((s) => s.current);
@@ -111,8 +112,9 @@ export function DialogRouter() {
   }
 }
 
-/** notify → antd notification；其余 fire-and-forget M0 记 console（docs/02 §8 M1 全量视觉化） */
-export function handleFireAndForget(req: UiRequest) {
+/** notify → antd notification；set_editor_text 带 PIGGY:1 前缀 → fleet 数据通道（06 §4.2）；
+ * 其余 fire-and-forget M0 记 console（docs/02 §8 M1 全量视觉化） */
+export function handleFireAndForget(req: UiRequest, tabId?: string) {
   if (req.method === 'notify') {
     const r = req as { message?: string; notifyType?: string };
     notification[r.notifyType === 'error' ? 'error' : r.notifyType === 'warning' ? 'warning' : 'info']({
@@ -120,7 +122,13 @@ export function handleFireAndForget(req: UiRequest) {
       description: r.message ?? '',
       placement: 'bottomRight',
     });
-  } else {
-    console.debug('[extension-ui]', req.method, req);
+    return;
   }
+  if (req.method === 'set_editor_text') {
+    const text = (req as { text?: string }).text;
+    if (useFleet.getState().applyBridgePayload(tabId ?? 'unknown', text)) {
+      return; // bridge 数据载荷：劫持，不落入用户草稿
+    }
+  }
+  console.debug('[extension-ui]', req.method, req);
 }

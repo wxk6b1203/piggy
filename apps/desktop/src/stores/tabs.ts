@@ -9,7 +9,7 @@ export interface TabSnapshot {
   session_id: string | null;
   session_file: string | null;
   session_name: string | null;
-  worker_state: 'spawning' | 'ready' | 'busy' | 'crashed' | 'stopped';
+  worker_state: 'spawning' | 'ready' | 'busy' | 'crashed' | 'stopped' | 'sleeping';
   state: {
     model?: { id?: string; name?: string; provider?: string } | null;
     thinkingLevel?: string;
@@ -133,11 +133,13 @@ export const useTabs = create<TabsState>()(
   },
   }))
 );
-/** 创建 tab（含初始化）；失败抛出由调用方呈现 */
+/** 创建 tab（含初始化）；失败抛出由调用方呈现。
+ * 注意：Tauri v2 命令参数按 camelCase 匹配（Rust session_path ← JS sessionPath），
+ * 发 snake_case 会被静默丢弃 → 打会话变成新建会话。 */
 export async function createTab(opts: { cwd?: string; sessionPath?: string; name?: string }) {
   return cmd<TabSnapshot>('tab_create', {
     cwd: opts.cwd,
-    session_path: opts.sessionPath,
+    sessionPath: opts.sessionPath,
     name: opts.name,
   });
 }

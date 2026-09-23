@@ -19,6 +19,8 @@ import { disposeLive } from '@/lib/live';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
+import { wakeIfNeeded } from '@/lib/sleep';
+import { t } from '@/lib/i18n';
 import { SessionWorkspace } from '@/features/chat/SessionWorkspace';
 import { SettingsTab } from '@/features/settings/SettingsTab';
 import { FilePreview } from '@/features/preview/FilePreview';
@@ -36,6 +38,8 @@ export interface SettingsParams {
 export interface PreviewParams {
   kind: 'preview';
   path: string;
+  /** 项目根（快捷编辑的越界守卫边界；缺省 = 只读） */
+  root?: string;
 }
 export type PanelParams = SessionParams | SettingsParams | PreviewParams;
 
@@ -44,13 +48,15 @@ export type PanelParams = SessionParams | SettingsParams | PreviewParams;
 const components = {
   session: (props: IDockviewPanelProps<SessionParams>) => <SessionWorkspace tabId={props.params.tabId} />,
   settings: () => <SettingsTab />,
-  preview: (props: IDockviewPanelProps<PreviewParams>) => <FilePreview path={props.params.path} />,
+  preview: (props: IDockviewPanelProps<PreviewParams>) => (
+    <FilePreview path={props.params.path} root={props.params.root} />
+  ),
   missing: () => <div className="pg-missing">会话文件不存在或已删除（可关闭此标签）</div>,
   welcome: () => (
     <div className="pg-welcome">
       <div className="pg-welcome-logo">🐷</div>
       <div className="pg-welcome-title">Piggy</div>
-      <div className="pg-welcome-hint">从左侧选择一个会话，或新建会话开始</div>
+      <div className="pg-welcome-hint">{t('welcome.hint')}</div>
     </div>
   ),
 };
@@ -74,6 +80,9 @@ function PgTab(props: IDockviewPanelHeaderProps) {
 // dockview api 存 globalThis：HMR 重载本模块时保活（模块级变量会丢引用导致所有 open* 失效）
 interface PiggyGlobals {
   __piggyDock?: DockviewApi;
+  /** 启动恢复单例：StrictMode/HMR 会触发多次 onReady，不挡会为每个面板重复建 worker/会话文件 */
+  __piggyRestorePromise?: Promise<void>;
+  __piggyRestoreDock?: DockviewApi;
 }
 const g = globalThis as unknown as PiggyGlobals;
 function setDockApi(a: DockviewApi | null) {
@@ -93,7 +102,10 @@ function onReady(e: DockviewReadyEvent) {
   setDockApi(e.api);
   e.api.onDidActivePanelChange((ev) => {
     const tabId = (ev.panel?.params as SessionParams | undefined)?.tabId;
-    if (tabId) useTabs.getState().setActive(tabId);
+    if (tabId) {
+      useTabs.getState().setActive(tabId);
+      void wakeIfNeeded(tabId); // 休眠标签激活即唤醒（05 §4.3）
+    }
   });
   e.api.onDidRemovePanel((panel) => {
     const tabId = (panel.params as SessionParams | undefined)?.tabId;
@@ -108,7 +120,39 @@ function onReady(e: DockviewReadyEvent) {
   });
   e.api.onDidAddPanel(() => persist());
   e.api.onDidLayoutChange(() => persist());
-  void restore();
+  void restoreOnce();
+}
+
+/** 启动恢复（单例；同一 dockview 实例只恢复一次）。
+ * StrictMode 双 onReady 各绑一个新实例，所以实例变了要重跑一轮；
+ * 同一会话文件的重复 createTab 由 inflightRestores 去重兜底。 */
+function restoreOnce(): Promise<void> {
+  const cur = api();
+  if (g.__piggyRestorePromise && g.__piggyRestoreDock === cur) return g.__piggyRestorePromise;
+  g.__piggyRestoreDock = cur ?? undefined;
+  g.__piggyRestorePromise = (async () => {
+    await restore();
+  })();
+  return g.__piggyRestorePromise;
+}
+
+/** 恢复期 createTab 去重（键=会话文件）：并发两轮 restore 时同一文件只建一个 worker。
+ * 缓存不随 settle 逐出（StrictMode 两轮 restore 一先一后，逐出会令后轮撞互斥锁），
+ * 复用前校验缓存 tab 仍存活，已关闭则逐出重建。 */
+const restoreTabCache = new Map<string, Promise<TabSnapshot>>();
+function createTabForRestore(sessionFile: string, cwd: string): Promise<TabSnapshot> {
+  const cached = restoreTabCache.get(sessionFile);
+  if (cached) {
+    return cached.then((snap) => {
+      if (useTabs.getState().tabs[snap.tab_id]) return snap;
+      restoreTabCache.delete(sessionFile);
+      return createTabForRestore(sessionFile, cwd);
+    });
+  }
+  const p = createTab({ sessionPath: sessionFile, cwd });
+  restoreTabCache.set(sessionFile, p);
+  p.catch(() => {});
+  return p;
 }
 
 function ensureTab(snap: TabSnapshot) {
@@ -133,11 +177,14 @@ async function restore() {
       for (const p of Object.values(serialized.panels)) {
         const params = p.params;
         if (params?.kind === 'session') {
+          // 旧布局遗留的无文件会话（precreate 之前的空白会话）：文件不存在无从恢复，
+          // 直接标 missing；绝不能再走"新建会话"，否则每次恢复都凭空多出一批空白会话
+          if (!params.sessionFile) {
+            p.params = { kind: 'preview', path: '__missing__' };
+            continue;
+          }
           try {
-            const snap: TabSnapshot = await createTab({
-              sessionPath: params.sessionFile ?? undefined,
-              cwd: params.cwd,
-            });
+            const snap: TabSnapshot = await createTabForRestore(params.sessionFile, params.cwd);
             ensureTab(snap);
             params.tabId = snap.tab_id;
             params.sessionFile = snap.session_file;
@@ -184,10 +231,25 @@ export function openSettingsTab() {
   api()?.addPanel({ id, component: 'settings', title: '设置', params: { kind: 'settings' } });
 }
 
-export function openPreviewTab(key: string, path: string, title: string) {
+/** 聚焦已打开的会话标签；没有该标签返回 false */
+export function focusSessionTab(tabId: string): boolean {
+  const panel = api()?.getPanel(`session:${tabId}`);
+  if (panel) {
+    panel.focus();
+    return true;
+  }
+  return false;
+}
+
+export function openPreviewTab(key: string, path: string, title: string, root?: string) {
   const id = `preview:${key}`;
   api()?.getPanel(id)?.api.close();
-  api()?.addPanel({ id, component: 'preview', title: `✦ ${title}`, params: { kind: 'preview', path } });
+  api()?.addPanel({
+    id,
+    component: 'preview',
+    title: `✦ ${title}`,
+    params: { kind: 'preview', path, root },
+  });
 }
 
 export function closeActivePanel() {

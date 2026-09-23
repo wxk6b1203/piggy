@@ -11,6 +11,8 @@ export interface SessionMeta {
   first_message: string | null;
   mtime_ms: number;
   size: number;
+  /** 项目目录已不存在（打开会失败，Rust scan 标记） */
+  cwd_missing?: boolean;
 }
 
 export interface SessionGroup {
@@ -90,5 +92,51 @@ export function relTime(ms: number): string {
 export async function watchSessionsChanged() {
   return on('sessions:changed', () => {
     void useSessions.getState().load();
+  });
+}
+
+/* ---------------- DSH 式侧栏视图模型（纯函数，可测） ---------------- */
+
+export interface SessionGroupView {
+  cwd: string;
+  label: string;
+  /** 全部会话（按 mtime 降序） */
+  sessions: SessionMeta[];
+  /** 折叠时为空数组 */
+  visible: SessionMeta[];
+  /** 折叠/收起后未展示的会话数 */
+  hiddenCount: number;
+}
+
+export const PREVIEW_LIMIT = 3;
+
+/**
+ * 侧栏分组视图（docs/09 DSH 参考）：组按最新会话 mtime 降序；组内会话 mtime 降序；
+ * collapsedGroups 整组收起；expandedGroups 超过 PREVIEW_LIMIT 时展开全部，否则显示前 3 + 折叠计数。
+ */
+export function buildSidebar(
+  groups: SessionGroup[],
+  collapsedGroups: Record<string, boolean>,
+  expandedGroups: Record<string, boolean>,
+): SessionGroupView[] {
+  const sorted = [...groups]
+    .map((g) => ({
+      ...g,
+      sessions: [...g.sessions].sort((a, b) => b.mtime_ms - a.mtime_ms),
+    }))
+    .sort((a, b) => (b.sessions[0]?.mtime_ms ?? 0) - (a.sessions[0]?.mtime_ms ?? 0));
+  return sorted.map((g) => {
+    if (collapsedGroups[g.cwd]) {
+      return { cwd: g.cwd, label: g.label, sessions: g.sessions, visible: [], hiddenCount: g.sessions.length };
+    }
+    const expanded = expandedGroups[g.cwd];
+    const visible = expanded ? g.sessions : g.sessions.slice(0, PREVIEW_LIMIT);
+    return {
+      cwd: g.cwd,
+      label: g.label,
+      sessions: g.sessions,
+      visible,
+      hiddenCount: g.sessions.length - visible.length,
+    };
   });
 }

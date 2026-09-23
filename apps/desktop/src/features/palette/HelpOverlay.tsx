@@ -34,7 +34,6 @@ export function HelpOverlay() {
     window.addEventListener('keydown', onKey, true);
   };
 
-  console.debug('[help] render cmds =', cmds.length, 'registry =', registrySize(), 'open =', open);
   return (
     <Modal
       open={open}

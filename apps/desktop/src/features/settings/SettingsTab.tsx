@@ -4,7 +4,8 @@
  * 注意：已运行 worker 持有旧配置，改动对新会话生效（UI 明示）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { message as antdMessage, Modal, Input, Button, List, Popconfirm } from 'antd';
+import { Modal, Input, Button, List, Popconfirm } from 'antd';
+import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { MonacoHost } from '@/features/common/MonacoHost';
 
@@ -46,7 +47,7 @@ function AuthSection() {
   const reload = useCallback(() => {
     void cmd<{ providers: AuthEntry[] }>('auth_list')
       .then((r) => setList(r.providers ?? []))
-      .catch((e) => antdMessage.error(String(e)));
+      .catch((e) => toast.error(String(e)));
   }, []);
 
   useEffect(reload, [reload]);
@@ -55,11 +56,11 @@ function AuthSection() {
     if (!adding || !adding.provider.trim() || !adding.key.trim()) return;
     try {
       await cmd('auth_set_key', { provider: adding.provider.trim(), apiKey: adding.key.trim() });
-      antdMessage.success(`已保存 ${adding.provider}`);
+      toast.success(`已保存 ${adding.provider}`);
       setAdding(null);
       reload();
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -141,7 +142,7 @@ function ModelsSection() {
         setText(JSON.stringify(v, null, 2));
         setDirty(false);
       })
-      .catch((e) => antdMessage.error(String(e)));
+      .catch((e) => toast.error(String(e)));
   }, []);
 
   useEffect(reload, [reload]);
@@ -150,10 +151,10 @@ function ModelsSection() {
     try {
       const v = JSON.parse(text);
       await cmd('models_write', { value: v });
-      antdMessage.success('models.json 已保存');
+      toast.success('models.json 已保存');
       setDirty(false);
     } catch (e) {
-      antdMessage.error(`JSON 无效: ${e}`);
+      toast.error(`JSON 无效: ${e}`);
     }
   };
 
@@ -195,7 +196,7 @@ function SettingsSection() {
         setText(JSON.stringify(v, null, 2));
         setDirty(false);
       })
-      .catch((e) => antdMessage.error(String(e)));
+      .catch((e) => toast.error(String(e)));
     void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
       .then((v) => {
         setSessionDir(v);
@@ -210,10 +211,10 @@ function SettingsSection() {
     try {
       const v = JSON.parse(text);
       await cmd('settings_write', { value: v });
-      antdMessage.success('settings.json 已保存');
+      toast.success('settings.json 已保存');
       setDirty(false);
     } catch (e) {
-      antdMessage.error(`JSON 无效: ${e}`);
+      toast.error(`JSON 无效: ${e}`);
     }
   };
 
@@ -226,7 +227,7 @@ function SettingsSection() {
       await cmd('settings_write', { value: v });
       setText(JSON.stringify(v, null, 2));
       setDirty(false);
-      antdMessage.success('会话目录已更新（新会话生效）');
+      toast.success('会话目录已更新（新会话生效）');
       void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
         .then((v2) => {
           setSessionDir(v2);
@@ -234,7 +235,7 @@ function SettingsSection() {
         })
         .catch(() => {});
     } catch (e) {
-      antdMessage.error(`保存失败: ${e}`);
+      toast.error(`保存失败: ${e}`);
     }
   };
 

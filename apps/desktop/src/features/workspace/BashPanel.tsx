@@ -1,7 +1,8 @@
 /** bash 直执行面板（WP8，docs/04 §1.7 M1 版）：RPC bash + bash_execution_update 流式输出 */
 import { useEffect, useRef, useState } from 'react';
 import { cmd } from '@/lib/ipc';
-import { message as antdMessage } from 'antd';
+import { } from 'antd';
+import { toast } from '@/lib/feedback';
 import { useBash } from '@/stores/bash';
 export function BashPanel({ tabId }: { tabId: string | null }) {
   const [command, setCommand] = useState('');
@@ -28,7 +29,7 @@ export function BashPanel({ tabId }: { tabId: string | null }) {
       append(tabId, `\n[exit ${res.exitCode ?? '?'}${res.cancelled ? ' · 已取消' : ''}]\n`);
       setCommand('');
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     } finally {
       setRunning(false);
     }

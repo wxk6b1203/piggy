@@ -4,6 +4,7 @@
  */
 import { on, cmd } from '@/lib/ipc';
 import { liveFor } from '@/lib/live';
+import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
@@ -52,6 +53,7 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     );
     un.push(
       await on(`pi:state:${tabId}`, (st: { state?: string } & Record<string, unknown>) => {
+        if (st.state === 'sleeping') markSleeping(tabId); // 主动休眠/空闲回收（05 §4）
         useTabs
           .getState()
           .setWorkerState(tabId, (st.state ?? 'ready') as never, st);
@@ -60,7 +62,7 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     un.push(
       await on(`pi:ui-req:${tabId}`, (req: UiRequest) => {
         if (DIALOG_METHODS.has(req.method)) useDialogs.getState().push(req);
-        else handleFireAndForget(req);
+        else handleFireAndForget(req, tabId);
       }),
     );
     return () => {

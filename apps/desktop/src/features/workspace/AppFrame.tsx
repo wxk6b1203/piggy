@@ -1,4 +1,6 @@
-/** AppFrame（WP1，docs/04 §1）：外框 react-resizable-panels + 编辑区 dockview + bash 面板 + 状态栏 */
+/** AppFrame（WP1，docs/04 §1）：外框 react-resizable-panels + 编辑区 dockview + bash 面板。
+ *  对齐 DSH（docs/12 §1.5/§1.6）：**无自绘标题栏、无横贯底部状态栏**——
+ *  品牌行在侧栏顶部，窗口级状态行在 Composer dock。 */
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
@@ -11,10 +13,9 @@ import { BashPanel } from './BashPanel';
 import { useTabMsg } from '@/stores/messages';
 import { useTabs, createTab } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
-import { EditorArea, openSessionTab } from './EditorArea';
+import { EditorArea, closeActivePanel, openSessionTab } from './EditorArea';
 import { SessionsSidebar } from './SessionsSidebar';
 import { RightBar } from './RightBar';
-import { ModelThinkingControls } from './ModelThinking';
 import { DialogRouter } from '@/features/dialogs/DialogRouter';
 
 // boot 单例挂 globalThis：HMR 重载本模块时保活（模块级变量会被重置 → boot 重跑 → tab 重复创建）
@@ -65,45 +66,25 @@ export function AppFrame() {
   useAppCommands();
 
   const tabs = useTabs((s) => s.tabs);
-  const order = useTabs((s) => s.order);
   const activeTabId = useTabs((s) => s.activeTabId);
   const banner = useTabs((s) => s.banner);
   const sidebarOpen = useUi((s) => s.sidebarOpen);
-  const setSidebarOpen = useUi((s) => s.setSidebarOpen);
-  const theme = useUi((s) => s.theme);
-  const toggleTheme = useUi((s) => s.toggleTheme);
   const [bashOpen, setBashOpen] = useState(false);
 
   useEffect(() => {
     void startBoot();
-    const off = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
-    return off;
+    const offBash = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
+    const offClose = windowEvents.on('close-active-tab', () => closeActivePanel());
+    return () => {
+      offBash();
+      offClose();
+    };
   }, []);
 
-  const active = activeTabId ? tabs[activeTabId] : null;
   const msgBanner = useTabMsg(activeTabId, (t) => t.banner);
-  const streaming = useTabMsg(activeTabId, (t) => t.streaming);
 
   return (
     <div className="pg-app">
-      <header className="pg-titlebar">
-        <button
-          className="pg-btn pg-rail-toggle"
-          title="切换侧栏（⌘B）"
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-        >
-          ☰
-        </button>
-        <span className="pg-logo">🐷 Piggy</span>
-        <ModelThinkingControls tabId={activeTabId} />
-        {streaming ? <span className="pg-streaming-dot" /> : null}
-        <span className={`pg-wstate pg-wstate-${active?.workerState ?? 'ready'}`}>
-          {active?.workerState ?? 'ready'}
-        </span>
-        <button className="pg-btn" onClick={toggleTheme} title="切换主题">
-          {theme === 'dark' ? '☀' : '☾'}
-        </button>
-      </header>
       {(banner ?? msgBanner) && (
         <div
           className="pg-banner"
@@ -147,13 +128,6 @@ export function AppFrame() {
           </Panel>
         </Group>
       </div>
-      <footer className="pg-statusbar">
-        <span>
-          {order.length} 会话 tab · {active ? active.cwd : ''}
-        </span>
-        <StatusSlots />
-        <span className="pg-hint">M1 WP1–8</span>
-      </footer>
       <DialogRouter />
       <CommandPalette />
       <HelpOverlay />
@@ -161,20 +135,6 @@ export function AppFrame() {
   );
 }
 
-function StatusSlots() {
-  const slots = useUi((s) => s.statusSlots);
-  const entries = Object.entries(slots);
-  if (entries.length === 0) return null;
-  return (
-    <span className="pg-status-slots">
-      {entries.map(([k, v]) => (
-        <span key={k} className="pg-status-slot" title={k}>
-          {v}
-        </span>
-      ))}
-    </span>
-  );
-}
 
 async function createFreshTab() {
   try {

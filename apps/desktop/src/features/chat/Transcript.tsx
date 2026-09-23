@@ -51,6 +51,11 @@ export function Transcript({ tabId }: { tabId: string }) {
             <div
               key={vi.key}
               ref={virtualizer.measureElement}
+              // TanStack Virtual 靠 data-index 把测量结果映射回条目；
+              // 缺了它 measureElement 会静默丢弃测量值（只报一条 warning），
+              // 于是行高永远停在 estimateSize → 行与行**重叠**。
+              data-index={vi.index}
+              className="pg-vrow"
               style={{
                 position: 'absolute',
                 top: 0,

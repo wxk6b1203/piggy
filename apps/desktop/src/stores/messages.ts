@@ -4,7 +4,11 @@
  */
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
+import { enableMapSet } from 'immer';
 import type { AgentMessage } from '@piggy/pi-protocol';
+
+// keys 去重集合用 Set 存放（05 §4.4），immer 需启用 MapSet 插件
+enableMapSet();
 
 export interface MessageView {
   id: string;
@@ -15,6 +19,8 @@ export interface MessageView {
 export interface TabMessages {
   byId: Record<string, MessageView>;
   ids: string[];
+  /** role:timestamp 去重键集合（O(1) 查询；05 §4.4 数据结构纪律——万条会话不可 O(n²)） */
+  keys: Set<string>;
   streaming: boolean;
   queue: { steering: string[]; followUp: string[] };
   toolRuns: Record<string, { toolName: string; running: boolean; isError?: boolean }>;
@@ -25,6 +31,7 @@ export interface TabMessages {
 const emptyTab = (): TabMessages => ({
   byId: {},
   ids: [],
+  keys: new Set(),
   streaming: false,
   queue: { steering: [], followUp: [] },
   toolRuns: {},
@@ -63,10 +70,11 @@ function pushMessage(tab: TabMessages, m: AgentMessage): boolean {
   const role = (m as { role?: string }).role;
   if (!role || role === 'system') return false;
   const key = tsKey(m);
-  if (tab.ids.some((id) => tsKey(tab.byId[id]!.message) === key)) return false;
+  if (tab.keys.has(key)) return false;
   const id = nextId(role);
   tab.byId[id] = { id, role, message: m };
   tab.ids.push(id);
+  tab.keys.add(key);
   return true;
 }
 
@@ -88,6 +96,7 @@ export const useMessages = create<MessagesState>()(
         const tab = (s.tabs[tabId] ??= emptyTab());
         tab.byId = {};
         tab.ids = [];
+        tab.keys = new Set();
         for (const m of messages) {
           pushMessage(tab, m);
         }

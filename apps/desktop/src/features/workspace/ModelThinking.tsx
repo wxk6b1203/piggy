@@ -1,6 +1,7 @@
 /** 模型 / Thinking 控件（WP3，docs/02 §3.2）：Cmd+L 选择器 + thinking 循环 */
 import { useEffect, useState } from 'react';
-import { Popover, List, message as antdMessage } from 'antd';
+import { Popover, List, } from 'antd';
+import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { useTabs } from '@/stores/tabs';
 
@@ -26,7 +27,7 @@ export function ModelThinkingControls({ tabId }: { tabId: string | null }) {
       cmd<{ models: ModelInfo[] }>('pi_get_available_models', { tabId })
         .then((r) => setModels(r.models ?? []))
         .catch((e) => {
-          antdMessage.error(String(e));
+          toast.error(String(e));
           setModels([]);
         })
         .finally(() => setLoading(false));
@@ -40,7 +41,7 @@ export function ModelThinkingControls({ tabId }: { tabId: string | null }) {
       patch(tabId, { model: { id: m.id, provider: m.provider } });
       setOpen(false);
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     }
   };
 
@@ -50,7 +51,7 @@ export function ModelThinkingControls({ tabId }: { tabId: string | null }) {
       const r = await cmd<{ level?: string; data?: { level?: string } }>('pi_cycle_thinking', { tabId });
       patch(tabId, { thinkingLevel: r.level ?? r.data?.level ?? null });
     } catch (e) {
-      antdMessage.error(String(e));
+      toast.error(String(e));
     }
   };
 

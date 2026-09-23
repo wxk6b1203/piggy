@@ -21,6 +21,8 @@ export function MonacoHost(props: {
   readOnly?: boolean;
   onChange?: (v: string) => void;
   height?: string;
+  /** 显式模型 URI（如 inmemory://piggy/pi-settings.json）：JSON schema fileMatch 依赖它 */
+  uri?: string;
 }) {
   const [mod, setMod] = useState<MonacoModule | null>(null);
   const [el, setEl] = useState<HTMLDivElement | null>(null);
@@ -47,11 +49,20 @@ export function MonacoHost(props: {
       wordWrap: 'on',
       scrollBeyondLastLine: false,
     });
+    let model: import('monaco-editor').editor.ITextModel | undefined;
+    if (props.uri) {
+      const uri = mod.monaco.Uri.parse(props.uri);
+      model =
+        mod.monaco.editor.getModel(uri) ??
+        mod.monaco.editor.createModel(props.value, props.language ?? 'plaintext', uri);
+      ed.setModel(model);
+    }
     liveInstances += 1;
     const dispo = ed.onDidChangeModelContent(() => onChangeRef.current?.(ed.getValue()));
     return () => {
       dispo.dispose();
       ed.dispose();
+      model?.dispose();
       liveInstances = Math.max(0, liveInstances - 1);
     };
   }, [mod, el]);

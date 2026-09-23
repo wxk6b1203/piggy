@@ -21,6 +21,8 @@ export interface TrajRow {
   detail?: string;
   ts?: number;
   running?: boolean;
+  /** 有 detail 可展开（如 system 的 sections 正文） */
+  expandable?: boolean;
 }
 
 interface TrajectoryState {
@@ -42,7 +44,7 @@ function textOf(content: unknown): string {
         const t = (b as { type?: string }).type;
         if (t === 'text') return (b as { text?: string }).text ?? '';
         if (t === 'toolCall')
-          return `⚙ ${(b as { name?: string }).name} ${JSON.stringify((b as { arguments?: unknown }).arguments ?? {}).slice(0, 160)}`;
+          return `${(b as { name?: string }).name} ${JSON.stringify((b as { arguments?: unknown }).arguments ?? {}).slice(0, 160)}`;
         return '';
       })
       .filter(Boolean)
@@ -51,13 +53,39 @@ function textOf(content: unknown): string {
   return '';
 }
 
+/**
+ * system 消息正文提取：pi 的 system 消息 content 常为空串，
+ * 实际上下文在 `sections`（preamble/tools/rules/docs/project_context/skills/cwd…）。
+ */
+function systemParts(m: AgentMessage | undefined): { text: string; detail?: string } {
+  const sm = (m ?? {}) as { content?: unknown; sections?: Record<string, string> };
+  const sections = sm.sections ?? {};
+  const keys = Object.keys(sections).filter((k) => sections[k]);
+  const primary = textOf(sm.content).trim() || (sections['preamble'] ?? '').trim() || keys.map((k) => sections[k]!).join('\n').trim();
+  if (!primary && keys.length === 0) return { text: '(系统上下文)' };
+  const summary =
+    primary.slice(0, 200) + (primary.length > 200 ? '…' : '') + (keys.length > 0 ? `（${keys.length} 节：${keys.join('/')}）` : '');
+  const detail =
+    keys.length > 0
+      ? keys.map((k) => `【${k}】\n${sections[k]!}`).join('\n\n')
+      : textOf(sm.content) || undefined;
+  return { text: summary, detail };
+}
+
+function systemRow(e: Record<string, unknown>): TrajRow {
+  const m = e.message as AgentMessage | undefined;
+  const { text, detail } = systemParts(m);
+  const ts = Date.parse(String(e.timestamp ?? '')) || undefined;
+  return { id: rid(), kind: 'system', text, detail, ts, expandable: !!detail };
+}
+
 function entryToRow(e: Record<string, unknown>): TrajRow | null {
   const type = String(e.type ?? '');
   const ts = Date.parse(String(e.timestamp ?? '')) || undefined;
   if (type === 'message') {
     const m = e.message as AgentMessage | undefined;
     const role = (m as { role?: string })?.role;
-    if (role === 'system') return { id: rid(), kind: 'system', text: '(系统上下文)', ts };
+    if (role === 'system') return systemRow(e);
     if (role === 'user') return { id: rid(), kind: 'user', text: textOf(m?.content), ts };
     if (role === 'assistant') return { id: rid(), kind: 'assistant', text: textOf(m?.content), ts };
     if (role === 'toolResult') {
@@ -65,23 +93,23 @@ function entryToRow(e: Record<string, unknown>): TrajRow | null {
       return {
         id: rid(),
         kind: 'tool',
-        text: `${rm.toolName ?? 'tool'} → ${textOf(rm.content).slice(0, 200)}`,
+        text: `${rm.toolName ?? 'tool'} ${textOf(rm.content).slice(0, 200)}`,
         ts,
       };
     }
     return { id: rid(), kind: 'other', text: `(message role=${role})`, ts };
   }
-  if (type === 'compaction') return { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩', ts };
+  if (type === 'compaction') return { id: rid(), kind: 'compaction', text: '上下文压缩', ts };
   if (type === 'context_edit')
     return {
       id: rid(),
       kind: 'context_edit',
-      text: `✎ 上下文编辑 → ${String(e.targetId ?? '').slice(0, 8)}${e.replacement ? '（替换）' : '（省略）'}`,
+      text: `上下文编辑 → ${String(e.targetId ?? '').slice(0, 8)}${e.replacement ? '（替换）' : '（省略）'}`,
       ts,
     };
   if (type === 'session_info')
-    return { id: rid(), kind: 'label', text: `🏷 命名：${String(e.name ?? '')}`, ts };
-  if (type === 'label') return { id: rid(), kind: 'label', text: `🏷 ${String(e.label ?? e.id ?? '')}`, ts };
+    return { id: rid(), kind: 'label', text: `命名：${String(e.name ?? '')}`, ts };
+  if (type === 'label') return { id: rid(), kind: 'label', text: String(e.label ?? e.id ?? ''), ts };
   return { id: rid(), kind: 'other', text: `(${type})`, ts };
 }
 
@@ -116,9 +144,10 @@ export const useTrajectory = create<TrajectoryState>()(
         if (role === 'user') row = { id: rid(), kind: 'user', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
         else if (role === 'assistant')
           row = { id: rid(), kind: 'assistant', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
+        else if (role === 'system') row = systemRow(e);
         else if (role === 'toolResult') {
           const rm = m as { toolName?: string; content?: unknown };
-          row = { id: rid(), kind: 'tool', text: `${rm.toolName ?? 'tool'} → ${textOf(rm.content).slice(0, 200)}` };
+          row = { id: rid(), kind: 'tool', text: `${rm.toolName ?? 'tool'} ${textOf(rm.content).slice(0, 200)}` };
         }
         break;
       }
@@ -128,10 +157,10 @@ export const useTrajectory = create<TrajectoryState>()(
         break;
       }
       case 'compaction_start':
-        row = { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩…', running: true };
+        row = { id: rid(), kind: 'compaction', text: '上下文压缩…', running: true };
         break;
       case 'compaction_end':
-        row = { id: rid(), kind: 'compaction', text: '⟳ 上下文压缩完成' };
+        row = { id: rid(), kind: 'compaction', text: '上下文压缩完成' };
         break;
       default:
         return;

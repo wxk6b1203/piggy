@@ -5,9 +5,13 @@ import { createRoot } from 'react-dom/client';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 import { act } from 'react';
 
-// ---- mock @tauri-apps/api（必须在 import App 之前）----
-const invokeMock = vi.fn();
-const listenMock = vi.fn().mockResolvedValue(() => {});
+// ---- mock @tauri-apps/api（必须在 import App 之前；vi.hoisted 避免工厂引用 TDZ 变量）----
+const { invokeMock, listenMock } = vi.hoisted(() => {
+  const invokeMock = vi.fn();
+  const listenMock = vi.fn();
+  listenMock.mockResolvedValue(() => {});
+  return { invokeMock, listenMock };
+});
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listenMock(...a) }));
