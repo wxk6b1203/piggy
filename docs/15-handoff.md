@@ -12,7 +12,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **169/169**：apps/desktop 169（17 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、**44 条代码块高亮/折叠/源码门**）+ `packages/piggy-bridge` 32（含产物新鲜度门禁）+ `packages/pi-protocol` 30 |
+| `vitest` | **173/173**：apps/desktop 173（18 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、**4 条同一会话重复打开去重**）+ `packages/piggy-bridge` 32（含产物新鲜度门禁）+ `packages/pi-protocol` 30 |
 | `cargo test` | **89 + 3 + 1** + fixtures 全绿（新增 fleet 状态机/结果收集/容量排队 16 条、argv 组装 8 条、扩展资源定位 4 条） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
@@ -173,6 +173,26 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
       的 ESM 解析 + 真实产物认得出，所以断言必须落在 `ui:startup` 的真实 DOM 上
       （`.shiki` 是否存在、token 颜色是否不止一种、diff 增删行有没有底色）。
       兜底一道便宜的源码门在 `src/test/codeblock.test.tsx`（扫 `src/**`，正则命中即红）。
+23. **"先查 store 再 await" 跨越 await 就失效 —— 需要 in-flight 表。**
+    2026-09-23 用户日志「非常偶尔会报错」：
+    ```
+    [piggy] tab_create ok: 3a8c24e9-…    --session …/2c118184-….jsonl
+    [piggy] tab_create FAILED: 会话文件已被标签页 3a8c24e9-… 打开: …/2c118184-….jsonl
+    ```
+    `SessionsSidebar.openSession` 查的是 zustand store，而 store 要到
+    `openSessionTab → ensureTab → addTab` 才更新 —— **整个 `tab_create` IPC 往返期间
+    store 里都还没有这个标签**。两次点击落进同一个窗口，就都查到"没打开"、都去建 worker，
+    第二个被 Rust 的会话互斥锁挡下，变成一条红色 toast。双击就会触发，所以"非常偶尔"。
+    规矩：**任何"检查 → 异步 → 提交"都要有一张 in-flight 表**，把不变量收到唯一漏斗里
+    （这里是 `createTabGuarded` 对会话文件幂等；`EditorArea.createTabForRestore` 早有同款）。
+    两个配套细节：
+    - **别在 settle 时逐出缓存**：那会在"promise 落定"与"调用方写 store"之间再开一个口子。
+      改为命中时校验标签是否还活着，已关闭才逐出重建（否则"关掉再打开"会拿到死快照）。
+    - **写测试时先确认 mock 的形状是真的**：这条测试第一版少了 `snap.state`，
+      `addTab` 里 `snap.state.model` 抛异常 → 标签压根没进 store → 第二次"重建"是假红。
+      假红比不写更坏。
+    顺带修掉一个**必现**（不是偶尔）的同类问题：`doExport` 导出已打开的会话时无条件
+    `createTabGuarded` → 必然撞互斥锁；而且不能顺手把用户正在用的标签关掉。
 
 ## 4. 未完成 / 待决策
 

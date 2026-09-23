@@ -5,8 +5,8 @@ import { windowEvents } from '@/lib/windowEvents';
 import { Modal, Input, Button } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { pickDirectory } from '@/lib/picker';
-import { createTabGuarded } from '@/lib/tabCreate';
-import { createTab, useTabs } from '@/stores/tabs';
+import { createTabGuarded, findTabBySession } from '@/lib/tabCreate';
+import { createTab, useTabs, type TabSnapshot } from '@/stores/tabs';
 import {
   useSessions,
   sessionTitle,
@@ -72,9 +72,10 @@ export function SessionsSidebar() {
   );
 
   const openSession = async (m: SessionMeta) => {
-    const existing = Object.values(useTabs.getState().tabs).find((t) => t.sessionFile === m.path);
+    const existing = findTabBySession(m.path);
     if (existing && focusSessionTab(existing.tabId)) return;
     try {
+      // 幂等：即使落到这里（比如面板丢了、或上一次点击还在建），也不会建出第二个 worker
       const snap = await createTabGuarded({ sessionPath: m.path, cwd: m.cwd ?? undefined });
       await openSessionTab(snap, sessionTitle(m));
     } catch (e) {
@@ -137,10 +138,17 @@ export function SessionsSidebar() {
 
   const doExport = async (m: SessionMeta) => {
     try {
-      const snap = await createTabGuarded({ sessionPath: m.path, cwd: m.cwd ?? undefined });
-      const d = await cmd<{ path?: string }>('pi_export_html', { tabId: snap.tab_id });
-      await cmd('tab_close', { tabId: snap.tab_id });
-      useTabs.getState().removeTab(snap.tab_id);
+      // 导出**已打开**的会话必须复用那个 tab：
+      //  - 原来无条件 createTabGuarded → 撞上 Rust 的会话互斥锁 → 报"会话文件已被打开"（必现，不是偶尔）；
+      //  - 而且导出后不能顺手把用户正在用的标签关掉。
+      const existing = findTabBySession(m.path);
+      const snap = existing ?? (await createTabGuarded({ sessionPath: m.path, cwd: m.cwd ?? undefined }));
+      const tabId = existing ? existing.tabId : (snap as TabSnapshot).tab_id;
+      const d = await cmd<{ path?: string }>('pi_export_html', { tabId });
+      if (!existing) {
+        await cmd('tab_close', { tabId });
+        useTabs.getState().removeTab(tabId);
+      }
       toast.success(`已导出：${d.path ?? '(见工作目录)'}`);
     } catch (e) {
       toast.error(String(e));

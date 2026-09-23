@@ -164,6 +164,20 @@ Piggy 的转录视图默认走 messages；"历史考古"视图与分支树走 en
 
 registry 保证一个会话文件同时只被一个 worker 打开（01 §2.2）。若文件正被终端里的 `pi` 使用：pi 侧自身行为未文档化【契约验证 C4：双开同文件的实测行为；Piggy 保守策略 = GUI 打开前检测 mtime 活跃度并警示，不强制锁】。
 
+**这个不变量由两层共同守，缺一层都会漏**（2026-09-23 用户日志实证）：
+
+| 层 | 职责 | 漏掉会怎样 |
+|---|---|---|
+| Rust（`registry.open_files`） | 真互斥：在同一把 registry 锁里查表 + 登记，并发调用被串行化 | 两个 worker 同时写一个 jsonl |
+| 前端（`lib/tabCreate.ts` 的 `createTabGuarded`） | **幂等**：同一会话文件的并发创建复用同一个 promise / 同一份快照 | 第二次请求被 Rust 挡下 → 用户看到红色 toast「会话文件已被标签页 X 打开」 |
+
+前端的坑在于**时序**：`openSession` 的"已经开着就聚焦"查的是 zustand store，
+而 store 要到 `openSessionTab → ensureTab → addTab` 才更新 —— 也就是
+**整个 `tab_create` IPC 往返期间 store 里都还没有这个标签**。
+两次点击落进同一个窗口就都会去建 worker（双击是最常见的触发方式）。
+所以"查 store 再 await"这种写法**只在 await 之前有效**，跨越 await 的检查必须有 in-flight 表兜。
+Rust 侧拒绝前会 `worker.shutdown()`（`child.kill()`），所以被挡下的那次没有进程泄漏。
+
 ### 6.4 游标增量同步（恢复与复活）
 
 `get_entries` 支持 `since=<entryId>` 且响应带 `leafId`：
