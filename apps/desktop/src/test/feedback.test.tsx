@@ -18,31 +18,15 @@
  *   2. 桥正常挂载时，走的是带上下文的实例（主题才跟得上）。
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { App as AntdApp, ConfigProvider } from 'antd';
 
-(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+import { drainReact, mountDom, unmountDom } from './dom-render';
 
 import { FeedbackBridge, toast } from '@/lib/feedback';
 
-let container: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-function mount(node: React.ReactNode) {
-  container = document.createElement('div');
-  document.body.appendChild(container);
-  root = createRoot(container);
-  act(() => {
-    root!.render(node);
-  });
-}
-
-afterEach(() => {
-  act(() => root?.unmount());
-  container?.remove();
-  root = null;
-  container = null;
+afterEach(async () => {
+  await unmountDom();
   vi.restoreAllMocks();
 });
 
@@ -55,7 +39,7 @@ describe('toast 通道绝不能自己抛异常', () => {
 
   it('桥挂错位置（只在 ConfigProvider 内，缺 antd <App>）时也要能调用', () => {
     // 这正是线上那个 bug 的形态：useApp() 返回空对象，不许因此炸掉
-    mount(
+    mountDom(
       <ConfigProvider>
         <FeedbackBridge />
       </ConfigProvider>,
@@ -64,7 +48,7 @@ describe('toast 通道绝不能自己抛异常', () => {
   });
 
   it('桥正确挂载（ConfigProvider + antd <App>）时能调用', () => {
-    mount(
+    mountDom(
       <ConfigProvider>
         <AntdApp component={false}>
           <FeedbackBridge />
@@ -89,7 +73,7 @@ describe('必须走上下文实例，而不是静默退回静态 API', () => {
     const { message: staticMessage } = await import('antd');
     const spy = vi.spyOn(staticMessage, 'error').mockImplementation((() => {}) as never);
 
-    mount(
+    mountDom(
       <ConfigProvider>
         <AntdApp component={false}>
           <FeedbackBridge />
@@ -105,7 +89,7 @@ describe('必须走上下文实例，而不是静默退回静态 API', () => {
     const { message: staticMessage } = await import('antd');
     const spy = vi.spyOn(staticMessage, 'error').mockImplementation((() => {}) as never);
 
-    mount(
+    mountDom(
       <ConfigProvider>
         <FeedbackBridge />
       </ConfigProvider>,
@@ -150,5 +134,7 @@ describe('真实 <App /> 树里桥位正确', () => {
 
     await act(async () => r.unmount());
     div.remove();
+    // 整棵真实 App 树留下的排队工作最多，必须在这里跑空（见 dom-render.tsx 的说明）
+    await drainReact();
   });
 });
