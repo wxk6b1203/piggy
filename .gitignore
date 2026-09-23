@@ -6,3 +6,7 @@ target/
 apps/desktop/src-tauri/gen/
 .vite/
 coverage/
+.recovery/
+
+# 性能基准产物（本地生成，由 perf-run.mjs 写出）
+apps/desktop/perf-results/
