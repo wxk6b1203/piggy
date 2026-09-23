@@ -17,13 +17,17 @@ pub enum DiscoveryError {
     VersionCheckFailed(String),
 }
 
-/// 发现顺序（docs/02 §2.1）：显式路径 → `PI_BIN` → PATH。
-pub fn discover(override_path: Option<&Path>) -> Result<PiBinary, DiscoveryError> {
+/// 发现顺序（docs/02 §2.1，08 §7.1）：显式路径 → `PI_BIN` → 内置（捆绑 standalone）→ PATH。
+pub fn discover(override_path: Option<&Path>, builtin: Option<&Path>) -> Result<PiBinary, DiscoveryError> {
     let path = match override_path {
         Some(p) => p.to_path_buf(),
-        None => std::env::var_os("PI_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(which_pi),
+        None => match std::env::var_os("PI_BIN").map(PathBuf::from) {
+            Some(p) => p,
+            None => match builtin.filter(|b| b.is_file()).map(PathBuf::from) {
+                Some(b) => b,
+                None => which_pi(),
+            },
+        },
     };
     if !path.exists() {
         return Err(DiscoveryError::NotFound);

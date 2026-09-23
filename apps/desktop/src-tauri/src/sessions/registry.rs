@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub struct Tab {
@@ -21,6 +22,8 @@ pub struct Tab {
     pub worker: Option<Worker>,
     pub restarts: u32,
     pub deliberate: bool,
+    /// 最近一次被使用的时间（任意 IPC 命令经 worker_of 触碰；05 §4.1 空闲回收依据）
+    pub last_activity: Instant,
 }
 
 impl Tab {
@@ -31,6 +34,9 @@ impl Tab {
 
 pub struct Registry {
     pub pi_bin: Option<PiBinary>,
+    /// 内置 pi standalone（08 §7.1 full SKU）；setup 时由 resource_dir 填充
+    pub builtin: Option<PathBuf>,
+    /// tab_id → Tab（docs/03 §2.7）
     pub tabs: HashMap<String, Tab>,
     /// 会话文件（规范化路径）→ 占用它的 tab_id（docs/02 §6.3 互斥）
     open_files: HashMap<String, String>,
@@ -53,6 +59,7 @@ impl Registry {
     pub fn new(pi_bin: Option<PiBinary>) -> Self {
         Self {
             pi_bin,
+            builtin: None,
             tabs: HashMap::new(),
             open_files: HashMap::new(),
         }
@@ -65,7 +72,7 @@ impl Registry {
                 return Ok(b.path.clone());
             }
         }
-        let b = crate::pi::discovery::discover(None).map_err(|e| e.to_string())?;
+        let b = crate::pi::discovery::discover(None, self.builtin.as_deref()).map_err(|e| e.to_string())?;
         self.pi_bin = Some(b.clone());
         Ok(b.path)
     }
@@ -110,6 +117,7 @@ impl Registry {
             worker: Some(worker.clone()),
             restarts: 0,
             deliberate: false,
+            last_activity: Instant::now(),
         };
         worker.set_state(WorkerState::Ready);
         let snapshot = snapshot_of(&tab, &state);
@@ -149,6 +157,84 @@ impl Registry {
 
     pub fn tab_ids(&self) -> Vec<String> {
         self.tabs.keys().cloned().collect()
+    }
+
+    /// 存活（有 worker 且非 Stopped）的 worker 数（05 §4.2 上限依据）
+    pub fn alive_worker_count(&self) -> usize {
+        self.tabs
+            .values()
+            .filter(|t| matches!(t.worker_state(), WorkerState::Ready | WorkerState::Busy | WorkerState::Spawning))
+            .count()
+    }
+
+    /// 触碰活跃时间（05 §4.1 空闲判定基准）
+    pub fn touch(&mut self, tab_id: &str) {
+        if let Some(t) = self.tabs.get_mut(tab_id) {
+            t.last_activity = Instant::now();
+        }
+    }
+
+    /// 休眠标签（05 §4.3）：主动回收 worker，保留 tab/游标/会话指针。
+    /// 再交互时 ensure_worker 自动复活 + 游标补齐。
+    pub async fn sleep_tab(&mut self, sink: &Arc<dyn EventSink>, tab_id: &str) -> Result<(), String> {
+        let Some(tab) = self.tabs.get_mut(tab_id) else {
+            return Err(format!("tab 不存在: {tab_id}"));
+        };
+        tab.deliberate = true; // watcher 不得复活
+        tab.restarts = 0; // 休眠/唤醒非崩溃，不计入重启上限
+        if let Some(w) = tab.worker.take() {
+            w.shutdown().await;
+        }
+        sink.emit_json(
+            &format!("pi:state:{tab_id}"),
+            json!({"state": "sleeping", "reason": "sleep"}),
+        );
+        Ok(())
+    }
+
+    /// 空闲回收（05 §4.1）：Ready 且空闲超过 timeout 的 worker 优雅退出。
+    /// 返回被回收的 tab 列表。timeout_secs = 0 时由调用方不调度本函数。
+    pub async fn reap_idle(&mut self, timeout_secs: u64) -> Vec<String> {
+        let mut reaped = Vec::new();
+        let ids: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| {
+                matches!(t.worker_state(), WorkerState::Ready)
+                    && t.last_activity.elapsed().as_secs() >= timeout_secs
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if self.sleep_tab_inner(&id).await {
+                reaped.push(id);
+            }
+        }
+        reaped
+    }
+
+    /// 回收最闲 worker（05 §4.2 超限时的"一键回收"目标）：Ready 且最久未用。
+    pub async fn sleep_idlest(&mut self, sink: &Arc<dyn EventSink>) -> Option<String> {
+        let candidate = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| matches!(t.worker_state(), WorkerState::Ready))
+            .min_by_key(|(_, t)| t.last_activity)
+            .map(|(id, _)| id.clone())?;
+        self.sleep_tab(sink, &candidate).await.ok()?;
+        Some(candidate)
+    }
+
+    /// 内部回收（不发 sleeping 事件版，供 reap 使用）
+    async fn sleep_tab_inner(&mut self, tab_id: &str) -> bool {
+        let Some(tab) = self.tabs.get_mut(tab_id) else { return false };
+        tab.deliberate = true;
+        tab.restarts = 0;
+        if let Some(w) = tab.worker.take() {
+            w.shutdown().await;
+            return true;
+        }
+        false
     }
 
     pub async fn close_tab(&mut self, sink: &Arc<dyn EventSink>, tab_id: &str) -> Result<(), String> {

@@ -212,7 +212,7 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, st
         json!({
             "state": final_state,
             "exitCode": exit_code,
-            "stderrTail": stderr_tail.last().map(String::clone),
+            "stderrTail": stderr_tail.last().cloned(),
         }),
     );
 }

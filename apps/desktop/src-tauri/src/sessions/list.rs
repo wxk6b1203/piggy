@@ -57,14 +57,14 @@ pub fn scan_dir(root: &Path) -> Vec<SessionMeta> {
             }
         }
     }
-    out.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+    out.sort_by_key(|m| std::cmp::Reverse(m.mtime_ms));
     out
 }
 
 pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
     let md = std::fs::metadata(path).ok()?;
     let mut file = std::fs::File::open(path).ok()?;
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{Seek, SeekFrom};
 
     // 头部
     let head_len = HEAD_BYTES.min(md.len());
@@ -74,6 +74,9 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
     let mut header_id = None;
     let mut header_cwd = None;
     let mut first_user = None;
+    // 头部（全段扫描）：session header（id/cwd）、首条用户消息、session_info 命名。
+    // session_info 必须在头部也解析：改名写入的是小文件（<64KB）时，名字只存在于"头部"窗口。
+    let mut name = None;
     for line in head.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
@@ -81,20 +84,24 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        if v["type"] == "session" {
-            header_id = v["id"].as_str().map(String::from);
-            header_cwd = v["cwd"].as_str().map(String::from);
-        }
-        if first_user.is_none() && v["type"] == "message" && v["message"]["role"] == "user" {
-            first_user = extract_text(&v["message"]["content"]);
-        }
-        if header_id.is_some() && first_user.is_some() {
-            break;
+        match v["type"].as_str() {
+            Some("session") => {
+                header_id = v["id"].as_str().map(String::from);
+                header_cwd = v["cwd"].as_str().map(String::from);
+            }
+            Some("message") if v["message"]["role"] == "user" && first_user.is_none() => {
+                first_user = extract_text(&v["message"]["content"]);
+            }
+            Some("session_info") => {
+                if let Some(n) = v["name"].as_str() {
+                    name = Some(n.to_string());
+                }
+            }
+            _ => {}
         }
     }
 
-    // 尾部（session_info 最新名字）
-    let mut name = None;
+    // 尾部（session_info 最新名字）——仅当文件超过头部窗口时，尾部条目更新、覆盖头部结果
     if md.len() > HEAD_BYTES {
         let tail_len = TAIL_BYTES.min(md.len() - HEAD_BYTES);
         file.seek(SeekFrom::End(-(tail_len as i64))).ok()?;
@@ -160,10 +167,83 @@ pub fn trash_session(path: &str) -> Result<(), String> {
     trash::delete(path).map_err(|e| format!("移入回收站失败: {e}"))
 }
 
-/// fs watcher（02 §6.2）：递归监听会话目录，debounce 后通知。
-/// 返回 Watcher 句柄必须保活（drop 即停止监听）。
+/* ---------------- 新会话预落盘（docs/02 §6.1 懒落盘的绕过） ---------------- */
+
+/// 为新会话预创建**空**会话文件并返回路径。
+///
+/// pi 对 `--session <空文件>` 的行为（session-manager `_setSessionFile`）：立即写入
+/// session header 并置 flushed，此后所有条目（含 `--name` 命名）直接追加落盘——
+/// 绕过"首个 LLM 回合完成才写盘"的懒落盘，空白会话因此不会再丢失。
+///
+/// 路径遵循 pi 自身约定，保证与扫描器/终端 pi 双向兼容（G7）：
+/// `<sessionRoot>/--<cwd 编码>--/<ISO时间戳>_<uuid>.jsonl`
+pub fn precreate_session_file(cwd: &Path) -> Result<PathBuf, String> {
+    precreate_session_file_in(&pi_files::sessions_root(), cwd)
+}
+
+/// 同上，root 由调用方注入（测试友好）。
+pub fn precreate_session_file_in(root: &Path, cwd: &Path) -> Result<PathBuf, String> {
+    // pi getDefaultSessionDirPath：去掉一个前导 / 或 \，再把 / \ : 全替换为 -，两侧包 --
+    let s = cwd.to_string_lossy();
+    let stripped = s
+        .strip_prefix('/')
+        .or_else(|| s.strip_prefix('\\'))
+        .unwrap_or(&s);
+    let safe = stripped.replace(['/', '\\', ':'], "-");
+    let dir = root.join(format!("--{safe}--"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建会话目录失败: {e}"))?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let name = format!(
+        "{}_{}.jsonl",
+        iso_timestamp_filename(now_ms),
+        uuid::Uuid::new_v4()
+    );
+    let path = dir.join(name);
+    // O_EXCL 创建空文件：并发/重试下不覆盖任何已有文件
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("创建会话文件失败: {e}"))?;
+    Ok(path)
+}
+
+/// epoch ms → `YYYY-MM-DDTHH-MM-SS-mmmZ`（pi 文件名时间戳格式：ISO 冒号/点替换为 -）。
+/// 手写 civil-from-days（Howard Hinnant 算法），避免为格式化一个文件名引入 chrono。
+fn iso_timestamp_filename(now_ms: u64) -> String {
+    let secs = (now_ms / 1000) as i64;
+    let ms = now_ms % 1000;
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}-{:02}-{:02}-{ms:03}Z",
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60
+    )
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// fs watcher（02 §6.2）：递归监听一组根目录（agent 目录 + 生效会话根，可含自定义
+/// sessionDir），debounce 后通知。返回 Watcher 句柄必须保活（drop 即停止监听）。
 pub fn spawn_sessions_watcher<F: Fn() + Send + 'static>(
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     on_change: F,
 ) -> Result<std::sync::Arc<dyn Watcher + Send + Sync>, String> {
     let (tx, rx) = std_mpsc::channel::<Event>();
@@ -173,10 +253,16 @@ pub fn spawn_sessions_watcher<F: Fn() + Send + 'static>(
             let _ = tx2.send(res.unwrap_or_else(|_| Event::default()));
         })
         .map_err(|e| format!("watcher init failed: {e}"))?;
-    std::fs::create_dir_all(&root).ok();
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|e| format!("watch failed: {e}"))?;
+    let mut watched = 0;
+    for root in roots {
+        std::fs::create_dir_all(&root).ok();
+        if watcher.watch(&root, RecursiveMode::Recursive).is_ok() {
+            watched += 1;
+        }
+    }
+    if watched == 0 {
+        return Err("watch failed: 无可监听目录".into());
+    }
     let handle: std::sync::Arc<dyn Watcher + Send + Sync> = std::sync::Arc::new(watcher);
     std::thread::spawn(move || {
         // notify 的 debounce 由内部 watcher 粗略保证；这里再做一层 300ms 合并
@@ -240,5 +326,58 @@ mod tests {
         std::fs::write(&p, b"").unwrap();
         assert!(parse_session_file(&p).is_none());
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn iso_timestamp_matches_pi_filename_format() {
+        assert_eq!(iso_timestamp_filename(0), "1970-01-01T00-00-00-000Z");
+        assert_eq!(iso_timestamp_filename(1_790_052_800_088), "2026-09-22T04-53-20-088Z");
+        assert_eq!(iso_timestamp_filename(951_912_000_500), "2000-03-01T12-00-00-500Z");
+    }
+
+    #[test]
+    fn small_file_session_info_is_parsed() {
+        // 临时/空白会话只有几百字节：改名写入的 session_info 必须能读到
+        let header = r#"{"type":"session","version":3,"id":"sid-3","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p3"}"#;
+        let info = r#"{"type":"session_info","id":"i1","parentId":null,"name":"我的新名字"}"#;
+        let p = write_tmp_session(&format!("{header}\n{info}\n"));
+        let m = parse_session_file(&p).expect("meta");
+        assert_eq!(m.name.as_deref(), Some("我的新名字"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn last_rename_wins() {
+        let header = r#"{"type":"session","version":3,"id":"sid-4","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p4"}"#;
+        let i1 = r#"{"type":"session_info","id":"i1","parentId":null,"name":"第一个名字"}"#;
+        let i2 = r#"{"type":"session_info","id":"i2","parentId":null,"name":"第二个名字"}"#;
+        let p = write_tmp_session(&format!("{header}\n{i1}\n{i2}\n"));
+        let m = parse_session_file(&p).expect("meta");
+        assert_eq!(m.name.as_deref(), Some("第二个名字"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn precreate_follows_pi_dir_and_file_naming() {
+        let root = std::env::temp_dir().join(format!("piggy-precreate-{}", std::process::id()));
+        let cwd = Path::new("/Users/wxk/My:Proj");
+        let p = precreate_session_file_in(&root, cwd).expect("precreate");
+        // 目录编码与 pi getDefaultSessionDirPath 一致
+        assert_eq!(
+            p.parent().unwrap(),
+            root.join("--Users-wxk-My-Proj--"),
+            "项目目录编码应符合 pi 约定"
+        );
+        let name = p.file_name().unwrap().to_string_lossy();
+        // <ISO 时间戳>_<uuid>.jsonl
+        let rest = name.strip_suffix(".jsonl").unwrap();
+        let (ts, id) = rest.split_once('_').unwrap();
+        assert!(ts.starts_with(char::is_numeric) && ts.contains('T') && ts.ends_with('Z'));
+        assert_eq!(id.matches('-').count(), 4);
+        // 空文件已创建；再次创建不覆盖（O_EXCL，生成新名）
+        assert!(p.metadata().unwrap().len() == 0);
+        let p2 = precreate_session_file_in(&root, cwd).expect("precreate 2");
+        assert_ne!(p, p2);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-fn expand_home(p: &str) -> PathBuf {
+pub fn expand_home(p: &str) -> PathBuf {
     if p == "~" {
         return std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     }

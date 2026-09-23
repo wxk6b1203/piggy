@@ -20,10 +20,7 @@ impl JsonlDecoder {
     /// 喂入一个 chunk，产出所有完整行（已剥 `\r`，跳过空行）。
     pub fn feed(&mut self, chunk: &[u8], out: &mut Vec<String>) {
         self.buf.extend_from_slice(chunk);
-        loop {
-            let Some(pos) = self.buf.iter().position(|&b| b == b'\n') else {
-                break;
-            };
+        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
             let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
             line.pop(); // 丢弃 '\n'
             if line.last() == Some(&b'\r') {
