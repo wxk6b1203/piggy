@@ -99,6 +99,33 @@ M1 修正记录（实现期发现）：
 
 **验收**：05 §2 预算表逐条达标并留有 CI 证据链接；`perf-lite`（S1/S3 缩短版）进 PR 必跑。
 
+### 4.1 M2 实现记录（2026-09-23）
+
+| 工作包 | 落位 | 状态 |
+|---|---|---|
+| 空闲回收（05 §4.1） | `registry.rs`：Tab.last_activity（worker_of 触碰）+ `reap_idle`；lib.rs 60s tick（全应用唯一周期任务，05 §3.1）；idleTimeoutMin 可配（0=永不），默认 10min | ✅ |
+| maxWorkers（05 §4.2） | `tab_create` 超限报 `MAX_WORKERS`；前端 `createTabGuarded` 弹窗"一键回收最闲"（`tab_sleep_idlest`）后重试；默认 8 | ✅ |
+| 休眠标签（05 §4.3） | `tab_sleep` 回收 worker 保留游标（唤醒不计入崩溃重启上限）；前端 sleepTab 丢弃 messages/trajectory/bash 内存，激活/发送时透明唤醒 + get_messages 重建；Cmd+Shift+S / 命令面板 | ✅ |
+| 性能配置 | `~/.piggy/config.json`（PerfConfig：maxWorkers/idleTimeoutMin，clamp + 原子写）；设置 → Piggy 性能 | ✅ |
+| 渲染落位（05 §5.2） | 转录行/轨迹行 `content-visibility: auto + contain-intrinsic-size` | ✅ |
+| Shiki 按需（04 §5.2） | `CodeBlock.tsx`：shiki core + oniguruma 引擎 + 语言包全部动态 import；语言 LRU ≤16（超出重建 highlighter）；IntersectionObserver 进视口才高亮；github-light/dark 双主题 CSS 变量 | ✅ |
+| 图片 asset 协议（04 §5.3） | tauri `assetProtocol`（scope $HOME/$TMP/$APPDATA）+ `convertFileSrc`；协议内联 base64 图按对象缓存转 Blob URL（不重复解码、不入 React 状态大字符串） | ✅ |
+| 万条消息打开（05 §2 预算 <1.5s） | messagesStore 去重 O(n²)→Set（05 §4.4 纪律）：10k hydrate 8960ms → **24.7ms**（perf S3 实测） | ✅ |
+| 场景库 S1–S6（05 §6.2） | `apps/desktop/scripts/perf-run.mjs`：S1 流式帧率/长任务、S2 8tab、S3 万条打开、S4 100 工具并发、S5 崩溃 resync、S6 空载 heap 漂移；预算断言不过 exit 1，结果写 perf-results/*.json | ✅ |
+| CI（05 §6.3） | `ci.yml` 增 perf-lite（S1/S3 缩短版，PR 必跑）；`perf-nightly.yml` 全场景 + 产物留存 30 天 | ✅ |
+| 独立发布（08 §7.1） | `scripts/fetch-pi-standalone.mjs`（GitHub Releases 下载 + SHA256 强校验 + tar 解包 → `src-tauri/resources/pi/`）；`tauri.full.conf.json`（full SKU bundle.resources）；发现链插入内置档（显式 > PI_BIN > 内置 > PATH，02 §2.1）；lite=默认 conf 不捆绑 | ✅（脚本+接线；release 资产直链需发布时按实际资产名核对 URL 模板） |
+| M1 顺延：Monaco schema 校验 | `monaco-setup.registerPiggySchemas`（pi settings/models 双 schema）+ MonacoHost 显式模型 URI | ✅ |
+
+perf-lite 本机实测（2026-09-23，M 系列）：S1 流式 60fps / 0 longtask（8s 灌帧）；S3 10k hydrate 24.7ms / 滚动 3 longtask（≤3）。
+
+M2 顺延项（记入 M3/M4 或独立跟进）：
+
+- **xterm.js bash 面板**（10 §4，M1 WP8 顺延）：M1 以 RPC pre 流呈现；终端仿真 M3 评估；
+- **tauri-driver 实机 E2E**（M1 验收顺延）：当前 perf/冒烟均为 Playwright + mock 底座；实机 E2E 依赖 tauri-driver 稳定，跟进；
+- **三轨时间线（甘特）**（04 §1.10 顺延）：依赖事件级时间戳埋点（pi 事件含 timestamp，渲染层排期 M3 随 Fleet 面板）；
+- **进程资源采样**（05 §6.1 sysinfo → 状态栏资源抽屉）：工具链增强，M3 与 Fleet 资源回归一并做；
+- **cargo bench 基线**（05 §6.1 codec/合帧吞吐阈值）：框架就绪，基线数据入 nightly。
+
 ## 5. M3 · 子代理（约 3 周）
 
 **范围**：06 双层。
@@ -115,17 +142,48 @@ M1 修正记录（实现期发现）：
 3. 未安装 pi-subagents 时 bridge 的降级提示正确；
 4. Fleet 运行不影响 05 预算（lane 计入 maxWorkers 的资源回归测试）。
 
+### 5.1 M3 实现记录（2026-09-23）
+
+| 工作包 | 落位 | 状态 |
+|---|---|---|
+| A 层 fleet 模块（06 §3） | `src-tauri/src/fleet.rs`：FleetRun 状态机（Running→Done/Aborted）、Lane 状态（Pending/Running/Settled/Failed）、`build_run`（环检测 fail-fast）、`ready_lanes` 纯函数 DAG 调度、`render_prompt`（{task}/{upstream} 注入）、`create_worktree`（git worktree，name 净化防逃逸、存在即复用） | ✅ |
+| 内置模板 ×4（06 §3.2） | `builtin_templates()`：scout-review-build / parallel-review / research / custom（纯 JSON，用户可编辑=后续自定义入口） | ✅ |
+| lane = registry tab（06 §3.5） | lane 复用 `registry.create_tab`（NoSession，不污染会话列表；计入 maxWorkers，05 §4.2/06 §3.4 排队语义）；”提升为标签页”= `fleet_open_lane` 返回 snapshot → 前端 openSessionTab | ✅ |
+| 调度胶水 | `commands.rs schedule_run/watch_lane`：worker state 订阅 Busy→Ready 视为 settle → `get_messages` 提取最后 assistant 文本 → settle → 驱动下游；Crashed/Stopped 计 Failed；`fleet_start/abort/steer/list/templates/open_lane` 命令 + `fleet:changed` 全量快照事件 | ✅ |
+| B 层 piggy-bridge（06 §4） | `packages/piggy-bridge/`：`/piggy:status|steer|interrupt|stop|resume|fleet-refresh` 命令集；`subagents:rpc:v1:ready` + ping 能力协商；未安装降级提示；应答走 `set_editor_text(“PIGGY:1:”+json)` 数据面 + `setWidget` 状态行 + notify 摘要（06 §4.2 约定） | ✅ |
+| Fleet 面板（06 §5） | 右栏 🛳：A 层 runs（模板选择+任务输入+启动/中止/lane 状态+结果预览+steer 弹窗+提升按钮）、B 层（按活动 tab 的 bridge 快照 + 刷新 + 未安装降级）；`fleetStore` 统一视图模型 + `PIGGY:1` 前缀劫持（DialogRouter set_editor_text 拦截） | ✅ |
+| 测试 | Rust：模板合法性/DAG 顺序/环拒绝/prompt 注入/manager 生命周期/abort/worktree 净化 ×7；前端：PIGGY:1 解析/快照应用/降级/非协议不劫持 ×4 | ✅ |
+
+M3 待实机验收（需真实 pi + pi-subagents）：验收 1/2（parallel-review 真跑、steer 回执）；降级提示（验收 3）已由单测覆盖。dockview lane 分列监控随”提升为标签”自然获得（分组拖拽），独立自动分列 = M4 打磨。
+
 ## 6. M4 · 打磨与发布（约 2–3 周）
 
 **范围**：
 
 - OAuth 登录内嵌终端（xterm.js + portable-pty，跑 `pi /login`，02 §2.10 路线）；
-- 文件视图“快捷编辑”（受限直写 + 外部变更警示，00 NG4）、资源浏览器（04 §1.5）；
+- 文件视图”快捷编辑”（受限直写 + 外部变更警示，00 NG4）、资源浏览器（04 §1.5）；
 - i18n（zh-CN/en-US）、托盘、全局唤起默认开启项评审、自动更新（stable/beta）；
 - 打包签名（macOS notarization / Windows signing）、崩溃安全（Rust panic hook → 本地日志）；
 - 文档终审：README 快速上手 + docs 与实现逐节对齐审计。
 
 **验收**：00 §7 成功判据两项用户测试通过；三平台安装包在干净虚拟机安装即用。
+
+### 6.1 M4 实现记录（2026-09-23）
+
+| 工作包 | 落位 | 状态 |
+|---|---|---|
+| 崩溃安全 | `lib.rs install_panic_hook`：panic 转储 `~/.piggy/logs/panic-*.log` 后交回默认 hook | ✅ |
+| 托盘 | `tray-icon` feature + TrayIconBuilder（显示/隐藏 + 退出） | ✅ |
+| 全局唤起 | `tauri-plugin-global-shortcut`：Cmd/Ctrl+Shift+P 显示并聚焦主窗（Rust 侧注册，无 webview 权限面） | ✅ |
+| 登录内嵌终端 | `src-tauri/src/pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `LoginTerminalModal`（@xterm/xterm + fit；关闭即 close 回收）；设置 → 认证页入口 | ✅（真机 OAuth 流程待用户实测） |
+| 资源浏览器 | `fs_list_dir`（项目根子树、守卫校验、目录优先排序）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
+| 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）+ FilePreview 编辑模式（有 root 才出编辑钮） | ✅ |
+| i18n | `lib/i18n.ts`：zh-CN/en-US 词典 + t() 回退链 + setLang 持久化/事件；已接 palette/welcome 文案；语言切换 UI 与全量文案迁移 = 持续项 | ✅ 骨架 |
+| 自动更新 | `tauri-plugin-updater` 已接入构建（check 未被调用即零风险）；endpoints/签名密钥/双通道 = 发布基建（需苹果/微软证书与更新服务器），随打包签名一同落地 | 🔧 结构就绪 |
+| 打包签名 | macOS notarization / Windows signing 需要证书；`tauri.full.conf.json`（full SKU 捆绑 pi）+ `fetch-pi-standalone.mjs`（SHA256 强校验）已就绪，发布清单见 08 §7.1 | 🔧 脚本就绪 |
+| 文档终审 | 本节 + 05/09 各落地记录；README 快速上手与全量对齐审计留发布前一轮 | 🔧 部分 |
+
+M4 测试：fs_guard ×4（子树/`..`/相对路径/mtime 冲突语义）、pty ×3（shell 选择/echo 回读真实 PTY/会话表幂等）；前端 i18n ×4（键一致/命中回退/切换事件）。
 
 ## 7. 风险登记册
 

@@ -17,15 +17,19 @@ Piggy 是一个以 [pi](https://github.com/earendil-works/pi) 为引擎、**Taur
 | 08 | [project-structure.md](08-project-structure.md) | 仓库结构、monorepo 布局、构建链、测试与质量策略 | 全体开发 |
 | 09 | [roadmap.md](09-roadmap.md) | 里程碑 M0–M4、验收标准、风险登记 | 所有人 |
 | 10 | [vscode-assets.md](10-vscode-assets.md) | VS Code 资产复用清单、Monaco 基座落地方案、源码参考点 | 前端开发 |
-| 11 | [dsh-reference.md](11-dsh-reference.md) | DSH 界面参考裁决（轨迹视图、Composer 细节、侧栏语义） | 前端开发 |
+| 11 | [dsh-reference.md](11-dsh-reference.md) | DSH 界面参考裁决（轨迹视图、Composer 细节、侧栏语义）**注：基于截图推断，已被 12 部分更正** | 前端开发 |
+| 12 | [dsh-ui-spec.md](12-dsh-ui-spec.md) | **DSH 客户端 UI 实现级规格**（源码逐条 `file:line`）：布局/令牌/对话/轨迹/侧栏/右栏 + 复用结论 | 前端开发，**UI 对齐以本篇为准** |
+| 13 | [vscode-asset-inventory.md](13-vscode-asset-inventory.md) | VS Code 资产清点与许可核查（codicons / 主题 JSON / 设计令牌 / 禁用项） | 前端开发 |
+| 14 | [14-ui-assessment-and-dsh-alignment.md](14-ui-assessment-and-dsh-alignment.md) | Piggy 现状体检、缺陷根因、DSH 对齐改造记录与事故记录 | 全体开发 |
 
 推荐阅读路径：
 
 - **快速理解项目**：00 → 01 → 09
 - **开始写 Rust 侧代码**：01 → 02 → 03 → 08
-- **开始写前端代码**：01 → 04 → 10 → 07 → 05
+- **开始写前端代码**：01 → 04 → **12** → 13 → 07 → 05（11 为历史裁决，冲突处以 12 为准）
 - **做子代理功能**：01 → 06 → 02
 - **评审性能**：05 → 04 §4 → 02 §5
+- **排查 UI 问题**：先跑 `pnpm --filter @piggy/desktop ui:debug`，再读 14
 
 ## 闭环承诺
 

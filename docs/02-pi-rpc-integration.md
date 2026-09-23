@@ -154,6 +154,8 @@ Piggy 的转录视图默认走 messages；"历史考古"视图与分支树走 en
 
 **懒落盘【M0 契约实测】**：`get_state.sessionFile` 在 spawn 后即分配路径，但文件**首个 LLM 回合完成才写盘**；bash 直执行等仅追加内存条目的操作不触发落盘。依赖文件存在性的功能（列表扫描 §6.2、互斥 §6.3、崩溃恢复 §7.5）必须容忍"已分配未落盘"中间态。
 
+**新会话预落盘【M1 实测】**：pi 对 `--session <空文件>` 会立即写入 SessionHeader 并置 flushed（`_setSessionFile` 的空文件分支），此后所有条目直接追加。Piggy 新建会话（`tab_create` 无 session_path）据此先按 pi 命名约定预创建空文件再打开，空白会话从创建起即持久化、重启可见；预创建失败时回退懒落盘。终端 pi 自建的会话仍是懒落盘，扫描器保留对"已分配未落盘"的容忍。
+
 ### 6.2 列表扫描（零进程成本）
 
 `sessions/list.rs` 直接扫描目录：读每个文件**首行** SessionHeader（含 name/时间戳）+ stat（size/mtime）→ 会话侧栏数据。不 spawn 任何 pi 进程。带 debounce 的 fs watcher（notify crate）保持列表新鲜（pi CLI 在终端产生的会话也实时出现）。
