@@ -1,7 +1,19 @@
 # 18 · 上游问题：pi-subagents 的 async runner 与 pnpm 软链布局不兼容
 
 > 上游：[15-handoff.md](15-handoff.md) 规矩 20 · [06-subagents.md](06-subagents.md) §4 · [09-roadmap.md](09-roadmap.md) §5.2
-> 状态：**已在用户机器上打补丁并验证**（2026-09-23）；issue 正文见 §4，可直接提交给 pi-subagents。
+> **状态（2026-09-23 结案）**：上游已独立发现并修复 —— 报告
+> [#2409](https://github.com/nicobailon/pi-subagents/pull/2409)、修复
+> [#2413](https://github.com/nicobailon/pi-subagents/pull/2413)（标题 `fix: resolve host peer aliases through symlinks`），
+> **且该修复已随 pi-subagents 0.71.0 发布**。本机现在是 0.71.0，**不需要任何本地补丁**。
+> 本文保留完整根因与复现（§1–§3、§5），§4 记录当时的临时补丁与其结局。
+>
+> ⚠️ 一处曾经的误判，写下来免得再踩：我一度以为"0.71.0 仍含旧代码"，依据是
+> `findPeerPackageDir` 末尾那行 `return candidates.find(...)` 没变——
+> **但官方修复本来就不改那一行**，它改的是 `resolveHostPeerAliases` 里的赋值。
+> 判断某个已装版本有没有这个修复，只看一个地方：
+> ```bash
+> grep -n "realpathSync(target)" ~/.pi/agent/npm/node_modules/pi-subagents/src/runs/background/runner-aliases.js
+> ```
 
 ## 1. 现象（用户视角）
 
@@ -92,10 +104,13 @@ PI_ASYNC_NATIVE_RUNNER=1 JITI_ALIAS='{"@earendil-works/pi-tui":"<realpath>/dist/
 | 软链路径（现状） | ❌ `pi-telemetry` 找不到 | ❌ `pi-telemetry` 找不到 | ✅（当时已手工补了软链） |
 | realpath | ✅ | ✅ | ✅ |
 
-## 4. 补丁（已应用并验证）
+## 4. 临时补丁（已被官方修复取代，勿再手工打）
 
-文件：`~/.pi/agent/npm/node_modules/pi-subagents/src/runs/background/runner-aliases.js`
-（0.71.0 的同一函数未变，仍可复现）
+> **结论先说**：官方修复已在 **0.71.0 发布**，与下面的临时补丁**语义等价**。
+> 本机在 0.70.1 上打过这个补丁，随后 pi 把 pi-subagents 升到 0.71.0 时**覆盖**了它——
+> 这是好事，不用修（0.71.0 自带官方修复）。**若你的版本 ≥0.71.0，请忽略本节。**
+
+当时的补丁（打在 `~/.pi/agent/npm/node_modules/pi-subagents/src/runs/background/runner-aliases.js`）：
 
 ```diff
 -    return candidates.find((candidate) => readManifest(candidate)?.name === pkg);
@@ -111,22 +126,41 @@ PI_ASYNC_NATIVE_RUNNER=1 JITI_ALIAS='{"@earendil-works/pi-tui":"<realpath>/dist/
  }
 ```
 
-- 改前 sha256 `8a646137d21f50a5b68b2f6b38b722ffd3780f24cc83f45bda7c0f54d208bf30`
-- 改后 sha256 `0028f45410a7ea49f93139797fb0e573d075eee47d097cb4ae6699f5c9f1a319`
-- 语义不变：还是同一个包，只是给出真实目录；npm/hoisted 布局下 realpath 等于原路径，故对它们无影响。
+**官方修复（#2413）打的是同一问题的另一处**，取的是「别名最终目标文件」的 realpath：
 
-**验证（真实 pi 0.87.1 + pi-subagents 0.70.1，补丁后且已撤掉一切临时软链）**：
+```diff
+ 	for (const { specifier, pkg, subpath } of required) {
+ 		const packageDir = findPeerPackageDir(piPackageRoot, pkg, hostManifest?.name);
+ 		const target = packageDir ? resolvePackageSubpath(packageDir, subpath) : undefined;
+-		if (target && fs.existsSync(target)) aliases[specifier] = target;
++		// Native loaders short-circuit resolution, so aliases must retain the real package's dependency scope.
++		if (target && fs.existsSync(target)) aliases[specifier] = fs.realpathSync(target);
+ 		else missing.push(specifier);
+ 	}
+```
 
-1. `/piggy:spawn scout 只回复两个字：收到` → 状态 `running` → **`complete`**（约 24s）；
-2. 完整往返：spawn → `/piggy:steer <runId> …` 回执 `deliveryStatus:"queued"`，
-   pi-subagents 自己的运行记录显示 `steering: {requested:1, delivered:1, failed:0}`，
-   事件流 `subagent.steer.requested → queued → routed → delivered`；
-3. 子代理产出真实结果文件（`artifacts/<runId>_scout_output.md`，中文逐条总结）。
+两者对 runner 等价（runner 只用 `resolveHostPeerAliases`；`findHostPeerPackageDir` 在 src 里没有任何调用点）。
+官方版额外更新了两条既有单测，并新增 `test/unit/runner-peer-symlinks.test.ts` ——
+那是本文 §3 的 A/B 实验的通用化版本（造一个软链宿主 + store 里的 `marked`，
+断言子进程能解析并且**模块身份一致**）。
 
-**维护提醒**：`pi update --extensions` / 重装 pi-subagents 会覆盖这个文件。
-覆盖后症状会原样回来（表现为"子代理派发成功但秒 failed"）。
+**当时的验证（0.70.1 + 临时补丁，已撤掉一切手工软链）**：
 
-## 5. 给上游的 issue 正文（英文，可直接粘贴）
+1. `/piggy:spawn scout 只回复两个字：收到` → `running` → **`complete`**（约 24s）；
+2. spawn → steer 回执 `deliveryStatus:"queued"`，运行记录 `steering:{requested:1,delivered:1,failed:0}`；
+3. 子代理产出真实结果文件。
+
+**0.71.0（官方修复，无任何本地补丁）复验（2026-09-23）**：
+
+| 项 | 结果 |
+|---|---|
+| `/piggy:spawn scout …` | `running`（tokens 2696→12592 实时增长）→ **`complete`**（47.8s） |
+| `/piggy:steer <runId> …` | 回执 `{"ok":true,"deliveryStatus":"queued"}`；运行记录 `requested:1, delivered:1, failed:0`（含 `routedAt`/`deliveredAt`） |
+| `/piggy:cost` | **首次真机可用**（0.71 才声明该能力位）：返回 `{version:1,parent,children,childTotal,total,unresolvedAsyncChildren}` |
+
+## 5. 上游 issue 正文（英文，**已无需提交**，保留作为问题记录）
+
+> 上游已独立报告（#2409）并修复（#2413）；下面是当时准备好的复现材料，留档用。
 
 ```markdown
 ### Summary

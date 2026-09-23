@@ -245,9 +245,12 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 | C9 | `prompt.images` | ✅ 受理成功（anthropic-messages 兼容 provider 实测） |
 | C10 | idle 状态 abort | ✅ 立即 success（data=null） |
 | C11 | 就地分支导航 RPC 入口 | ⏳ M1（04 §4.5） |
-| C12 | `-e piggy-bridge.js` + `/piggy:status` 数据面 | ✅ 实测：载荷经 `extension_ui_request{method:set_editor_text, text:"PIGGY:1:{…}"}` 回传，`ok:true` + 真实 `fleet`/`asyncSnapshot`；`setWidget`(widgetKey=`piggy-fleet`) 与 `notify` 同时到达；**扩展命令不消耗 token**（无 message_start/agent_start） |
+| C12 | `-e piggy-bridge.js` + `/piggy:status` 数据面 | ✅ 实测（0.70.1 与 **0.71.0** 各一轮）：载荷经 `extension_ui_request{method:set_editor_text, text:"PIGGY:1:{…}"}` 回传，`ok:true` + 真实 `fleet`/`asyncSnapshot`；`setWidget`(widgetKey=`piggy-fleet`) 与 `notify` 同时到达；**扩展命令不消耗 token**（无 message_start/agent_start） |
 | C13 | 无 pi-subagents 时 bridge 降级 | ✅ 实测：`PI_CODING_AGENT_DIR` 指向空目录 → `{kind:"status",ok:false,error:"pi-subagents 未安装"}`；顺带证明 pi 在**无凭据的空配置**下仍能启动 RPC 并执行扩展命令 |
 | C14 | A 层 lane 机制（DAG/settle/结果收集） | ✅ 实测两 lane DAG：a settle 后 b 才就绪 → `{upstream}` 注入 a 的真实输出 → b 回复 BRAVO-OK → run 转 Done。**顺带修掉一个真 bug**：`get_messages` 的 data 是 `{"messages":[…]}` 而非裸数组，旧的 `last_assistant_text` 只认裸数组 → 每条 lane 结果恒为空、下游永远"(无输出)"（docs/15 规矩 15） |
+
+> M3 的 B 层另有两项真机往返（不在这份 M0 契约清单里，记在 docs/09 §5.2 与 docs/18 §4）：
+> `/piggy:spawn` → 子代理真跑到 `complete`；`/piggy:steer` → 回执 `delivered`（pi-subagents 记录 `requested:1, delivered:1`）。
 
 实测额外发现的协议事实（已回填正文）：
 

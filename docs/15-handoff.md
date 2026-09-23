@@ -138,18 +138,22 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     `runner-aliases.js` 把 peer 包别名指向 **pnpm 软链路径**，runner 再把它当模块 URL 用，
     于是被别名包**自己的依赖**从软链路径解析不到（它们躺在真实路径的兄弟位）——
     报错形如 `ERR_MODULE_NOT_FOUND: Cannot find package 'marked' / '@earendil-works/pi-telemetry'`。
-    注意：**不是"没装"**，重装 pi 也不会好（实测重装后错误一字不差）；补一个依赖只会冒下一个。
-    修法=在 `findPeerPackageDir` 的返回值上加 `fs.realpathSync`（一行），
-    完整分析、A/B 复现实验与可直接提交的 issue 正文见 **docs/18**。
-    该补丁打在 `~/.pi/agent/npm/node_modules/pi-subagents/` 里，**`pi update --extensions` 会覆盖**。
+    注意：**不是"没装"**（重装 pi 无效，补一个依赖只会冒下一个）。
+    **上游已修复并发布**：报告 #2409 / 修复 #2413（`aliases[specifier] = fs.realpathSync(target)`），
+    **0.71.0 起自带**。本机 0.70.1 上曾打一行临时补丁，升级到 0.71.0 时被官方版覆盖——正常，不用再打。
+    判断某个版本有没有这个修复**只看一处**（修复改的是 `resolveHostPeerAliases` 的赋值，
+    **不是** `findPeerPackageDir` 末尾那行 `candidates.find`——我一度看错这行而误判 0.71.0 未修）：
+    ```bash
+    grep -n "realpathSync(target)" ~/.pi/agent/npm/node_modules/pi-subagents/src/runs/background/runner-aliases.js
+    ```
+    完整根因、A/B 复现实验与复验记录见 **docs/18**。
     排查入口：`$TMPDIR/pi-subagents-uid-<uid>/async-subagent-runs/<runId>/runner.stderr.log`。
 
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
-| **本机 pi 的 pi-subagents 已打一行补丁（会被 `pi update --extensions` 覆盖）** | 见规矩 20 与 docs/18。补丁前：`/piggy:spawn` 派发的子代理 2 秒内 failed；补丁后：真跑到 `complete`，`steer` 回执 `delivered`。重装/更新 pi-subagents 后若又出现"派发成功但秒 failed"，先查 docs/18 §4 的补丁是否还在 |
-| **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②`/piggy:cost` 真机往返（本机 pi-subagents 0.70.1 不声明该能力）；③dockview lane 分列监控 / 模板自定义编辑 |
+| **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | `CodeBlock.tsx` 的 shiki 动态导入 | `import(\`shiki/langs/${id}.mjs\`)` 是模板串，Vite 分析不了（启动有警告）。有 try/catch 兜底退回纯文本，但生产下这些语言无高亮 |

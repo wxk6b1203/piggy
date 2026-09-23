@@ -170,13 +170,12 @@ M2 顺延项（记入 M3/M4 或独立跟进）：
 **环境阻塞（已解决，非 Piggy 缺陷）**：本机是 **pnpm 全局安装的 pi**，而 pi-subagents 的 async runner
 把 pnpm 的**软链路径**当模块 URL 用，导致被别名包的依赖解析不到（`marked`、`@earendil-works/pi-telemetry`…），
 子代理派发成功但 2 秒内 failed。注意这**不是"缺依赖"**——重装 pi 无效（实测错误一字不差），
-补一个依赖只会冒下一个。修法是在 pi-subagents 的 `findPeerPackageDir` 返回值上加一行 `fs.realpathSync`，
-已应用并验证（spawn→complete、steer→delivered）。完整根因、A/B 复现实验与上游 issue 正文见 **docs/18**。
-该补丁位于 `~/.pi/agent/npm/node_modules/pi-subagents/`，**`pi update --extensions` 会覆盖它**。
+补一个依赖只会冒下一个。上游已独立报告（#2409）并修复（#2413），**0.71.0 起自带该修复**；
+本机当前即 0.71.0，**无任何本地补丁**。复验：spawn → `complete`（47.8s）、steer 回执 `delivered`、
+`/piggy:cost` 首次真机可用。完整根因与 A/B 复现实验见 **docs/18**。
 
 **仍未做**：在 GUI 里对真实仓库点一次 `parallel-review`（需要人开 `tauri dev` 点，agent 无法驱动原生窗口）；
-dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自动分列 = M4 打磨）；模板自定义编辑（`custom` 模板仍是空 lane 集）；
-`/piggy:cost` 的真机往返（本机 pi-subagents 0.70.1 不声明该能力）。
+dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自动分列 = M4 打磨）；模板自定义编辑（`custom` 模板仍是空 lane 集）。
 
 ## 6. M4 · 打磨与发布（约 2–3 周）
 
