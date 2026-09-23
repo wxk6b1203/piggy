@@ -6,6 +6,7 @@ use crate::events::EventSink;
 use crate::pi::client::{Worker, WorkerInner, WorkerState};
 use crate::pi::coalesce::FrameCoalescer;
 use crate::pi::codec::JsonlDecoder;
+use crate::pi::permission::PermissionMode;
 use crate::pi::protocol::{classify, Ame, PiEvent, DELTA_KINDS};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -31,6 +32,11 @@ pub struct SpawnArgs {
     pub pi_bin: PathBuf,
     pub session: SessionTarget,
     pub name: Option<String>,
+    /// 权限档位（见 `pi/permission.rs`）。`--tools` / `-e` 都是 CLI 参数，
+    /// 所以档位**只能在 spawn 时决定**：切档 = 带同一会话文件重启 worker。
+    pub permission: PermissionMode,
+    /// 守卫扩展脚本路径；仅 `Workspace` 档使用，缺失时拒绝启动（不静默降级）。
+    pub guard_script: Option<PathBuf>,
 }
 
 pub async fn spawn_worker(
@@ -59,6 +65,26 @@ pub async fn spawn_worker(
     if let Some(n) = &args.name {
         cmd.arg("--name").arg(n);
     }
+    // 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
+    // 不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
+    if let Some(list) = args.permission.tool_allowlist() {
+        cmd.arg("--tools").arg(list);
+    }
+    // 路径守卫（pi `-e`）：只有「工作区内修改」需要。
+    // 脚本缺失时**必须报错而不是静默降级**——否则用户以为修改被限制在 cwd 内、实际没有，
+    // 这种"看起来安全"的假象比直接启动失败更危险。
+    if args.permission.needs_path_guard() {
+        let Some(guard) = args.guard_script.as_ref().filter(|p| p.is_file()) else {
+            return Err(
+                "GUARD_SCRIPT_MISSING: 权限档位「工作区内修改」需要守卫扩展 resources/piggy-guard.js，\
+                 但未找到。已拒绝以无边界的方式启动——请改用「仅可查看」/「完全权限」，或修复安装。"
+                    .to_string(),
+            );
+        };
+        cmd.arg("--extension").arg(guard);
+        // 白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入。
+        cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
+    }
     // 前置检查：tokio 把 cwd 缺失与二进制缺失都报 NotFound，无法区分（M1 修正记录）
     if !args.cwd.exists() {
         return Err(format!("SESSION_CWD_MISSING: 项目目录不存在: {}", args.cwd.display()));
@@ -68,6 +94,20 @@ pub async fn spawn_worker(
             "PI_BINARY_MISSING: pi 二进制不存在: {}（可能正在升级）",
             args.pi_bin.display()
         ));
+    }
+    // 启动参数留痕：权限档位完全由 argv 决定，"我到底起了什么"必须能从日志回答。
+    // 排查自定义 pi（换二进制 / 换档位 / 守卫没生效）时，这一行通常是第一个要看的东西。
+    {
+        let mut shown: Vec<String> = vec![args.pi_bin.display().to_string()];
+        for a in cmd.as_std().get_args() {
+            shown.push(a.to_string_lossy().into_owned());
+        }
+        eprintln!(
+            "[piggy] spawn pi [{tab_id}] permission={} cwd={}\n    {}",
+            args.permission.as_str(),
+            args.cwd.display(),
+            shown.join(" ")
+        );
     }
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

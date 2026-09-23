@@ -22,6 +22,7 @@ const state = {
   sessionId: 'mock-sid-1',
   sessionFile: '/Users/mock/.pi/agent/sessions/--mock--/2026-09-22_mock.jsonl',
   sessionName: 'Mock 会话',
+  permission: 'workspace' as 'read-only' | 'workspace' | 'full',
 };
 
 function snapshot() {
@@ -32,6 +33,7 @@ function snapshot() {
     session_file: state.sessionFile,
     session_name: state.sessionName,
     worker_state: 'ready',
+    permission: state.permission,
     state: { model: state.model, thinkingLevel: state.thinkingLevel, isStreaming: false },
   };
 }
@@ -74,7 +76,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {},
   pi_discover: () => ({ path: '/mock/pi', version: '0.87.0' }),
   pick_directory: () => null, // 浏览器 mock 无系统目录框：视为取消
-  perf_config_load: () => ({ max_workers: 8, idle_timeout_min: 10 }),
+  perf_config_load: () => ({ max_workers: 8, idle_timeout_min: 10, permission_mode: 'workspace' }),
   perf_config_save: () => null,
   tab_sleep: () => null,
   tab_sleep_idlest: () => ({ tabId: 'mock-tab-1' }),
@@ -84,8 +86,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       s.session_file = String(a.sessionPath ?? a.session_path);
       s.session_name = '恢复的会话';
     }
+    if (a?.permission) s.permission = String(a.permission) as typeof s.permission;
     return s;
   },
+  /* 权限档位矩阵：**必须与 src-tauri/src/pi/permission.rs 的 PermissionMode 一致**。
+     mock 与真实后端各自独立定义，一旦漂移就会藏住真机问题（本项目已经踩过一次：
+     fs_list_dir 的 OsString 在 mock 里是字符串，真机才炸）。 */
+  permission_modes: () => ({
+    modes: [
+      { id: 'read-only', label: '仅可查看', tools: 'read,grep,find,ls', unrestricted: false, pathGuard: false },
+      {
+        id: 'workspace',
+        label: '工作区内修改',
+        tools: 'read,grep,find,ls,write,edit',
+        unrestricted: false,
+        pathGuard: true,
+      },
+      { id: 'full', label: '完全权限', tools: null, unrestricted: true, pathGuard: false },
+    ],
+  }),
+  pi_set_permission_mode: (a) => ({
+    tabId: a.tabId,
+    permission: a.mode,
+    workerState: 'ready',
+  }),
   tab_close: () => {},
   pi_get_state: () => ({
     model: state.model,
@@ -116,7 +140,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     state.model = { id, name: id, provider: String(a.provider ?? 'mock') };
     return state.model;
   },
-  pi_get_available_thinking_levels: () => ({ levels: ['off', 'medium', 'high'] }),
+  pi_get_available_thinking_levels: () => ({ levels: ['off', 'minimal', 'low', 'medium', 'high'] }),
+  pi_set_thinking_level: (a) => {
+    state.thinkingLevel = String(a.level ?? 'medium');
+    return { level: state.thinkingLevel };
+  },
   pi_cycle_thinking: () => {
     const order = ['off', 'minimal', 'medium', 'high'];
     const i = order.indexOf(state.thinkingLevel);

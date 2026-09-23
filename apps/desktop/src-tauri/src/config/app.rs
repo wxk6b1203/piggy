@@ -33,6 +33,10 @@ pub fn layout_save(v: &serde_json::Value) -> Result<(), String> {
 
 /* ---------------- 性能配置（05 §4：maxWorkers / idleTimeout） ---------------- */
 
+/// Piggy 应用级配置（`~/.piggy/config.json`）。
+///
+/// 注意：`perf_config_save` 会整体重写这个文件，所以**凡是进 config.json 的字段都必须在这里**，
+/// 否则会被静默抹掉。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PerfConfig {
     /// 并发 worker 上限（05 §4.2，默认 8）
@@ -41,6 +45,9 @@ pub struct PerfConfig {
     /// worker 空闲回收分钟数，0 = 永不（05 §4.1，默认 10）
     #[serde(default = "default_idle_timeout_min")]
     pub idle_timeout_min: u32,
+    /// 新建标签页的默认权限档位（pi/permission.rs）。缺省 = 工作区内修改。
+    #[serde(default)]
+    pub permission_mode: crate::pi::permission::PermissionMode,
 }
 
 fn default_max_workers() -> u32 {
@@ -53,7 +60,11 @@ fn default_idle_timeout_min() -> u32 {
 
 impl Default for PerfConfig {
     fn default() -> Self {
-        Self { max_workers: default_max_workers(), idle_timeout_min: default_idle_timeout_min() }
+        Self {
+            max_workers: default_max_workers(),
+            idle_timeout_min: default_idle_timeout_min(),
+            permission_mode: crate::pi::permission::PermissionMode::default(),
+        }
     }
 }
 

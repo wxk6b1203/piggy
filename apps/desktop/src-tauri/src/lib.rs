@@ -120,13 +120,50 @@ pub fn run() {
             let app4 = app.handle().clone();
             tauri::async_runtime::block_on(async move {
                 let state = app4.state::<crate::commands::AppState>();
-                if let Ok(rd) = app4.path().resource_dir() {
+                match app4.path().resource_dir() {
+                    Ok(rd) => eprintln!("[piggy] resource_dir = {}", rd.display()),
+                    Err(e) => eprintln!("[piggy] resource_dir 不可用: {e}"),
+                }
+                let resource_dir = app4.path().resource_dir().ok();
+                if let Some(rd) = resource_dir.as_ref() {
                     let builtin = if cfg!(windows) {
                         rd.join("resources/pi/pi.exe")
                     } else {
                         rd.join("resources/pi/pi")
                     };
-                    state.registry.lock().await.builtin = Some(builtin);
+                    let mut reg = state.registry.lock().await;
+                    reg.builtin = Some(builtin);
+                    // 权限守卫脚本 + 持久化的默认档位（「工作区内修改」缺脚本会拒绝启动）
+                    reg.guard_script = crate::pi::permission::guard_script_path(resource_dir.as_deref());
+                    reg.default_permission = state
+                        .perf
+                        .read()
+                        .map(|p| p.permission_mode)
+                        .unwrap_or_default();
+                    match &reg.guard_script {
+                        Some(p) => eprintln!("[piggy] 权限守卫: {}", p.display()),
+                        None => eprintln!(
+                            "[piggy] 权限守卫脚本缺失：档位「工作区内修改」将拒绝启动（仅可查看/完全权限不受影响）"
+                        ),
+                    }
+                } else {
+                    // resource_dir 拿不到时也必须初始化守卫与档位：
+                    // 之前整块都在 `if let Some(rd)` 里，于是 resource_dir 一失败，
+                    // guard_script 就静默保持 None → 默认档位拒绝启动一切会话（实测踩到）
+                    let mut reg = state.registry.lock().await;
+                    reg.guard_script = crate::pi::permission::guard_script_path(None);
+                    reg.default_permission = state
+                        .perf
+                        .read()
+                        .map(|p| p.permission_mode)
+                        .unwrap_or_default();
+                    eprintln!(
+                        "[piggy] 权限守卫（resource_dir 回退）: {}",
+                        reg.guard_script
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "未找到".into())
+                    );
                 }
             });
             // 会话目录 watcher：变化 → sessions:changed（根目录随 sessionDir，见 commands::restart_sessions_watcher）
@@ -153,8 +190,9 @@ pub fn run() {
             //
             // ⚠️ 必须留在**这一个** setup 闭包内：`tauri::Builder::setup` 的语义是
             // `self.setup = Box::new(setup)`（tauri-2.11.6 src/app.rs:1777）——**后一次调用直接覆盖前一次**，
-            // 不是追加。这里原本有第二个 `.setup(...)`，于是上面那一整块（托盘、内置 pi 接线、
-            // 会话 watcher）被静默丢弃：实测 `[piggy] sessions watcher 已启动` 从未打印过。
+            // 不是追加。这里曾经有第二个 `.setup(...)`，于是托盘、内置 pi 接线、权限守卫、
+            // 会话 watcher 全都被静默丢弃（实测：`[piggy] sessions watcher 已启动` 从未打印，
+            // 且默认权限档位因拿不到守卫脚本而拒绝启动任何会话）。
             let app3 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app3.state::<crate::commands::AppState>();
@@ -205,6 +243,8 @@ pub fn run() {
             commands::tab_close,
             commands::tab_sleep,
             commands::tab_sleep_idlest,
+            commands::pi_set_permission_mode,
+            commands::permission_modes,
             commands::perf_config_load,
             commands::perf_config_save,
             commands::pi_prompt,

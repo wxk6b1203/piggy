@@ -3,6 +3,7 @@
 use crate::config::{app, pi_files};
 use crate::events::{EventSink, TauriSink};
 use crate::pi::discovery::discover;
+use crate::pi::permission::PermissionMode;
 use crate::pi::process::SessionTarget;
 use crate::sessions::list;
 use crate::sessions::registry::{spawn_tab_watcher, SharedRegistry, TabSnapshot};
@@ -134,6 +135,7 @@ pub async fn tab_create(
     cwd: Option<String>,
     session_path: Option<String>,
     name: Option<String>,
+    permission: Option<String>,
 ) -> Result<TabSnapshot, String> {
     // 空串/纯空白 = 未提供（回退 HOME）；`~` 前缀展开（用户手输路径的常态）
     let cwd = cwd
@@ -149,6 +151,13 @@ pub async fn tab_create(
             cwd.display()
         ));
     }
+    // 权限档位：显式传入 > 持久化默认。
+    // 非法值**直接报错**而不是静默回落——权限档悄悄降级成更宽松的一档，
+    // 是本项目最不能接受的失败方式（用户会以为限制还在）。
+    let permission = match permission.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => PermissionMode::parse(s)?,
+        None => state.registry.lock().await.default_permission,
+    };
     let target = match session_path {
         Some(p) => SessionTarget::Path(p),
         // 新会话：预创建空文件并以 --session 打开 → pi 立即写 header 并置 flushed，
@@ -171,9 +180,13 @@ pub async fn tab_create(
                 "MAX_WORKERS: 活跃会话已达上限 {max}。可关闭或休眠不用的标签后重试。"
             ));
         }
-        match reg.create_tab(&sink(&app), cwd, target, name).await {
+        match reg.create_tab(&sink(&app), cwd, target, name, permission).await {
             Ok(s) => {
-                eprintln!("[piggy] tab_create ok: {}", s.tab_id);
+                eprintln!(
+                    "[piggy] tab_create ok: {} (permission={})",
+                    s.tab_id,
+                    s.permission.as_str()
+                );
                 s
             }
             Err(e) => {
@@ -188,6 +201,64 @@ pub async fn tab_create(
         snapshot.tab_id.clone(),
     );
     Ok(snapshot)
+}
+
+/// 切换某标签页的权限档位。
+///
+/// `--tools` / `-e` 都是 pi 的 CLI 参数，RPC 没有运行期改工具的接口，
+/// 所以实现是「停旧进程 → 按新档复活」，会话文件与游标不变（复用崩溃复活路径）。
+/// 同时把该档记为新标签页的默认值并持久化到 `~/.piggy/config.json`。
+#[tauri::command]
+pub async fn pi_set_permission_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tab_id: String,
+    mode: String,
+) -> Result<Value, String> {
+    let mode = PermissionMode::parse(&mode)?;
+    let out = {
+        let mut reg = state.registry.lock().await;
+        reg.set_permission(&sink(&app), &tab_id, mode).await?
+    };
+    save_default_permission(&state, mode);
+    Ok(out)
+}
+
+/// 各档位的能力矩阵（前端渲染选择器用，避免 UI 文案与后端行为漂移）。
+#[tauri::command]
+pub fn permission_modes() -> Value {
+    let modes: Vec<Value> =
+        [PermissionMode::ReadOnly, PermissionMode::Workspace, PermissionMode::Full]
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.as_str(),
+                    "label": m.label(),
+                    "tools": m.tool_allowlist(),
+                    "unrestricted": m.tool_allowlist().is_none(),
+                    "pathGuard": m.needs_path_guard(),
+                })
+            })
+            .collect();
+    serde_json::json!({ "modes": modes })
+}
+
+/// 把档位写成新标签页的默认值（内存 + `~/.piggy/config.json`）。
+fn save_default_permission(state: &State<'_, AppState>, mode: PermissionMode) {
+    let snapshot = {
+        let mut cfg = match state.perf.write() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[piggy] 权限默认值写入失败（RwLock 中毒）: {e}");
+                return;
+            }
+        };
+        cfg.permission_mode = mode;
+        cfg.clone()
+    };
+    if let Err(e) = app::perf_config_save(&snapshot) {
+        eprintln!("[piggy] 权限默认值持久化失败: {e}");
+    }
 }
 
 #[tauri::command]
@@ -232,7 +303,11 @@ pub async fn perf_config_save(
     max_workers: u32,
     idle_timeout_min: u32,
 ) -> Result<(), String> {
-    let mut cfg = app::PerfConfig { max_workers, idle_timeout_min };
+    // 读-改-写：config.json 里还有 permission_mode 等字段，
+    // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
+    let mut cfg = app::perf_config_load();
+    cfg.max_workers = max_workers;
+    cfg.idle_timeout_min = idle_timeout_min;
     cfg.clamp();
     app::perf_config_save(&cfg)
         .map_err(|e| format!("config.json 写入失败: {e}"))?;
@@ -441,6 +516,9 @@ pub async fn session_rename(
                 pi_bin,
                 session: SessionTarget::Path(path),
                 name: None,
+                // 这个 worker 只用来调一次 set_session_name 改元数据，不该带任何工具能力
+                permission: PermissionMode::ReadOnly,
+                guard_script: None,
             },
             sink(&app),
         )
@@ -830,8 +908,16 @@ async fn schedule_run(app: AppHandle, run_id: String) {
         let tab_id = {
             let mut reg = state.registry.lock().await;
             let lane_label = format!("fleet:{}/{}", &run_id[..8], lane_key);
+            // lane 继承当前默认档位：Fleet 是"替用户跑任务"，不该偷偷提权
+            let lane_permission = reg.default_permission;
             match reg
-                .create_tab(&sink(&app), cwd.clone(), SessionTarget::NoSession, Some(lane_label))
+                .create_tab(
+                    &sink(&app),
+                    cwd.clone(),
+                    SessionTarget::NoSession,
+                    Some(lane_label),
+                    lane_permission,
+                )
                 .await
             {
                 Ok(snap) => snap.tab_id,

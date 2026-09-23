@@ -3,9 +3,10 @@
 //! 运行：`pnpm test:contract`（需要 PATH 上有真实 pi；C9 会消耗极少量 token）。
 //! 每个测试把结论写入 stderr，验收后回填 docs/02 §9。
 
-use piggy_lib::events::{CollectorSink, EventSink, NullSink};
+use piggy_lib::events::{CollectorSink, NullSink};
 use piggy_lib::pi::client::{Worker, WorkerState};
 use piggy_lib::pi::discovery::discover;
+use piggy_lib::pi::permission::PermissionMode;
 use piggy_lib::pi::process::{spawn_worker, SessionTarget, SpawnArgs};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -21,7 +22,8 @@ fn cleanup_session(file: &str) {
 }
 
 fn pi_bin() -> PathBuf {
-    discover(None).expect("pi not found").path
+    // discover(override_path, builtin)：契约测试不注入覆盖路径，也不捆绑 standalone
+    discover(None, None).expect("pi not found").path
 }
 
 async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
@@ -32,6 +34,9 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
             pi_bin: pi_bin(),
             session,
             name: None,
+            // 契约测试只验证 RPC 协议，不需要守卫脚本；用完全权限档避免依赖外部资源
+            permission: PermissionMode::Full,
+            guard_script: None,
         },
         Arc::new(NullSink),
     )
@@ -109,6 +114,9 @@ async fn c3_id_echo() {
             pi_bin: pi_bin(),
             session: SessionTarget::NoSession,
             name: None,
+            // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
+            permission: PermissionMode::Full,
+            guard_script: None,
         },
         sink.clone(),
     )
@@ -229,6 +237,9 @@ async fn c7_megabyte_lines() {
             pi_bin: pi_bin(),
             session: SessionTarget::NoSession,
             name: None,
+            // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
+            permission: PermissionMode::Full,
+            guard_script: None,
         },
         sink.clone(),
     )
@@ -317,6 +328,9 @@ async fn e2e_streaming_pipeline() {
             pi_bin: pi_bin(),
             session: SessionTarget::NoSession,
             name: None,
+            // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
+            permission: PermissionMode::Full,
+            guard_script: None,
         },
         sink.clone(),
     )
@@ -369,6 +383,9 @@ async fn e2e_crash_recovery() {
             pi_bin: pi_bin(),
             session: SessionTarget::Path(file.clone()),
             name: None,
+            // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
+            permission: PermissionMode::Full,
+            guard_script: None,
         },
         sink.clone(),
     )

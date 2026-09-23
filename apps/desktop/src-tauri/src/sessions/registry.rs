@@ -4,6 +4,7 @@
 use crate::events::EventSink;
 use crate::pi::client::{Worker, WorkerState};
 use crate::pi::discovery::PiBinary;
+use crate::pi::permission::PermissionMode;
 use crate::pi::process::{spawn_worker, SessionTarget, SpawnArgs};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -22,6 +23,9 @@ pub struct Tab {
     pub worker: Option<Worker>,
     pub restarts: u32,
     pub deliberate: bool,
+    /// 本标签页的权限档位。`--tools`/`-e` 是 CLI 参数，改档必须重启 worker；
+    /// 该字段随 `revive_tab` 一起传给新进程，保证重启后档位不丢。
+    pub permission: PermissionMode,
     /// 最近一次被使用的时间（任意 IPC 命令经 worker_of 触碰；05 §4.1 空闲回收依据）
     pub last_activity: Instant,
 }
@@ -36,6 +40,10 @@ pub struct Registry {
     pub pi_bin: Option<PiBinary>,
     /// 内置 pi standalone（08 §7.1 full SKU）；setup 时由 resource_dir 填充
     pub builtin: Option<PathBuf>,
+    /// 权限守卫扩展脚本（pi/permission.rs::guard_script_path）；setup 时填充
+    pub guard_script: Option<PathBuf>,
+    /// 新建标签页的默认档位（持久化在 ~/.piggy/config.json）
+    pub default_permission: PermissionMode,
     /// tab_id → Tab（docs/03 §2.7）
     pub tabs: HashMap<String, Tab>,
     /// 会话文件（规范化路径）→ 占用它的 tab_id（docs/02 §6.3 互斥）
@@ -52,6 +60,7 @@ pub struct TabSnapshot {
     pub session_file: Option<String>,
     pub session_name: Option<String>,
     pub worker_state: WorkerState,
+    pub permission: PermissionMode,
     pub state: Value,
 }
 
@@ -60,6 +69,8 @@ impl Registry {
         Self {
             pi_bin,
             builtin: None,
+            guard_script: None,
+            default_permission: PermissionMode::default(),
             tabs: HashMap::new(),
             open_files: HashMap::new(),
         }
@@ -84,10 +95,18 @@ impl Registry {
         cwd: PathBuf,
         session: SessionTarget,
         name: Option<String>,
+        permission: PermissionMode,
     ) -> Result<TabSnapshot, String> {
         let tab_id = uuid::Uuid::new_v4().to_string();
         let worker = self
-            .spawn_with_rediscovery(&tab_id, cwd.clone(), session.clone(), name.clone(), sink.clone())
+            .spawn_with_rediscovery(
+                &tab_id,
+                cwd.clone(),
+                session.clone(),
+                name.clone(),
+                permission,
+                sink.clone(),
+            )
             .await?;
         let state = worker.get_state().await?;
         let session_file = state["sessionFile"].as_str().map(String::from);
@@ -117,6 +136,7 @@ impl Registry {
             worker: Some(worker.clone()),
             restarts: 0,
             deliberate: false,
+            permission,
             last_activity: Instant::now(),
         };
         worker.set_state(WorkerState::Ready);
@@ -133,13 +153,17 @@ impl Registry {
         cwd: PathBuf,
         session: SessionTarget,
         name: Option<String>,
+        permission: PermissionMode,
         sink: Arc<dyn EventSink>,
     ) -> Result<Worker, String> {
+        let guard = self.guard_script.clone();
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),
             pi_bin,
             session: session.clone(),
             name: name.clone(),
+            permission,
+            guard_script: guard.clone(),
         };
         let args = build(self.resolve_bin()?);
         match spawn_worker(tab_id, args.clone(), sink.clone()).await {
@@ -150,8 +174,55 @@ impl Registry {
                 let args = build(self.resolve_bin()?);
                 spawn_worker(tab_id, args, sink).await
             }
-            // SESSION_CWD_MISSING（项目目录已删）等：不重试，直接透传
+            // SESSION_CWD_MISSING（项目目录已删）/ GUARD_SCRIPT_MISSING 等：不重试，直接透传
             Err(e) => Err(e),
+        }
+    }
+
+    /// 切换标签页权限档位（`--tools`/`-e` 是 CLI 参数 → 必须重启 worker）。
+    ///
+    /// 流程：改档 → 停旧进程（deliberate，watcher 不介入）→ 立刻按新档复活。
+    /// 复用 `revive_tab`，因此会话文件、游标补齐、resync 都与崩溃复活同一条路径。
+    /// 拒绝在流式中切换：那会打断进行中的回合，且用户看不到"后半段用了另一个档位"。
+    pub async fn set_permission(
+        &mut self,
+        sink: &Arc<dyn EventSink>,
+        tab_id: &str,
+        mode: PermissionMode,
+    ) -> Result<Value, String> {
+        let (worker, session_file) = {
+            let Some(tab) = self.tabs.get_mut(tab_id) else {
+                return Err(format!("tab 不存在: {tab_id}"));
+            };
+            let state = tab.worker.as_ref().map(|w| w.state());
+            if matches!(state, Some(WorkerState::Busy)) {
+                return Err("会话正在运行，请先中断（Esc）再切换权限档位".to_string());
+            }
+            tab.permission = mode;
+            tab.restarts = 0; // 换档不是崩溃，不占崩溃重启预算
+            (tab.worker.take(), tab.session_file.clone())
+        };
+        // 主动停旧进程；deliberate 期间 watcher 不会把它当崩溃复活
+        if let Some(w) = worker {
+            let _ = w.shutdown().await;
+        }
+        // 立刻按新档复活，让界面状态与真实进程一致（而不是"待下次发送才生效"）
+        let revived = revive_tab(self, sink, tab_id).await;
+        let worker_state = self
+            .tabs
+            .get(tab_id)
+            .map(|t| t.worker_state())
+            .unwrap_or(WorkerState::Crashed);
+        match revived {
+            Ok(_) => Ok(json!({
+                "tabId": tab_id,
+                "permission": mode,
+                "workerState": worker_state,
+                "sessionFile": session_file,
+                "tools": mode.tool_allowlist(),
+                "pathGuard": mode.needs_path_guard(),
+            })),
+            Err(e) => Err(format!("已切换到「{}」，但 worker 重启失败：{e}", mode.label())),
         }
     }
 
@@ -291,14 +362,16 @@ fn snapshot_of(tab: &Tab, state: &Value) -> TabSnapshot {
         session_file: tab.session_file.clone(),
         session_name: tab.session_name.clone(),
         worker_state: tab.worker_state(),
+        permission: tab.permission,
         state: state.clone(),
     }
 }
 
 /// 崩溃复活（docs/02 §7.5、01 §2.3）：spawn → 握手 → （必要时）switch_session
 /// → get_entries(since=cursor) 游标补齐 → 发 resync 事件。
+/// 重启一律沿用 `tab.permission`——换档与崩溃恢复共用这条路径。
 async fn revive_tab(reg: &mut Registry, sink: &Arc<dyn EventSink>, tab_id: &str) -> Result<Worker, String> {
-    let (cwd, expected_file, cursor, restarts) = {
+    let (cwd, expected_file, cursor, restarts, permission) = {
         let Some(tab) = reg.tabs.get_mut(tab_id) else {
             return Err(format!("tab 不存在: {tab_id}"));
         };
@@ -308,6 +381,7 @@ async fn revive_tab(reg: &mut Registry, sink: &Arc<dyn EventSink>, tab_id: &str)
             tab.session_file.clone(),
             tab.last_cursor.clone(),
             tab.restarts,
+            tab.permission,
         )
     };
     if restarts > 3 {
@@ -319,7 +393,7 @@ async fn revive_tab(reg: &mut Registry, sink: &Arc<dyn EventSink>, tab_id: &str)
         .map(SessionTarget::Path)
         .unwrap_or(SessionTarget::New);
     let worker = reg
-        .spawn_with_rediscovery(tab_id, cwd.clone(), target, None, sink.clone())
+        .spawn_with_rediscovery(tab_id, cwd.clone(), target, None, permission, sink.clone())
         .await?;
     let mut state = worker.get_state().await?;
     // C1 兜底：若 --session 未生效，显式 switch_session

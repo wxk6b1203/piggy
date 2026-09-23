@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { cmd } from '@/lib/ipc';
+import type { PermissionModeId } from '@/features/chat/PermissionPicker';
 
 export interface TabSnapshot {
   tab_id: string;
@@ -10,6 +11,8 @@ export interface TabSnapshot {
   session_file: string | null;
   session_name: string | null;
   worker_state: 'spawning' | 'ready' | 'busy' | 'crashed' | 'stopped' | 'sleeping';
+  /** 权限档位（后端 pi/permission.rs）；缺省 = workspace */
+  permission?: PermissionModeId;
   state: {
     model?: { id?: string; name?: string; provider?: string } | null;
     thinkingLevel?: string;
@@ -27,6 +30,8 @@ export interface TabInfo {
   workerState: TabSnapshot['worker_state'];
   model: { id?: string; provider?: string } | null;
   thinkingLevel: string | null;
+  /** 权限档位（见 PermissionPicker） */
+  permission: PermissionModeId;
 }
 
 interface TabsState {
@@ -66,6 +71,7 @@ export const useTabs = create<TabsState>()(
         workerState: snap.worker_state,
         model: snap.state.model ?? null,
         thinkingLevel: snap.state.thinkingLevel ?? null,
+        permission: snap.permission ?? 'workspace',
       };
       if (!s.order.includes(snap.tab_id)) s.order.push(snap.tab_id);
       s.activeTabId = snap.tab_id;
@@ -128,6 +134,7 @@ export const useTabs = create<TabsState>()(
       session_file: t.sessionFile,
       session_name: t.sessionName,
       worker_state: t.workerState,
+      permission: t.permission,
       state: { model: t.model, thinkingLevel: t.thinkingLevel ?? undefined },
     };
   },
@@ -136,10 +143,17 @@ export const useTabs = create<TabsState>()(
 /** 创建 tab（含初始化）；失败抛出由调用方呈现。
  * 注意：Tauri v2 命令参数按 camelCase 匹配（Rust session_path ← JS sessionPath），
  * 发 snake_case 会被静默丢弃 → 打会话变成新建会话。 */
-export async function createTab(opts: { cwd?: string; sessionPath?: string; name?: string }) {
+export async function createTab(opts: {
+  cwd?: string;
+  sessionPath?: string;
+  name?: string;
+  /** 不传 = 用后端持久化的默认档位（~/.piggy/config.json:permission_mode） */
+  permission?: PermissionModeId;
+}) {
   return cmd<TabSnapshot>('tab_create', {
     cwd: opts.cwd,
     sessionPath: opts.sessionPath,
     name: opts.name,
+    permission: opts.permission,
   });
 }
