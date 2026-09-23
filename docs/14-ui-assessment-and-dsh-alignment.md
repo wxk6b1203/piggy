@@ -229,8 +229,9 @@ mock 把真机上必崩的 bug 藏得严严实实。这是 mock 策略的结构�
 
 **未能恢复**：上一轮 agent 对 `SettingsTab.tsx`（~106 行）、`appCommands.ts`（~24 行）、
 `RightBar.tsx`（Fleet/Files/Tree 视图，~420 行 → 现为 157 行）等文件的**未提交改动**。
-事故前的构建产物已格式化保存在 `.recovery/pre-damage-bundle.pretty.js`（已加入 `.gitignore`），
-取回方法见 `.recovery/README.md`。
+事故前的构建产物曾格式化保存在 `.recovery/pre-damage-bundle.pretty.js`，
+`2026-09-23` 经确认不再需要，该目录（连同 `.gitignore` 条目）已删除；
+上表列出的仍未恢复项即最终结论，**不要再去找 `.recovery/`**。
 
 **教训（已加防线）**：批量改写脚本必须**先备份再改**，且改完立即 `tsc --noEmit` 自检；
 本次能快速收敛，靠的正是 `ui:debug` 与 `tsc` 这两道已有检查。后续同类脚本一律走
