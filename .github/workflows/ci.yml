@@ -32,6 +32,30 @@ jobs:
       - name: unit + fixtures 对拍
         run: cd apps/desktop/src-tauri && cargo test --lib --tests
 
+  perf-lite:
+    # perf-lite（docs/05 §6.3 M2）：S1/S3 缩短版 + 预算断言，PR 必跑
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - name: S1/S3 缩短版 + 预算断言
+        run: node scripts/perf/run.mjs --lite
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-lite-results
+          path: perf-results/
+          retention-days: 7
+
   contract:
     # 契约测试（docs/02 §9）：安装真实 pi 对 C1–C10 实测
     runs-on: macos-14

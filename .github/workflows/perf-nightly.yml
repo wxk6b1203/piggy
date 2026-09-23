@@ -1,0 +1,31 @@
+name: perf-nightly
+# 性能回归（docs/05 §6.3 M2）：每晚全场景 S1–S6 + 预算断言；数据产物留存 30 天
+on:
+  schedule:
+    - cron: '0 20 * * *' # UTC 20:00 = 北京 04:00
+  workflow_dispatch:
+
+jobs:
+  perf:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - name: 全场景 S1–S6 + 预算断言
+        run: node scripts/perf/run.mjs
+      - name: 上传场景数据（趋势入库源）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ github.run_id }}
+          path: perf-results/
+          retention-days: 30
