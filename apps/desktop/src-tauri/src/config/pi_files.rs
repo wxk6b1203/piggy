@@ -109,28 +109,32 @@ pub fn auth_list() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "providers": out }))
 }
 
+/// 把 auth.json 里的一条凭据翻译成（类型, 掩码后的密钥）。
+///
+/// **形状以 pi 为准**（packages/ai/src/auth/types.ts:17-20）：
+/// ```jsonc
+/// { "anthropic": { "type": "api_key", "key": "sk-…" } }
+/// { "openai":    { "type": "oauth", "refresh": "…", "access": "…", "expires": 123 } }
+/// ```
+/// 注意：`pi` 的 `AuthStorage.load()` 对**不合法的条目直接抛错**（auth-storage.ts:239-247），
+/// 所以这里认识不了的形状不是"显示不出来"那么轻——它意味着那份 auth.json 整个不可用。
 fn describe_credential(entry: &serde_json::Value) -> (String, Option<String>) {
-    // auth.json 形态：{ "provider": { "type": "oauth", ... } } 或 { "provider": "sk-..." } 或含 api_key 字段
-    if let Some(s) = entry.as_str() {
-        return ("api_key".to_string(), Some(mask_secret(s)));
-    }
     if let Some(obj) = entry.as_object() {
         let kind = obj
             .get("type")
             .and_then(|t| t.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| {
-                if obj.contains_key("access_token") || obj.contains_key("refresh_token") {
-                    "oauth".into()
-                } else {
-                    "unknown".into()
-                }
-            });
-        let key = obj
-            .get("api_key")
-            .or_else(|| obj.get("access_token"))
+            .unwrap_or("unknown")
+            .to_string();
+        // api_key 的字段名是 `key`（不是 api_key）；oauth 的是 `access`
+        let secret = obj
+            .get("key")
+            .or_else(|| obj.get("access"))
             .and_then(|k| k.as_str());
-        return (kind, key.map(mask_secret));
+        return (kind, secret.map(mask_secret));
+    }
+    // 裸字符串：历史上出现过、但 pi 会视为非法条目 —— 标为 unknown 而不是假装它是 api_key
+    if entry.is_string() {
+        return ("unknown".to_string(), None);
     }
     ("unknown".to_string(), None)
 }
@@ -143,14 +147,18 @@ fn mask_secret(s: &str) -> String {
     format!("{}…{}", chars[..6].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
 }
 
-/// 设置 provider 的 API Key（写入 auth.json；结构遵循 pi providers.md：字符串或 {type,api_key}）。
+/// 设置 provider 的 API Key（写入 auth.json）。
+///
+/// **字段名必须是 `key`**：pi 读的是 `credential.key`（packages/ai/src/auth/types.ts:17-20、
+/// auth-storage.ts:233-266）。这里曾写成 `api_key` —— pi 的校验器容忍未知字段所以不报错，
+/// 结果是**静默失效**：用户以为存好了，pi 却回落到环境变量、认证一直不过。
 pub fn auth_set_key(provider: &str, api_key: &str) -> Result<(), String> {
     let path = agent_dir().join("auth.json");
     let mut v = read_json(&path)?;
     if !v.is_object() {
         v = serde_json::json!({});
     }
-    v[provider] = serde_json::json!({ "type": "api_key", "api_key": api_key });
+    v[provider] = serde_json::json!({ "type": "api_key", "key": api_key });
     write_json_atomic(&path, &v)
 }
 
@@ -188,4 +196,50 @@ pub fn settings_write(v: &serde_json::Value) -> Result<(), String> {
         return Err("settings.json 必须是对象".into());
     }
     write_json_atomic(&agent_dir().join("settings.json"), v)
+}
+
+#[cfg(test)]
+mod auth_shape_tests {
+    use super::describe_credential;
+
+    /// 契约：auth.json 的 api_key 条目字段名是 `key`（pi auth/types.ts:17-20）。
+    /// 写成 `api_key` 会被 pi 静默忽略——本项目真实踩过，故锁死。
+    #[test]
+    fn api_key_credential_exposes_the_key_field() {
+        let entry = serde_json::json!({ "type": "api_key", "key": "sk-ant-1234567890abcdef" });
+        let (kind, masked) = describe_credential(&entry);
+        assert_eq!(kind, "api_key");
+        let masked = masked.expect("应能读出密钥用于展示");
+        assert!(masked.starts_with("sk-ant"), "掩码应保留前缀: {masked}");
+        assert!(!masked.contains("567890abcdef"), "掩码不得暴露完整密钥: {masked}");
+    }
+
+    /// `api_key` 是**错误**的字段名：必须读不出来，否则我们会以为它可用。
+    #[test]
+    fn legacy_api_key_field_is_not_treated_as_a_valid_secret() {
+        let entry = serde_json::json!({ "type": "api_key", "api_key": "sk-legacy" });
+        let (kind, masked) = describe_credential(&entry);
+        assert_eq!(kind, "api_key");
+        assert!(masked.is_none(), "旧字段名不该被当成有效凭据");
+    }
+
+    /// oauth 条目的令牌字段是 `access`（不是 access_token）。
+    #[test]
+    fn oauth_credential_reads_access_token() {
+        let entry = serde_json::json!({
+            "type": "oauth", "refresh": "r-1234567890", "access": "a-0987654321", "expires": 1_700_000_000_000u64
+        });
+        let (kind, masked) = describe_credential(&entry);
+        assert_eq!(kind, "oauth");
+        assert!(masked.is_some(), "oauth 应能读出 access token");
+    }
+
+    /// 裸字符串条目：pi 的 loader 会抛 `Invalid auth.json credential`，
+    /// 因此这里必须报 unknown，而不是伪装成可用的 api_key。
+    #[test]
+    fn bare_string_entry_is_reported_as_unknown() {
+        let (kind, masked) = describe_credential(&serde_json::json!("sk-bare"));
+        assert_eq!(kind, "unknown");
+        assert!(masked.is_none());
+    }
 }
