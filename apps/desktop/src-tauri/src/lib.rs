@@ -149,10 +149,12 @@ pub fn run() {
                     Err(e) => eprintln!("[piggy] sessions watcher 不可用: {e}"),
                 }
             });
-            Ok(())
-        })
-        // 空闲回收定时器（05 §3.1/§4.1）：全应用唯一周期任务，60s 一 tick
-        .setup(|app| {
+            // 空闲回收定时器（05 §3.1/§4.1）：全应用唯一周期任务，60s 一 tick
+            //
+            // ⚠️ 必须留在**这一个** setup 闭包内：`tauri::Builder::setup` 的语义是
+            // `self.setup = Box::new(setup)`（tauri-2.11.6 src/app.rs:1777）——**后一次调用直接覆盖前一次**，
+            // 不是追加。这里原本有第二个 `.setup(...)`，于是上面那一整块（托盘、内置 pi 接线、
+            // 会话 watcher）被静默丢弃：实测 `[piggy] sessions watcher 已启动` 从未打印过。
             let app3 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app3.state::<crate::commands::AppState>();
