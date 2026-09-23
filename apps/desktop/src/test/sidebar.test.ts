@@ -1,0 +1,57 @@
+/** 侧栏视图模型测试（DSH 重构）：分组排序 / 折叠 / 展开计数 */
+import { describe, expect, it } from 'vitest';
+import { buildSidebar, PREVIEW_LIMIT, type SessionGroup } from '@/stores/sessions';
+
+const meta = (name: string, mtime: number) => ({
+  path: `/p/${name}.jsonl`,
+  file_name: `${name}.jsonl`,
+  session_id: name,
+  cwd: '/p',
+  name: null,
+  first_message: name,
+  mtime_ms: mtime,
+  size: 1,
+});
+
+const groups: SessionGroup[] = [
+  { cwd: '/old-proj', label: 'old-proj', sessions: [meta('a', 1000), meta('b', 900)] },
+  { cwd: '/new-proj', label: 'new-proj', sessions: [meta('c', 5000), meta('d', 4000), meta('e', 3000), meta('f', 2000), meta('g', 1000)] },
+];
+
+describe('buildSidebar（DSH 式侧栏）', () => {
+  it('组按最新会话降序；组内会话降序', () => {
+    const view = buildSidebar(groups, {}, {});
+    expect(view[0]!.cwd).toBe('/new-proj');
+    expect(view[0]!.sessions[0]!.first_message).toBe('c');
+    expect(view[1]!.cwd).toBe('/old-proj');
+  });
+
+  it(`默认每组显示前 ${PREVIEW_LIMIT} 个，其余进 hiddenCount`, () => {
+    const view = buildSidebar(groups, {}, {});
+    expect(view[0]!.visible).toHaveLength(PREVIEW_LIMIT);
+    expect(view[0]!.hiddenCount).toBe(2);
+    expect(view[1]!.hiddenCount).toBe(0);
+  });
+
+  it('展开组显示全部且 hiddenCount 归零', () => {
+    const view = buildSidebar(groups, {}, { '/new-proj': true });
+    expect(view[0]!.visible).toHaveLength(5);
+    expect(view[0]!.hiddenCount).toBe(0);
+  });
+
+  it('折叠组 visible 为空、hiddenCount = 全量', () => {
+    const view = buildSidebar(groups, { '/new-proj': true }, {});
+    expect(view[0]!.visible).toHaveLength(0);
+    expect(view[0]!.hiddenCount).toBe(5);
+  });
+
+  it('搜索过滤后的组继续走同一视图模型', () => {
+    const filtered = groups.map((g) => ({
+      ...g,
+      sessions: g.sessions.filter((m) => m.first_message!.includes('c')),
+    })).filter((g) => g.sessions.length > 0);
+    const view = buildSidebar(filtered, {}, {});
+    expect(view).toHaveLength(1);
+    expect(view[0]!.label).toBe('new-proj');
+  });
+});
