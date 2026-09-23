@@ -2,20 +2,33 @@
 
 > 用途：给**下一个接手的 agent / 会话**的一页速览，避免重读全过程。
 > 设计细节见 [12](12-dsh-ui-spec.md)/[13](13-vscode-asset-inventory.md)/[14](14-ui-assessment-and-dsh-alignment.md)。
+> pi 的配置来源与扩展机制见 [16](16-pi-config-and-extensions.md)；
+> 权限档位与自定义 pi 打包见 [17](17-pi-permissions-and-packaging.md)。
 
 ## 1. 当前状态
 
-DSH UI 对齐改造**已完成并验证**，全部提交（`327f3fc..6f9a4a8`，9 个提交），工作区干净。
+DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
 
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过 |
-| `vitest` | 44/44 |
-| `cargo test` | 33 + 3 + 1 + fixtures 全绿 |
-| `vite build` | 通过 |
-| `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题 |
-| `tauri build --bundles app` | 通过，打包版启动 0 条 webview 错误 |
-| **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23）——这是唯一无法由 agent 自动验证的一环 |
+| `vitest` | 64/64（含 20 条守卫扩展测试） |
+| `cargo test` | 43 + 3 + 1 + fixtures 全绿 |
+| `cargo test --features contract` | 可编译通过（此前是坏的，默认不编译所以没暴露） |
+| `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
+| `tauri build --bundles app` | 通过；打包版启动 **0 条 webview 错误**，且日志确认按 `workspace` 档拉起 pi 并带上包内守卫脚本 |
+| 真实 pi 0.87.1 加载守卫扩展 | 无错误；三个档位的 `--tools` 取值均被接受、握手成功 |
+| **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23） |
+
+### 1.1 权限档位（Composer 工具行左侧）
+
+三档：**仅可查看**（`--tools read,grep,find,ls`）/ **工作区内修改**（默认；加 `write,edit` + 守卫扩展）/
+**完全权限**（不传 `--tools`，含 shell 与插件工具）。
+
+关键事实：**pi 没有权限模型**，只有 `--tools` 白名单和扩展 `tool_call` 钩子两个原语，
+且都只能在启动时决定 —— 所以**切档 = 带同一会话文件重启 worker**（复用崩溃复活路径，会话不丢）。
+另外 pi 的 `write`/`edit` **不做工作区边界检查**，所以「工作区内修改」靠
+`resources/piggy-guard.js` 拦截，不能只靠 `--tools`。详见 docs/17。
 
 ## 2. 常用命令
 
@@ -45,6 +58,15 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
    （见 docs/14 §0.1），丢了上一轮 agent 对 `SettingsTab.tsx` 等的未提交改动。
 6. **黑屏时先看终端**：`ErrorBoundary` + `webview_log` 会把渲染错误打到 stdout
    （前缀 `[piggy][webview]`），不用猜。
+7. **`tauri::Builder::setup` 是覆盖不是追加**（`self.setup = Box::new(setup)`）。
+   一个 Builder 链里写两个 `.setup()`，前一个会被**静默丢弃**。本项目踩过：
+   托盘、内置 pi 接线、权限守卫、会话 watcher 因此从未运行过（docs/17 §3 第 9 条）。
+   要加启动逻辑就写进**同一个**闭包。
+8. **权限档位的文案不写死在前端**：档位名与工具清单从 `permission_modes` 命令读，
+   避免 UI 描述与 `pi/permission.rs` 的真实行为漂移。
+9. **改 `pi_files.rs` 里的 pi 配置文件形状，先去 docs/16 查真实 schema**：
+   `auth.json` 的字段是 `key` 不是 `api_key`，且 pi 对非法条目**直接抛错**（整个文件不可用）。
+   这个 bug 让"设置里填的 API Key"静默失效了很久。
 
 ## 4. 未完成 / 待决策
 
@@ -55,11 +77,14 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | `CodeBlock.tsx` 的 shiki 动态导入 | `import(\`shiki/langs/${id}.mjs\`)` 是模板串，Vite 分析不了（启动有警告）。有 try/catch 兜底退回纯文本，但生产下这些语言无高亮 |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
 | WebKit 渲染 | 未验证：本机缺"屏幕录制"权限，截不到 Tauri 窗口；Playwright WebKit 启动即挂死 |
-| `.recovery/` | 事故救援素材（事故前构建产物的格式化副本），确认不需要可整个删掉 |
+| **WebKit 渲染** | 仍未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是 WKWebView 下的启动路径，不等于逐像素复核 |
+| 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`。fork 若改了 `piConfig.configDir`，Piggy 的面板会指向另一个目录。要支持需加设置项（docs/17 §2.3） |
+| `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |
 
 ## 5. 验收方式
 
-**已完成。** `pnpm tauri dev` 起窗、人工确认渲染正常（2026-09-23）。
+**已完成。** `pnpm tauri dev` 起窗、人工确认渲染正常（2026-09-23）；
+打包版 `Piggy.app` 启动 0 条 webview 错误，日志确认以 `workspace` 档拉起 pi 并加载包内守卫脚本。
 
 agent 侧没有窗口截图能力（本机缺"屏幕录制"权限，见第 4 节），因此这一步必须人工做。
 后续若再遇到界面异常，终端会直接打出 `[piggy][webview][ERROR] ...`（`ErrorBoundary`
