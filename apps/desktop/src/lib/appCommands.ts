@@ -14,6 +14,21 @@ import {
 import { createTab } from '@/stores/tabs';
 import { windowEvents } from '@/lib/windowEvents';
 
+/**
+ * 新建会话标签。
+ *
+ * 抽成函数是因为它有**两条入口**：⌘N / 命令面板（`session.new`）与折叠态图标轨
+ * （`SidebarRail`）。两条入口必须走同一条路——否则改了一处、另一处悄悄不一样。
+ */
+export async function newSessionTab(): Promise<void> {
+  try {
+    const snap = await createTab({ name: '新会话' });
+    await openSessionTab(snap, '新会话');
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 export function useAppCommands() {
   useEffect(() => {
     const ui = () => useUi.getState();
@@ -39,14 +54,7 @@ export function useAppCommands() {
       title: '新建会话',
       category: '会话',
       keys: 'cmd+n',
-      run: async () => {
-        try {
-          const snap = await createTab({ name: '新会话' });
-          await openSessionTab(snap, '新会话');
-        } catch (e) {
-          console.error(e);
-        }
-      },
+      run: () => newSessionTab(),
     });
     registerCommand({
       id: 'tab.close',

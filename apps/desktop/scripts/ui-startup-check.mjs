@@ -395,8 +395,57 @@ const preview = await page.evaluate(async () => {
   return { markdown, go, unknown };
 });
 page.off('response', onLangDep);
+
+/* ---------- 6. 侧栏折叠：折叠态必须留一条能把它叫回来的图标轨 ---------- */
+// 起因（用户截图）：窗口里没有打开的标签、侧栏也不见了 —— 一屏黑，**没有任何可点的地方**
+// 能把它展开回来（只剩 ⌘B 与命令面板）。根因是 `{sidebarOpen && <Panel…>}`：
+// 折叠把侧栏连同它的入口一起从 DOM 里删了。DSH 的折叠态是留一条 56px 图标轨
+// （SIDEBAR_COLLAPSED = 56，docs/12 §1.5），这里量真实几何 + 走完整回路。
+//
+// 为什么必须在这里立：jsdom 没有排版，react-resizable-panels 用 ResizeObserver 量 group
+// 尺寸、量到 0 就整段 return，于是折叠态重新插入 Panel 会必抛
+// `Panel constraints not found for index 3` —— 环境问题，不是产品问题（真浏览器干净）。
+const sidebarRoundTrips = [];
+{
+  const snapshot = () =>
+    page.evaluate(() => {
+      const sb = document.querySelector('.pg-sidebar');
+      const rail = document.querySelector('.pg-rail-left');
+      const btn = rail?.querySelector('button[aria-label="展开侧栏"]');
+      const r = rail?.getBoundingClientRect();
+      const b = btn?.getBoundingClientRect();
+      return {
+        sidebarW: sb ? Math.round(sb.getBoundingClientRect().width) : 0,
+        railW: r ? Math.round(r.width) : 0,
+        expandBtn: b ? `${Math.round(b.width)}x${Math.round(b.height)}` : null,
+        railButtons: [...(rail?.querySelectorAll('button') ?? [])].map((x) => x.getAttribute('aria-label')),
+        tabs: document.querySelectorAll('.dv-tab').length,
+      };
+    });
+
+  // 关掉全部标签：复现截图里"编辑区是空的"那半边
+  await page.evaluate(async () => {
+    const editor = await import('/src/features/workspace/EditorArea.tsx');
+    editor.closeAllTabs();
+  });
+  await page.waitForTimeout(300);
+
+  for (let i = 1; i <= 2; i++) {
+    await page.click('.pg-brand-row button[title^="收起侧栏"]');
+    await page.waitForTimeout(250);
+    const collapsed = await snapshot();
+    if (!collapsed.expandBtn) {
+      sidebarRoundTrips.push({ round: i, collapsed, error: '折叠后找不到可点的展开入口' });
+      break;
+    }
+    await page.click('.pg-rail-left button[aria-label="展开侧栏"]');
+    await page.waitForTimeout(250);
+    sidebarRoundTrips.push({ round: i, collapsed, expanded: await snapshot() });
+  }
+}
+
 await browser.close();
-console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet, preview }, null, 1));
+console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips }, null, 1));
 
 if (probe.storeIds.length === 0) bad.push('恢复后 useTabs 为空（布局恢复把标签全关了）★');
 if (probe.driftedPanelIds === 0) bad.push('面板 id 与 params.tabId 没有分叉，这条核对失去意义');
@@ -499,6 +548,28 @@ if (!deps.includes('markdown') || !deps.includes('go')) {
 }
 if (deps.length > 2) {
   bad.push(`预览：开了 2 个文件却下了 ${deps.length} 门语言定义 ${JSON.stringify(deps)}（有人把全语言注册接回来了？）★`);
+}
+/* 侧栏折叠：折叠后必须留下一条 56px 图标轨 + 可点的展开入口，且能真的来回 */
+if (!sidebarRoundTrips.length) bad.push('侧栏折叠：一轮都没跑成 ★');
+for (const r of sidebarRoundTrips) {
+  const at = `侧栏折叠第 ${r.round} 轮`;
+  if (r.error) {
+    bad.push(`${at}：${r.error} —— 折叠 = 进死胡同（用户截图那个状态）★`);
+    continue;
+  }
+  if (r.collapsed.sidebarW !== 0) bad.push(`${at}：折叠后侧栏还有 ${r.collapsed.sidebarW}px ★`);
+  if (r.collapsed.railW !== 56) {
+    bad.push(`${at}：折叠态图标轨宽 ${r.collapsed.railW}px，应为 56px（DSH SIDEBAR_COLLAPSED）★`);
+  }
+  if (!r.collapsed.expandBtn) bad.push(`${at}：图标轨上没有展开按钮 ★`);
+  if (JSON.stringify(r.collapsed.railButtons) !== JSON.stringify(['展开侧栏', '新建会话', '设置'])) {
+    bad.push(`${at}：图标轨按钮是 ${JSON.stringify(r.collapsed.railButtons)}（都要有可访问名）★`);
+  }
+  if (!(r.expanded?.sidebarW > 0)) bad.push(`${at}：点展开后侧栏没回来（宽 ${r.expanded?.sidebarW}）★`);
+  if (r.expanded?.railW !== 0) bad.push(`${at}：展开后图标轨还在（宽 ${r.expanded?.railW}）★`);
+  if (r.expanded?.tabs !== r.collapsed.tabs) {
+    bad.push(`${at}：折来折去把标签数改了（${r.collapsed.tabs} → ${r.expanded?.tabs}）★`);
+  }
 }
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 

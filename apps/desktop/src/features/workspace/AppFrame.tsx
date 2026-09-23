@@ -16,6 +16,7 @@ import { useTabs, createTab } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { EditorArea, closeActivePanel, openSessionTab } from './EditorArea';
 import { SessionsSidebar } from './SessionsSidebar';
+import { SidebarRail } from './SidebarRail';
 import { RightBar } from './RightBar';
 import { DialogRouter } from '@/features/dialogs/DialogRouter';
 
@@ -96,6 +97,9 @@ export function AppFrame() {
         </div>
       )}
       <div className="pg-frame">
+        {/* 折叠后必须留下可点的东西：一条 56px 图标轨（DSH SIDEBAR_COLLAPSED，docs/12 §1.5）。
+            此前这里是 `{sidebarOpen && <Panel>}`，折叠 = 什么都不剩 = 无处展开。 */}
+        {!sidebarOpen && <SidebarRail />}
         <Group orientation="horizontal" className="pg-group-h">
           {sidebarOpen && (
             <>

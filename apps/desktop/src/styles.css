@@ -340,6 +340,30 @@ body {
 .pg-sash:hover, .pg-sash[data-resize-handle-state='drag'] { background: var(--pg-accent); }
 .pg-pane-sidebar { display: flex; flex-direction: column; min-width: 0; }
 
+/* 折叠态图标轨（DSH SIDEBAR_COLLAPSED = 56 = 24px 图标列 + 左右各 16px，docs/12 §1.5/§5.2）。
+   它是"侧栏被折叠后唯一还能点的地方"，所以**不在 Panel 里**（不可拖拽、不参与布局持久化），
+   就是一个固定宽度的列；按钮几何抄 DSH 折叠态：36×36、r12、图标/logo 居中。 */
+.pg-rail-left {
+  flex: none; width: 56px;
+  display: flex; flex-direction: column; align-items: center; gap: var(--pg-sp-2);
+  padding: 18px 0 var(--pg-sp-4);
+  background: var(--pg-bg-sidebar);
+  border-right: 0.5px solid var(--pg-border-l3);
+}
+.pg-rail-toggle, .pg-rail-btn {
+  flex: none; width: 36px; height: 36px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: var(--pg-r-lg);
+  color: var(--pg-fg-dim); font: inherit; cursor: pointer;
+}
+.pg-rail-toggle:hover, .pg-rail-btn:hover { background: var(--pg-hover-solid); color: var(--pg-fg); }
+.pg-rail-logo { font-size: 18px; line-height: 1; }
+.pg-rail-toggle-icon { display: none; }
+/* hover 时 logo 让位给"展开侧栏"图标 —— 否则用户不知道这个猪头是可以点的 */
+.pg-rail-toggle:hover .pg-rail-logo { display: none; }
+.pg-rail-toggle:hover .pg-rail-toggle-icon { display: inline-flex; }
+.pg-rail-spacer { flex: 1; }
+
 /* 侧栏（DSH SidebarRoot / Rows，docs/12 §5） */
 .pg-sidebar { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--pg-bg-sidebar); border-right: 0.5px solid var(--pg-border-l3); }
 
