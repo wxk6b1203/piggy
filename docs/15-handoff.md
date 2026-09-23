@@ -12,12 +12,13 @@ DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过 |
-| `vitest` | 64/64（含 20 条守卫扩展测试） |
-| `cargo test` | 43 + 3 + 1 + fixtures 全绿 |
+| `vitest` | 89/89（含 20 条守卫扩展测试、16 条失败回合可见性测试） |
+| `cargo test` | 68 + 3 + 1 + fixtures 全绿 |
 | `cargo test --features contract` | 可编译通过（此前是坏的，默认不编译所以没暴露） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `tauri build --bundles app` | 通过；打包版启动 **0 条 webview 错误**，且日志确认按 `workspace` 档拉起 pi 并带上包内守卫脚本 |
 | 真实 pi 0.87.1 加载守卫扩展 | 无错误；三个档位的 `--tools` 取值均被接受、握手成功 |
+| 真实 pi 0.87.1 失败回合抓包 | 确认 `stopReason:"error"`/`"aborted"` + 空 `content`，转写与轨迹均已可见（规矩 12） |
 | **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23） |
 
 ### 1.1 权限档位（Composer 工具行左侧）
@@ -77,6 +78,14 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     写成 `tabComponents={{ default: X }}` 会注册组件但**永远不生效**
     （见 dist/package/main.esm.mjs:559-566），dockview 会退回它自己的默认 tab。
     带"流式 ● / 未读 •"徽标的 `PgTab` 曾因此从未渲染过。
+12. **pi 的「失败回合」是一条普通的 assistant 消息，不是错误事件。**（2026-09-23 用真实 pi 抓包确认）
+    模型报错 → `{content: [], stopReason: 'error',   errorMessage: '401: {"message":"Authentication Fails, …"}'}`；
+    用户中断 → `{content: [], stopReason: 'aborted', errorMessage: 'Request aborted'}`。
+    `content` 是空数组，所以**只渲染 content 的视图会画出一片空白**，
+    用户看到的现象是「消息发出去就再也回不来了」——而错误文本一直在消息里没人读。
+    判读统一走 `src/lib/turnFailure.ts`（转写 `MessageView` 与轨迹 store 共用一份规则，
+    别再各写一套）。排查这类"没反应"时：**先看会话 jsonl 里 assistant 消息的 `stopReason`/`errorMessage`**
+    —— 那比看 UI 快得多（`sessionDir` 见 docs/16）。
 
 ## 4. 未完成 / 待决策
 
@@ -86,8 +95,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | `CodeBlock.tsx` 的 shiki 动态导入 | `import(\`shiki/langs/${id}.mjs\`)` 是模板串，Vite 分析不了（启动有警告）。有 try/catch 兜底退回纯文本，但生产下这些语言无高亮 |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
-| WebKit 渲染 | 未验证：本机缺"屏幕录制"权限，截不到 Tauri 窗口；Playwright WebKit 启动即挂死 |
-| **WebKit 渲染** | 仍未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是 WKWebView 下的启动路径，不等于逐像素复核 |
+| **WebKit 渲染** | 未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是启动路径，不等于逐像素复核 |
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`。fork 若改了 `piConfig.configDir`，Piggy 的面板会指向另一个目录。要支持需加设置项（docs/17 §2.3） |
 | `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |

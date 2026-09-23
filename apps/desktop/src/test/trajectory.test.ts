@@ -72,3 +72,60 @@ describe('trajectoryStore：system 上下文展示', () => {
     expect(sys.ts).toBe(Date.parse('2026-09-22T01:00:00.000Z'));
   });
 });
+
+/** 真实抓包原样（2026-09-23，provider=cc-switch-deep-seek / model=deepseek-flash）。 */
+const REAL_401 =
+  '401: {"message":"Authentication Fails, Your api key: ****4d37 is invalid",' +
+  '"type":"authentication_error","param":null,"code":"invalid_request_error"}';
+
+describe('trajectoryStore：失败回合 + 实时/快照构造一致', () => {
+  beforeEach(resetStore);
+
+  it('message_end(error)：标红 + 摘要带错误原文 + 详情含可能原因', () => {
+    useTrajectory.getState().appendCommit(TAB, {
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: REAL_401 },
+    } as never);
+    const r = useTrajectory.getState().rows[TAB]![0]!;
+    expect(r.kind).toBe('assistant');
+    expect(r.failed).toBe(true);
+    expect(r.text).toContain('本轮失败');
+    expect(r.text).toContain('Authentication Fails');
+    expect(r.expandable).toBe(true);
+    expect(r.detail).toContain(REAL_401);
+    expect(r.detail).toContain('可能原因');
+  });
+
+  it('message_end(aborted)：出现「已中止」但不标红（用户自己按的）', () => {
+    useTrajectory.getState().appendCommit(TAB, {
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request aborted' },
+    } as never);
+    const r = useTrajectory.getState().rows[TAB]![0]!;
+    expect(r.text).toContain('已中止');
+    expect(r.failed).toBeFalsy();
+  });
+
+  /**
+   * 这条是**发散守卫**：实时追加曾内联成 `{text: textOf(content)}`，不设 detail/expandable，
+   * 而 load() 走 assistantRow()。结果是同一个会话「看着看着」和「重新打开」长得不一样。
+   */
+  it('实时追加的长回复与 load 快照构造一致（都能展开、摘要相同）', async () => {
+    const long = `长回复开始 ${'内容'.repeat(200)} 结束`;
+    const msg = { role: 'assistant', content: [{ type: 'text', text: long }], timestamp: 1790000000000 };
+    useTrajectory.getState().appendCommit(TAB, { type: 'message_end', message: msg } as never);
+    const live = useTrajectory.getState().rows[TAB]![0]!;
+
+    ipcMocks.cmd.mockResolvedValue({
+      entries: [{ type: 'message', id: 'e0', timestamp: '2026-09-22T01:00:00.000Z', message: msg }],
+    });
+    await useTrajectory.getState().load(TAB);
+    const snap = useTrajectory.getState().rows[TAB]![0]!;
+
+    expect(live.expandable).toBe(true);
+    expect(live.detail).toBe(long);
+    expect(snap.text).toBe(live.text);
+    expect(snap.detail).toBe(live.detail);
+    expect(snap.expandable).toBe(live.expandable);
+  });
+});

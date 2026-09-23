@@ -283,7 +283,7 @@ function Row({
        于是 320px 的正文无法撑开行、直接画到后面几行上（2026-09-23 实测溢出 321px）。
        放到流里之后，行高必然跟随内容，物理上不可能再重叠。 */
     <div className="pg-traj-entry">
-      <div className="pg-traj-row" data-kind={kind} data-selected={selected || undefined} data-expanded={open || undefined}>
+      <div className="pg-traj-row" data-kind={kind} data-selected={selected || undefined} data-expanded={open || undefined} data-failed={row.failed || undefined}>
         <span className="pg-traj-kinds">
           <KindTag kind={kind} />
         </span>

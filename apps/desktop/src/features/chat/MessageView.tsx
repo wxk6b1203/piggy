@@ -12,6 +12,7 @@ import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock, splitFences } from './CodeBlock';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
+import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 
 export function MessageView({ view }: { view: MessageView }) {
   const m = view.message as AgentMessage & { content?: unknown };
@@ -29,6 +30,7 @@ export function MessageView({ view }: { view: MessageView }) {
     const blocks = (Array.isArray(m.content) ? m.content : []) as ContentBlock[];
     const full = textOf(m.content);
     const changed = changedFilesOf(blocks);
+    const failure = turnFailure(m);
     return (
       <div className="pg-message pg-assistant">
         <div className="pg-assistant-body">
@@ -36,6 +38,9 @@ export function MessageView({ view }: { view: MessageView }) {
             <Block key={i} block={b} />
           ))}
         </div>
+        {/* 失败/中断回合：pi 用普通 assistant 消息表达（content 为空 + stopReason/errorMessage）。
+            没有这块卡片时，整条消息渲染出来是**一片空白**——用户看到的是"发出去没反应"。 */}
+        {failure ? <TurnFailureCard failure={failure} /> : null}
         {/* DSH 回合尾：改动文件卡片（docs/12 §3.5） */}
         <ChangedFiles files={changed} />
         {full.trim() ? <MessageActions text={full} message={m} /> : null}
@@ -64,6 +69,31 @@ export function MessageView({ view }: { view: MessageView }) {
     );
   }
   return null;
+}
+
+/**
+ * 失败/中断回卡片。
+ *
+ * 「中断」用中性色、不加 `role="alert"`——那是用户自己按的，不该报警；
+ * 「失败」用 `--pg-error` 且 `role="alert"`，读屏会播报。
+ * 原始错误文本逐字展示（provider 原话往往直接指出问题），提示只作为"可能原因"另起一行。
+ */
+function TurnFailureCard({ failure }: { failure: TurnFailure }) {
+  const aborted = failure.kind === 'aborted';
+  return (
+    <div
+      className={`pg-turn-failure${aborted ? ' pg-turn-aborted' : ''}`}
+      data-kind={failure.kind}
+      {...(aborted ? {} : { role: 'alert' })}
+    >
+      <div className="pg-turn-failure-head">
+        <Icon name={aborted ? 'circle-slash' : 'error'} size={13} />
+        <span className="pg-turn-failure-title">{failure.title}</span>
+      </div>
+      {failure.detail ? <pre className="pg-turn-failure-detail">{failure.detail}</pre> : null}
+      {failure.hint ? <p className="pg-turn-failure-hint">{failure.hint}</p> : null}
+    </div>
+  );
 }
 
 /** DSH 助手操作行（docs/12 §3.7）：28×28 按钮，默认隐藏、hover 显现（opacity 80ms）。 */

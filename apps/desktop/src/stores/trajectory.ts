@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { cmd } from '@/lib/ipc';
+import { turnFailure } from '@/lib/turnFailure';
 import type { AgentMessage } from '@piggy/pi-protocol';
 
 export type TrajKind =
@@ -25,6 +26,8 @@ export interface TrajRow {
   running?: boolean;
   /** 有 detail 可展开（system 的 sections 正文、超长的助手回复） */
   expandable?: boolean;
+  /** 这一轮以失败告终（pi `stopReason:"error"`）——表格里标红，见 lib/turnFailure.ts */
+  failed?: boolean;
 }
 
 interface TrajectoryState {
@@ -91,8 +94,28 @@ const ASSISTANT_INLINE_MAX = 160;
  * 于是 `TrajectoryView` 里那条 `isAssistant && row.expandable` 的折叠分支永远不成立、
  * 工具栏的「调用」开关也没有任何东西可折。现在长回复给出 `detail`（完整正文），
  * 表格里保留一行摘要。
+ *
+ * 失败/中断回合（`content` 为空、只有 `stopReason` + `errorMessage`）也必须在这里落地：
+ * 否则轨迹里同样只会出现一行空白——转写与轨迹是两套渲染，两处都得管。
  */
 function assistantRow(m: AgentMessage | undefined, ts: number | undefined): TrajRow {
+  const failure = turnFailure(m);
+  if (failure) {
+    // 摘要行给结论 + 原始错误的第一行；展开看全文与可能原因。
+    const detail = [failure.hint ? `可能原因：${failure.hint}` : '', failure.detail]
+      .filter(Boolean)
+      .join('\n\n');
+    const head = failure.detail || failure.hint || '';
+    return {
+      id: rid(),
+      kind: 'assistant',
+      text: head ? `${failure.title}：${head}` : failure.title,
+      detail: detail || undefined,
+      ts,
+      expandable: !!detail,
+      failed: failure.kind === 'error',
+    };
+  }
   const full = textOf(m?.content);
   const long = full.length > ASSISTANT_INLINE_MAX;
   return {
@@ -169,7 +192,9 @@ export const useTrajectory = create<TrajectoryState>()(
         const role = (m as { role?: string }).role;
         if (role === 'user') row = { id: rid(), kind: 'user', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
         else if (role === 'assistant')
-          row = { id: rid(), kind: 'assistant', text: textOf(m?.content), ts: (m as { timestamp?: number }).timestamp };
+          // 必须与 `load()` 走**同一个**构造器：这里曾内联成 `{text: textOf(content)}`，
+          // 于是实时追加的行永远不可展开，重新打开会话后又变了样。
+          row = assistantRow(m, (m as { timestamp?: number }).timestamp);
         else if (role === 'system') row = systemRow(e);
         else if (role === 'toolResult') {
           const rm = m as { toolName?: string; content?: unknown };

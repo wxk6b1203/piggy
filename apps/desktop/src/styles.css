@@ -70,6 +70,31 @@ body {
 .pg-assistant .pg-text { margin: var(--pg-sp-6) 0; white-space: pre-wrap; word-break: break-word; }
 .pg-assistant-body > :first-child { margin-top: 0; }
 .pg-assistant-body > :last-child { margin-bottom: 0; }
+/* 失败/中断回合卡片。
+   没有它时，pi 的失败回合（content 为空 + stopReason/errorMessage）渲染出来是一片空白。 */
+.pg-turn-failure {
+  margin-top: var(--pg-sp-6);
+  padding: var(--pg-sp-4) var(--pg-sp-5);
+  border-left: 2px solid var(--pg-error);
+  border-radius: 0 var(--pg-r-md) var(--pg-r-md) 0;
+  background: color-mix(in srgb, var(--pg-error) 9%, transparent);
+}
+.pg-turn-failure-head { display: flex; align-items: center; gap: var(--pg-sp-2); color: var(--pg-error); }
+.pg-turn-failure-title { font-size: var(--pg-fs-12); font-weight: 600; }
+.pg-turn-failure-detail {
+  margin: var(--pg-sp-3) 0 0 0;
+  font-family: var(--pg-mono); font-size: var(--pg-fs-11); line-height: 17px;
+  color: var(--pg-fg-secondary);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto;
+}
+.pg-turn-failure-hint { margin: var(--pg-sp-3) 0 0 0; font-size: var(--pg-fs-11); line-height: 17px; color: var(--pg-fg-dim); }
+/* 用户主动中断：中性色，不报警 */
+.pg-turn-failure.pg-turn-aborted {
+  border-left-color: var(--pg-border-l2);
+  background: var(--pg-bg-sidebar);
+}
+.pg-turn-failure.pg-turn-aborted .pg-turn-failure-head { color: var(--pg-fg-dim); }
 /* 操作行：默认隐藏、hover 显现（DSH opacity 80ms） */
 .pg-actions {
   display: flex; align-items: center; gap: var(--pg-sp-2);
@@ -796,6 +821,9 @@ body {
   font-size: var(--pg-fs-12);
 }
 .pg-traj-row:hover { background: var(--pg-hover); }
+/* 失败回合（stopReason:"error"）：整行标红，否则它和正常回合在表里长得一模一样 */
+.pg-traj-row[data-failed] { background: color-mix(in srgb, var(--pg-error) 8%, transparent); }
+.pg-traj-row[data-failed] .pg-traj-content { color: var(--pg-error); }
 .pg-traj-kinds { display: flex; flex: none; justify-content: flex-end; width: 60px; }
 .pg-traj-content { flex: 1; min-width: 0; display: flex; align-items: center; }
 .pg-traj-mono .pg-traj-ellipsis { font-family: var(--pg-mono); }
