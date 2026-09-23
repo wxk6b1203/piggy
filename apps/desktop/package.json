@@ -16,7 +16,8 @@
     "icons:gen": "node scripts/gen-codicons.mjs",
     "tokens:extract": "node scripts/extract-dsh-tokens.mjs",
     "icons:seti": "node scripts/sync-seti-icons.mjs",
-    "themes:sync": "node scripts/sync-vscode-themes.mjs"
+    "themes:sync": "node scripts/sync-vscode-themes.mjs",
+    "ui:startup": "node scripts/ui-startup-check.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",

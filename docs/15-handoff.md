@@ -12,13 +12,14 @@ DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过 |
-| `vitest` | 89/89（含 20 条守卫扩展测试、16 条失败回合可见性测试） |
+| `vitest` | 104/104（含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序） |
 | `cargo test` | 68 + 3 + 1 + fixtures 全绿 |
 | `cargo test --features contract` | 可编译通过（此前是坏的，默认不编译所以没暴露） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `tauri build --bundles app` | 通过；打包版启动 **0 条 webview 错误**，且日志确认按 `workspace` 档拉起 pi 并带上包内守卫脚本 |
 | 真实 pi 0.87.1 加载守卫扩展 | 无错误；三个档位的 `--tools` 取值均被接受、握手成功 |
 | 真实 pi 0.87.1 失败回合抓包 | 确认 `stopReason:"error"`/`"aborted"` + 空 `content`，转写与轨迹均已可见（规矩 12） |
+| `ui:startup` 启动核对 | 恢复布局（含面板 id 与 tabId 分叉）后：store 与面板一致、每个标签在 mock registry 里都存在、关闭按钮在内（激活常显 / 非激活 hover 显现）、徽标渲染、重载后仍成立 |
 | **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23） |
 
 ### 1.1 权限档位（Composer 工具行左侧）
@@ -36,6 +37,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
 ```bash
 pnpm dev                                        # Vite :5195
 pnpm --filter @piggy/desktop ui:debug           # 截图 + 错误 + 布局体检（--strict 进 CI）
+pnpm --filter @piggy/desktop ui:startup         # 启动核对：恢复布局后 store/面板/registry 是否一致
 pnpm --filter @piggy/desktop icons:gen          # 重生成 codicon 名联合类型
 pnpm --filter @piggy/desktop icons:seti         # 同步 Seti 文件图标（需 VSCODE_REF）
 pnpm --filter @piggy/desktop themes:sync        # 同步 VS Code tokenColors
@@ -55,6 +57,11 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
    `tests/ipc_contract.rs` 守这条。
 4. **`mockBackend` 与真后端形状不一致会藏真机 bug**——加新 IPC 命令时，
    两边都要改，并优先给 Rust 侧补契约断言。
+   2026-09-23 又踩一次：mock 对任何 `tabId` 都照常回答，于是"界面显示着这个标签、
+   registry 里却没有它"这类 bug 在 mock 里完全测不出来（真机是所有命令一起报
+   「tab 不存在: <uuid>」）。现在 mock 有 `liveTabs` 注册表 + `TAB_SCOPED` 命令集，
+   并用 sessionStorage 跨页面重载保存（真机的 registry 活在 Rust 进程里，同样跨重载）。
+   新增 tab 级命令时**必须**加进 `TAB_SCOPED`，否则 mock 又比真机宽松。
 5. **批量改写脚本必须先备份再改，改完立刻 `tsc`**。2026-09-23 有一起自伤事故
    （见 docs/14 §0.1），丢了上一轮 agent 对 `SettingsTab.tsx` 等的未提交改动。
 6. **黑屏时先看终端**：`ErrorBoundary` + `webview_log` 会把渲染错误打到 stdout
@@ -86,6 +93,24 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     判读统一走 `src/lib/turnFailure.ts`（转写 `MessageView` 与轨迹 store 共用一份规则，
     别再各写一套）。排查这类"没反应"时：**先看会话 jsonl 里 assistant 消息的 `stopReason`/`errorMessage`**
     —— 那比看 UI 快得多（`sessionDir` 见 docs/16）。
+13. **StrictMode / HMR 会把 dockview 卸载重挂，而布局恢复是异步的**——两者叠加会静默搞坏
+    "哪些 tab 还算活着"（界面照常，坏的是 store 与 registry）。三条已固化的规矩：
+    - `restore()` 必须在**开始时捕获目标实例**，落地前用 `shouldApplyLayout(target, api())` 校验。
+      否则两轮恢复会把同一份布局套到同一个实例上；而 `fromJSON()` 是**先清空再重建**，
+      第二次套用触发的 remove 被当成"用户关标签"→ 刚恢复的 tab 全被关掉。
+      实测症状：面板还显示着、`useTabs` 空了、Rust registry 也空了 →
+      该标签下所有命令一起报「tab 不存在: <uuid>」（模型列表空白、转写空白、发送无响应）。
+    - **「面板被移除」≠「用户关了标签」**，判据在 `lib/layoutLifecycle.ts`
+      （套用布局期间 / 已失效实例 / 活实例里还有面板在用同一 tabId，三者任一成立就不关）。
+    - **`boot_reset` 与 `createTab` 之间必须有确定先后**：Rust 侧是先取 id 快照再逐个
+      `close_tab`，建 tab 抢在快照之前完成就会被立刻关掉。统一走 `lib/boot.ts` 的
+      `bootGate()`（`createTab` 内部已 await）。
+14. **恢复布局后，dockview 面板 id 与 `params.tabId` 会分叉**：面板 id 是上一进程留下的
+    `session:<旧 uuid>`，`params.tabId` 是这次新建 worker 的 uuid（`restore()` 只改写后者，
+    因为面板 id 还挂在 grid 树里）。所以**任何"按 tabId 找面板"的地方都必须按
+    `params.tabId` 找**，不能拼 `session:${tabId}`——拼字符串永远找不到，表现为点侧栏里
+    已经打开的会话时又开一个重复标签，Rust 还会以「会话文件已被标签页 X 打开」拒绝。
+    见 `EditorArea.findSessionPanel`。
 
 ## 4. 未完成 / 待决策
 

@@ -4,6 +4,7 @@
  * 布局持久化：layout_load/save（~/.piggy/layout.json）。
  */
 import {
+  DockviewDefaultTab,
   DockviewReact,
   type BuiltInContextMenuItem,
   type ReactContextMenuItemConfig,
@@ -19,6 +20,7 @@ import { useStore } from 'zustand';
 import type { DockviewTheme } from 'dockview';
 import { debounce } from '@/lib/debounce';
 import { cmd } from '@/lib/ipc';
+import { shouldApplyLayout, shouldCloseTabOnPanelRemoved } from '@/lib/layoutLifecycle';
 import { disposeTabListeners } from '@/lib/tabEvents';
 import { disposeLive } from '@/lib/live';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
@@ -78,19 +80,24 @@ const components = {
  * 也就是说 `tabComponents={{ default: PgTab }}` **不会生效**——它注册了组件，
  * 但 `defaultTabComponent` 选项仍是 undefined，dockview 会退回它自己的默认 tab。
  * 这个组件曾因此从未渲染过（徽标一直是死的），所以才在 DOM 里只看到 `.dv-default-tab`。
+ *
+ * ⚠️ 但传了这个 prop 之后，**dockview 内建的 tab 就整个不再渲染**——包括关闭按钮。
+ * 自己手画一个"看起来像"的 × 是错的（会丢掉中键关闭、`aria-label`、拖动时的
+ * pointer 处理、`hideClose` 等一整套行为）。所以这里**直接复用 dockview 自己的
+ * `DockviewDefaultTab`**，只把徽标作为 `data-*` 透传给它——`rest` 会被展开到
+ * 那个 div 上，而徽标用 CSS 伪元素画在标题后面。
+ * 结果：关闭按钮等内建行为一字不差，徽标能力也保住了。
  */
 function PgTab(props: IDockviewPanelHeaderProps) {
   const tabId = (props.params as SessionParams | undefined)?.tabId ?? null;
   const unread = useStore(useTabs, (s) => (tabId ? !!s.unread[tabId] : false));
   const busy = useStore(useTabs, (s) => (tabId ? s.tabs[tabId]?.workerState === 'busy' : false));
-  const dot = busy ? ' ●' : unread ? ' •' : '';
   return (
-    <div className="pg-dv-tab">
-      <span className="pg-dv-tab-title">
-        {props.api.title}
-        {dot}
-      </span>
-    </div>
+    <DockviewDefaultTab
+      {...props}
+      data-busy={busy ? '' : undefined}
+      data-unread={!busy && unread ? '' : undefined}
+    />
   );
 }
 
@@ -117,7 +124,14 @@ const persist = debounce(() => {
 
 function onReady(e: DockviewReadyEvent) {
   setDockApi(e.api);
+  // 本次 onReady 绑定的事件只对**这个实例**有效。
+  // StrictMode / HMR 会卸载再挂载 DockviewReact：旧实例拆除时照样触发 remove/active 回调，
+  // 而那些回调对新实例来说全是噪音（同一个 tabId 在新实例里可能正开着）。
+  const myApi = e.api;
+  const isLive = () => api() === myApi;
+
   e.api.onDidActivePanelChange((ev) => {
+    if (!isLive()) return;
     const tabId = (ev.panel?.params as SessionParams | undefined)?.tabId;
     if (tabId) {
       useTabs.getState().setActive(tabId);
@@ -126,13 +140,33 @@ function onReady(e: DockviewReadyEvent) {
   });
   e.api.onDidRemovePanel((panel) => {
     const tabId = (panel.params as SessionParams | undefined)?.tabId;
-    if (tabId) {
-      void cmd('tab_close', { tabId }).catch(() => {});
-      disposeTabListeners(tabId);
-      disposeLive(tabId);
-      useTabs.getState().removeTab(tabId);
-      useMessages.getState().remove(tabId);
+    if (!tabId) {
+      persist();
+      return;
     }
+    // ⚠️ 「面板被移除」不等于「用户关了标签」——判据见 lib/layoutLifecycle.ts。
+    //
+    // 这次的**病根**在 restore()：两轮恢复把同一份布局套到了同一个实例上（由
+    // shouldApplyLayout 挡住）。下面三条是**纵深防御**，把"哪些移除不是用户操作"
+    // 一次说清楚，避免下次改动又把其中一类放进来。
+    // 一旦误判，症状是**静默**的：面板还显示着、useTabs 空了、Rust registry 也空了，
+    // 该标签下所有命令一起报「tab 不存在: <uuid>」（模型列表空白、转写空白、发送无响应）。
+    const close = shouldCloseTabOnPanelRemoved({
+      applyingLayout,
+      liveInstance: isLive(),
+      stillOpen: !!api()?.panels.some(
+        (p) => (p.params as SessionParams | undefined)?.tabId === tabId,
+      ),
+    });
+    if (!close) {
+      persist();
+      return;
+    }
+    void cmd('tab_close', { tabId }).catch(() => {});
+    disposeTabListeners(tabId);
+    disposeLive(tabId);
+    useTabs.getState().removeTab(tabId);
+    useMessages.getState().remove(tabId);
     persist();
   });
   e.api.onDidAddPanel(() => persist());
@@ -181,9 +215,25 @@ function ensureTab(snap: TabSnapshot) {
     .catch(() => {});
 }
 
-/** 启动恢复：读取持久化布局 → 为 session 面板重建 worker → tabId 重映射 → fromJSON */
-async function restore() {
-  if (!api) return;
+/**
+ * 正在套用持久化布局。
+ *
+ * `fromJSON()` 会**先清空再重建**面板（内部 clear → 逐个 remove），
+ * 于是套用布局期间会为每个面板触发一次 `onDidRemovePanel`。
+ * 那些是**结构性**的移除，不是用户关标签——不区分的话会把刚恢复出来的 tab 全杀掉。
+ * 实测（2026-09-23）：StrictMode 下 `restore()` 跑两轮，两轮都把 `fromJSON`
+ * 套到了同一个活着的实例上，第二轮清空时把第一轮建好的 tab 全关了：
+ * 面板还显示着、`useTabs` 却空了、Rust registry 也空了
+ * → 该标签下所有命令一起报「tab 不存在: <uuid>」。
+ */
+let applyingLayout = false;
+
+/** 启动恢复：读取持久化布局 → 为 session 面板重建 worker → tabId 重映射 → fromJSON。
+ * `@internal` 导出仅为测试（见 test/layout-restore.test.ts）——这条时序只有把
+ * "恢复途中实例被换掉"造出来才测得到，浏览器里等它是碰运气。 */
+export async function restore() {
+  const target = api();
+  if (!target) return;
   try {
     interface DockviewJson {
       panels?: Record<string, { params?: PanelParams }>;
@@ -210,7 +260,15 @@ async function restore() {
           }
         }
       }
-      api()?.fromJSON(serialized as never);
+      // 实例已经换了一轮：本轮作废，交给新实例那一轮去套用。
+      // 否则两轮会各套一次同一个实例，第二次清空即"自己关掉自己的标签"（判据见 layoutLifecycle.ts）。
+      if (!shouldApplyLayout(target, api())) return;
+      applyingLayout = true;
+      try {
+        target.fromJSON(serialized as never);
+      } finally {
+        applyingLayout = false;
+      }
       if (api()?.panels.length === 0) await openWelcome();
       return;
     }
@@ -248,9 +306,25 @@ export function openSettingsTab() {
   api()?.addPanel({ id, component: 'settings', title: '设置', params: { kind: 'settings' } });
 }
 
+/**
+ * 按 tabId 找已打开的会话面板。
+ *
+ * ⚠️ 不能拿面板 id 拼（`session:${tabId}`）：**恢复布局时面板 id 与 tabId 会分叉**。
+ * `restore()` 为每个 session 面板新建 worker 后只改写 `params.tabId`（新 uuid），
+ * 面板 id 仍是上一进程留下的 `session:<旧 uuid>`。这是刻意的——面板 id 还挂在 grid
+ * 树里，改它要重建整棵树。但拼字符串查找就会**永远找不到**，
+ * 表现为点侧栏已打开的会话时又开一个重复标签（Rust 侧还会以
+ * "会话文件已被标签页 X 打开" 拒绝，用户看到一句莫名其妙的报错）。
+ * 所以统一按 `params.tabId` 找。
+ */
+function findSessionPanel(tabId: string) {
+  return api()
+    ?.panels.find((p) => (p.params as SessionParams | undefined)?.tabId === tabId);
+}
+
 /** 聚焦已打开的会话标签；没有该标签返回 false */
 export function focusSessionTab(tabId: string): boolean {
-  const panel = api()?.getPanel(`session:${tabId}`);
+  const panel = findSessionPanel(tabId);
   if (panel) {
     panel.focus();
     return true;
@@ -270,8 +344,11 @@ export function openPreviewTab(key: string, path: string, title: string, root?: 
 }
 
 export function closeActivePanel() {
-  if (!api) return;
-  const active = api()?.activePanel ?? api()?.panels.find((x) => x.id === `session:${useTabs.getState().activeTabId}`);
+  const a = api();
+  if (!a) return;
+  const activeTabId = useTabs.getState().activeTabId;
+  const active =
+    a.activePanel ?? (activeTabId ? findSessionPanel(activeTabId) : undefined);
   active?.api.close();
 }
 

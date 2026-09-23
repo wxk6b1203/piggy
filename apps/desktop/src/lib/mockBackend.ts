@@ -42,6 +42,38 @@ const appCfg: {
 
 let mockTabSeq = 0;
 
+/**
+ * 模拟 Rust registry 里"这个 tab 还在不在"（真机行为见 registry.rs::ensure_worker
+ * 与 commands.rs::worker_of —— 不存在就 `Err("tab 不存在: <uuid>")`）。
+ *
+ * 以前 mock 对任何 tabId 都照常回答，于是**"界面显示着这个标签、registry 里却已经没有它"**
+ * 这类 bug 在 mock 里完全测不出来：真机上的表现是这个标签下所有命令一起报
+ * 「tab 不存在: <uuid>」（模型列表空白、转写空白、发送无响应），
+ * 而 mock 里一切正常、看着像前端没问题。本项目已经因为 mock 与真后端形状不一致
+ * 踩过坑（fs_list_dir 的 OsString），所以这里把存在性也模拟出来。
+ */
+const liveTabs = new Set<string>(readPersistedTabs());
+
+/** 真机里 registry 活在 **Rust 进程**中，webview 重载（HMR/刷新）不会清空它；
+ *  mock 的模块状态却会随之重置。用 sessionStorage 把这份状态跨重载带过去，
+ *  否则「上一上下文的 tab 还在 registry 里」这个前提在 mock 里根本不存在，
+ *  boot_reset 的收割逻辑也就永远测不到。 */
+function readPersistedTabs(): string[] {
+  try {
+    return JSON.parse(sessionStorage.getItem('pg.mockLiveTabs') ?? '[]') as string[];
+  } catch {
+    return [];
+  }
+}
+
+function persistTabs(): void {
+  try {
+    sessionStorage.setItem('pg.mockLiveTabs', JSON.stringify([...liveTabs]));
+  } catch {
+    /* 隐私模式等场景忽略 */
+  }
+}
+
 function snapshot() {
   return {
     // 每次 tab_create 给一个新的 tab_id：以前恒为 'mock-tab-1'，
@@ -103,8 +135,45 @@ const sessionMeta = (
   size: 12_345,
 });
 
+/**
+ * 需要 registry 里"这个 tab 真的存在"的命令 —— 逐一对应 Rust 侧走
+ * `worker_of()` 的那些（commands.rs）。任何新增的 tab 级命令都要加进来，
+ * 否则 mock 又会比真机宽松，把这类 bug 放过去。
+ */
+const TAB_SCOPED = new Set([
+  'pi_prompt',
+  'pi_steer',
+  'pi_follow_up',
+  'pi_abort',
+  'pi_clear_queue',
+  'pi_get_state',
+  'pi_get_messages',
+  'pi_get_entries',
+  'pi_get_tree',
+  'pi_get_fork_messages',
+  'pi_fork',
+  'pi_clone_session',
+  'pi_set_model',
+  'pi_set_thinking_level',
+  'pi_get_available_models',
+  'pi_get_available_thinking_levels',
+  'pi_get_commands',
+  'pi_get_session_stats',
+  'pi_set_permission_mode',
+  'pi_compact',
+  'pi_bash',
+  'pi_abort_bash',
+  'tab_sleep',
+]);
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-  boot_reset: () => {},
+  boot_reset: () => {
+    // 与真机一致：收割上一 JS 上下文遗留的全部 tab（registry 清空）。
+    // 这正是「boot_reset 与布局恢复抢时序」那个 bug 的另一半——
+    // mock 以前是空实现，所以浏览器里永远复现不出「tab 不存在」。
+    liveTabs.clear();
+    persistTabs();
+  },
   pi_discover: () => ({
     path: '/mock/bin/pi',
     version: '0.87.0',
@@ -146,13 +215,20 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   tab_sleep: () => null,
   tab_sleep_idlest: () => ({ tabId: 'mock-tab-1' }),
-  tab_create: (a) => {
+  /* 真机这里要 spawn pi 进程 + `get_state` 握手（实测几百毫秒到 1 秒），
+     是**恢复布局期间最慢的一步**。mock 以前几乎瞬时返回，时序与真机差一个量级——
+     凡是"快慢决定结论"的 bug 在这里都会得出错误结论（本项目已因此误判过一次）。
+     给一个量级相当的延迟，让 mock 的时序与真机同形。 */
+  tab_create: async (a) => {
+    await new Promise((r) => setTimeout(r, 250));
     const s = snapshot();
     if (a?.sessionPath ?? a?.session_path) {
       s.session_file = String(a.sessionPath ?? a.session_path);
       s.session_name = '恢复的会话';
     }
     if (a?.permission) s.permission = String(a.permission) as typeof s.permission;
+    liveTabs.add(s.tab_id);
+    persistTabs();
     return s;
   },
   /* 权限档位矩阵：**必须与 src-tauri/src/pi/permission.rs 的 PermissionMode 一致**。
@@ -176,7 +252,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     permission: a.mode,
     workerState: 'ready',
   }),
-  tab_close: () => {},
+  tab_close: (a) => {
+    liveTabs.delete(String(a?.tabId ?? a?.tab_id ?? ''));
+    persistTabs();
+  },
   pi_get_state: () => ({
     model: state.model,
     thinkingLevel: state.thinkingLevel,
@@ -510,6 +589,12 @@ export async function mockInvoke<T>(name: string, args?: Record<string, unknown>
   if (name === 'pi_prompt' || name === 'pi_steer') {
     void mockPrompt(args ?? {});
     return true as T;
+  }
+  // tab 存在性检查（与真机 worker_of 一致）。`tab_close` 故意不查：
+  // Rust 的 close_tab 对不存在的 tab 返回 Ok（幂等），前端也在关闭回调里无脑调用它。
+  if (TAB_SCOPED.has(name)) {
+    const id = String(args?.tabId ?? args?.tab_id ?? '');
+    if (id && !liveTabs.has(id)) throw new Error(`tab 不存在: ${id}`);
   }
   const h = handlers[name];
   if (!h) {

@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { cmd } from '@/lib/ipc';
+import { bootGate } from '@/lib/boot';
 import type { PermissionModeId } from '@/features/chat/PermissionPicker';
 
 export interface TabSnapshot {
@@ -142,7 +143,10 @@ export const useTabs = create<TabsState>()(
 );
 /** 创建 tab（含初始化）；失败抛出由调用方呈现。
  * 注意：Tauri v2 命令参数按 camelCase 匹配（Rust session_path ← JS sessionPath），
- * 发 snake_case 会被静默丢弃 → 打会话变成新建会话。 */
+ * 发 snake_case 会被静默丢弃 → 打会话变成新建会话。
+ *
+ * **先过 `bootGate()`**：`boot_reset` 会关掉它取快照时 registry 里的所有 tab，
+ * 若建 tab 抢在它前面完成，这个 tab 就会被立刻关掉而前端毫不知情（见 lib/boot.ts）。 */
 export async function createTab(opts: {
   cwd?: string;
   sessionPath?: string;
@@ -150,6 +154,7 @@ export async function createTab(opts: {
   /** 不传 = 用后端持久化的默认档位（~/.piggy/config.json:permission_mode） */
   permission?: PermissionModeId;
 }) {
+  await bootGate();
   return cmd<TabSnapshot>('tab_create', {
     cwd: opts.cwd,
     sessionPath: opts.sessionPath,

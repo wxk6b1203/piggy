@@ -422,8 +422,11 @@ body {
 .pg-dv { height: 100%; --dv-paneview-active-border-color: var(--pg-accent); }
 .pg-dv .dockview-theme-abyss { --dv-group-view-background-color: var(--pg-bg-app); --dv-tabs-and-actions-container-background-color: var(--pg-bg-sidebar); --dv-tabs-container-background-color: var(--pg-bg-sidebar); --dv-activegroup-visiblepanel-background-color: var(--pg-bg-app); --dv-activegroup-hiddenpanel-background-color: var(--pg-bg-sidebar); --dv-inactivegroup-visiblepanel-background-color: var(--pg-bg-app); --dv-inactivegroup-hiddenpanel-background-color: var(--pg-bg-sidebar); --dv-tab-divider-color: var(--pg-border-l2); --dv-pane-divider-color: var(--pg-border-l2); --dv-active-sash-color: var(--pg-accent); --dv-background-color: var(--pg-bg-app); color: var(--pg-fg); }
 .dockview-theme-abyss .dockview-tab { padding: 0 6px; font-size: 12px; }
-.pg-dv-tab { display: flex; align-items: center; height: 100%; }
-.pg-dv-tab-title { white-space: nowrap; }
+/* 流式 ● / 未读 • 徽标。
+   画在 dockview 内建 tab 的标题后面（用 `DockviewDefaultTab` 透传的 data-* 选中），
+   这样关闭按钮等内建行为不用自己重写。 */
+.dv-default-tab[data-busy] .dv-default-tab-content::after { content: ' ●'; color: var(--pg-accent); }
+.dv-default-tab[data-unread] .dv-default-tab-content::after { content: ' •'; color: var(--pg-accent); }
 
 /* 右栏 */
 .pg-rightbar { display: flex; height: 100%; min-width: 0; background: var(--pg-bg-sidebar); border-left: 1px solid var(--pg-border-l2); }

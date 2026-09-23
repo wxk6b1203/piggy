@@ -4,6 +4,7 @@
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
+import { bootGate } from '@/lib/boot';
 import { ensureTabListeners } from '@/lib/tabEvents';
 import { windowEvents } from '@/lib/windowEvents';
 import { useAppCommands } from '@/lib/appCommands';
@@ -28,12 +29,9 @@ const bg = globalThis as unknown as PiggyBootGlobals;
 function startBoot(): Promise<void> {
   if (bg.__piggyBootPromise) return bg.__piggyBootPromise;
   bg.__piggyBootPromise = (async () => {
-    // 单窗口语义：新 JS 上下文接管前，收割上一上下文的孤儿 worker（docs/02 §7.5）
-    try {
-      await cmd('boot_reset');
-    } catch {
-      /* 首启无遗留 */
-    }
+    // 单窗口语义：新 JS 上下文接管前，收割上一上下文的孤儿 worker（docs/02 §7.5）。
+    // 该收割是**闸门**：createTab 也 await 它，否则恢复布局建的 tab 会被它关掉（lib/boot.ts）。
+    await bootGate();
     interface LayoutJson {
       dockview?: { panels?: Record<string, { params?: { kind?: string } }> };
     }
