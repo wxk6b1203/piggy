@@ -5,7 +5,7 @@
 
 use piggy_lib::events::{CollectorSink, NullSink};
 use piggy_lib::pi::client::{Worker, WorkerState};
-use piggy_lib::pi::discovery::discover;
+use piggy_lib::pi::discovery::{discover, PiSource};
 use piggy_lib::pi::permission::PermissionMode;
 use piggy_lib::pi::process::{spawn_worker, SessionTarget, SpawnArgs};
 use serde_json::{json, Value};
@@ -22,8 +22,8 @@ fn cleanup_session(file: &str) {
 }
 
 fn pi_bin() -> PathBuf {
-    // discover(override_path, builtin)：契约测试不注入覆盖路径，也不捆绑 standalone
-    discover(None, None).expect("pi not found").path
+    // discover(source, custom, builtin)：契约测试走默认来源（系统 pi），不捆绑 standalone
+    discover(PiSource::default(), None, None).expect("pi not found").path
 }
 
 async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {

@@ -658,9 +658,13 @@ body {
 .pg-traj-table { flex: 1; min-height: 0; overflow-y: auto; }
 /* 轮次：DSH 用 2px turnRail + `#N` 标签，不是分组卡片 */
 .pg-traj-turn { position: relative; }
+/* 用 min-height 而不是 height：这些行可以展开正文，固定高度会让正文画到下一行上
+   （2026-09-23 实测 320px 正文压在 30px 行里、溢出 321px）。 */
+.pg-traj-turnhead,
+.pg-traj-row { min-height: 30px; }
 .pg-traj-turnhead {
   position: relative; display: flex; align-items: center; gap: var(--pg-sp-3);
-  height: 30px; padding: 0 var(--pg-sp-4) 0 var(--pg-sp-3);
+  padding: 0 var(--pg-sp-4) 0 var(--pg-sp-3);
   border-bottom: 0.5px solid var(--pg-border-l1);
 }
 .pg-traj-turnhead:not(:first-child) { border-top: 0.5px solid var(--pg-border-l2); }
@@ -679,10 +683,12 @@ body {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--pg-fg-secondary); font-size: var(--pg-fs-12);
 }
-/* 事件行：30px 高、底发丝线（DSH `td`） */
+/* 事件行：至少 30px 高、底发丝线（DSH `td`）。
+   `min-height` 而非 `height`：展开的正文是这一行的兄弟节点，行高必须能自然增长。 */
+.pg-traj-entry { position: relative; }
 .pg-traj-row {
   display: flex; align-items: center; gap: var(--pg-sp-3);
-  height: 30px; padding: 0 var(--pg-sp-4) 0 var(--pg-sp-7);
+  min-height: 30px; padding: 0 var(--pg-sp-4) 0 var(--pg-sp-7);
   border-bottom: 0.5px solid var(--pg-border-l1);
   font-size: var(--pg-fs-12);
 }
@@ -696,13 +702,16 @@ body {
   min-width: 0; background: none; border: none; padding: 0;
   color: inherit; font: inherit; cursor: pointer; text-align: left;
 }
-.pg-traj-details { min-width: 0; }
-.pg-traj-details summary { cursor: pointer; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 正文：与行同处一个流，因此必然把后面的行推开，不会重叠。
+   左侧内缩到与 `pg-traj-content` 的文字对齐（60px kinds + gap12 + 行左内边距）。 */
 .pg-traj-detail-body {
-  margin: var(--pg-sp-2) 0 0; padding: var(--pg-sp-4);
-  background: var(--pg-codeblock); border-radius: var(--pg-r-md);
+  margin: 0; padding: var(--pg-sp-4) var(--pg-sp-4) var(--pg-sp-4) 88px;
+  background: var(--pg-bg-layer-2);
+  border-bottom: 0.5px solid var(--pg-border-l1);
   font-family: var(--pg-mono); font-size: var(--pg-fs-11);
-  max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  color: var(--pg-fg-secondary);
+  max-height: 320px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
 }
 .pg-traj-empty { padding: var(--pg-sp-6); font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
 
@@ -729,7 +738,10 @@ body {
 
 /* M2 渲染落位（05 §5.2）：离屏行跳过 layout/paint */
 .pg-vrow { content-visibility: auto; contain-intrinsic-size: auto 88px; }
-.pg-traj-row { content-visibility: auto; contain-intrinsic-size: auto 28px; }
+/* 轨迹行恒为一行摘要（min-height 30px），所以 fallback 用 30px 与之一致。
+   展开正文是**这一行的兄弟节点**，不在它内部，因此这里的 paint containment
+   不会裁到正文——正是这一点让"展开后重叠"的修法成立。 */
+.pg-traj-row { content-visibility: auto; contain-intrinsic-size: auto 30px; }
 
 /* 代码块（04 §5.2） */
 /* 代码块（DSH CodeCard，docs/12 §3.3：r12 / 标题条 11-18 / 正文 11-19 / 按钮 24x24 r6） */
@@ -912,3 +924,13 @@ body {
 .pg-help-row { color: var(--pg-fg); }
 .pg-linkish { background: none; border: none; text-align: left; width: 100%; cursor: pointer; text-decoration: underline; }
 .pg-settings-label { font-size: 12.5px; font-weight: 600; }
+/* 「运行」页：来源/权限档位按钮组 + 当前生效二进制 */
+.pg-runtime-modes { display: flex; gap: var(--pg-sp-3); flex-wrap: wrap; }
+.pg-runtime-current {
+  margin: var(--pg-sp-4) 0 var(--pg-sp-6); padding: var(--pg-sp-4) var(--pg-sp-5);
+  background: var(--pg-bg-layer-2); border: 1px solid var(--pg-border-l2);
+  border-radius: var(--pg-r-md); font-size: var(--pg-fs-12);
+}
+.pg-runtime-current code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); color: var(--pg-fg); }
+.pg-runtime-warn { margin-top: var(--pg-sp-2); color: var(--pg-warn); }
+.pg-settings-editor .ant-input { max-width: 420px; }

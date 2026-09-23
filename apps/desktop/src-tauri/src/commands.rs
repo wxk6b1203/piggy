@@ -2,7 +2,7 @@
 
 use crate::config::{app, pi_files};
 use crate::events::{EventSink, TauriSink};
-use crate::pi::discovery::discover;
+use crate::pi::discovery::{discover, PiSource};
 use crate::pi::permission::PermissionMode;
 use crate::pi::process::SessionTarget;
 use crate::sessions::list;
@@ -79,10 +79,14 @@ async fn worker_of(
     Ok(w)
 }
 
+/// 当前实际生效的 pi 二进制（按设置里的来源解析，含回退结果与 `PI_BIN` 覆盖）。
 #[tauri::command]
 pub async fn pi_discover(state: State<'_, AppState>) -> Result<Value, String> {
-    let builtin = state.registry.lock().await.builtin.clone();
-    let bin = discover(None, builtin.as_deref()).map_err(|e| e.to_string())?;
+    let (source, custom, builtin) = {
+        let reg = state.registry.lock().await;
+        (reg.pi_source, reg.pi_custom_path.clone(), reg.builtin.clone())
+    };
+    let bin = discover(source, custom.as_deref(), builtin.as_deref()).map_err(|e| e.to_string())?;
     serde_json::to_value(bin).map_err(|e| e.to_string())
 }
 
@@ -224,6 +228,24 @@ pub async fn pi_set_permission_mode(
     Ok(out)
 }
 
+/// 设置页用：只改**新标签页的默认权限档位**，不动任何正在运行的会话。
+///
+/// 与 `pi_set_permission_mode` 的区别：那个是"切这个标签页的档位"（要重启它的 worker），
+/// 这个是"以后新开的会话默认用哪一档"。设置页里传 `tabId: ''` 去调前者会直接报错。
+#[tauri::command]
+pub async fn pi_set_default_permission(
+    state: State<'_, AppState>,
+    mode: String,
+) -> Result<Value, String> {
+    let parsed = PermissionMode::parse(&mode)?;
+    {
+        let mut reg = state.registry.lock().await;
+        reg.default_permission = parsed;
+    }
+    save_default_permission(&state, parsed);
+    Ok(serde_json::json!({ "defaultPermission": parsed }))
+}
+
 /// 各档位的能力矩阵（前端渲染选择器用，避免 UI 文案与后端行为漂移）。
 #[tauri::command]
 pub fn permission_modes() -> Value {
@@ -302,19 +324,86 @@ pub async fn perf_config_save(
     state: State<'_, AppState>,
     max_workers: u32,
     idle_timeout_min: u32,
+    // 可选：pi 来源（system / bundled / custom）与 custom 时的绝对路径。
+    // 不传 = 保持既有值。（tauri::command 不允许参数上写文档注释，故用普通注释）
+    pi_source: Option<String>,
+    pi_path: Option<String>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
     let mut cfg = app::perf_config_load();
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
+    let mut pi_changed = false;
+    if let Some(s) = pi_source.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let parsed = PiSource::parse(s)?;
+        pi_changed = parsed != cfg.pi_source || pi_path.is_some();
+        cfg.pi_source = parsed;
+    }
+    if let Some(p) = pi_path {
+        let trimmed = p.trim().to_string();
+        let next = if trimmed.is_empty() { None } else { Some(trimmed) };
+        pi_changed |= next != cfg.pi_path;
+        cfg.pi_path = next;
+    }
     cfg.clamp();
     app::perf_config_save(&cfg)
         .map_err(|e| format!("config.json 写入失败: {e}"))?;
     if let Ok(mut p) = state.perf.write() {
-        *p = cfg;
+        *p = cfg.clone();
+    }
+    if pi_changed {
+        let mut reg = state.registry.lock().await;
+        reg.pi_source = cfg.pi_source;
+        reg.pi_custom_path = cfg.pi_path.as_ref().map(PathBuf::from);
+        // 让已缓存的路径失效，下次建会话/复活时按新来源重新定位。
+        // 已在跑的 worker 仍持有旧二进制，直到被重启——设置页会明示这一点。
+        reg.pi_bin = None;
+        // 立刻解析一次，配置有问题就在保存这一步报错，而不是等用户开新会话才炸。
+        let resolved = reg.resolve_bin()?;
+        eprintln!(
+            "[piggy] pi 来源已切换: {} → {}",
+            cfg.pi_source.as_str(),
+            resolved.display()
+        );
     }
     Ok(())
+}
+
+/// 设置页用：各来源选项 + 当前实际生效的二进制。
+#[tauri::command]
+pub async fn pi_source_options(state: State<'_, AppState>) -> Result<Value, String> {
+    let (source, custom, builtin, resolved) = {
+        let reg = state.registry.lock().await;
+        (reg.pi_source, reg.pi_custom_path.clone(), reg.builtin.clone(), reg.pi_bin.clone())
+    };
+    let builtin_available = builtin.as_ref().map(|b| b.is_file()).unwrap_or(false);
+    let current = resolved.or_else(|| {
+        discover(source, custom.as_deref(), builtin.as_deref()).ok()
+    });
+    // 注意：不能把 `[..].into_iter().map(..)` 直接写进 json! 里——
+    // 宏的 TT muncher 会把 `[...]` 当 JSON 数组字面量，随后的 `.` 就报 `no rules expected .`。
+    let options: Vec<Value> = [PiSource::System, PiSource::Bundled, PiSource::Custom]
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.as_str(),
+                "label": s.label(),
+                "available": match s {
+                    PiSource::Bundled => builtin_available,
+                    _ => true,
+                },
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "source": source,
+        "customPath": custom.map(|p| p.to_string_lossy().into_owned()),
+        "builtinAvailable": builtin_available,
+        "builtinPath": builtin.map(|p| p.to_string_lossy().into_owned()),
+        "current": current,
+        "options": options,
+    }))
 }
 
 #[tauri::command]

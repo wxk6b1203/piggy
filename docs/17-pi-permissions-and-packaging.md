@@ -79,18 +79,43 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 
 ## 2. 用自定义 pi 打包
 
-### 2.1 三条路径
+### 2.1 运行期：三种来源，默认系统 pi
+
+设置页「运行」页签里选（持久化在 `~/.piggy/config.json` 的 `pi_source` / `pi_path`）：
+
+| 来源 | 取值顺序 | 适用 |
+|------|----------|------|
+| **`system`（默认）** | `PATH` → 常见安装位置（`~/.local/bin`、`/usr/local/bin`、`/opt/homebrew/bin`、`~/Library/pnpm/bin`、`~/.cargo/bin`）→ **回退到捆绑** | 本机已装 pi，跟着 `pi update` 走 |
+| `bundled` | 应用包内 `resources/pi/pi` | 用打包进来的自定义 pi |
+| `custom` | 设置里填的绝对路径 | fork 出来的 pi，放在任意位置 |
+
+**默认必须是系统 pi**：安装包虽然捆绑自定义 pi，但不该劫持用户机器上已有的安装。
+反过来，`system` 档在系统没装 pi 时会**回退**到捆绑（并如实把来源报成 `bundled`），
+免得"装了个包却完全用不了"。
+
+`PI_BIN` 环境变量**永远优先于以上三者**（运维/CI 的显式指令不该被界面默认值覆盖）；
+生效时设置页会明确提示"被环境变量覆盖，界面选择当前不生效"。
+（macOS 上 GUI 启动的 `.app` 拿不到 shell 环境变量，所以这条实际只适合开发/QA。）
+
+三个档位都**不会静默回退到别的二进制**：要 `bundled` 而包内没有 → 报"这个是 lite SKU 未捆绑"，
+而不是偷偷换成系统 pi；要 `custom` 而路径不存在 → 报出那个路径。
+矩阵与回退行为在 `pi/discovery.rs` 的 `pick_source` 里，有 9 条单测穷举。
+
+设置页同时显示**实际生效的那个二进制**（路径 + 版本 + 来源 + 怎么找到的）——
+设置值不等于结果，必须让人看得见。
+
+### 2.2 打包期：把你自己的 pi 放进安装包
 
 | 方式 | 怎么做 | 适用 |
 |------|--------|------|
 | **`PI_STANDALONE_FILE`** | `PI_STANDALONE_FILE=~/my/pi-darwin-arm64.tar.gz node scripts/fetch-pi-standalone.mjs` | **推荐**：走完整打包链路，只换产物 |
 | `PI_STANDALONE_URL` | 换成自己的 URL 模板（占位符 `{VERSION}` `{OS}` `{ARCH}` `{ASSET}`） | 有自建发布时 |
-| `PI_BIN` 环境变量 | 运行期覆盖发现链（优先级高于内置二进制） | 开发/QA；macOS GUI 启动的 `.app` 拿不到 shell 环境变量 |
 
-发现链：显式路径 → `PI_BIN` → 内置 standalone → `PATH`（`pi/discovery.rs`）。
-内置路径由 `resource_dir()` 决定，打包布局见 `src-tauri/TAURI_FULL_SKU.md`。
+产物落位 `resources/pi/`，再由 `tauri.full.conf.json` 的 `resources/pi/**/*` 打进包。
+内置路径由 `resource_dir()` 决定，布局见 `src-tauri/TAURI_FULL_SKU.md`。
+打完包后在设置页选「捆绑 pi」即可启用。
 
-### 2.2 必须保持的契约
+### 2.3 必须保持的契约
 
 自定义 pi 只要满足这些，Piggy 就能驱动它（除此之外**没有任何版本协商**）：
 
@@ -101,7 +126,7 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 - `get_state.sessionFile` / `get_state.sessionId`、`get_entries.leafId`
 - `pi/protocol.rs` 里匹配的那批事件 `type` 字面量
 
-### 2.3 配置项：pi 从哪读
+### 2.4 配置项：pi 从哪读
 
 优先级（`docs/16` §7 有完整展开）：
 
@@ -124,11 +149,12 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 1. **配置目录硬编码在 Rust 里**：`config/pi_files.rs::agent_dir()` 拼的是 `$HOME/.pi/agent`，
    且 spawn 时**不传** `PI_CODING_AGENT_DIR`。若你的 fork 改了
    `package.json` 的 `piConfig.configDir`（比如 `.pi2`），Piggy 的设置/认证/模型面板与侧栏会话列表
-   都会指向**另一个目录**。目前没有设置项能改这个。
+   都会指向**另一个目录**。`pi_source=system` 时这通常不是问题（系统装的就是标准 pi），
+   但换自定义构建时要注意。目前没有设置项能改配置目录——需要的话得先加 `PI_CODING_AGENT_DIR` 透传。
 2. **`PI_BIN` 在 macOS GUI 启动时拿不到**：`.app` 的环境来自 launchd 而非 shell。
    要固定用自带/自定义二进制，走 §2.1 的打包路径，别依赖环境变量。
 
-### 2.4 插件（pi 里叫 **extension**）
+### 2.5 插件（pi 里叫 **extension**）
 
 - 加载**与运行模式无关**：RPC 模式下扩展照常加载
   （`main.ts:930` 才进 `runRpcMode`，扩展在此之前已 `resourceLoader.reload()`）。
@@ -143,7 +169,7 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 - ⚠️ **`--tools` 会连插件工具一起过滤。** 默认档位是「工作区内修改」，
   所以自定义 pi 带的扩展工具默认**不可见**；要用插件工具得把该标签页切到「完全权限」。
 
-### 2.5 打包 standalone 的两个坑（已修）
+### 2.6 打包 standalone 的两个坑（已修）
 
 1. **资产名拼错**：脚本原本请求 `pi-standalone-{TRIPLE}.{EXT}`，这个资产**不存在**（永远 404）。
    真实命名是 `pi-{os}-{arch}.{ext}`，os ∈ `darwin|linux|windows`
@@ -171,6 +197,9 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 | 6 | `resources/pi/*` 不跨目录 | 子目录资源（`export-html/` 等）打不进包 | tauri 用 `glob` crate，`*` 不跨 `/`（`tauri-utils/src/resources.rs:250`）；已实测 `**/*` 生效 |
 | 7 | standalone 资产名/平台映射错误 | 下载永远 404 | 已用 GitHub releases API 核对 |
 | 8 | `tests/contract.rs` 调用 `discover(None)` | `contract` feature 下无法编译（默认不编译所以没暴露） | 已修，`cargo test --features contract --no-run` 通过 |
+| 9 | `tauri::Builder::setup` 写了两次 | 后一次**覆盖**前一次，托盘/内置 pi 接线/watcher 从未运行 | tauri-2.11.6 `src/app.rs:1777` `self.setup = Box::new(setup)`；实测日志从未出现 "sessions watcher 已启动" |
+| 10 | 轨迹行固定 `height:30px` 却可展开 | 320px 正文挤在 30px 行里，**溢出 321px 压住后续 3 行** | 实测矩形；且 assistant 行从不设置 `detail`，折叠按钮是死代码，「调用」按钮无物可折 |
+| 11 | `perf_config_*` 命令注册了但前端从未调用 | `permission_mode` / `pi_source` / 并发数都没有界面 | 全仓 grep 无调用点；已补「运行」页签 |
 
 另外确认并记录（未改，因为是无害或需产品决策）：
 

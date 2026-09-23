@@ -17,11 +17,13 @@ export type TrajKind =
 export interface TrajRow {
   id: string;
   kind: TrajKind;
+  /** 单行摘要（表格里永远一行，超长省略号） */
   text: string;
+  /** 展开后的正文；有它才可展开 */
   detail?: string;
   ts?: number;
   running?: boolean;
-  /** 有 detail 可展开（如 system 的 sections 正文） */
+  /** 有 detail 可展开（system 的 sections 正文、超长的助手回复） */
   expandable?: boolean;
 }
 
@@ -79,6 +81,30 @@ function systemRow(e: Record<string, unknown>): TrajRow {
   return { id: rid(), kind: 'system', text, detail, ts, expandable: !!detail };
 }
 
+/** 表格里一行放得下的宽度（约 160 个半角字符）——超过才值得展开。 */
+const ASSISTANT_INLINE_MAX = 160;
+
+/**
+ * 助手行。
+ *
+ * 这里以前只产出 `{id, kind, text, ts}`，**从不设置 `detail`/`expandable`**，
+ * 于是 `TrajectoryView` 里那条 `isAssistant && row.expandable` 的折叠分支永远不成立、
+ * 工具栏的「调用」开关也没有任何东西可折。现在长回复给出 `detail`（完整正文），
+ * 表格里保留一行摘要。
+ */
+function assistantRow(m: AgentMessage | undefined, ts: number | undefined): TrajRow {
+  const full = textOf(m?.content);
+  const long = full.length > ASSISTANT_INLINE_MAX;
+  return {
+    id: rid(),
+    kind: 'assistant',
+    text: long ? `${full.slice(0, ASSISTANT_INLINE_MAX)}…` : full,
+    detail: long ? full : undefined,
+    ts,
+    expandable: long,
+  };
+}
+
 function entryToRow(e: Record<string, unknown>): TrajRow | null {
   const type = String(e.type ?? '');
   const ts = Date.parse(String(e.timestamp ?? '')) || undefined;
@@ -87,7 +113,7 @@ function entryToRow(e: Record<string, unknown>): TrajRow | null {
     const role = (m as { role?: string })?.role;
     if (role === 'system') return systemRow(e);
     if (role === 'user') return { id: rid(), kind: 'user', text: textOf(m?.content), ts };
-    if (role === 'assistant') return { id: rid(), kind: 'assistant', text: textOf(m?.content), ts };
+    if (role === 'assistant') return assistantRow(m, ts);
     if (role === 'toolResult') {
       const rm = m as { toolName?: string; content?: unknown; isError?: boolean };
       return {

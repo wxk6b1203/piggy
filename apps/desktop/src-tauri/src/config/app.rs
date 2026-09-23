@@ -48,6 +48,13 @@ pub struct PerfConfig {
     /// 新建标签页的默认权限档位（pi/permission.rs）。缺省 = 工作区内修改。
     #[serde(default)]
     pub permission_mode: crate::pi::permission::PermissionMode,
+    /// pi 二进制来源（pi/discovery.rs）。**默认 system**：打包虽捆绑自定义 pi，
+    /// 但不劫持用户机器上已有的安装。
+    #[serde(default)]
+    pub pi_source: crate::pi::discovery::PiSource,
+    /// `pi_source = custom` 时的绝对路径。
+    #[serde(default)]
+    pub pi_path: Option<String>,
 }
 
 fn default_max_workers() -> u32 {
@@ -64,6 +71,8 @@ impl Default for PerfConfig {
             max_workers: default_max_workers(),
             idle_timeout_min: default_idle_timeout_min(),
             permission_mode: crate::pi::permission::PermissionMode::default(),
+            pi_source: crate::pi::discovery::PiSource::default(),
+            pi_path: None,
         }
     }
 }

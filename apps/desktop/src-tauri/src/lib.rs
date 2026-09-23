@@ -59,7 +59,14 @@ fn builtin_pi_path() -> Option<PathBuf> {
 pub fn run() {
     install_panic_hook(); // M4：崩溃安全
     // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
-    let pi_bin = match discover(None, builtin_pi_path().as_deref()) {
+    // 启动时按持久化的来源解析（默认 system）；失败不阻断启动，
+    // 由引导横幅 + 每次建 tab 时的重试兜底（02 §2.1）
+    let boot_cfg = config::app::perf_config_load();
+    let pi_bin = match discover(
+        boot_cfg.pi_source,
+        boot_cfg.pi_path.as_ref().map(std::path::Path::new),
+        builtin_pi_path().as_deref(),
+    ) {
         Ok(b) => {
             eprintln!("[piggy] pi: {} ({})", b.path.display(), b.version);
             Some(b)
@@ -133,6 +140,13 @@ pub fn run() {
                     };
                     let mut reg = state.registry.lock().await;
                     reg.builtin = Some(builtin);
+                    reg.pi_source = state.perf.read().map(|p| p.pi_source).unwrap_or_default();
+                    reg.pi_custom_path = state
+                        .perf
+                        .read()
+                        .ok()
+                        .and_then(|p| p.pi_path.clone())
+                        .map(PathBuf::from);
                     // 权限守卫脚本 + 持久化的默认档位（「工作区内修改」缺脚本会拒绝启动）
                     reg.guard_script = crate::pi::permission::guard_script_path(resource_dir.as_deref());
                     reg.default_permission = state
@@ -244,7 +258,9 @@ pub fn run() {
             commands::tab_sleep,
             commands::tab_sleep_idlest,
             commands::pi_set_permission_mode,
+            commands::pi_set_default_permission,
             commands::permission_modes,
+            commands::pi_source_options,
             commands::perf_config_load,
             commands::perf_config_save,
             commands::pi_prompt,

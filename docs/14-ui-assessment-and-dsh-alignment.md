@@ -42,7 +42,7 @@
 | **三轨时间线** | ✅ 按 docs/12 §4.7 实现：`laneFor` 三轨归属、44px 标签栏 + 7/21/35px 轨道、span 8px 高 r1、按 kind 着色、轮次边界、hover 高亮线 + 点击选中联动列表、无时间戳自动退化等宽；纯函数有 11 条单测 |
 | **VS Code 主题 tokenColors** | ✅ 见 §0.0e |
 | **Fleet 视图重建** | ✅ 按 `stores/fleet.ts` 现存接口重建（该视图在事故中随 `RightBar.tsx` 丢失，store 与测试未受损）：编排启动表单 + runs lane 列表 + 会话内子代理；修正了 `fleet_start` 的 `cwd` 必须为字符串（Rust 侧非 Option） |
-| 未完成 | ⬜ updater 占位域名（G1，需产品决策）；⬜ 主题 JSON 的**外壳颜色**部分（需先做注册表默认值层，docs/13 E4）；⬜ 构建产物里 codicon.ttf 出现两份（约 150 KB 冗余，见 §0.0d）；⬜ WebKit 渲染未验证（见 §0.0c） |
+| 未完成 | ⬜ updater 占位域名（发布门禁 G1，**与 docs/00 的产品目标 G1 同名但无关**，需产品决策）；⬜ 主题 JSON 的**外壳颜色**部分（需先做注册表默认值层，docs/13 E4）；⬜ 构建产物里 codicon.ttf 出现两份（约 150 KB 冗余，见 §0.0d）；⬜ WebKit 渲染未验证（见 §0.0c） |
 
 **验证**：`tsc --noEmit` 通过 · `vitest` 33/33 通过 · `vite build` 成功 · `ui:debug --strict` 零 pageerror / 零 console error / 零布局问题。
 
@@ -332,7 +332,12 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 
 以下两项**不是 UI 问题**，但会直接决定能否对外发版，故单列：
 
-### G1 · `tauri.conf.json` 的 updater 指向占位域名
+### 发布门禁 G1 · `tauri.conf.json` 的 updater 指向占位域名
+
+> ⚠️ **命名冲突提醒**：这里的 G1 是**发布门禁**编号，与 `docs/00-overview.md` 的目标表里
+> 那个 G1（「完整对话体验」）**没有任何关系**。说话/写文档时请写全「发布门禁 G1」，
+> 否则下一个接手的人会去找对话体验的问题。
+
 
 ```json
 "updater": {

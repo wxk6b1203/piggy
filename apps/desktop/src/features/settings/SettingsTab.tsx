@@ -9,25 +9,209 @@ import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { MonacoHost } from '@/features/common/MonacoHost';
 
-type Tab = 'auth' | 'models' | 'settings';
+type Tab = 'auth' | 'models' | 'settings' | 'runtime';
 
 export function SettingsTab() {
   const [tab, setTab] = useState<Tab>('auth');
   return (
     <div className="pg-settings">
       <div className="pg-settings-tabs">
-        {([['auth', 'Provider 认证'], ['models', '自定义模型'], ['settings', 'pi 设置']] as const).map(
-          ([k, label]) => (
-            <button key={k} className={`pg-btn${tab === k ? ' pg-btn-primary' : ''}`} onClick={() => setTab(k)}>
-              {label}
-            </button>
-          ),
-        )}
+        {(
+          [
+            ['auth', 'Provider 认证'],
+            ['models', '自定义模型'],
+            ['settings', 'pi 设置'],
+            ['runtime', '运行'],
+          ] as const
+        ).map(([k, label]) => (
+          <button key={k} className={`pg-btn${tab === k ? ' pg-btn-primary' : ''}`} onClick={() => setTab(k)}>
+            {label}
+          </button>
+        ))}
       </div>
       {tab === 'auth' && <AuthSection />}
       {tab === 'models' && <ModelsSection />}
       {tab === 'settings' && <SettingsSection />}
+      {tab === 'runtime' && <RuntimeSection />}
       <p className="pg-fg-dim pg-settings-note">改动写入 pi 标准配置文件（原子写 + .bak 备份）；对新建会话生效。</p>
+    </div>
+  );
+}
+
+/* ---------------- 运行（Piggy 自身设置：pi 可执行文件 / 默认权限档位 / 并发） ---------------- */
+
+interface PiSourceOption {
+  id: 'system' | 'bundled' | 'custom';
+  label: string;
+  available: boolean;
+}
+interface PiSourceState {
+  source: PiSourceOption['id'];
+  customPath: string | null;
+  builtinAvailable: boolean;
+  builtinPath: string | null;
+  current: { path: string; version: string; source: string; via: string; fromEnv: boolean } | null;
+  options: PiSourceOption[];
+}
+interface PermissionModeInfo {
+  id: 'read-only' | 'workspace' | 'full';
+  label: string;
+  tools: string | null;
+  pathGuard: boolean;
+}
+
+/**
+ * 运行设置。
+ *
+ * 「默认使用系统 pi」是明确的产品要求：安装包虽然捆绑自定义 pi，
+ * 但不能劫持用户机器上已有的安装。所以来源默认 system，捆绑只作为显式选项
+ * 与"系统没装 pi"时的兜底。这里同时把**实际生效的那个二进制**显示出来——
+ * 设置值不等于结果（有回退、也可能被 PI_BIN 覆盖），必须让人看得见。
+ */
+function RuntimeSection() {
+  const [pi, setPi] = useState<PiSourceState | null>(null);
+  const [permModes, setPermModes] = useState<PermissionModeInfo[]>([]);
+  const [perm, setPerm] = useState<string>('workspace');
+  const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
+  const [busy, setBusy] = useState(false);
+
+  const reload = useCallback(() => {
+    void cmd<PiSourceState>('pi_source_options').then(setPi).catch((e) => toast.error(String(e)));
+    void cmd<{ modes: PermissionModeInfo[] }>('permission_modes')
+      .then((r) => setPermModes(r.modes ?? []))
+      .catch(() => {});
+    void cmd<{ max_workers: number; idle_timeout_min: number; permission_mode?: string }>('perf_config_load')
+      .then((c) => {
+        setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
+        if (c.permission_mode) setPerm(c.permission_mode);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(reload, [reload]);
+
+  const save = async (patch: { piSource?: string; piPath?: string; permissionMode?: string; perf?: typeof perf }) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await cmd('perf_config_save', {
+        maxWorkers: patch.perf?.max_workers ?? perf.max_workers,
+        idleTimeoutMin: patch.perf?.idle_timeout_min ?? perf.idle_timeout_min,
+        piSource: patch.piSource,
+        piPath: patch.piPath,
+      });
+      // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
+      if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
+      toast.success('已保存（对新建会话生效；已在跑的会话需重启）');
+      reload();
+    } catch (e) {
+      // 配置有问题就在这里报出来，而不是等用户开新会话才炸
+      toast.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pickPath = async () => {
+    try {
+      const p = await cmd<string | null>('pick_directory');
+      if (p) await save({ piSource: 'custom', piPath: p });
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  return (
+    <div className="pg-settings-editor">
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">pi 可执行文件</span>
+        <div className="pg-runtime-modes">
+          {(pi?.options ?? []).map((o) => (
+            <button
+              key={o.id}
+              className={`pg-btn${pi?.source === o.id ? ' pg-btn-primary' : ''}`}
+              disabled={!o.available || busy}
+              title={o.available ? undefined : '当前是 lite SKU（未捆绑 pi）'}
+              onClick={() => void save({ piSource: o.id })}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {pi?.source === 'custom' && (
+        <div className="pg-settings-row">
+          <span className="pg-settings-label">自定义路径</span>
+          <Input
+            value={pi.customPath ?? ''}
+            placeholder="/path/to/pi"
+            onChange={(e) => setPi((s) => (s ? { ...s, customPath: e.target.value } : s))}
+            onBlur={() => void save({ piSource: 'custom', piPath: pi.customPath ?? '' })}
+          />
+          <Button onClick={() => void pickPath()}>选择目录…</Button>
+        </div>
+      )}
+
+      <div className="pg-runtime-current">
+        {pi?.current ? (
+          <>
+            <div>
+              当前生效：<code>{pi.current.path}</code>
+            </div>
+            <div className="pg-fg-dim">
+              版本 {pi.current.version} · 来源 {pi.current.source} · 经 {pi.current.via}
+            </div>
+            {pi.current.fromEnv && (
+              <div className="pg-runtime-warn">
+                被环境变量 <code>PI_BIN</code> 覆盖——界面上的选择当前不生效。
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="pg-runtime-warn">当前没有可用的 pi 二进制；新建会话会失败。</div>
+        )}
+      </div>
+
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">新会话默认权限</span>
+        <div className="pg-runtime-modes">
+          {permModes.map((m) => (
+            <button
+              key={m.id}
+              className={`pg-btn${perm === m.id ? ' pg-btn-primary' : ''}`}
+              disabled={busy}
+              title={m.tools ? `工具：${m.tools}` : '不限制工具'}
+              onClick={() => void save({ permissionMode: m.id })}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">并发会话上限</span>
+        <Input
+          type="number"
+          style={{ width: 90 }}
+          value={perf.max_workers}
+          onChange={(e) => setPerf((p) => ({ ...p, max_workers: Number(e.target.value) || 1 }))}
+          onBlur={() => void save({ perf })}
+        />
+        <span className="pg-settings-label">空闲回收（分钟，0 = 不回收）</span>
+        <Input
+          type="number"
+          style={{ width: 90 }}
+          value={perf.idle_timeout_min}
+          onChange={(e) => setPerf((p) => ({ ...p, idle_timeout_min: Number(e.target.value) || 0 }))}
+          onBlur={() => void save({ perf })}
+        />
+      </div>
+
+      <p className="pg-fg-dim pg-settings-note">
+        切换 pi 二进制或权限档位只影响<strong>新建 / 重启</strong>的会话；已在运行的会话继续用启动时的设置。
+      </p>
     </div>
   );
 }

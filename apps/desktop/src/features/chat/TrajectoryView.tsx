@@ -61,7 +61,11 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
   const load = useTrajectory((s) => s.load);
   const [query, setQuery] = useState('');
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(new Set());
-  const [collapsedAssistants, setCollapsedAssistants] = useState<ReadonlySet<string>>(new Set());
+  // 语义是「已展开」而不是「已收起」：轨迹表默认每行一行摘要，
+  // 工具栏的「调用」才是批量展开/收起。空集合 = 全部收起。
+  const [expandedAssistants, setExpandedAssistants] = useState<ReadonlySet<string>>(new Set());
+  /** 轮次头的展开集合（本轮首行带正文时才有意义） */
+  const [expandedHeads, setExpandedHeads] = useState<ReadonlySet<number>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   useEffect(() => {
@@ -99,14 +103,17 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
   );
 
   const allTurnsCollapsed = collapsedTurns.size > 0 && collapsedTurns.size >= visibleTurns.length;
-  const allAssistantsCollapsed = collapsedAssistants.size > 0;
+  /** 可展开的助手行（只有它们会被「调用」开关影响）。 */
+  const expandableAssistantIds = (rows ?? [])
+    .filter((r) => r.kind === 'assistant' && r.expandable && r.detail)
+    .map((r) => r.id);
+  const allAssistantsExpanded =
+    expandableAssistantIds.length > 0 && expandableAssistantIds.every((id) => expandedAssistants.has(id));
 
   const toggleAllTurns = () =>
     setCollapsedTurns(allTurnsCollapsed ? new Set() : new Set(visibleTurns.map((t) => t.turn)));
   const toggleAllAssistants = () =>
-    setCollapsedAssistants(
-      allAssistantsCollapsed ? new Set() : new Set((rows ?? []).filter((r) => r.kind === 'assistant').map((r) => r.id)),
-    );
+    setExpandedAssistants(allAssistantsExpanded ? new Set() : new Set(expandableAssistantIds));
 
   // 时间线用的"行序"必须与渲染顺序一致：轮次头是 rows[0]，其后是 rows[1..]
   const flatRows = useMemo(() => visibleTurns.flatMap((t) => t.rows), [visibleTurns]);
@@ -132,11 +139,12 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
           </button>
           <button
             className="pg-traj-action"
-            aria-pressed={allAssistantsCollapsed}
-            title={allAssistantsCollapsed ? '展开所有调用' : '收起所有调用'}
+            aria-pressed={allAssistantsExpanded}
+            title={allAssistantsExpanded ? '收起所有调用' : '展开所有调用'}
             onClick={toggleAllAssistants}
+            disabled={expandableAssistantIds.length === 0}
           >
-            <span className="pg-traj-glyph">{allAssistantsCollapsed ? '⊞' : '⊟'}</span> 调用
+            <span className="pg-traj-glyph">{allAssistantsExpanded ? '⊟' : '⊞'}</span> 调用
           </button>
         </div>
         <div className="pg-traj-searchbox">
@@ -161,7 +169,10 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
           const first = t.rows[0]!;
           return (
             <div key={t.turn} className="pg-traj-turn">
-              <div className="pg-traj-turnhead">
+              <div
+                className="pg-traj-turnhead"
+                data-expanded={expandedHeads.has(t.turn) || undefined}
+              >
                 <span className="pg-traj-rail" aria-hidden="true" />
                 <button
                   className="pg-traj-turnlabel"
@@ -178,18 +189,47 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
                   <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={12} />#{turnNo}
                 </button>
                 <KindTag kind={KIND_OF[first.kind]} />
-                <span className="pg-traj-preview" title={first.text}>
-                  {first.text}
-                </span>
+                {/* 本轮首行若带正文，折叠入口必须放在轮次头上——否则它会随
+                    「首行渲染成轮次头」一起消失，那一轮的 system 正文永远打不开。 */}
+                {first.expandable && first.detail ? (
+                  <>
+                    <button
+                      className="pg-traj-foldbtn pg-traj-preview"
+                      aria-expanded={expandedHeads.has(t.turn)}
+                      title={first.text}
+                      onClick={() =>
+                        setExpandedHeads((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(t.turn)) next.delete(t.turn);
+                          else next.add(t.turn);
+                          return next;
+                        })
+                      }
+                    >
+                      <Icon
+                        name={expandedHeads.has(t.turn) ? 'chevron-down' : 'chevron-right'}
+                        size={11}
+                      />
+                      <span className="pg-traj-ellipsis">{first.text}</span>
+                    </button>
+                  </>
+                ) : (
+                  <span className="pg-traj-preview" title={first.text}>
+                    {first.text}
+                  </span>
+                )}
               </div>
+              {expandedHeads.has(t.turn) && first.detail ? (
+                <pre className="pg-traj-detail-body">{first.detail}</pre>
+              ) : null}
               {!collapsed &&
                 t.rows.slice(1).map((r) => (
                   <Row
                     key={r.id}
                     row={r}
                     selected={selectedIndex !== null && flatIndexOf.get(r.id) === selectedIndex}
-                    collapsedAssistants={collapsedAssistants}
-                    onToggleAssistant={setCollapsedAssistants}
+                    expandedAssistants={expandedAssistants}
+                    onToggleAssistant={setExpandedAssistants}
                   />
                 ))}
             </div>
@@ -208,55 +248,62 @@ export function TrajectoryView({ tabId }: { tabId: string }) {
 function Row({
   row,
   selected,
-  collapsedAssistants,
+  expandedAssistants,
   onToggleAssistant,
 }: {
   row: TrajRow;
   selected?: boolean;
-  collapsedAssistants: ReadonlySet<string>;
+  expandedAssistants: ReadonlySet<string>;
   onToggleAssistant: (fn: (prev: ReadonlySet<string>) => ReadonlySet<string>) => void;
 }) {
   const kind = KIND_OF[row.kind];
   const isAssistant = row.kind === 'assistant';
-  const collapsed = isAssistant && collapsedAssistants.has(row.id);
+  const canExpand = !!row.expandable && !!row.detail;
+  // 助手行的展开状态由工具栏的「调用」批量控制；其余行各自独立
+  const [selfOpen, setSelfOpen] = useState(false);
+  const open = canExpand && (isAssistant ? expandedAssistants.has(row.id) : selfOpen);
   const isTool = kind === 'tool' || kind === 'subtool';
 
+  const toggle = () => {
+    if (isAssistant) {
+      onToggleAssistant((prev) => {
+        const next = new Set(prev);
+        if (next.has(row.id)) next.delete(row.id);
+        else next.add(row.id);
+        return next;
+      });
+    } else {
+      setSelfOpen((v) => !v);
+    }
+  };
+
   return (
-    <div className="pg-traj-row" data-kind={kind} data-selected={selected || undefined}>
-      <span className="pg-traj-kinds">
-        <KindTag kind={kind} />
-      </span>
-      <span className={`pg-traj-content${isTool ? ' pg-traj-mono' : ''}`}>
-        {isAssistant && row.expandable ? (
-          <button
-            className="pg-traj-foldbtn"
-            aria-expanded={!collapsed}
-            onClick={() =>
-              onToggleAssistant((prev) => {
-                const next = new Set(prev);
-                if (next.has(row.id)) next.delete(row.id);
-                else next.add(row.id);
-                return next;
-              })
-            }
-          >
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={11} />
-            <span className="pg-traj-ellipsis" title={row.text}>
+    /* 展开正文是**行的兄弟节点**而不是子节点。
+       以前它嵌在 `.pg-traj-row` 里，而行是固定 `height: 30px`，
+       于是 320px 的正文无法撑开行、直接画到后面几行上（2026-09-23 实测溢出 321px）。
+       放到流里之后，行高必然跟随内容，物理上不可能再重叠。 */
+    <div className="pg-traj-entry">
+      <div className="pg-traj-row" data-kind={kind} data-selected={selected || undefined} data-expanded={open || undefined}>
+        <span className="pg-traj-kinds">
+          <KindTag kind={kind} />
+        </span>
+        <span className={`pg-traj-content${isTool ? ' pg-traj-mono' : ''}`}>
+          {canExpand ? (
+            <button className="pg-traj-foldbtn" aria-expanded={open} onClick={toggle}>
+              <Icon name={open ? 'chevron-down' : 'chevron-right'} size={11} />
+              <span className="pg-traj-ellipsis" title={row.text}>
+                {row.text || '(空)'}
+              </span>
+            </button>
+          ) : (
+            <span className="pg-traj-ellipsis" title={row.detail ?? row.text}>
               {row.text || '(空)'}
+              {row.running ? ' …' : ''}
             </span>
-          </button>
-        ) : row.expandable && row.detail ? (
-          <details className="pg-traj-details">
-            <summary title={row.text}>{row.text || '(空)'}</summary>
-            <pre className="pg-traj-detail-body">{row.detail}</pre>
-          </details>
-        ) : (
-          <span className="pg-traj-ellipsis" title={row.detail ?? row.text}>
-            {row.text || '(空)'}
-            {row.running ? ' …' : ''}
-          </span>
-        )}
-      </span>
+          )}
+        </span>
+      </div>
+      {open ? <pre className="pg-traj-detail-body">{row.detail}</pre> : null}
     </div>
   );
 }

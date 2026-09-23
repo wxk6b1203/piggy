@@ -74,7 +74,28 @@ const sessionMeta = (cwd: string, name: string, mins: number, first: string) => 
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {},
-  pi_discover: () => ({ path: '/mock/pi', version: '0.87.0' }),
+  pi_discover: () => ({
+    path: '/mock/bin/pi',
+    version: '0.87.0',
+    source: 'system',
+    via: 'PATH',
+    fromEnv: false,
+  }),
+  /* 形状必须与 src-tauri/src/pi/discovery.rs 的 PiSource / pi_source_options 一致。
+     默认 source=system —— "默认使用系统 pi" 是明确要求，mock 不该给别的默认。 */
+  pi_source_options: () => ({
+    source: 'system',
+    customPath: null,
+    builtinAvailable: true,
+    builtinPath: '/mock/App.app/Contents/Resources/resources/pi/pi',
+    current: { path: '/mock/bin/pi', version: '0.87.0', source: 'system', via: 'PATH', fromEnv: false },
+    options: [
+      { id: 'system', label: '系统 pi', available: true },
+      { id: 'bundled', label: '捆绑 pi', available: true },
+      { id: 'custom', label: '自定义路径', available: true },
+    ],
+  }),
+  pi_set_default_permission: (a) => ({ defaultPermission: a.mode }),
   pick_directory: () => null, // 浏览器 mock 无系统目录框：视为取消
   perf_config_load: () => ({ max_workers: 8, idle_timeout_min: 10, permission_mode: 'workspace' }),
   perf_config_save: () => null,
@@ -246,25 +267,50 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   models_write: () => null,
   settings_read: () => ({ defaultThinkingLevel: 'medium', compaction: { enabled: true } }),
   settings_write: () => null,
+  /* 轨迹数据刻意复刻**真机会话的顺序**：标记 → 用户 → 系统 → 助手。
+     系统条目带 `sections` → 产生可展开行；且它不是本轮第一行，所以会渲染成正文行
+     （本轮第一行会被渲染成轮次头，那条路径看不到 <details>）。
+     2026-09-23：正是这个形状暴露了"展开后行与行重叠"的 bug。 */
   pi_get_entries: () => ({
     entries: [
+      { type: 'session_info', id: 'e0', timestamp: new Date(now() - 51_000).toISOString(), name: '轨迹演示' },
       {
         type: 'message',
-        id: 'e0',
-        timestamp: new Date(now() - 51_000).toISOString(),
+        id: 'e1',
+        timestamp: new Date(now() - 50_000).toISOString(),
+        message: {
+          role: 'user',
+          content: '你好！How are you today? I can read and edit files, work with documents (Word, PDF, Excel, PowerPoint), and answer questions about the code in this workspace.',
+        },
+      },
+      {
+        type: 'message',
+        id: 'e2',
+        timestamp: new Date(now() - 49_500).toISOString(),
         message: {
           role: 'system',
           content: '',
           sections: {
-            preamble: 'You are an expert coding assistant operating inside pi, a coding agent harness.',
+            docs: 'pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI)\n\n- Main documentation: /Users/mock/.nvm/versions/node/v24/lib/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /Users/mock/.nvm/versions/node/v24/lib/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /Users/mock/.nvm/versions/node/v24/lib/node_modules/@earendil-works/pi-coding-agent/examples',
             tools: '<tools>\n- read: Read file contents\n- bash: Execute bash commands\n- edit: Make precise file edits\n</tools>',
             cwd: '<cwd>\n/Users/mock/proj\n</cwd>',
           },
         },
       },
-      { type: 'message', id: 'e1', timestamp: new Date(now() - 50_000).toISOString(), message: { role: 'user', content: '验证轨迹视图' } },
-      { type: 'message', id: 'e2', timestamp: new Date(now() - 49_000).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: '轨迹视图工作中' }] } },
-      { type: 'session_info', id: 'e3', timestamp: new Date(now() - 48_000).toISOString(), name: '轨迹演示' },
+      {
+        type: 'message',
+        id: 'e3',
+        timestamp: new Date(now() - 49_000).toISOString(),
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'I am doing well, thanks for asking. I can read and edit files, run commands, and work with documents in this workspace — tell me what you would like to look at first.',
+            },
+          ],
+        },
+      },
       { type: 'context_edit', id: 'e4', timestamp: new Date(now() - 47_000).toISOString(), targetId: 'e1', replacement: null },
       { type: 'compaction', id: 'e5', timestamp: new Date(now() - 46_000).toISOString() },
     ],

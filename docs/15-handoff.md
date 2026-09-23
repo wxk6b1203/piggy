@@ -72,7 +72,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 
 | 项 | 说明 |
 |---|---|
-| **G1 updater** | `tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
+| **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | `CodeBlock.tsx` 的 shiki 动态导入 | `import(\`shiki/langs/${id}.mjs\`)` 是模板串，Vite 分析不了（启动有警告）。有 try/catch 兜底退回纯文本，但生产下这些语言无高亮 |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |

@@ -3,7 +3,7 @@
 
 use crate::events::EventSink;
 use crate::pi::client::{Worker, WorkerState};
-use crate::pi::discovery::PiBinary;
+use crate::pi::discovery::{PiBinary, PiSource};
 use crate::pi::permission::PermissionMode;
 use crate::pi::process::{spawn_worker, SessionTarget, SpawnArgs};
 use serde_json::{json, Value};
@@ -40,6 +40,9 @@ pub struct Registry {
     pub pi_bin: Option<PiBinary>,
     /// 内置 pi standalone（08 §7.1 full SKU）；setup 时由 resource_dir 填充
     pub builtin: Option<PathBuf>,
+    /// pi 来源与自定义路径（设置项；默认 system，见 pi/discovery.rs）
+    pub pi_source: PiSource,
+    pub pi_custom_path: Option<PathBuf>,
     /// 权限守卫扩展脚本（pi/permission.rs::guard_script_path）；setup 时填充
     pub guard_script: Option<PathBuf>,
     /// 新建标签页的默认档位（持久化在 ~/.piggy/config.json）
@@ -69,6 +72,8 @@ impl Registry {
         Self {
             pi_bin,
             builtin: None,
+            pi_source: PiSource::default(),
+            pi_custom_path: None,
             guard_script: None,
             default_permission: PermissionMode::default(),
             tabs: HashMap::new(),
@@ -76,14 +81,19 @@ impl Registry {
         }
     }
 
-    /// 校验缓存的 pi 路径；失效则按发现链重新定位（升级自愈）。
+    /// 校验缓存的 pi 路径；失效则按来源重新定位（升级自愈）。
     pub fn resolve_bin(&mut self) -> Result<PathBuf, String> {
         if let Some(b) = &self.pi_bin {
             if b.path.exists() {
                 return Ok(b.path.clone());
             }
         }
-        let b = crate::pi::discovery::discover(None, self.builtin.as_deref()).map_err(|e| e.to_string())?;
+        let b = crate::pi::discovery::discover(
+            self.pi_source,
+            self.pi_custom_path.as_deref(),
+            self.builtin.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         self.pi_bin = Some(b.clone());
         Ok(b.path)
     }
