@@ -67,6 +67,16 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 9. **改 `pi_files.rs` 里的 pi 配置文件形状，先去 docs/16 查真实 schema**：
    `auth.json` 的字段是 `key` 不是 `api_key`，且 pi 对非法条目**直接抛错**（整个文件不可用）。
    这个 bug 让"设置里填的 API Key"静默失效了很久。
+10. **dockview 的主题是"结构 + 配色"两部分，变量全在 `.dockview-theme-*` 下。**
+    用自定义主题类 = 内置的 112 个变量一个都继承不到。只搬颜色会踩的坑：
+    `--dv-overlay-z-index` 缺失 → 浮层 `z-index` 退化成 auto → 溢出下拉菜单**看得见点不到**；
+    `--dv-context-menu-background-color` 缺失 → 右键菜单背景透明、文字叠在面板上。
+    判断"缺哪些"要看**被 `var()` 引用且无 fallback** 的变量，而不是拿某个内置主题做差集
+    （老主题 `dockview-theme-dark` 与新主题 `abyss` 的变量集并不相同，参照物选错会漏）。
+11. **dockview-react 的默认标签组件只能用 `defaultTabComponent` 这个独立 prop 传**。
+    写成 `tabComponents={{ default: X }}` 会注册组件但**永远不生效**
+    （见 dist/package/main.esm.mjs:559-566），dockview 会退回它自己的默认 tab。
+    带"流式 ● / 未读 •"徽标的 `PgTab` 曾因此从未渲染过。
 
 ## 4. 未完成 / 待决策
 
@@ -78,6 +88,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
 | WebKit 渲染 | 未验证：本机缺"屏幕录制"权限，截不到 Tauri 窗口；Playwright WebKit 启动即挂死 |
 | **WebKit 渲染** | 仍未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是 WKWebView 下的启动路径，不等于逐像素复核 |
+| dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`。fork 若改了 `piConfig.configDir`，Piggy 的面板会指向另一个目录。要支持需加设置项（docs/17 §2.3） |
 | `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |
 

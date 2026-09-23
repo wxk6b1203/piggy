@@ -5,7 +5,12 @@ import { useKeymap } from '@/lib/keymap';
 import { useUi } from '@/stores/ui';
 import { useTabs } from '@/stores/tabs';
 import { cmd } from '@/lib/ipc';
-import { openSessionTab, openSettingsTab } from '@/features/workspace/EditorArea';
+import {
+  closeAllTabs,
+  closeOtherTabs,
+  openSessionTab,
+  openSettingsTab,
+} from '@/features/workspace/EditorArea';
 import { createTab } from '@/stores/tabs';
 import { windowEvents } from '@/lib/windowEvents';
 
@@ -49,6 +54,20 @@ export function useAppCommands() {
       category: '会话',
       keys: 'cmd+w',
       run: () => windowEvents.emit('close-active-tab'),
+    });
+    registerCommand({
+      id: 'tab.closeOthers',
+      title: '关闭其他标签',
+      category: '会话',
+      keys: 'cmd+alt+w',
+      run: () => closeOtherTabs(),
+    });
+    registerCommand({
+      id: 'tab.closeAll',
+      title: '关闭全部标签',
+      category: '会话',
+      keys: 'cmd+shift+w',
+      run: () => closeAllTabs(),
     });
     registerCommand({
       id: 'sidebar.toggle',

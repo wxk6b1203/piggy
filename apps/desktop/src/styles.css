@@ -533,7 +533,78 @@ body {
 .pg-model-ctx { margin-left: 8px; font-size: 11px; }
 .pg-rail-toggle { margin-right: 2px; }
 
-/* dockview v8 主题变量（显式 theme 传入，见 EditorArea） */
+/* dockview v8 主题（显式 theme 传入，见 EditorArea）。
+ *
+ * ⚠️ dockview 的主题 = **结构 + 配色**两部分，变量全在 `.dockview-theme-*` 下定义。
+ * 我们用的是自定义主题类，所以内置主题里那 43 个变量**一个都不会继承**。
+ * 最初只搬了 13 个颜色变量，缺的 40 个里有若干是**有行为含义**的，最典型的是：
+ *
+ *   --dv-overlay-z-index   ← 缺失时浮层的 `z-index: var(--dv-overlay-z-index)` 整条声明失效，
+ *                            计算值退化成 auto，于是标签溢出下拉的菜单被面板盖住：
+ *                            看得见、点不到（实测点击被 <header class="pg-session-header"> 吃掉）
+ *   --dv-tabs-and-actions-container-height / -font-size
+ *   --dv-tab-margin / --dv-tab-border-radius / --dv-border-radius / --dv-spacing-padding
+ *
+ * 结构变量与配色无关，dark/light 共用一份，避免两边漂移。 */
+.pg-dv-theme-dark,
+.pg-dv-theme-light {
+  --dv-overlay-z-index: 999;
+  --dv-tabs-and-actions-container-height: 35px;
+  --dv-tabs-and-actions-container-font-size: 13px;
+  --dv-border-radius: 0px;
+  --dv-spacing-padding: 0px;
+  --dv-tab-margin: 0;
+  --dv-tab-border-radius: 0px;
+  --dv-tab-close-icon-size: inherit;
+  --dv-dropdown-border-radius: 0px;
+  --dv-sash-border-radius: 0px;
+  --dv-sash-color: transparent;
+  --dv-active-sash-transition-duration: 0.1s;
+  --dv-active-sash-transition-delay: 0.5s;
+  /* 浮动分组 / 拖拽指示：Piggy 目前不用浮动分组，但补齐可避免"某天用了才发现是坏的" */
+  --dv-floating-border: 1px solid var(--pg-border-l2);
+  --dv-floating-group-border: none;
+  --dv-floating-group-dragging-opacity: 0.5;
+  --dv-floating-titlebar-height: 22px;
+  --dv-floating-titlebar-border-bottom: none;
+  --dv-floating-box-shadow: 0 8px 32px rgb(0 0 0 / 40%), 0 2px 8px rgb(0 0 0 / 25%);
+  --dv-drag-over-border: none;
+  --dv-drag-over-border-color: transparent;
+  --dv-drag-over-background-color: color-mix(in srgb, var(--pg-accent) 22%, transparent);
+  --dv-edge-dock-indicator-color: var(--pg-accent);
+  --dv-paneview-active-outline-color: var(--pg-accent);
+  --dv-tabs-container-scrollbar-color: var(--pg-border-l3);
+  /* tab group 色板（Piggy 未用分组，留内置默认值以免将来 undefined） */
+  --dv-tab-group-color-grey: #5f6368;
+  --dv-tab-group-color-blue: #1a73e8;
+  --dv-tab-group-color-red: #d93025;
+  --dv-tab-group-color-yellow: #f9ab00;
+  --dv-tab-group-color-green: #188038;
+  --dv-tab-group-color-pink: #d01884;
+  --dv-tab-group-color-purple: #a142f4;
+  --dv-tab-group-color-cyan: #007b83;
+  --dv-tab-group-color-orange: #e8710a;
+  --dv-tab-group-line-height: 2px;
+  --dv-tab-group-line-opacity: 0.6;
+  --dv-tab-group-chip-padding: 4px 8px;
+  --dv-tab-group-chip-border-radius: 6px;
+  --dv-tab-group-chip-font-size: 11px;
+  /* 下面这些同样被 dockview 的结构样式直接引用（多数**没有 fallback**），
+     漏掉不是"颜色难看"而是功能异常：--dv-context-menu-background-color 缺失时
+     右键菜单背景透明，文字直接叠在面板内容上（实测踩到）。 */
+  --dv-context-menu-background-color: var(--pg-bg-layer-2);
+  --dv-context-menu-color: var(--pg-fg);
+  --dv-separator-border: var(--pg-border-l2);
+  --dv-paneview-header-border-color: var(--pg-border-l2);
+  --dv-scrollbar-background-color: var(--pg-border-l1);
+  --dv-transition-duration: 0.15s;
+  /* 未启用多行标签（overflow.mode 仍是默认的裁剪+下拉），1 行即可 */
+  --dv-max-tab-rows: 1;
+  /* 标签外边距归零，让标签铺满条带 */
+  --dv-tab-margin-block: 0;
+  --dv-tab-margin-inline: 0;
+}
+
 .pg-dv-theme-dark {
   --dv-group-view-background-color: var(--pg-bg-app);
   --dv-tabs-and-actions-container-background-color: var(--pg-bg-sidebar);
@@ -546,6 +617,16 @@ body {
   --dv-pane-divider-color: var(--pg-border-l2);
   --dv-active-sash-color: var(--pg-accent);
   --dv-background-color: var(--pg-bg-app);
+  --dv-floating-titlebar-background-color: var(--pg-bg-sidebar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--pg-bg-app);
+  --dv-activegroup-visiblepanel-tab-color: var(--pg-fg);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--pg-bg-sidebar);
+  --dv-activegroup-hiddenpanel-tab-color: var(--pg-fg-dim);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--pg-bg-app);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--pg-fg-secondary);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--pg-bg-sidebar);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--pg-fg-caption);
+  --dv-tab-group-color: var(--pg-accent);
   --dv-icon-hover-background-color: color-mix(in srgb, var(--pg-accent) 20%, transparent);
   --dv-tab-font-size: 12px;
   color: var(--pg-fg);
@@ -562,9 +643,32 @@ body {
   --dv-pane-divider-color: var(--pg-border-l2);
   --dv-active-sash-color: var(--pg-accent);
   --dv-background-color: var(--pg-bg-app);
+  --dv-floating-titlebar-background-color: var(--pg-bg-sidebar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--pg-bg-app);
+  --dv-activegroup-visiblepanel-tab-color: var(--pg-fg);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--pg-bg-sidebar);
+  --dv-activegroup-hiddenpanel-tab-color: var(--pg-fg-dim);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--pg-bg-app);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--pg-fg-secondary);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--pg-bg-sidebar);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--pg-fg-caption);
+  --dv-tab-group-color: var(--pg-accent);
   --dv-icon-hover-background-color: color-mix(in srgb, var(--pg-accent) 20%, transparent);
   --dv-tab-font-size: 12px;
   color: var(--pg-fg);
+}
+
+/* 溢出下拉菜单：补齐内置主题里没有、但我们需要的外观（菜单面 + 圆角 + 阴影）。
+   层级由 --dv-overlay-z-index 提供，这里**不要**再写 z-index，否则会与它对冲。 */
+.pg-dv-theme-dark .dv-tabs-overflow-container,
+.pg-dv-theme-light .dv-tabs-overflow-container {
+  border-radius: var(--pg-r-md);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 40%);
+  padding: var(--pg-sp-2);
+}
+.pg-dv-theme-dark .dv-tabs-overflow-container .dv-tab,
+.pg-dv-theme-light .dv-tabs-overflow-container .dv-tab {
+  border-radius: var(--pg-r-sm);
 }
 
 /* ============ M1 WP5–8：设置 / 面板 / 轨迹 / bash / palette ============ */
@@ -935,3 +1039,15 @@ body {
 /* 禁用选项的可见理由：只靠 tooltip 等于"鼠标悬停才知道"，看起来就像坏了 */
 .pg-runtime-note { margin: var(--pg-sp-2) 0 0; font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
 .pg-settings-editor .ant-input { max-width: 420px; }
+
+/* 标签栏右端操作（关闭全部）。放在 dockview 的 right-actions 容器里，
+   与溢出下拉并列；数量 ≤1 时组件返回 null，不占位。 */
+.pg-tab-actions { display: flex; align-items: center; height: 100%; padding: 0 var(--pg-sp-3); }
+.pg-tab-action {
+  display: inline-flex; align-items: center; gap: var(--pg-sp-2);
+  height: 22px; padding: 0 var(--pg-sp-3);
+  background: none; border: none; border-radius: var(--pg-r-sm);
+  color: var(--pg-fg-dim); font: inherit; font-size: var(--pg-fs-12); cursor: pointer;
+}
+.pg-tab-action:hover { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-tab-action-danger { color: var(--pg-error); }

@@ -5,11 +5,16 @@
  */
 import {
   DockviewReact,
+  type BuiltInContextMenuItem,
+  type ReactContextMenuItemConfig,
   type DockviewApi,
+  type GetTabContextMenuItemsParams,
+  type IDockviewHeaderActionsProps,
   type DockviewReadyEvent,
   type IDockviewPanelProps,
   type IDockviewPanelHeaderProps,
 } from 'dockview-react';
+import { useState } from 'react';
 import { useStore } from 'zustand';
 import type { DockviewTheme } from 'dockview';
 import { debounce } from '@/lib/debounce';
@@ -21,6 +26,7 @@ import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
 import { wakeIfNeeded } from '@/lib/sleep';
 import { t } from '@/lib/i18n';
+import { Icon } from '@/features/common/Icon';
 import { SessionWorkspace } from '@/features/chat/SessionWorkspace';
 import { SettingsTab } from '@/features/settings/SettingsTab';
 import { FilePreview } from '@/features/preview/FilePreview';
@@ -61,7 +67,18 @@ const components = {
   ),
 };
 
-/** tab 头：流式 ● / 未读 • 徽标（订阅 tabsStore，响应式） */
+/**
+ * tab 头：流式 ● / 未读 • 徽标（订阅 tabsStore，响应式）。
+ *
+ * ⚠️ 必须通过 `defaultTabComponent` 这个**独立 prop** 传进去。
+ * dockview-react 的实现是（dist/package/main.esm.mjs:559-566）：
+ *   frameworkTabComponents = { ...props.tabComponents };
+ *   if (props.defaultTabComponent) frameworkTabComponents['default'] = props.defaultTabComponent;
+ *   updateOptions({ defaultTabComponent: props.defaultTabComponent ? 'default' : undefined });
+ * 也就是说 `tabComponents={{ default: PgTab }}` **不会生效**——它注册了组件，
+ * 但 `defaultTabComponent` 选项仍是 undefined，dockview 会退回它自己的默认 tab。
+ * 这个组件曾因此从未渲染过（徽标一直是死的），所以才在 DOM 里只看到 `.dv-default-tab`。
+ */
 function PgTab(props: IDockviewPanelHeaderProps) {
   const tabId = (props.params as SessionParams | undefined)?.tabId ?? null;
   const unread = useStore(useTabs, (s) => (tabId ? !!s.unread[tabId] : false));
@@ -266,13 +283,113 @@ export async function openWelcome() {
 const darkTheme: DockviewTheme = { name: 'piggy-dark', className: 'pg-dv-theme-dark', colorScheme: 'dark' };
 const lightTheme: DockviewTheme = { name: 'piggy-light', className: 'pg-dv-theme-light', colorScheme: 'light' };
 
+/**
+ * 关闭全部标签。
+ *
+ * 刻意**逐个 `panel.api.close()`** 而不是 `api.clear()`：`clear()` 把布局重置为空，
+ * 但不保证为每个面板触发 `onDidRemovePanel`，而 worker 回收 / store 清理 / 监听器释放
+ * 全挂在那个回调上（见 onReady）。走 clear() 会留下一堆孤儿 pi 进程。
+ *
+ * 语义与"逐个关闭"一致：worker 关停、会话文件保留，侧栏仍能重新打开。
+ */
+export function closeAllTabs() {
+  const a = api();
+  if (!a) return;
+  for (const p of [...a.panels]) p.api.close(); // 复制一份：关闭会改动 panels
+}
+
+/** 关闭除活动面板外的全部标签。 */
+export function closeOtherTabs() {
+  const a = api();
+  if (!a) return;
+  const keep = a.activePanel;
+  if (!keep) return;
+  for (const p of [...a.panels]) {
+    if (p.id !== keep.id) p.api.close();
+  }
+}
+
+/**
+ * tab 右键菜单。
+ *
+ * 不用 dockview 的内置字符串项（`'close' | 'closeOthers' | 'closeAll'`）：
+ * 它们的文案是**写死的英文**（Close / Close Others / Close All），
+ * 与其余中文界面不一致，而 dockview v8 没有提供本地化内置项的入口
+ * （只有面向读屏的 announcement strings 能覆盖）。所以自带 label + action。
+ */
+function tabContextMenu({
+  panel,
+  api,
+}: GetTabContextMenuItemsParams): (BuiltInContextMenuItem | ReactContextMenuItemConfig)[] {
+  const all = [...api.panels];
+  const at = all.findIndex((p) => p.id === panel.id);
+  const rightCount = at < 0 ? 0 : all.length - at - 1;
+
+  return [
+    { label: '关闭', action: () => panel.api.close() },
+    {
+      label: '关闭其他',
+      action: () => {
+        for (const p of [...api.panels]) if (p.id !== panel.id) p.api.close();
+      },
+    },
+    {
+      label: '关闭右侧',
+      disabled: rightCount === 0,
+      action: () => {
+        for (const p of all.slice(at + 1)) p.api.close();
+      },
+    },
+    'separator',
+    { label: `关闭全部（${api.panels.length}）`, action: () => closeAllTabs() },
+  ];
+}
+
+/**
+ * 标签栏右端的操作按钮。
+ *
+ * 存在的理由：关闭全部只放在右键菜单里**发现不了**（用户报的就是标签开太多没法收拾）。
+ * 数量 ≤1 时隐藏，避免只有一个标签时还杵着一个"关闭全部"。
+ */
+function TabActions({ panels }: IDockviewHeaderActionsProps) {
+  const [confirming, setConfirming] = useState(false);
+  if (panels.length <= 1) return null;
+
+  const run = () => {
+    if (!confirming) {
+      // 会关停所有会话的 worker，所以二次确认；3 秒内没再点就复位
+      setConfirming(true);
+      window.setTimeout(() => setConfirming(false), 3000);
+      return;
+    }
+    setConfirming(false);
+    closeAllTabs();
+  };
+
+  return (
+    <div className="pg-tab-actions">
+      <button
+        type="button"
+        className={`pg-tab-action${confirming ? ' pg-tab-action-danger' : ''}`}
+        title={confirming ? `再点一次确认关闭全部 ${panels.length} 个标签` : `关闭全部标签（${panels.length}）`}
+        onClick={run}
+      >
+        <Icon name={confirming ? 'alert' : 'close-all'} size={13} />
+        {confirming ? '确认关闭全部' : null}
+      </button>
+    </div>
+  );
+}
+
 export function EditorArea() {
   const themeName = useUi((s) => s.theme);
   return (
     <div className="pg-editor-area">
       <DockviewReact
         components={components}
-        tabComponents={{ default: PgTab }}
+        defaultTabComponent={PgTab}
+        getTabContextMenuItems={tabContextMenu}
+        rightHeaderActionsComponent={TabActions}
         onReady={onReady}
         theme={themeName === 'dark' ? darkTheme : lightTheme}
         className="pg-dv"

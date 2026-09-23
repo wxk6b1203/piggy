@@ -40,9 +40,14 @@ const appCfg: {
   pi_path: null,
 };
 
+let mockTabSeq = 0;
+
 function snapshot() {
   return {
-    tab_id: TAB,
+    // 每次 tab_create 给一个新的 tab_id：以前恒为 'mock-tab-1'，
+    // 于是连点「新会话」不会产生第二个标签（dockview 面板 id 相同会去重），
+    // 多标签 / 标签溢出这些 UI 在浏览器里根本没法复现。
+    tab_id: mockTabSeq++ === 0 ? TAB : `${TAB}-${mockTabSeq}`,
     cwd: '/Users/mock/proj',
     session_id: state.sessionId,
     session_file: state.sessionFile,
