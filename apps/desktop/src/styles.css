@@ -175,6 +175,8 @@ body {
   cursor: pointer; white-space: nowrap;
 }
 .pg-pill:hover { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-pill:disabled { opacity: 0.45; cursor: default; }
+.pg-pill:disabled:hover { background: none; color: var(--pg-fg-secondary); }
 .pg-pill-static { cursor: default; }
 .pg-pill-static:hover { background: none; color: var(--pg-fg-secondary); }
 .pg-pill-action { color: var(--pg-accent); border-color: var(--pg-accent); }
@@ -182,6 +184,47 @@ body {
 .pg-model-select { max-width: 220px; padding: 0 var(--pg-sp-6) 0 var(--pg-sp-4); border-color: transparent; }
 .pg-pill-strong { color: var(--pg-fg); overflow: hidden; text-overflow: ellipsis; }
 .pg-pill-dim { color: var(--pg-fg-dim); }
+/* 权限胶囊与左侧 `+` 之间的竖直发丝线（DSH 工具行同款分隔） */
+.pg-composer-sep { width: 1px; height: 16px; flex: none; background: var(--pg-border-l2); }
+
+/* 选择器菜单（Picker.tsx）：菜单面 r12 + elevation-prominent，向上弹出 */
+.pg-picker-menu {
+  position: fixed; z-index: 1100; box-sizing: border-box;
+  padding: var(--pg-sp-4);
+  border-radius: var(--pg-r-lg);
+  background: var(--pg-bg-layer-2);
+  border: 1px solid var(--pg-border-l2);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  font-size: var(--pg-fs-12); line-height: var(--pg-lh-12);
+  color: var(--pg-fg-secondary);
+}
+.pg-picker-title {
+  padding: 0 var(--pg-sp-3) var(--pg-sp-3);
+  color: var(--pg-fg-dim); font-size: var(--pg-fs-11);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.pg-picker-list { max-height: 320px; overflow-y: auto; }
+.pg-picker-group {
+  padding: var(--pg-sp-3) var(--pg-sp-3) var(--pg-sp-2);
+  color: var(--pg-fg-dim); font-size: var(--pg-fs-11);
+}
+.pg-picker-item {
+  display: flex; align-items: center; gap: var(--pg-sp-3); width: 100%;
+  box-sizing: border-box; padding: var(--pg-sp-3);
+  background: none; border: none; border-radius: var(--pg-r-md);
+  color: var(--pg-fg-secondary); font: inherit; text-align: left; cursor: pointer;
+}
+.pg-picker-item:hover { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-picker-item:disabled { opacity: 0.45; cursor: default; }
+.pg-picker-item-active { color: var(--pg-accent); }
+.pg-picker-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-picker-hint { flex: none; color: var(--pg-fg-dim); font-variant-numeric: tabular-nums; }
+.pg-picker-detail { padding: 0 var(--pg-sp-3) var(--pg-sp-3) 24px; color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
+.pg-picker-note { padding: var(--pg-sp-4) var(--pg-sp-3); color: var(--pg-fg-dim); }
+.pg-picker-footer {
+  margin-top: var(--pg-sp-3); padding: var(--pg-sp-3) var(--pg-sp-3) 0;
+  border-top: 1px solid var(--pg-border-l1); color: var(--pg-fg-dim); font-size: var(--pg-fs-11);
+}
 /* `.primary` 发送：34x34 r999，底 button-info-fill，translateY(-2px) */
 .pg-send-btn {
   display: grid; place-items: center; width: 34px; height: 34px; flex: none;
@@ -215,9 +258,11 @@ body {
   font: inherit; font-variant-numeric: tabular-nums;
 }
 .pg-ctx-meter:hover { background: var(--pg-hover); color: var(--pg-fg-secondary); }
-.pg-ctx-meter circle { fill: none; stroke-width: 1.5; }
+/* 几何照抄 DSH `ContextMeter.module.css`：stroke-width 2 / linecap round /
+   fill 用 label-tertiary（**不是** accent——DSH 这里刻意不上强调色）。 */
+.pg-ctx-meter circle { fill: none; stroke-width: 2; }
 .pg-ctx-track { stroke: var(--pg-border-l3); }
-.pg-ctx-fill { stroke: var(--pg-accent); }
+.pg-ctx-fill { stroke: var(--pg-fg-dim); stroke-linecap: round; }
 .pg-btn {
   background: var(--pg-bg-sidebar); color: var(--pg-fg);
   border: 1px solid var(--pg-border-l2); border-radius: 6px;
@@ -368,11 +413,15 @@ body {
 .pg-stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
 .pg-stat-label { color: var(--pg-fg-dim); }
 .pg-stat-value { font-family: var(--pg-mono); }
-.pg-ctx-meter { height: 6px; border-radius: 3px; background: var(--pg-bg-app); overflow: hidden; margin: 4px 0 8px; }
-.pg-ctx-fill { height: 100%; border-radius: 3px; }
-.pg-ctx-fill[data-level='low'] { background: var(--pg-ok); }
-.pg-ctx-fill[data-level='mid'] { background: #e3b341; }
-.pg-ctx-fill[data-level='high'] { background: var(--pg-error); }
+/* 右栏统计里的用量条。
+   注意类名：这里曾和 Composer dock 的上下文环同名（都叫 `.pg-ctx-meter` / `.pg-ctx-fill`），
+   于是环按钮被这条 `height:6px; overflow:hidden` 压成一条 6px 色块、内容全被裁掉。
+   两个组件毫不相干，必须分开命名。 */
+.pg-usage-bar { height: 6px; border-radius: 3px; background: var(--pg-bg-app); overflow: hidden; margin: 4px 0 8px; }
+.pg-usage-fill { height: 100%; border-radius: 3px; }
+.pg-usage-fill[data-level='low'] { background: var(--pg-ok); }
+.pg-usage-fill[data-level='mid'] { background: #e3b341; }
+.pg-usage-fill[data-level='high'] { background: var(--pg-error); }
 .pg-tree { padding: 8px; font-size: 12px; }
 
 /* composer 扩展 */
@@ -837,14 +886,8 @@ body {
   margin: 0; font-size: var(--pg-fs-16); font-weight: 600; color: var(--pg-fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.pg-mode-pill {
-  display: inline-flex; align-items: center; gap: var(--pg-sp-2); flex: none;
-  padding: 1px var(--pg-sp-5); border-radius: var(--pg-r-pill);
-  border: 1px solid var(--pg-border-l3);
-  font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
-}
-.pg-mode-busy { color: var(--pg-accent); border-color: var(--pg-accent-hover); }
-.pg-mode-crashed, .pg-mode-stopped { color: var(--pg-error); border-color: var(--pg-error); }
+/* 会话头部只有一个标题 + 右侧操作；这里**没有**模式胶囊——
+   权限档位是可选控件，归属 Composer 工具行（见 PermissionPicker.tsx 顶部注释）。 */
 .pg-session-head-ops { margin-left: auto; display: flex; align-items: center; gap: var(--pg-sp-2); }
 .pg-icon-btn {
   width: 26px; height: 26px; flex: none;

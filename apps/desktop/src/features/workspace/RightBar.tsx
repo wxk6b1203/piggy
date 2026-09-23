@@ -102,9 +102,9 @@ function StatsView({ tabId }: { tabId: string | null }) {
         <span className="pg-stat-label">上下文</span>
         <span className="pg-stat-value">{pct != null ? `${pct}%` : '—'}</span>
       </div>
-      <div className="pg-ctx-meter">
+      <div className="pg-usage-bar">
         <div
-          className="pg-ctx-fill"
+          className="pg-usage-fill"
           style={{ width: `${Math.min(100, pct ?? 0)}%` }}
           data-level={(pct ?? 0) > 85 ? 'high' : (pct ?? 0) > 60 ? 'mid' : 'low'}
         />

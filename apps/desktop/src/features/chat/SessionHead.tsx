@@ -1,23 +1,15 @@
 /**
- * 会话头部（docs/14 §4 B1）——对齐 DSH：标题 + 模式胶囊 + 右侧「打开方式 / 更多」。
+ * 会话头部（docs/14 §4 B1）——标题 + 右侧「打开方式 / 更多」。
  *
- * 标题来源优先级：pi 给的会话名 → 首条用户消息 → 目录名兜底（与侧栏 sessionTitle 同源语义）。
+ * 这里**没有模式胶囊**：DSH 那枚胶囊表示权限/沙箱档位，而 Piggy 的档位是真实可选的，
+ * 归属在 Composer 工具行（DSH 的 `conversation.input.permission` 位），
+ * 在标题旁边再放一个只读副本只会让人以为它可点。
+ * worker 运行状态改由 Composer 上方的流式条 + 状态行表达。
  */
 import { useMemo } from 'react';
 import { useTabs } from '@/stores/tabs';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
-
-/** 模式胶囊文案：DSH 用「标准模式」表示权限/沙箱档位；Piggy 不自建沙箱语义（docs/11 §2.2），
- *  这里映射为 pi 的 worker 状态，避免展示一个不存在的权限模型。 */
-const WORKER_LABEL: Record<string, string> = {
-  spawning: '启动中',
-  ready: '标准模式',
-  busy: '运行中',
-  crashed: '已崩溃',
-  stopped: '已停止',
-  sleeping: '休眠',
-};
 
 export function SessionHead({ tabId }: { tabId: string }) {
   const tab = useTabs((s) => s.tabs[tabId]);
@@ -38,18 +30,12 @@ export function SessionHead({ tabId }: { tabId: string }) {
     return dir ? `${dir} · 新会话` : '新会话';
   }, [tab?.sessionName, tab?.cwd, firstUser]);
 
-  const worker = tab?.workerState ?? 'ready';
-
   return (
     <header className="pg-session-head">
       <div className="pg-session-head-main">
         <h1 className="pg-session-head-title" title={title}>
           {title}
         </h1>
-        <span className={`pg-mode-pill pg-mode-${worker}`}>
-          <Icon name="shield" size={11} />
-          {WORKER_LABEL[worker] ?? worker}
-        </span>
       </div>
       <div className="pg-session-head-ops">
         {/* DSH 这里是「打开方式」分裂胶囊（外部应用菜单）。Piggy 按 docs/11 §2.1 排期 M2，
