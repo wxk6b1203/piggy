@@ -12,13 +12,14 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **258/258**：apps/desktop **191**（21 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、**5 条折叠侧栏图标轨**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `vitest` | **262/262**：apps/desktop **195**（22 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、**4 条空编辑区占位**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
 | `cargo test` | **94 + 3 + 1** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
+| `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
 
@@ -233,7 +234,13 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     docs/12 §1.5）；macOS 上它确实取 0，但代价是必须另给标题栏里的
     `HeaderLeadingControls`。**两条路选一条，不能不选。**
     检查法：对每个"能关掉/能收起"的东西问一句"关掉之后我用什么把它打开"，
-    答案**不能是快捷键**。同类的还有：关掉全部标签后编辑区只剩一片黑（无欢迎页/无入口）。
+    答案**不能是快捷键**。同类的第二处也已经补上：关光全部标签后编辑区只剩一片黑，
+    现在盖一层 `<EmptyEditor/>`（水印 + 基础快捷键 + 中央入口，仿 VS Code 空编辑组）。
+    ⚠️ 那层占位第一版**按钮点不动**：dockview 自己有个全屏的 `.dv-watermark-container`
+    （`z-index: 1`，它拿来做空组的拖放目标）压在上面。jsdom 看不见这一层，
+    是 `ui:startup` 第 7 段的 `elementFromPoint` 命中判定抓出来的 ——
+    **能给"可点"下断言就别只靠 Playwright 的点击超时**（超时会让整个脚本崩掉，
+    而不是报一条红）。
     ⚠️ 环境差异一条：jsdom 里"折叠→展开"会抛
     `Panel constraints not found for index 3`（react-resizable-panels 用 ResizeObserver
     的 `borderBoxSize` 量 group 尺寸，量到 0 就整段 `return`，`separatorToPanels` 于是

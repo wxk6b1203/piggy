@@ -24,13 +24,18 @@ if (import.meta.env.DEV) {
     import('@/stores/messages'),
     import('@/stores/trajectory'),
     import('@/stores/fleet'),
-  ]).then(([tabs, messages, trajectory, fleet]) => {
+    // 命令表也要走这个钩子：`ui:startup` 第 7 段要拿**应用自己那份注册表**去核
+    // 空编辑区列出的快捷键与标题。另 import 一份 `@/lib/commands` 会得到**空表**
+    // （模块实例不同，见上），断言会集体假红 —— 实测踩过。
+    import('@/lib/commands'),
+  ]).then(([tabs, messages, trajectory, fleet, commands]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
       useTrajectory: trajectory.useTrajectory,
       useFleet: fleet.useFleet,
     };
+    (globalThis as Record<string, unknown>).__piggyCommands = commands;
   });
 }
 

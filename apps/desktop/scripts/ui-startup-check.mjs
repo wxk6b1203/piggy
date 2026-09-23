@@ -444,8 +444,96 @@ const sidebarRoundTrips = [];
   }
 }
 
+/* ---------- 7. 空编辑区占位：水印 + 基础快捷键 + 中央入口 ---------- */
+// 起因（用户）："空编辑区背景，描述一些基础的快捷键，有点像 vscode，然后加一些中央入口"。
+// 关光标签后编辑区只剩一片黑 —— 这是上一轮就点出来的另一个死胡同。
+//
+// 两件事只有在真浏览器里才成立：
+//   ① **按钮点得到**。第一版就被这条抓了：dockview 自己的 `.dv-watermark-container`
+//      （全屏、z-index 1，它拿来做空组拖放目标）压在入口按钮上，Playwright 直接报
+//      "dv-watermark intercepts pointer events" —— jsdom 永远看不见这一层。
+//      所以这里除了点击，还显式做一次 elementFromPoint 命中判定。
+//   ② 快捷键/标题来自**命令注册表**：真浏览器里 import 应用自己那两份模块来对，
+//      而不是照着截图认字。
+const emptyPane = await page.evaluate(async () => {
+  const editor = await import('/src/features/workspace/EditorArea.tsx');
+  editor.closeAllTabs();
+  await new Promise((r) => setTimeout(r, 400));
+
+  const root = document.querySelector('.pg-empty');
+  if (!root) return { present: false };
+  const logo = root.querySelector('.pg-empty-logo');
+  const rowEls = [...root.querySelectorAll('.pg-empty-key-row')];
+  const entryEls = [...root.querySelectorAll('.pg-empty-entry')];
+
+  // ⚠️ 必须用 `globalThis.__piggyCommands`（应用自己那份注册表）：另 import 一份
+  // `@/lib/commands` 会拿到**另一个模块实例** = 空表（实测踩过，六行标题集体假红）。
+  // 键位那边可以直接 import `@/lib/keymap`：`keysFor` 读的是模块常量 + localStorage，
+  // 不依赖注册表，跨实例也一致。
+  const [km] = await Promise.all([import('/src/lib/keymap.ts')]);
+  const cmds = globalThis.__piggyCommands;
+  const mismatched = rowEls
+    .map((r) => {
+      const id = r.getAttribute('data-cmd');
+      const cmd = id ? cmds?.getCommand(id) : undefined;
+      const chord = id ? km.keysFor(id) : undefined;
+      const want = chord ? km.displayChord(chord) : null;
+      const got = r.querySelector('.pg-empty-kbd')?.textContent ?? null;
+      const title = r.querySelector('.pg-empty-key-title')?.textContent ?? null;
+      return { id, want, got, title, cmdTitle: cmd?.title ?? null };
+    })
+    .filter((r) => r.got !== r.want || r.cmdTitle !== r.title);
+
+  // 命中判定：按钮中心点上最顶层的可交互元素必须就是它自己（或它的子节点）
+  const hits = entryEls.map((b) => {
+    const r = b.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { cmd: b.getAttribute('data-cmd'), hittable: !!top && (top === b || b.contains(top)) };
+  });
+
+  return {
+    present: true,
+    logo: logo?.textContent ?? null,
+    logoOpacity: logo ? Number(getComputedStyle(logo).opacity) : null,
+    rows: rowEls.length,
+    entries: entryEls.length,
+    entryCmds: entryEls.map((b) => b.getAttribute('data-cmd')),
+    mismatched,
+    hits,
+    tabsWhileEmpty: document.querySelectorAll('.dv-tab').length,
+  };
+});
+
+// 中央入口真的执行命令：点第一个（新建会话）→ 出标签、占位消失。
+// ⚠️ 点击本身带 5s 超时并**吞掉异常**：被别的层挡住时 Playwright 会抛
+// "intercepts pointer events"，默认 30s 超时会让整个脚本崩掉（看不到后面所有断言），
+// 而这里要的是"报一条红"。
+let emptyClickError = null;
+if (emptyPane.present) {
+  await page
+    .click('.pg-empty-entry', { timeout: 5000 })
+    .catch((e) => (emptyClickError = String(e).split('\n')[0]));
+  await page.waitForTimeout(600);
+}
+const emptyAfterClick = await page.evaluate(() => ({
+  tabs: document.querySelectorAll('.dv-tab').length,
+  paneGone: !document.querySelector('.pg-empty'),
+}));
+await page.evaluate(async () => {
+  const editor = await import('/src/features/workspace/EditorArea.tsx');
+  editor.closeAllTabs();
+});
+await page.waitForTimeout(400);
+const emptyBack = await page.evaluate(() => !!document.querySelector('.pg-empty'));
+
 await browser.close();
-console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips }, null, 1));
+console.log(
+  JSON.stringify(
+    { ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick, emptyBack },
+    null,
+    1,
+  ),
+);
 
 if (probe.storeIds.length === 0) bad.push('恢复后 useTabs 为空（布局恢复把标签全关了）★');
 if (probe.driftedPanelIds === 0) bad.push('面板 id 与 params.tabId 没有分叉，这条核对失去意义');
@@ -570,6 +658,31 @@ for (const r of sidebarRoundTrips) {
   if (r.expanded?.tabs !== r.collapsed.tabs) {
     bad.push(`${at}：折来折去把标签数改了（${r.collapsed.tabs} → ${r.expanded?.tabs}）★`);
   }
+}
+/* 空编辑区占位：水印 + 快捷键（与注册表逐条对齐）+ 中央入口真的能点、真的执行 */
+if (!emptyPane.present) bad.push('空编辑区：关光标签后没有出现占位（还是一片黑）★');
+else {
+  if (emptyPane.logo !== '🐷') bad.push(`空编辑区：水印是 ${emptyPane.logo} ★`);
+  if (!(emptyPane.logoOpacity <= 0.15)) bad.push(`空编辑区：水印不淡（opacity ${emptyPane.logoOpacity}）★`);
+  if (emptyPane.tabsWhileEmpty !== 0) bad.push(`空编辑区：占位出现时还有 ${emptyPane.tabsWhileEmpty} 个标签 ★`);
+  if (emptyPane.rows < 5) bad.push(`空编辑区：只列了 ${emptyPane.rows} 条快捷键（太少，用户要的是"基础快捷键"）★`);
+  if (emptyPane.mismatched.length) {
+    bad.push(
+      `空编辑区：快捷键/标题与命令注册表不一致 ${JSON.stringify(emptyPane.mismatched)}（写死了？）★`,
+    );
+  }
+  if (emptyPane.entries < 3) bad.push(`空编辑区：中央入口只有 ${emptyPane.entries} 个 ★`);
+  const dead = emptyPane.hits.filter((h) => !h.hittable);
+  if (dead.length) {
+    bad.push(`空编辑区：入口 ${JSON.stringify(dead.map((d) => d.cmd))} 点不到（被别的层挡住了？）★`);
+  }
+  if (!emptyAfterClick.paneGone || emptyAfterClick.tabs !== 1) {
+    bad.push(
+      `空编辑区：点「新建会话」没有建出标签（tabs=${emptyAfterClick.tabs}、占位消失=${emptyAfterClick.paneGone}` +
+        `${emptyClickError ? `、点击异常：${emptyClickError}` : ''}）★`,
+    );
+  }
+  if (!emptyBack) bad.push('空编辑区：再次关光标签后占位没回来 ★');
 }
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 

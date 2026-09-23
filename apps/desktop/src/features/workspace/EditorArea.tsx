@@ -15,11 +15,12 @@ import {
   type IDockviewPanelProps,
   type IDockviewPanelHeaderProps,
 } from 'dockview-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from 'zustand';
 import type { DockviewTheme } from 'dockview';
 import { debounce } from '@/lib/debounce';
 import { cmd } from '@/lib/ipc';
+import { windowEvents } from '@/lib/windowEvents';
 import { shouldApplyLayout, shouldCloseTabOnPanelRemoved } from '@/lib/layoutLifecycle';
 import { disposeTabListeners } from '@/lib/tabEvents';
 import { disposeLive } from '@/lib/live';
@@ -32,6 +33,7 @@ import { Icon } from '@/features/common/Icon';
 import { SessionWorkspace } from '@/features/chat/SessionWorkspace';
 import { SettingsTab } from '@/features/settings/SettingsTab';
 import { FilePreview } from '@/features/preview/FilePreview';
+import { EmptyEditor } from './EmptyEditor';
 
 export interface SessionParams {
   kind: 'session';
@@ -171,7 +173,27 @@ function onReady(e: DockviewReadyEvent) {
   });
   e.api.onDidAddPanel(() => persist());
   e.api.onDidLayoutChange(() => persist());
+  // 空态占位：面板增删都要重算。与上面那些"业务回调"分开订阅 —— 那边有多个 return 分支，
+  // 把同步塞进去迟早漏一条（而漏掉的症状恰恰是"关光标签后什么都不显示"）。
+  e.api.onDidAddPanel(() => {
+    if (isLive()) syncEmptyPanels();
+  });
+  e.api.onDidRemovePanel(() => {
+    if (isLive()) syncEmptyPanels();
+  });
+  syncEmptyPanels();
   void restoreOnce();
+}
+
+/**
+ * 编辑区里还剩几个面板 → 广播给 `EmptyEditor`（0 个 = 显示空态占位）。
+ *
+ * 走 `windowEvents` 这条既有的轻事件总线，而不是把 dockview api 塞进 store 或轮询：
+ * `onReady` 是模块级函数（见上：它刻意不放进组件，HMR/StrictMode 下靠 globalThis 保活），
+ * 拿不到组件里的 setState。
+ */
+function syncEmptyPanels() {
+  windowEvents.emit('editor-panels', String(api()?.panels.length ?? 0));
 }
 
 /** 启动恢复（单例；同一 dockview 实例只恢复一次）。
@@ -466,6 +488,13 @@ function TabActions({ panels }: IDockviewHeaderActionsProps) {
 
 export function EditorArea() {
   const themeName = useUi((s) => s.theme);
+  // 面板数为 0 = 空编辑区 → 盖一层空态占位（见 EmptyEditor）。
+  // 初值 true 是对的：onReady 之前确实一个面板都没有。
+  const [empty, setEmpty] = useState(true);
+  useEffect(
+    () => windowEvents.on('editor-panels', (n) => setEmpty(n === '0')),
+    [],
+  );
   return (
     <div className="pg-editor-area">
       <DockviewReact
@@ -477,6 +506,7 @@ export function EditorArea() {
         theme={themeName === 'dark' ? darkTheme : lightTheme}
         className="pg-dv"
       />
+      {empty && <EmptyEditor />}
     </div>
   );
 }
