@@ -55,6 +55,25 @@ fn builtin_pi_path() -> Option<PathBuf> {
     Some(if cfg!(windows) { base.join("pi.exe") } else { base.join("pi") })
 }
 
+/// 委派开关打开时返回策略文件路径（否则 None）。
+///
+/// 抽成函数是为了让「两个 resource_dir 分支」用同一套判据 —— 历史上这两处漂移过一次，
+/// 结果是拿不到 resource_dir 的机器上守卫脚本静默为 None（docs/15 规矩 8）。
+fn subagent_policy_for(
+    state: &AppState,
+    resource_dir: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let on = state
+        .perf
+        .read()
+        .map(|p| p.subagent_delegation)
+        .unwrap_or(false);
+    if !on {
+        return None;
+    }
+    crate::pi::resources::subagent_policy_path(resource_dir)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook(); // M4：崩溃安全
@@ -151,6 +170,9 @@ pub fn run() {
                     reg.guard_script = crate::pi::permission::guard_script_path(resource_dir.as_deref());
                     // 桥接扩展（docs/06 §4）：缺失只让 Fleet 面板显示"未安装"，不影响会话
                     reg.bridge_script = crate::pi::resources::bridge_script_path(resource_dir.as_deref());
+                    // 子代理委派策略（docs/06 §6）：只在开关打开时记录。是否**真的**注入
+                    // 还要看档位（限制档位下扩展工具不存在，注入等于让模型调不存在的工具）。
+                    reg.subagent_policy = subagent_policy_for(&state, resource_dir.as_deref());
                     reg.default_permission = state
                         .perf
                         .read()
@@ -166,6 +188,13 @@ pub fn run() {
                         Some(p) => eprintln!("[piggy] 子代理桥接扩展: {}", p.display()),
                         None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
                     }
+                    match &reg.subagent_policy {
+                        Some(p) => eprintln!(
+                            "[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}",
+                            p.display()
+                        ),
+                        None => {}
+                    }
                 } else {
                     // resource_dir 拿不到时也必须初始化守卫与档位：
                     // 之前整块都在 `if let Some(rd)` 里，于是 resource_dir 一失败，
@@ -173,6 +202,7 @@ pub fn run() {
                     let mut reg = state.registry.lock().await;
                     reg.guard_script = crate::pi::permission::guard_script_path(None);
                     reg.bridge_script = crate::pi::resources::bridge_script_path(None);
+                    reg.subagent_policy = subagent_policy_for(&state, None);
                     reg.default_permission = state
                         .perf
                         .read()

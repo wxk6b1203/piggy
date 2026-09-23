@@ -4,7 +4,7 @@
  * 注意：已运行 worker 持有旧配置，改动对新会话生效（UI 明示）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Modal, Input, Button, List, Popconfirm } from 'antd';
+import { Modal, Input, Button, List, Popconfirm, Switch } from 'antd';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { MonacoHost } from '@/features/common/MonacoHost';
@@ -73,6 +73,7 @@ function RuntimeSection() {
   const [permModes, setPermModes] = useState<PermissionModeInfo[]>([]);
   const [perm, setPerm] = useState<string>('workspace');
   const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
+  const [delegation, setDelegation] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
@@ -80,9 +81,15 @@ function RuntimeSection() {
     void cmd<{ modes: PermissionModeInfo[] }>('permission_modes')
       .then((r) => setPermModes(r.modes ?? []))
       .catch(() => {});
-    void cmd<{ max_workers: number; idle_timeout_min: number; permission_mode?: string }>('perf_config_load')
+    void cmd<{
+      max_workers: number;
+      idle_timeout_min: number;
+      permission_mode?: string;
+      subagent_delegation?: boolean;
+    }>('perf_config_load')
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
+        setDelegation(c.subagent_delegation ?? false);
         if (c.permission_mode) setPerm(c.permission_mode);
       })
       .catch(() => {});
@@ -90,7 +97,13 @@ function RuntimeSection() {
 
   useEffect(reload, [reload]);
 
-  const save = async (patch: { piSource?: string; piPath?: string; permissionMode?: string; perf?: typeof perf }) => {
+  const save = async (patch: {
+    piSource?: string;
+    piPath?: string;
+    permissionMode?: string;
+    perf?: typeof perf;
+    delegation?: boolean;
+  }) => {
     if (busy) return;
     setBusy(true);
     try {
@@ -99,6 +112,8 @@ function RuntimeSection() {
         idleTimeoutMin: patch.perf?.idle_timeout_min ?? perf.idle_timeout_min,
         piSource: patch.piSource,
         piPath: patch.piPath,
+        // 不传 = 保持既有值（后端读-改-写，不会顺手抹掉别的字段）
+        subagentDelegation: patch.delegation,
       });
       // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
       if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
@@ -230,6 +245,37 @@ function RuntimeSection() {
           onBlur={() => void save({ perf })}
         />
       </div>
+
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">子代理委派</span>
+        <Switch
+          checked={delegation}
+          disabled={busy || perm !== 'full'}
+          onChange={(v) => {
+            setDelegation(v);
+            void save({ delegation: v });
+          }}
+        />
+        <span className="pg-fg-dim">
+          开启后 pi 会主动把可独立完成的工作交给子代理（侦察 / 独立复核 / 并行调研）。
+        </span>
+      </div>
+      {/* 不能工作的情况必须**说出原因**：开关打开却毫无变化，用户只会以为功能坏了。
+          这类"静默失效"是本项目最忌讳的失败方式。 */}
+      {perm !== 'full' ? (
+        <p className="pg-fg-dim pg-settings-note">
+          当前默认档位是「{permModes.find((m) => m.id === perm)?.label ?? perm}」，
+          <strong>子代理委派在该档位不可用</strong>：限制档位的 <code>--tools</code> 白名单会把扩展工具
+          整个过滤掉，pi 进程里根本没有 <code>subagent</code> 这个工具（真机验证过）。
+          请先把默认档位切到「完全权限」。
+        </p>
+      ) : delegation ? (
+        <p className="pg-fg-dim pg-settings-note">
+          已开启：新会话会往系统提示词追加一段委派策略，并自动激活 <code>subagent</code> 工具
+          （否则模型得先自己调一次 <code>subagents_enable</code>——实测那正是"pi 几乎不用子代理"的直接原因）。
+          策略只授权可独立完成、可验证的工作；需要来回澄清的、一两处小改动仍要求它自己做。
+        </p>
+      ) : null}
 
       <p className="pg-fg-dim pg-settings-note">
         切换 pi 二进制或权限档位只影响<strong>新建 / 重启</strong>的会话；已在运行的会话继续用启动时的设置。

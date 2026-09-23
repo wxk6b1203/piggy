@@ -19,6 +19,7 @@ import {
   createBridge,
   parseSpawnArgs,
   parseSteerArgs,
+  planSubagentActivation,
   receiptDelivery,
   receiptRunId,
   receiptText,
@@ -483,5 +484,50 @@ describe('正常路径（已装 pi-subagents）', () => {
     bus.emit(ASYNC_COMPLETE_EVENT, { runId: 'x' });
     await new Promise((r) => setTimeout(r, 0));
     expect(ui.editorTexts.length).toBe(before);
+  });
+});
+
+/* ---------------- 子代理委派开关（docs/06 §6） ---------------- */
+
+describe('planSubagentActivation：开关打开时替模型把 subagent 激活', () => {
+  const base = { available: ['read', 'bash', 'subagents_enable', 'subagent'], active: ['read', 'bash', 'subagents_enable'] };
+
+  it('开关关闭 → 什么都不做（默认行为不变）', () => {
+    expect(planSubagentActivation({ ...base, enabled: false })).toEqual({
+      activate: false,
+      tools: [],
+      reason: 'disabled',
+    });
+  });
+
+  it('开关打开且工具存在 → 追加 subagent，保留原有工具', () => {
+    const plan = planSubagentActivation({ ...base, enabled: true });
+    expect(plan.reason).toBe('ok');
+    expect(plan.activate).toBe(true);
+    expect(plan.tools).toEqual(['read', 'bash', 'subagents_enable', 'subagent']);
+  });
+
+  it('已经激活过 → 幂等，不重复设置', () => {
+    const plan = planSubagentActivation({
+      enabled: true,
+      available: base.available,
+      active: [...base.active, 'subagent'],
+    });
+    expect(plan).toMatchObject({ activate: false, reason: 'already' });
+  });
+
+  it('限制档位下工具根本不存在 → unavailable（不是错误，是预期）', () => {
+    // 真机验证：--tools read,grep,find,ls 之下 getAllTools() 只有这 4 个
+    const plan = planSubagentActivation({
+      enabled: true,
+      available: ['read', 'grep', 'find', 'ls'],
+      active: ['read', 'grep', 'find', 'ls'],
+    });
+    expect(plan).toMatchObject({ activate: false, reason: 'unavailable' });
+  });
+
+  it('pi-subagents 没装（没有 subagent 也没有 loader）→ unavailable', () => {
+    const plan = planSubagentActivation({ enabled: true, available: ['read', 'bash'], active: ['read'] });
+    expect(plan.reason).toBe('unavailable');
   });
 });

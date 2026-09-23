@@ -48,6 +48,10 @@ pub struct Registry {
     /// 桥接扩展脚本（pi/resources.rs::bridge_script_path，docs/06 §4）；setup 时填充。
     /// 缺失只影响 Fleet 数据面，不影响会话启动。
     pub bridge_script: Option<PathBuf>,
+    /// 子代理委派策略（pi/resources.rs::subagent_policy_path，docs/06 §6）。
+    /// `Some` = `~/.piggy/config.json` 里开关打开；是否**真的**生效还要看档位
+    /// （见 `pi/process.rs::subagent_delegation_active`）。setup 时填充。
+    pub subagent_policy: Option<PathBuf>,
     /// 新建标签页的默认档位（持久化在 ~/.piggy/config.json）
     pub default_permission: PermissionMode,
     /// tab_id → Tab（docs/03 §2.7）
@@ -79,6 +83,7 @@ impl Registry {
             pi_custom_path: None,
             guard_script: None,
             bridge_script: None,
+            subagent_policy: None,
             default_permission: PermissionMode::default(),
             tabs: HashMap::new(),
             open_files: HashMap::new(),
@@ -172,6 +177,7 @@ impl Registry {
     ) -> Result<Worker, String> {
         let guard = self.guard_script.clone();
         let bridge = self.bridge_script.clone();
+        let policy = self.subagent_policy.clone();
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),
             pi_bin,
@@ -180,6 +186,7 @@ impl Registry {
             permission,
             guard_script: guard.clone(),
             bridge_script: bridge.clone(),
+            subagent_policy: policy.clone(),
             envs: Vec::new(),
         };
         let args = build(self.resolve_bin()?);

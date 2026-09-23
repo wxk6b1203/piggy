@@ -162,7 +162,77 @@ GUI 驻留位置：右栏 "Fleet（子代理）" 视图（04 §1.4）+ lane 提�
 A 层每条 lane 的"提升为标签页"走 `fleet_open_lane` → `openSessionTab`：
 lane 本来就是 registry 里的一个 worker/tab（06 §3.5），提升只是把它挂进主窗口的 dockview。
 
-## 6. 演进
+## 6. 主动委派开关（设置 → 运行 → 子代理委派）
+
+### 6.1 为什么需要它：pi 默认**几乎不会**用子代理
+
+这不是模型能力问题，是 pi-subagents 刻意的三层劝退。2026-09-23 dump 真机系统提示词 + 工具表核实：
+
+| 层 | 机制 | 原文 |
+|---|---|---|
+| ① 工具门控 | `subagent` **默认不在激活工具表里**，只有一个空参数的 `subagents_enable`；模型得先主动调它，`subagent` 下一次请求才出现 | `tool-activation.js`（需 pi ≥ 0.86.1，本机 0.87.1 满足） |
+| ② loader 描述 | 调不调它本身就是一次"要不要委派"的决策 | *"Direct execution is the default; **complexity alone never authorizes delegation**."* |
+| ③ 启用后的 guidelines | 进系统提示词 rules 段 | *"**Do not invoke subagents unless the operator requested delegation directly or through applicable instructions.**"* |
+
+对照 DSH：`subagent` 常驻工具表、提示词写 *"Use subagent in the background by default"* —— 方向正好相反。
+真机 `getAllTools()` 实证（`--mode rpc`，全档位）：
+
+```
+激活前: [read, bash, edit, write, bg_wait, subagents_enable, web_search, …, subagent_supervisor]
+        ↑ 没有 subagent
+全部注册: [… , 'subagent', …]        ← 注册了，但没激活
+```
+
+另外随包的 13 个 agent **没有一个**写 `advertise: true`，所以 `<advertised_subagents>` 目录也不注入。
+
+### 6.2 实现
+
+```
+设置开关（~/.piggy/config.json: subagent_delegation）
+   │  仅「完全权限」档
+   ├─→ pi --append-system-prompt resources/piggy-subagent-policy.md   ← 授权 + 边界 + 花名册
+   └─→ env PIGGY_SUBAGENT_DELEGATION=1
+          └─→ piggy-bridge before_agent_start: setActiveTools([...,'subagent'])
+```
+
+- **策略文件** `resources/piggy-subagent-policy.md`：自称"这就是 pi-subagents 要的那个授权"，
+  并给出**有界**的委派规则（该委派 / 不该委派 / 纪律）。落在系统提示词的 `<addendum>` 段，
+  位置在所有其它段落之后 —— 正面对冲 rules 段里那条 "Do not invoke..."。
+- **自动激活**：`planSubagentActivation()`（纯函数）决定要不要 `setActiveTools`。
+  ⚠️ **生效时机**：`before_agent_start` 的 `systemPromptOptions.selectedTools` 在 handler 之前
+  就已取好快照，所以**本次请求不带、从第二轮起才有 `subagent`**（真机实测）。第一轮由策略里
+  写明的 `subagents_enable` 兜底。扩展工厂体（`Extension runtime not initialized`）与
+  `session_start`（同样早于快照）都试过，都不能让第一轮就带上。
+
+### 6.3 只在「完全权限」档生效（硬约束，不是保守）
+
+真机验证：`--tools read,grep,find,ls` 之下 `pi.getAllTools()` **只剩这 4 个**，扩展工具根本没被
+注册进进程，`setActiveTools` 静默无效。所以：
+
+- 限制档位下 `cli_args` **不注入**策略 —— 注入了等于让模型去调一个不存在的工具；
+- 设置页在档位不是 full 时**禁用开关并当场说明原因**（本项目的铁律：权限档绝不静默失效）；
+- 反过来这也**消除了一条越权路径**：只读档下 `subagent` 在进程里压根不存在，
+  不存在"只读的父进程派生出可写的子代理"。不需要额外去碰 pi-subagents 的
+  capability ceiling（那个只在内部模块导出，RPC 方法表里没有，属于私有 API，禁用）。
+
+### 6.4 失败语义
+
+- 开关打开但策略文件缺失 → `cli_args` 返回 `SUBAGENT_POLICY_MISSING`，**拒绝启动**。
+  开关开着却没注入 = 用户以为委派已启用、实际什么都没发生，这是本项目最不能接受的失败方式；
+- 打开开关时先校验文件存在，避免把"每次建会话都失败"的配置写进磁盘；
+- `subagent_delegation` 进 `~/.piggy/config.json`，因此必须同时出现在 `PerfConfig`
+  （`perf_config_save` 是整体重写，漏了就静默抹掉）。
+
+### 6.5 与项目级 `AGENTS.md` 的关系
+
+两者可并存、不冲突，都只是"授权来源"的一种。`AGENTS.md` 是**按仓库**配、写进项目
+（pi 从 cwd 逐级向上找 `AGENTS.md`，**不读 `.pi/AGENTS.md`**）；开关是**全局**的。
+若某仓库已有自己的委派策略，开关打开会得到两段措辞不同但方向一致的授权 —— 无害。
+
+## 7. 演进
 
 - M3 后评估：pi-subagents 若官方暴露 stdout 事件或 RPC 命令直连（如 fleet 查询命令），piggy-bridge 的数据面可整体替换为官方通道，UI 不变；
-- A 层模板市场：模板即 JSON，社区分发（pi packages 或 Piggy 自有格式）。
+- A 层模板市场：模板即 JSON，社区分发（pi packages 或 Piggy 自有格式）；
+- 若 pi-subagents 后续把 `subagent` 常驻工具表（取消动态激活），`PIGGY_SUBAGENT_DELEGATION`
+  的自动激活部分可整体删除，策略注入保持不变。
+

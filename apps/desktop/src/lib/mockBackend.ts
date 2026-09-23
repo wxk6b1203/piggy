@@ -32,12 +32,14 @@ const appCfg: {
   permission_mode: string;
   pi_source: string;
   pi_path: string | null;
+  subagent_delegation: boolean;
 } = {
   max_workers: 8,
   idle_timeout_min: 10,
   permission_mode: 'workspace',
   pi_source: 'system',
   pi_path: null,
+  subagent_delegation: false,
 };
 
 let mockTabSeq = 0;
@@ -211,6 +213,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     appCfg.idle_timeout_min = Number(a.idleTimeoutMin ?? appCfg.idle_timeout_min);
     if (a.piSource) appCfg.pi_source = String(a.piSource);
     if (a.piPath !== undefined) appCfg.pi_path = a.piPath === null ? null : String(a.piPath);
+    // 不传 = 保持既有值（与真机 perf_config_save 的读-改-写语义一致）
+    if (a.subagentDelegation !== undefined) {
+      appCfg.subagent_delegation = Boolean(a.subagentDelegation);
+    }
     return null;
   },
   tab_sleep: () => null,

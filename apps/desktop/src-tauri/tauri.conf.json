@@ -43,7 +43,8 @@
     ],
     "resources": [
       "resources/piggy-guard.js",
-      "resources/piggy-bridge.js"
+      "resources/piggy-bridge.js",
+      "resources/piggy-subagent-policy.md"
     ]
   },
   "plugins": {

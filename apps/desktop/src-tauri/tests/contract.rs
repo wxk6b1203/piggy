@@ -39,6 +39,8 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         Arc::new(NullSink),
     )
@@ -121,6 +123,8 @@ async fn c3_id_echo() {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -246,6 +250,8 @@ async fn c7_megabyte_lines() {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -339,6 +345,8 @@ async fn e2e_streaming_pipeline() {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -396,6 +404,8 @@ async fn e2e_crash_recovery() {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -498,6 +508,8 @@ async fn c12_bridge_status_payload_over_rpc() {
             guard_script: None,
             bridge_script: Some(bridge_script()),
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -551,6 +563,7 @@ async fn c13_bridge_degrades_without_pi_subagents() {
                 "PI_CODING_AGENT_DIR".to_string(),
                 cfg.path().to_string_lossy().into_owned(),
             )],
+            subagent_policy: None,
         },
         sink.clone(),
     )
@@ -605,6 +618,8 @@ async fn run_lane(
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            // C12–C14 测的是子代理数据面本身，不涉及委派开关
+            subagent_policy: None,
         },
         Arc::new(NullSink),
     )

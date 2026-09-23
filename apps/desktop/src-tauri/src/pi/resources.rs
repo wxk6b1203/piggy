@@ -41,14 +41,30 @@ pub fn bridge_script_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
     extension_script(resource_dir, "piggy-bridge.js")
 }
 
+/// 子代理委派策略（`piggy-subagent-policy.md`，docs/06 §6）。
+///
+/// 它经 `pi --append-system-prompt <path>` 注入（pi 的 `resolvePromptInput` 对存在的路径
+/// 读文件内容，对不存在的则当字面量文本——所以**必须传路径且必须存在**，否则整段路径
+/// 字符串会被当成提示词塞进去）。
+///
+/// 缺失语义与守卫脚本一致：**调用方应当报错而不是静默继续**。开关打开却没注入策略，
+/// 用户会以为子代理委派已启用，实际什么都没发生——这正是本项目最不能接受的那类失败。
+pub fn subagent_policy_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    extension_script(resource_dir, "piggy-subagent-policy.md")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn source_tree_fallback_finds_the_bundled_scripts() {
-        // 仓库里这两个脚本是提交过的资源，开发态必须能找到（找不到就等于功能静默消失）
-        for name in ["piggy-guard.js", "piggy-bridge.js"] {
+        // 仓库里这几个文件都是提交过的资源，开发态必须能找到（找不到就等于功能静默消失）
+        for name in [
+            "piggy-guard.js",
+            "piggy-bridge.js",
+            "piggy-subagent-policy.md",
+        ] {
             let p = extension_script(None, name).unwrap_or_else(|| panic!("源码树里找不到 {name}"));
             assert!(p.is_file(), "{name} 应存在: {}", p.display());
         }

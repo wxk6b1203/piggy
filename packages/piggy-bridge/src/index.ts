@@ -538,6 +538,45 @@ export async function runVerb(verb: BridgeVerb, args: string, ui: BridgeUi, rpc:
 
 /* ---------------- 扩展入口 ---------------- */
 
+/* ---------------- 子代理委派开关（docs/06 §6） ---------------- */
+
+/** 委派开关的环境变量名（由 `pi/process.rs::spawn_envs` 在「完全权限」档注入）。 */
+export const DELEGATION_ENV = 'PIGGY_SUBAGENT_DELEGATION';
+
+export interface ActivationPlan {
+  /** 是否应当调用 `setActiveTools`。 */
+  activate: boolean;
+  /** 要设置的工具清单（`activate` 为 false 时无意义）。 */
+  tools: string[];
+  reason: 'ok' | 'disabled' | 'unavailable' | 'already';
+}
+
+/**
+ * 决定这一轮要不要把 `subagent` 激活（纯函数，便于单测）。
+ *
+ * 背景：pi-subagents 把 `subagent` 门控起来 —— 默认工具表里只有空参数的
+ * `subagents_enable`，模型得**主动决定**先调它一次，`subagent` 才会出现。
+ * 实测（2026-09-23）：这就是"pi 几乎不用子代理"最直接的一道闸。
+ * 开关打开时由我们替他做这一步。
+ *
+ * `unavailable` 是正常的：限制档位的 `--tools` 白名单会把扩展工具整个过滤掉，
+ * `getAllTools()` 里根本没有 `subagent`（真机验证过）。
+ */
+export function planSubagentActivation(opts: {
+  enabled: boolean;
+  available: string[];
+  active: string[];
+}): ActivationPlan {
+  if (!opts.enabled) return { activate: false, tools: [], reason: 'disabled' };
+  if (!opts.available.includes('subagent')) return { activate: false, tools: [], reason: 'unavailable' };
+  if (opts.active.includes('subagent')) return { activate: false, tools: [], reason: 'already' };
+  return {
+    activate: true,
+    tools: [...new Set([...opts.active, 'subagent'])],
+    reason: 'ok',
+  };
+}
+
 /**
  * 注册全部 `/piggy:*` 命令并接上 RPC v1。
  *
@@ -594,4 +633,39 @@ export default function piggyBridge(pi: ExtensionAPI): void {
         },
       }),
   });
+
+  // 子代理委派开关（docs/06 §6）：开关打开时替模型把 `subagent` 激活，
+  // 免掉"先调 subagents_enable"那一轮。
+  //
+  // ⚠️ 生效时机（真机实测，别想当然）：`before_agent_start` 的
+  // `event.systemPromptOptions.selectedTools` 在我们这个 handler 跑之前**就已经取好快照**，
+  // 所以本轮请求的工具表不会因为这次 setActiveTools 而改变 —— **从第二轮起才有 `subagent`**。
+  // 第一轮由策略文件里写明的 `subagents_enable` 兜底（那条路工具一直在）。
+  // 曾试过更早的 `session_start` 与扩展工厂体：前者同样早于快照、后者直接抛
+  // "Extension runtime not initialized"，都不能让第一轮就带上。
+  let warnedUnavailable = false;
+  const onAgentStart = (): void => {
+    const plan = planSubagentActivation({
+      enabled: process.env[DELEGATION_ENV] === '1',
+      available: (pi.getAllTools?.() ?? []).map((t) => t.name),
+      active: pi.getActiveTools?.() ?? [],
+    });
+    if (plan.activate) {
+      try {
+        pi.setActiveTools(plan.tools);
+      } catch {
+        // pi 版本不支持动态工具时不该拖垮会话：策略文件里那条 subagents_enable 仍然可用
+      }
+      return;
+    }
+    if (plan.reason === 'unavailable' && !warnedUnavailable) {
+      warnedUnavailable = true;
+      // 说清楚为什么开关没起作用（限制档位下这是预期行为，不是 bug）
+      console.warn(
+        '[piggy] 子代理委派已开启，但本会话的工具表里没有 subagent ' +
+          '（限制档位的 --tools 白名单会过滤掉扩展工具）。策略已注入但工具不存在。',
+      );
+    }
+  };
+  pi.on('before_agent_start', onAgentStart);
 }

@@ -55,6 +55,14 @@ pub struct PerfConfig {
     /// `pi_source = custom` 时的绝对路径。
     #[serde(default)]
     pub pi_path: Option<String>,
+    /// 子代理委派开关（docs/06 §6）。开启时给 pi 追加一段
+    /// `--append-system-prompt` 策略，并由桥接扩展自动激活 `subagent` 工具。
+    ///
+    /// **只在「完全权限」档生效**：限制档位的 `--tools` 白名单会把扩展工具整个过滤掉，
+    /// `getAllTools()` 里压根没有 `subagent`，开了也没用。这一条已在真机验证过，
+    /// 详见 `pi/process.rs::cli_args` 的注释。
+    #[serde(default)]
+    pub subagent_delegation: bool,
 }
 
 fn default_max_workers() -> u32 {
@@ -73,6 +81,7 @@ impl Default for PerfConfig {
             permission_mode: crate::pi::permission::PermissionMode::default(),
             pi_source: crate::pi::discovery::PiSource::default(),
             pi_path: None,
+            subagent_delegation: false,
         }
     }
 }

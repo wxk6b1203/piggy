@@ -350,6 +350,7 @@ pub async fn perf_config_load() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn perf_config_save(
+    app: AppHandle,
     state: State<'_, AppState>,
     max_workers: u32,
     idle_timeout_min: u32,
@@ -357,6 +358,8 @@ pub async fn perf_config_save(
     // 不传 = 保持既有值。（tauri::command 不允许参数上写文档注释，故用普通注释）
     pi_source: Option<String>,
     pi_path: Option<String>,
+    // 子代理委派开关（docs/06 §6）。不传 = 保持既有值。
+    subagent_delegation: Option<bool>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -390,6 +393,21 @@ pub async fn perf_config_save(
     if let Some((next_source, next_path)) = plan {
         cfg.pi_source = next_source;
         cfg.pi_path = next_path;
+    }
+    // 开关打开前先确认策略文件真的在 —— 否则这次保存会写下一个"看起来生效、
+    // 实际每次建会话都拒绝启动"的配置（cli_args 里 fail-closed）。
+    if subagent_delegation == Some(true) {
+        let dir = app.path().resource_dir().ok();
+        if crate::pi::resources::subagent_policy_path(dir.as_deref()).is_none() {
+            return Err(
+                "SUBAGENT_POLICY_MISSING: 找不到子代理委派策略文件 piggy-subagent-policy.md，\
+                 已拒绝打开该开关（否则每次建会话都会启动失败）。请重新安装 Piggy。"
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(on) = subagent_delegation {
+        cfg.subagent_delegation = on;
     }
     cfg.clamp();
     app::perf_config_save(&cfg)
@@ -658,6 +676,8 @@ pub async fn session_rename(
                 // 改名的临时 worker 也不需要 Fleet 数据面
                 bridge_script: None,
                 envs: Vec::new(),
+                // 只读档位，本来就不会走到委派（cli_args 里档位判定也会拦下）
+                subagent_policy: None,
             },
             sink(&app),
         )

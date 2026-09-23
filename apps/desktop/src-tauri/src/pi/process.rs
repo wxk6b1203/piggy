@@ -42,8 +42,11 @@ pub struct SpawnArgs {
     /// 数据面，会话本身照常可用，所以这里缺失不报错、只记日志。
     pub bridge_script: Option<PathBuf>,
     /// 追加给 pi 的环境变量。目前用于契约测试隔离配置目录
-    /// （`PI_CODING_AGENT_DIR` → 一个没有 pi-subagents 的空目录，从而验证降级路径）。
+    /// （`PI_CODING_AGENT_DIR` → 一个没有 pi-subagents 的空目录，从而验证降级路径），
+    /// 以及 `PIGGY_SUBAGENT_DELEGATION`（告诉桥接扩展自动激活 `subagent`）。
     pub envs: Vec<(String, String)>,
+    /// 子代理委派策略文件（`piggy-subagent-policy.md`）。`Some` = 开关已打开。
+    pub subagent_policy: Option<PathBuf>,
 }
 
 /// 组装 pi 的 argv（不含二进制本身）。
@@ -91,7 +94,57 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push("--extension".into());
         out.push(bridge.into());
     }
+    // 子代理委派策略（docs/06 §6）：`--append-system-prompt` 落到系统提示词的 addendum 段，
+    // 位置在所有其它段落之后 —— 它要正面对冲 pi-subagents 写在 rules 段里的
+    // "Do not invoke subagents unless the operator requested delegation..."，
+    // 靠后并且明确自称"这就是那个授权"。
+    //
+    // ⚠️ **只在「完全权限」档注入**。真机验证（2026-09-23）：`--tools read,grep,find,ls`
+    // 之下 `pi.getAllTools()` 只剩这 4 个，扩展工具根本没被注册进来，
+    // 连 `subagents_enable` 都不存在 —— 此时注入一段"去委派吧"的策略等于让模型去调一个
+    // 不存在的工具。判定条件写在这里而不是让上层决定，是为了让它能被 `cli_args` 的单测钉死。
+    if subagent_delegation_active(args) {
+        let policy = args
+            .subagent_policy
+            .as_ref()
+            .expect("subagent_delegation_active 为真时必然有 policy");
+        // 缺失必须报错：开关开着却没注入，用户会以为委派已启用（静默失效）。
+        if !policy.is_file() {
+            return Err(format!(
+                "SUBAGENT_POLICY_MISSING: 子代理委派已开启，但策略文件不存在: {}。\
+                 已拒绝启动——否则开关看起来生效、实际什么都没发生。\
+                 请重新安装 Piggy 或在设置里关闭该开关。",
+                policy.display()
+            ));
+        }
+        out.push("--append-system-prompt".into());
+        out.push(policy.into());
+    }
     Ok(out)
+}
+
+/// 打开子代理委派时注入的环境变量名（桥接扩展 `packages/piggy-bridge` 里同名常量）。
+pub const DELEGATION_ENV: &str = "PIGGY_SUBAGENT_DELEGATION";
+
+/// 子代理委派此刻是否**真的**生效（开关打开 **且** 档位能让扩展工具存在）。
+///
+/// 抽出来是为了让「界面显示的开关状态」与「进程实际拿到的能力」用同一个判据——
+/// 两者分叉会让用户以为开了、实际没开（docs/15 规矩 8 同一类问题）。
+pub fn subagent_delegation_active(args: &SpawnArgs) -> bool {
+    args.permission == PermissionMode::Full && args.subagent_policy.is_some()
+}
+
+/// 交给 pi 进程的环境变量：`SpawnArgs.envs` 加上委派开关。
+///
+/// 单独成函数（而不是塞进 `spawn_worker`）是为了让"开关打开时到底传了什么"可被单测覆盖。
+pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
+    let mut envs = args.envs.clone();
+    if subagent_delegation_active(args) {
+        // 桥接扩展据此在首个模型请求前激活 `subagent`，
+        // 省掉模型自己调 `subagents_enable` 的那一轮。
+        envs.push(("PIGGY_SUBAGENT_DELEGATION".to_string(), "1".to_string()));
+    }
+    envs
 }
 
 pub async fn spawn_worker(
@@ -110,7 +163,7 @@ pub async fn spawn_worker(
     for a in &argv {
         cmd.arg(a);
     }
-    for (k, v) in &args.envs {
+    for (k, v) in spawn_envs(&args) {
         cmd.env(k, v);
     }
     if args.permission.needs_path_guard() {
@@ -376,7 +429,15 @@ mod tests {
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
+            subagent_policy: None,
         }
+    }
+
+    /// 生成一份真实的策略文件（`cli_args` 会校验它存在）。
+    fn policy_file(dir: &std::path::Path) -> PathBuf {
+        let p = dir.join("piggy-subagent-policy.md");
+        std::fs::write(&p, "# policy").unwrap();
+        p
     }
 
     fn argv(args: &SpawnArgs) -> Vec<String> {
@@ -470,5 +531,86 @@ mod tests {
         let mut b = args(PermissionMode::Full);
         b.session = SessionTarget::NoSession;
         assert!(argv(&b).contains(&"--no-session".to_string()));
+    }
+
+    /* ---------------- 子代理委派开关（docs/06 §6） ---------------- */
+
+    #[test]
+    fn delegation_off_by_default_injects_nothing() {
+        // 默认关：不注入策略、不传环境变量。判定与档位无关，因为压根没开。
+        // （Workspace 档需要守卫脚本，它由 `delegation_is_silently_off_in_restricted_modes` 覆盖）
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Full] {
+            let a = args(mode);
+            assert!(!argv(&a).contains(&"--append-system-prompt".to_string()), "{mode:?}");
+            assert!(spawn_envs(&a).iter().all(|(k, _)| k != DELEGATION_ENV), "{mode:?}");
+            assert!(!subagent_delegation_active(&a), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn delegation_injects_policy_and_env_in_full_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = args(PermissionMode::Full);
+        a.subagent_policy = Some(policy_file(tmp.path()));
+
+        assert_eq!(
+            argv(&a),
+            vec![
+                "--mode",
+                "rpc",
+                "--append-system-prompt",
+                a.subagent_policy.as_ref().unwrap().to_str().unwrap(),
+            ]
+        );
+        assert!(subagent_delegation_active(&a));
+        assert_eq!(
+            spawn_envs(&a).iter().find(|(k, _)| k == DELEGATION_ENV),
+            Some(&(DELEGATION_ENV.to_string(), "1".to_string()))
+        );
+    }
+
+    #[test]
+    fn delegation_is_silently_off_in_restricted_modes() {
+        // 真机验证（2026-09-23）：--tools 白名单会把扩展工具整个过滤掉，
+        // `pi.getAllTools()` 里连 subagents_enable 都没有。此时注入"去委派吧"的策略
+        // 等于让模型去调一个不存在的工具 —— 所以限制档位下**不注入**。
+        let tmp = tempfile::tempdir().unwrap();
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
+            let mut a = args(mode);
+            a.subagent_policy = Some(policy_file(tmp.path()));
+            if mode == PermissionMode::Workspace {
+                // 守卫脚本缺失会让 Workspace 直接拒绝启动，先补上
+                let g = tmp.path().join("piggy-guard.js");
+                std::fs::write(&g, "// guard").unwrap();
+                a.guard_script = Some(g);
+            }
+            assert!(!argv(&a).contains(&"--append-system-prompt".to_string()), "{mode:?}");
+            assert!(spawn_envs(&a).iter().all(|(k, _)| k != DELEGATION_ENV), "{mode:?}");
+            assert!(!subagent_delegation_active(&a), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn delegation_with_a_missing_policy_file_refuses_to_start() {
+        // 开关开着却没注入 = 用户以为委派已启用、实际什么都没发生（静默失效）。
+        // 这是本项目最不能接受的失败方式，所以必须硬错误。
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = args(PermissionMode::Full);
+        a.subagent_policy = Some(tmp.path().join("does-not-exist.md"));
+        let err = cli_args(&a).unwrap_err();
+        assert!(err.starts_with("SUBAGENT_POLICY_MISSING"), "{err}");
+    }
+
+    #[test]
+    fn delegation_env_does_not_clobber_existing_envs() {
+        // 契约测试用 envs 隔离 PI_CODING_AGENT_DIR；两个都要在
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = args(PermissionMode::Full);
+        a.subagent_policy = Some(policy_file(tmp.path()));
+        a.envs = vec![("PI_CODING_AGENT_DIR".into(), "/tmp/empty".into())];
+        let envs = spawn_envs(&a);
+        assert!(envs.iter().any(|(k, v)| k == "PI_CODING_AGENT_DIR" && v == "/tmp/empty"));
+        assert!(envs.iter().any(|(k, _)| k == DELEGATION_ENV));
+        assert_eq!(envs.len(), 2);
     }
 }

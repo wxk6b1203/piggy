@@ -12,8 +12,8 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **173/173**：apps/desktop 173（18 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、**4 条同一会话重复打开去重**）+ `packages/piggy-bridge` 32（含产物新鲜度门禁）+ `packages/pi-protocol` 30 |
-| `cargo test` | **89 + 3 + 1** + fixtures 全绿（新增 fleet 状态机/结果收集/容量排队 16 条、argv 组装 8 条、扩展资源定位 4 条） |
+| `vitest` | **245/245**：apps/desktop **178**（19 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、**5 条子代理委派开关**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `cargo test` | **94 + 3 + 1** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
@@ -193,6 +193,20 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
       假红比不写更坏。
     顺带修掉一个**必现**（不是偶尔）的同类问题：`doExport` 导出已打开的会话时无条件
     `createTabGuarded` → 必然撞互斥锁；而且不能顺手把用户正在用的标签关掉。
+
+24. **要"改模型行为"，先 dump 它真正收到的东西，别照着文档猜。**
+    问的是"为什么 pi 几乎不用子代理"。读 pi-subagents 源码能猜到"有劝退措辞"，但只有把
+    **真机系统提示词 + `getAllTools()`** dump 出来才看清全貌：`subagent` **根本不在工具表里**
+    （默认只有 `subagents_enable`，模型得先主动调它一次），外加 rules 段里那条
+    "Do not invoke subagents unless the operator requested delegation..."。
+    做法：写一个一次性扩展 hook `before_agent_start`，把 `event.systemPrompt` 与
+    `pi.getAllTools()/getActiveTools()` 写到 /tmp，然后 `pi -p "只回复：收到"` 跑一轮。
+    **成本一轮极小的 token，换掉一整类猜测。**
+    顺带两条只能靠实测得到的结论：
+    - `--tools read,grep,…` 会把**扩展工具整个过滤掉**（`getAllTools()` 只剩白名单那几个），
+      所以任何依赖插件工具的功能在限制档位下都不存在 —— 这不是"可能不生效"，是**进程里没有**；
+    - 在 `before_agent_start` 里 `setActiveTools`，**本次请求的工具表已经定死**，
+      要从下一轮才生效。`systemPromptOptions.selectedTools` 在此之前就取好快照了。
 
 ## 4. 未完成 / 待决策
 

@@ -375,6 +375,17 @@ async function runVerb(verb, args, ui, rpc) {
     }
   }
 }
+var DELEGATION_ENV = "PIGGY_SUBAGENT_DELEGATION";
+function planSubagentActivation(opts) {
+  if (!opts.enabled) return { activate: false, tools: [], reason: "disabled" };
+  if (!opts.available.includes("subagent")) return { activate: false, tools: [], reason: "unavailable" };
+  if (opts.active.includes("subagent")) return { activate: false, tools: [], reason: "already" };
+  return {
+    activate: true,
+    tools: [.../* @__PURE__ */ new Set([...opts.active, "subagent"])],
+    reason: "ok"
+  };
+}
 function createBridge(api) {
   const rpc = new SubagentRpc(api.events);
   let lastUi = null;
@@ -416,11 +427,34 @@ function piggyBridge(pi) {
       }
     })
   });
+  let warnedUnavailable = false;
+  const onAgentStart = () => {
+    const plan = planSubagentActivation({
+      enabled: process.env[DELEGATION_ENV] === "1",
+      available: (pi.getAllTools?.() ?? []).map((t) => t.name),
+      active: pi.getActiveTools?.() ?? []
+    });
+    if (plan.activate) {
+      try {
+        pi.setActiveTools(plan.tools);
+      } catch {
+      }
+      return;
+    }
+    if (plan.reason === "unavailable" && !warnedUnavailable) {
+      warnedUnavailable = true;
+      console.warn(
+        "[piggy] \u5B50\u4EE3\u7406\u59D4\u6D3E\u5DF2\u5F00\u542F\uFF0C\u4F46\u672C\u4F1A\u8BDD\u7684\u5DE5\u5177\u8868\u91CC\u6CA1\u6709 subagent \uFF08\u9650\u5236\u6863\u4F4D\u7684 --tools \u767D\u540D\u5355\u4F1A\u8FC7\u6EE4\u6389\u6269\u5C55\u5DE5\u5177\uFF09\u3002\u7B56\u7565\u5DF2\u6CE8\u5165\u4F46\u5DE5\u5177\u4E0D\u5B58\u5728\u3002"
+      );
+    }
+  };
+  pi.on("before_agent_start", onAgentStart);
 }
 export {
   ASYNC_COMPLETE_EVENT,
   COMMAND_TABLE,
   DEGRADED_ERROR,
+  DELEGATION_ENV,
   PREFIX,
   READY_EVENT,
   REPLY_PREFIX,
@@ -433,6 +467,7 @@ export {
   encodePayload,
   parseSpawnArgs,
   parseSteerArgs,
+  planSubagentActivation,
   receiptDelivery,
   receiptRunId,
   receiptText,
