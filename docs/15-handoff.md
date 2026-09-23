@@ -12,11 +12,11 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **146/146**：apps/desktop 114（15 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView）+ `packages/piggy-bridge` 32（含产物新鲜度门禁） |
+| `vitest` | **157/157**：apps/desktop 125（16 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全）+ `packages/piggy-bridge` 32（含产物新鲜度门禁） |
 | `cargo test` | **89 + 3 + 1** + fixtures 全绿（新增 fleet 状态机/结果收集/容量排队 16 条、argv 组装 8 条、扩展资源定位 4 条） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
-| `ui:startup` | 全绿，且**新增第 4 段**：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness） |
+| `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内） |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
 
@@ -134,8 +134,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 19. **bridge 的载荷与 store 的解析必须成对改**：`lanes` 在**顶层**（bridge 归一化产物），
     不是 `status.lanes`。这两处曾各自按不同理解实现 → 真机上"载荷到了、面板永远空白"。
     改任一侧都要动 `src/test/fleet.test.ts` 里那份**真实抓包 fixture**。
-20. **pi-subagents 的 async runner 与 pnpm 软链布局不兼容**（子代理"派发成功但秒 failed"的根因）。
-    `runner-aliases.js` 把 peer 包别名指向 **pnpm 软链路径**，runner 再把它当模块 URL 用，
+20. **pi-subagents 的 async runner 与 pnpm 软链布局不兼容**（子代理"派发成功但秒 failed"的根因）。    `runner-aliases.js` 把 peer 包别名指向 **pnpm 软链路径**，runner 再把它当模块 URL 用，
     于是被别名包**自己的依赖**从软链路径解析不到（它们躺在真实路径的兄弟位）——
     报错形如 `ERR_MODULE_NOT_FOUND: Cannot find package 'marked' / '@earendil-works/pi-telemetry'`。
     注意：**不是"没装"**（重装 pi 无效，补一个依赖只会冒下一个）。
@@ -148,6 +147,16 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     ```
     完整根因、A/B 复现实验与复验记录见 **docs/18**。
     排查入口：`$TMPDIR/pi-subagents-uid-<uid>/async-subagent-runs/<runId>/runner.stderr.log`。
+21. **列表类 UI：「看得见的条数」是 CSS 的事，不许写进数据层。**
+    Composer 的斜杠补全曾经是 `.slice(0, 8)` + 容器 `overflow: hidden` + ↑↓ 被 `preventDefault`
+    却什么都不做 —— 三件事叠起来的效果是"第 9 条以后**根本不在 DOM 里**、也滚不到、键盘也够不着"。
+    在只有 3 条内建命令时看不出来；装了 pi-subagents 变成 50+ 条后，用户第一眼就是"无法滚动"。
+    正确形态：全部条目渲染进 DOM，容器给 `max-height` + `overflow-y: auto` + `overscroll-behavior: contain`，
+    ↑↓ 环绕移动选中项并 `scrollIntoView({block:'nearest'})`。
+    另外两点容易漏：**异步数据到达后要按当前输入重算一次**（否则第一轮永远是空列表）；
+    **jsdom 的 `scrollHeight` 恒为 0**，所以"能不能滚"只能在真浏览器里断言（`ui:startup` 第 4 段）。
+    同类隐患：任何"只渲染前 N 条"的地方（会话列表、文件树、命令面板）都要先问一句
+    "第 N+1 条用户怎么够到"。
 
 ## 4. 未完成 / 待决策
 

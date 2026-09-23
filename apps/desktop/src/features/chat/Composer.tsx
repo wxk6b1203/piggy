@@ -4,7 +4,7 @@
  * 状态行与上下文环在卡**下方**的 dock（DSH 无底部状态栏）。
  * 协议语义未改：流式中发送必须带 streamingBehavior（docs/02 §7.2）。
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { wakeIfNeeded } from '@/lib/sleep';
@@ -42,12 +42,23 @@ async function fileToBase64(file: File): Promise<PendingImage> {
   };
 }
 
+/**
+ * 补全列表一次最多放多少条。
+ *
+ * 这里**不是**可见行数（可见高度由 CSS `max-height` 决定、超出可滚动）。
+ * 曾经的 `.slice(0, 8)` 把 8 当成了"看得见的条数"，于是第 9 条以后**根本不在 DOM 里**：
+ * 列表既滚不动、也没有键盘导航（↑↓ 被 preventDefault 掉却不做任何事），
+ * 用户装了 pi-subagents 后命令变多，第一屏之后的命令就再也够不着了。
+ */
+const MAX_SLASH_ITEMS = 200;
+
 export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<PendingImage[]>([]);
-  const [slash, setSlash] = useState<{ items: SlashCommand[]; query: string } | null>(null);
+  const [slash, setSlash] = useState<{ items: SlashCommand[]; query: string; index: number } | null>(null);
   const [commands, setCommands] = useState<SlashCommand[] | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  const slashRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
   const queue = useTabMsg(tabId, (t) => t.queue);
@@ -94,28 +105,62 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     const query = m[1] ?? '';
     if (!commands) {
       void cmd<{ commands: SlashCommand[] }>('pi_get_commands', { tabId })
-        .then((r) => setCommands(r.commands ?? []))
+        .then((r) => {
+          setCommands(r.commands ?? []);
+          // 命令列表是异步到的：到了之后要按当前输入重算一次，否则这一轮永远只显示空列表
+          const items = (r.commands ?? [])
+            .filter((c) => c.name.toLowerCase().includes(query.toLowerCase()))
+            .slice(0, MAX_SLASH_ITEMS);
+          setSlash((cur) => (cur && cur.query === query ? { items, query, index: 0 } : cur));
+        })
         .catch(() => setCommands([]));
-      setSlash({ items: [], query });
+      setSlash({ items: [], query, index: 0 });
       return;
     }
     const items = commands
       .filter((c) => c.name.toLowerCase().includes(query.toLowerCase()))
-      .slice(0, 8);
-    setSlash({ items, query });
+      .slice(0, MAX_SLASH_ITEMS);
+    setSlash({ items, query, index: 0 });
   };
 
-  const applySlash = (c: SlashCommand) => {
+  const applySlash = (c: SlashCommand | undefined) => {
+    if (!c) return;
     setText(`/${c.name} `);
     setSlash(null);
     areaRef.current?.focus();
   };
 
+  /** ↑↓ 在补全列表里移动选中项（环绕），列表滚到哪就自动把选中项带进视野。 */
+  const moveSlash = (delta: number) => {
+    setSlash((cur) => {
+      if (!cur || cur.items.length === 0) return cur;
+      const n = cur.items.length;
+      return { ...cur, index: (cur.index + delta + n) % n };
+    });
+  };
+
+  // 键盘移动后把选中项滚进视野（jsdom 没有 scrollIntoView，测试里跳过）
+  useEffect(() => {
+    const el = slashRef.current?.querySelector('[data-active="true"]');
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+  }, [slash?.index, slash?.query]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slash && slash.items.length > 0) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (e.key === 'ArrowDown') {
         e.preventDefault();
-        return; // M1：不做键盘选择，点击补全
+        moveSlash(1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveSlash(-1);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.nativeEvent.isComposing)) {
+        e.preventDefault();
+        applySlash(slash.items[slash.index] ?? slash.items[0]);
+        return;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -129,11 +174,6 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      if (slash) {
-        e.preventDefault();
-        if (slash.items[0]) applySlash(slash.items[0]);
-        return;
-      }
       if (streaming) return; // 流式中 Enter 不发送（走 Steer/Follow-up 按钮）
       e.preventDefault();
       void send();
@@ -216,9 +256,19 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
             rows={Math.min(6, Math.max(1, text.split('\n').length))}
           />
           {slash && slash.items.length > 0 && (
-            <div className="pg-slash">
-              {slash.items.map((c) => (
-                <button key={c.name} className="pg-slash-item" onClick={() => applySlash(c)}>
+            <div className="pg-slash" ref={slashRef} role="listbox" aria-label="指令补全">
+              {slash.items.map((c, i) => (
+                <button
+                  key={c.name}
+                  className="pg-slash-item"
+                  data-active={i === slash.index || undefined}
+                  role="option"
+                  aria-selected={i === slash.index}
+                  onMouseEnter={() =>
+                    setSlash((cur) => (cur && cur.index !== i ? { ...cur, index: i } : cur))
+                  }
+                  onClick={() => applySlash(c)}
+                >
                   <code>/{c.name}</code>
                   <span className="pg-slash-desc">{c.description ?? c.source ?? ''}</span>
                 </button>

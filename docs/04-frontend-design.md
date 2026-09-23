@@ -254,7 +254,15 @@ pi:frame:{tabId}（≤60Hz）
 ## 7. 输入区（Composer）
 
 - 多行自动增高（上限 12 行）；`Enter` 发送 / `Shift+Enter` 换行 / `Cmd+Enter` 流式中强制 steer（07 §3 冲突策略）；
-- 斜杠命令：`/` 触发自动补全（`get_commands` 数据 + 内建 GUI 命令混排，标注来源 extension/prompt/skill/local）；
+- 斜杠命令：`/` 触发自动补全（`get_commands` 数据 + 内建 GUI 命令混排，标注来源 extension/prompt/skill/local）。
+  **列表行为**（2026-09-23 按用户反馈修正）：匹配项**全部渲染进 DOM**，容器固定可见高度
+  （`max-height: 260px`）并 `overflow-y: auto` —— 「看得见的条数」是 CSS 的事，**不能**在数据层
+  用 `slice` 硬截断。旧实现 `.slice(0, 8)` + `overflow: hidden` + ↑↓ 被 `preventDefault` 掉却不做事，
+  装 pi-subagents 后命令涨到 50+ 条，第 9 条以后既看不到也够不着（用户截图反馈"无法滚动"）。
+  键盘：`↑`/`↓` 环绕移动选中项并自动滚进视野、`Enter`/`Tab` 应用选中项、`Esc` 关闭、悬停即选中；
+  `pi_get_commands` 是异步的，到达后要按当前输入重算一次，否则第一轮 `/` 永远显示空列表；
+  真滚动由 `ui:startup` 在浏览器里断言（行数 / `scrollHeight>clientHeight` / `scrollTop` 真的变了 /
+  滚到底最后一条落在可视区内）—— jsdom 测不了滚动（`scrollHeight` 恒为 0）；
 - 图片：粘贴/拖拽/选择，缩略图 chips，经 Rust 读文件 → base64 → `prompt.images`（尺寸与 mime 校验，超过 provider 限制前置拦截）；
 - 流式中输入：输入区常开，发送按钮变为"Steer / Follow-up"二选一（协议语义可视化，02 §7.2）；
 - 队列 chips：`queue_update` 呈现，单条撤回 = `clear_queue` 后重排剩余。

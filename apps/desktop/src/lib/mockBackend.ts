@@ -296,11 +296,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     state.thinkingLevel = order[(i + 1) % order.length] ?? 'medium';
     return { level: state.thinkingLevel };
   },
+  /* 命令条数与真机同量级：真 pi + pi-subagents + pi-web-access 实测 **54 条**（docs/18 §4 那次核对）。
+   * 只给 3 条会让"补全列表能不能滚"这类问题在 mock 里直接消失——mock 撒谎比 mock 缺失更危险。 */
   pi_get_commands: () => ({
     commands: [
-      { name: 'piggy:status', description: '舰队状态', source: 'extension' },
+      { name: 'piggy:status', description: '把会话内子代理舰队快照同步到 Fleet 面板', source: 'extension' },
+      { name: 'piggy:spawn', description: '派发一个会话内子代理：/piggy:spawn <agent> <任务>', source: 'extension' },
+      { name: 'piggy:steer', description: '给运行中的子代理追加指令', source: 'extension' },
+      { name: 'piggy:interrupt', description: '中断子代理当前回合', source: 'extension' },
+      { name: 'piggy:stop', description: '停止后台子代理运行', source: 'extension' },
+      { name: 'piggy:resume', description: '续跑已停止的子代理', source: 'extension' },
+      { name: 'piggy:cost', description: '子代理成本/用量报告', source: 'extension' },
+      { name: 'piggy:fleet-refresh', description: '刷新舰队快照', source: 'extension' },
       { name: 'review-pr', description: '评审当前 PR', source: 'prompt' },
+      { name: 'fix-tests', description: '修复失败的测试', source: 'prompt' },
+      { name: 'changelog', description: '生成变更日志', source: 'prompt' },
       { name: 'skill:brave-search', description: '联网搜索', source: 'skill' },
+      { name: 'skill:pdf', description: '读取 PDF', source: 'skill' },
+      { name: 'skill:docx', description: '读写 Word 文档', source: 'skill' },
+      // 凑到 52 条，逼近真机规模
+      ...Array.from({ length: 38 }, (_, i) => ({
+        name: `pkg-cmd-${String(i + 1).padStart(2, '0')}`,
+        description: `来自第三方包的第 ${i + 1} 条命令（用于凑满真机量级的补全列表）`,
+        source: 'extension',
+      })),
     ],
   }),
   session_list: () => [

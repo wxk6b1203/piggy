@@ -457,13 +457,17 @@ body {
 .pg-img-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--pg-bg-sidebar); border: 1px solid var(--pg-border-l2); border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .pg-img-remove { background: none; border: none; color: var(--pg-fg-dim); cursor: pointer; }
 .pg-composer-box { position: relative; }
+/* 指令补全：固定可见高度 + 可滚动（装 pi-subagents 后命令 50+ 条，靠滚动/键盘够得到）
+ * `overscroll-behavior: contain` 防止滚到底后继续滚动把背后的转写一起滚走。 */
 .pg-slash {
   position: absolute; bottom: 100%; left: 0; right: 0;
+  max-height: 260px; overflow-y: auto; overscroll-behavior: contain;
   background: var(--pg-bg-sidebar); border: 1px solid var(--pg-border-l2); border-radius: 8px;
-  margin-bottom: 4px; overflow: hidden; z-index: 30; box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+  margin-bottom: 4px; z-index: 30; box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
 }
 .pg-slash-item { display: flex; gap: 8px; width: 100%; text-align: left; background: none; border: none; color: var(--pg-fg); padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
-.pg-slash-item:hover { background: color-mix(in srgb, var(--pg-accent) 14%, transparent); }
+.pg-slash-item:hover, .pg-slash-item[data-active] { background: color-mix(in srgb, var(--pg-accent) 14%, transparent); }
+.pg-slash-item[data-active] { box-shadow: inset 2px 0 0 var(--pg-accent); }
 .pg-slash-desc { color: var(--pg-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工具 tab / 预览 / welcome */

@@ -155,12 +155,44 @@ const fleet = await page.evaluate(async () => {
   document.querySelector('.pg-fleet-refresh').click();
   await new Promise((r) => setTimeout(r, 900));
   const bRoles = [...document.querySelectorAll('.pg-fleet-lane-role')].map((e) => e.textContent);
+
+  // 斜杠补全：列表必须**可滚动**且全部条目都在 DOM 里。
+  // jsdom 测不了真实滚动（scrollHeight 恒为 0），所以这一条只能在真浏览器里立。
+  const slash = await (async () => {
+    const ta = document.querySelector('.pg-composer-input');
+    if (!ta) return { error: '找不到输入框' };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, '/');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 900)); // 等 pi_get_commands
+    const box = document.querySelector('.pg-slash');
+    const rows = [...document.querySelectorAll('.pg-slash-item')];
+    if (!box) return { error: '补全列表没出现', rows: rows.length };
+    const cs = getComputedStyle(box);
+    const before = box.scrollTop;
+    box.scrollTop = box.scrollHeight; // 滚到底
+    await new Promise((r) => setTimeout(r, 60));
+    const last = rows.at(-1)?.getBoundingClientRect();
+    const boxRect = box.getBoundingClientRect();
+    return {
+      rows: rows.length,
+      overflowY: cs.overflowY,
+      scrollHeight: box.scrollHeight,
+      clientHeight: box.clientHeight,
+      scrollable: box.scrollHeight > box.clientHeight,
+      scrolledBy: box.scrollTop - before,
+      lastRowVisible: !!last && last.bottom <= boxRect.bottom + 1 && last.top >= boxRect.top - 1,
+      lastRowName: rows.at(-1)?.querySelector('code')?.textContent ?? null,
+    };
+  })();
+
   return {
     tabId,
     aLaneBlocks,
     aRoles,
     steerCleared,
     bRoles,
+    slash,
     bridged: stores.useFleet.getState().bridge.installed,
     synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
   };
@@ -188,6 +220,16 @@ if (fleet.steerCleared !== true) bad.push('A 层 steer 回车后输入框未清�
 if (fleet.bridged !== true) bad.push(`B 层 bridge 未标记为已安装：installed=${String(fleet.bridged)} ★`);
 if (!fleet.bRoles.some((r) => String(r).includes('correctness'))) {
   bad.push(`B 层刷新后未出现子代理 lane：${JSON.stringify(fleet.bRoles)} ★`);
+}
+/* 斜杠补全：全部命令在 DOM 里 + 容器真的能滚 + 滚到底能看到最后一条 */
+const sl = fleet.slash ?? {};
+if (sl.error) bad.push(`斜杠补全：${sl.error} ★`);
+else {
+  if (sl.rows <= 8) bad.push(`斜杠补全只渲染了 ${sl.rows} 条（应当列出全部匹配项）★`);
+  if (sl.overflowY !== 'auto' && sl.overflowY !== 'scroll') bad.push(`补全容器 overflow-y=${sl.overflowY}，不可滚动 ★`);
+  if (!sl.scrollable) bad.push(`补全容器没有溢出（scrollHeight=${sl.scrollHeight} ≤ clientHeight=${sl.clientHeight}），滚动核对失去意义`);
+  if (!(sl.scrolledBy > 0)) bad.push(`补全列表 scrollTop 没变化（${sl.scrolledBy}），实际滚不动 ★`);
+  if (!sl.lastRowVisible) bad.push(`滚到底后最后一条（${sl.lastRowName}）仍不在可视区内 ★`);
 }
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 
