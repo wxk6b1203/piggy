@@ -252,6 +252,7 @@ pub fn run() {
             commands::boot_reset,
             commands::pi_discover,
             commands::pick_directory,
+            commands::pick_pi_binary,
             commands::webview_log,
             commands::tab_create,
             commands::tab_close,

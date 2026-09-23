@@ -114,12 +114,27 @@ function RuntimeSection() {
 
   const pickPath = async () => {
     try {
-      const p = await cmd<string | null>('pick_directory');
-      if (p) await save({ piSource: 'custom', piPath: p });
+      // 必须是「选文件」不是「选目录」：custom 要的是可执行文件本身，
+      // 选到文件夹会被后端的 is_file() 拒绝。
+      const p = await cmd<string | null>('pick_pi_binary', { start: pi?.customPath ?? null });
+      // 用户取消 → 什么都不改（不切到 custom，也不留一个"custom 但没路径"的坏配置）
+      if (!p) return;
+      await save({ piSource: 'custom', piPath: p });
     } catch (e) {
       toast.error(String(e));
     }
   };
+
+  /** 点来源按钮：custom 必须**先选到路径**再切档，否则会写下一个解析不了的配置。 */
+  const pickSource = (id: PiSourceOption['id']) => {
+    if (id === 'custom') void pickPath();
+    else void save({ piSource: id });
+  };
+
+  // 禁用的选项要给出**看得见**的理由，不能只靠 tooltip（鼠标悬停才知道 = 看起来像坏了）
+  const disabledReason = pi?.builtinAvailable
+    ? null
+    : '「捆绑 pi」不可用：当前是 lite SKU，安装包里没有捆绑 pi。用 full SKU 构建后可选。';
 
   return (
     <div className="pg-settings-editor">
@@ -129,16 +144,18 @@ function RuntimeSection() {
           {(pi?.options ?? []).map((o) => (
             <button
               key={o.id}
+              type="button"
               className={`pg-btn${pi?.source === o.id ? ' pg-btn-primary' : ''}`}
               disabled={!o.available || busy}
               title={o.available ? undefined : '当前是 lite SKU（未捆绑 pi）'}
-              onClick={() => void save({ piSource: o.id })}
+              onClick={() => pickSource(o.id)}
             >
               {o.label}
             </button>
           ))}
         </div>
       </div>
+      {disabledReason && <p className="pg-runtime-note">{disabledReason}</p>}
 
       {pi?.source === 'custom' && (
         <div className="pg-settings-row">
@@ -147,9 +164,14 @@ function RuntimeSection() {
             value={pi.customPath ?? ''}
             placeholder="/path/to/pi"
             onChange={(e) => setPi((s) => (s ? { ...s, customPath: e.target.value } : s))}
-            onBlur={() => void save({ piSource: 'custom', piPath: pi.customPath ?? '' })}
+            // 清空输入框不该把空路径写回去（那会得到一个解析不了的 custom 配置）。
+            // 后端也会拦，但这里直接不发请求，用户不会看到一个莫名其妙的报错。
+            onBlur={() => {
+              const v = (pi.customPath ?? '').trim();
+              if (v) void save({ piSource: 'custom', piPath: v });
+            }}
           />
-          <Button onClick={() => void pickPath()}>选择目录…</Button>
+          <Button onClick={() => void pickPath()}>选择文件…</Button>
         </div>
       )}
 

@@ -132,6 +132,35 @@ pub async fn pick_directory(
     rx.await.map_err(|e| format!("目录选择框关闭异常: {e}"))
 }
 
+/// 选一个可执行文件（用于指定自定义 pi）。
+///
+/// 与 `pick_directory` 分开是必须的：`pi_source = custom` 要的是**文件**，
+/// 用选目录的对话框拿到文件夹只会被 `discover` 的 `is_file()` 拒绝。
+/// macOS 上 `.app` 包里的可执行文件默认不可选，所以这里不禁用「显示包内容」之外的路径。
+#[tauri::command]
+pub async fn pick_pi_binary(app: AppHandle, start: Option<String>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_title("选择 pi 可执行文件")
+        .add_filter("pi 可执行文件", &["", "exe", "cmd"]);
+    if let Some(s) = start {
+        let pb = PathBuf::from(&s);
+        // 传进来的可能是文件本身（重新选择时）→ 取它所在目录作为起点
+        let dir = if pb.is_dir() { Some(pb) } else { pb.parent().map(Path::to_path_buf) };
+        if let Some(d) = dir.filter(|d| d.is_dir()) {
+            builder = builder.set_directory(d);
+        }
+    }
+    builder.pick_file(move |picked| {
+        let path = picked.map(|p| p.to_string());
+        let _ = tx.send(path);
+    });
+    rx.await.map_err(|e| format!("文件选择框关闭异常: {e}"))
+}
+
 #[tauri::command]
 pub async fn tab_create(
     app: AppHandle,
@@ -334,17 +363,33 @@ pub async fn perf_config_save(
     let mut cfg = app::perf_config_load();
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
-    let mut pi_changed = false;
-    if let Some(s) = pi_source.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = PiSource::parse(s)?;
-        pi_changed = parsed != cfg.pi_source || pi_path.is_some();
-        cfg.pi_source = parsed;
+
+    // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）
+    let plan = crate::pi::discovery::plan_source_change(
+        cfg.pi_source,
+        cfg.pi_path.as_deref(),
+        pi_source.as_deref(),
+        pi_path.as_deref(),
+    )?;
+
+    // 2) **落盘之前**先把新来源真的解析一遍。
+    //    顺序很关键：以前是先写 config.json 再 resolve，于是"custom + 无路径"会被
+    //    写进磁盘、然后 resolve 报错返回 —— config.json 停在一个解析不了的状态，
+    //    之后每次建会话都失败，而界面上因为命令抛错没走到 reload，看起来只是"点了没反应"。
+    if let Some((next_source, next_path)) = &plan {
+        let builtin = state.registry.lock().await.builtin.clone();
+        discover(
+            *next_source,
+            next_path.as_deref().map(Path::new),
+            builtin.as_deref(),
+        )
+        .map_err(|e| format!("「{}」当前不可用，配置未改动：{e}", next_source.label()))?;
     }
-    if let Some(p) = pi_path {
-        let trimmed = p.trim().to_string();
-        let next = if trimmed.is_empty() { None } else { Some(trimmed) };
-        pi_changed |= next != cfg.pi_path;
-        cfg.pi_path = next;
+
+    // 3) 验证通过才落盘 + 更新内存
+    if let Some((next_source, next_path)) = plan {
+        cfg.pi_source = next_source;
+        cfg.pi_path = next_path;
     }
     cfg.clamp();
     app::perf_config_save(&cfg)
@@ -352,20 +397,22 @@ pub async fn perf_config_save(
     if let Ok(mut p) = state.perf.write() {
         *p = cfg.clone();
     }
-    if pi_changed {
+
+    // 4) 同步到 registry 并让缓存路径失效（已在跑的 worker 仍持旧二进制，直到被重启）
+    {
         let mut reg = state.registry.lock().await;
+        let changed = reg.pi_source != cfg.pi_source || reg.pi_custom_path.as_deref() != cfg.pi_path.as_deref().map(Path::new);
         reg.pi_source = cfg.pi_source;
         reg.pi_custom_path = cfg.pi_path.as_ref().map(PathBuf::from);
-        // 让已缓存的路径失效，下次建会话/复活时按新来源重新定位。
-        // 已在跑的 worker 仍持有旧二进制，直到被重启——设置页会明示这一点。
-        reg.pi_bin = None;
-        // 立刻解析一次，配置有问题就在保存这一步报错，而不是等用户开新会话才炸。
-        let resolved = reg.resolve_bin()?;
-        eprintln!(
-            "[piggy] pi 来源已切换: {} → {}",
-            cfg.pi_source.as_str(),
-            resolved.display()
-        );
+        if changed {
+            reg.pi_bin = None;
+            let resolved = reg.resolve_bin()?;
+            eprintln!(
+                "[piggy] pi 来源已切换: {} → {}",
+                cfg.pi_source.as_str(),
+                resolved.display()
+            );
+        }
     }
     Ok(())
 }

@@ -25,6 +25,21 @@ const state = {
   permission: 'workspace' as 'read-only' | 'workspace' | 'full',
 };
 
+/** Piggy 应用配置的 mock 副本（对应 ~/.piggy/config.json）。写入必须真的记住。 */
+const appCfg: {
+  max_workers: number;
+  idle_timeout_min: number;
+  permission_mode: string;
+  pi_source: string;
+  pi_path: string | null;
+} = {
+  max_workers: 8,
+  idle_timeout_min: 10,
+  permission_mode: 'workspace',
+  pi_source: 'system',
+  pi_path: null,
+};
+
 function snapshot() {
   return {
     tab_id: TAB,
@@ -84,8 +99,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   /* 形状必须与 src-tauri/src/pi/discovery.rs 的 PiSource / pi_source_options 一致。
      默认 source=system —— "默认使用系统 pi" 是明确要求，mock 不该给别的默认。 */
   pi_source_options: () => ({
-    source: 'system',
-    customPath: null,
+    source: appCfg.pi_source,
+    customPath: appCfg.pi_path,
     builtinAvailable: true,
     builtinPath: '/mock/App.app/Contents/Resources/resources/pi/pi',
     current: { path: '/mock/bin/pi', version: '0.87.0', source: 'system', via: 'PATH', fromEnv: false },
@@ -95,10 +110,24 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       { id: 'custom', label: '自定义路径', available: true },
     ],
   }),
-  pi_set_default_permission: (a) => ({ defaultPermission: a.mode }),
+  pi_set_default_permission: (a) => {
+    appCfg.permission_mode = String(a.mode);
+    return { defaultPermission: appCfg.permission_mode };
+  },
   pick_directory: () => null, // 浏览器 mock 无系统目录框：视为取消
-  perf_config_load: () => ({ max_workers: 8, idle_timeout_min: 10, permission_mode: 'workspace' }),
-  perf_config_save: () => null,
+  pick_pi_binary: () => '/mock/bin/pi', // mock 直接给一个路径，便于验证切档流程
+  /* **有状态**的 config mock。
+     以前这里是硬编码常量：点「完全权限」→ 保存成功 → reload 读回 'workspace'
+     → 选中状态弹回原样，看起来就是"按钮点了没反应"。
+     mock 不记录写入会让调试得出错误结论，所以必须真的存下来。 */
+  perf_config_load: () => ({ ...appCfg }),
+  perf_config_save: (a) => {
+    appCfg.max_workers = Number(a.maxWorkers ?? appCfg.max_workers);
+    appCfg.idle_timeout_min = Number(a.idleTimeoutMin ?? appCfg.idle_timeout_min);
+    if (a.piSource) appCfg.pi_source = String(a.piSource);
+    if (a.piPath !== undefined) appCfg.pi_path = a.piPath === null ? null : String(a.piPath);
+    return null;
+  },
   tab_sleep: () => null,
   tab_sleep_idlest: () => ({ tabId: 'mock-tab-1' }),
   tab_create: (a) => {

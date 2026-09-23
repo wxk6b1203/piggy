@@ -932,4 +932,6 @@ body {
 }
 .pg-runtime-current code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); color: var(--pg-fg); }
 .pg-runtime-warn { margin-top: var(--pg-sp-2); color: var(--pg-warn); }
+/* 禁用选项的可见理由：只靠 tooltip 等于"鼠标悬停才知道"，看起来就像坏了 */
+.pg-runtime-note { margin: var(--pg-sp-2) 0 0; font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
 .pg-settings-editor .ant-input { max-width: 420px; }

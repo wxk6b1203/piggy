@@ -211,6 +211,51 @@ fn probe_well_known() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
+/// 计算 pi 来源的变更计划。
+///
+/// **纯函数**：只做校验与规整，不碰磁盘、不碰 registry、不解析二进制
+/// （"能不能解析"由调用方在落盘**之前**用 `discover` 验证）。
+///
+/// 返回 `Ok(None)` = 没有变更；`Ok(Some((来源, 路径)))` = 有变更。
+///
+/// 这里拦住的是本项目真实踩过的坑：允许 `custom` 且路径为空会被写进 config.json，
+/// 结果是**每次建会话都失败**（"指定的 pi 路径不存在: （未填写路径）"），
+/// 而界面上因为命令报错、没走到 reload，看起来像"点了没反应"。
+pub fn plan_source_change(
+    current: PiSource,
+    current_path: Option<&str>,
+    requested_source: Option<&str>,
+    requested_path: Option<&str>,
+) -> Result<Option<(PiSource, Option<String>)>, String> {
+    let next_source = match requested_source.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => PiSource::parse(s)?,
+        None => current,
+    };
+    let next_path = match requested_path {
+        // 显式传空串 = 清空
+        Some(p) => {
+            let t = p.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        None => current_path.map(str::to_string),
+    };
+
+    // 关键守卫：custom 必须有路径
+    if next_source == PiSource::Custom && next_path.is_none() {
+        return Err(
+            "选择「自定义路径」需要先指定 pi 可执行文件；配置未改动（仍用原来的来源）".to_string(),
+        );
+    }
+    if next_source == current && next_path.as_deref() == current_path {
+        return Ok(None);
+    }
+    Ok(Some((next_source, next_path)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +269,66 @@ mod tests {
             assert_eq!(PiSource::parse(s.as_str()).unwrap(), s);
         }
         assert!(PiSource::parse("python").is_err());
+    }
+
+    #[test]
+    fn no_change_returns_none() {
+        assert!(plan_source_change(PiSource::System, None, Some("system"), None)
+            .unwrap()
+            .is_none());
+        assert!(
+            plan_source_change(PiSource::Custom, Some("/a/pi"), Some("custom"), None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// 这是本次的 bug：custom + 空路径曾被允许写盘，导致建会话全失败。
+    #[test]
+    fn custom_without_path_is_rejected() {
+        let e = plan_source_change(PiSource::System, None, Some("custom"), None).unwrap_err();
+        assert!(e.contains("自定义路径"), "{e}");
+
+        // 显式传空串同样拒绝
+        let e2 = plan_source_change(PiSource::System, None, Some("custom"), Some("  ")).unwrap_err();
+        assert!(e2.contains("自定义路径"), "{e2}");
+
+        // 已有 custom 路径时，清空它也要拒绝（否则同样落到"无路径的 custom"）
+        let e3 = plan_source_change(PiSource::Custom, Some("/a/pi"), Some("custom"), Some(""))
+            .unwrap_err();
+        assert!(e3.contains("自定义路径"), "{e3}");
+    }
+
+    #[test]
+    fn custom_with_path_is_accepted() {
+        let plan = plan_source_change(PiSource::System, None, Some("custom"), Some(" /x/pi "))
+            .unwrap()
+            .expect("应产生变更");
+        assert_eq!(plan.0, PiSource::Custom);
+        assert_eq!(plan.1.as_deref(), Some("/x/pi"), "路径应被 trim");
+    }
+
+    /// 只改配置里的其他字段（不传来源）时不该产生 pi 变更。
+    #[test]
+    fn omitted_source_keeps_current() {
+        assert!(plan_source_change(PiSource::Bundled, Some("/b/pi"), None, None)
+            .unwrap()
+            .is_none());
+    }
+
+    /// 从坏状态（custom 无路径）切回 system 必须可行——这是修复路径。
+    #[test]
+    fn switching_away_from_broken_custom_repairs_it() {
+        let plan = plan_source_change(PiSource::Custom, None, Some("system"), None)
+            .unwrap()
+            .expect("应产生变更");
+        assert_eq!(plan.0, PiSource::System);
+        assert_eq!(plan.1, None);
+    }
+
+    #[test]
+    fn unknown_source_is_rejected() {
+        assert!(plan_source_change(PiSource::System, None, Some("python"), None).is_err());
     }
 
     /// 默认必须是系统 pi —— 这是明确的产品要求（打包用自定义 pi，但默认不劫持用户已有的安装）。
