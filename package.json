@@ -10,6 +10,7 @@
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint",
+    "build:bridge": "pnpm --filter piggy-bridge build",
     "test:rust": "cd apps/desktop/src-tauri && cargo test",
     "test:contract": "cd apps/desktop/src-tauri && cargo test --features contract -- --test-threads=2 --nocapture",
     "fmt": "cd apps/desktop/src-tauri && cargo fmt"

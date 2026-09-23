@@ -114,8 +114,60 @@ const probe = await page.evaluate(async () => {
   };
 });
 
+/* ---------- 4. Fleet 面板：A 层启动 + B 层 PIGGY:1 数据面（真浏览器，走应用自己的代码） ---------- */
+// 覆盖的是"IPC 参数名 → mock 状态 → 事件 → store → 渲染"这条整链路：
+// 2026-09-23 之前 mock 的 fleet 处理器读 snake_case（真机走的是 camelCase），
+// 于是浏览器里 templateId 恒为 "undefined"、lane 集合永远走默认分支——测试全绿而真机未知。
+await page.addInitScript(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.dv-tab', { timeout: 15000 });
+await page.waitForTimeout(800);
+await page.click('.pg-rail-btn[title="Fleet（子代理）"]');
+await page.waitForSelector('.pg-fleet', { timeout: 5000 });
+
+const fleet = await page.evaluate(async () => {
+  const ipc = await import('/src/lib/ipc.ts');
+  const stores = globalThis.__piggyStores;
+  const tabId = stores.useTabs.getState().activeTabId;
+  // A 层：启动一次编排（scout-review-build = 3 条 lane，mock 400ms 后推 fleet:changed）
+  await ipc.cmd('fleet_start', { templateId: 'scout-review-build', task: '核对启动路径', cwd: '/Users/mock/proj' });
+  await new Promise((r) => setTimeout(r, 1400));
+  const aLaneBlocks = document.querySelectorAll('.pg-fleet-lane-block').length;
+  const aRoles = [...document.querySelectorAll('.pg-fleet-lane-role')].map((e) => e.textContent);
+
+  // A 层 steer：输入 + 回车 → fleet_steer（mock 会校验 lane 真的存在，不存在会抛错并弹 toast）
+  const steerInput = document.querySelector('.pg-fleet-steer input');
+  if (steerInput) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(steerInput, '只看边界条件');
+    steerInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 50));
+    steerInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  const steerCleared = document.querySelector('.pg-fleet-steer input')?.value === '';
+
+  // B 层：点刷新 → pi_prompt('/piggy:status') → mock 发 extension_ui_request(set_editor_text)
+  //        → DialogRouter 劫持 PIGGY:1 载荷 → fleetStore → 面板出现 lane 行
+  document.querySelector('.pg-fleet-refresh').click();
+  await new Promise((r) => setTimeout(r, 900));
+  const bRoles = [...document.querySelectorAll('.pg-fleet-lane-role')].map((e) => e.textContent);
+  return {
+    tabId,
+    aLaneBlocks,
+    aRoles,
+    steerCleared,
+    bRoles,
+    bridged: stores.useFleet.getState().bridge.installed,
+    synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
+  };
+});
+
 await browser.close();
-console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors }, null, 1));
+console.log(JSON.stringify({ ...probe, sessionPanelCount, pageErrors, fleet }, null, 1));
 
 if (probe.storeIds.length === 0) bad.push('恢复后 useTabs 为空（布局恢复把标签全关了）★');
 if (probe.driftedPanelIds === 0) bad.push('面板 id 与 params.tabId 没有分叉，这条核对失去意义');
@@ -127,6 +179,16 @@ if (probe.focusFirst !== true) bad.push('面板 id 分叉后 focusSessionTab 找
 if (probe.focusBogus !== false) bad.push('focusSessionTab 对不存在的 tabId 应返回 false');
 if (probe.closeButtons.some((b) => !b.has || !b.isButton || !b.label)) bad.push('有标签缺少可用的关闭按钮 ★');
 if (probe.pill && probe.pill.includes('选择模型')) bad.push('活动标签没有可用模型（说明 store 里没有这个 tab）★');
+
+/* Fleet：A 层用 scout-review-build 模板 → 必须正好 3 条 lane 块（参数名错了就会退化成默认模板） */
+if (fleet.aLaneBlocks !== 3) bad.push(`A 层 lane 数应为 3（scout-review-build），实际 ${fleet.aLaneBlocks} ★`);
+if (!fleet.aRoles.includes('scout')) bad.push(`A 层未见 scout lane：${JSON.stringify(fleet.aRoles)} ★`);
+if (fleet.steerCleared !== true) bad.push('A 层 steer 回车后输入框未清空（fleet_steer 可能报错了）★');
+/* Fleet：B 层点刷新后 PIGGY:1 载荷必须落到面板（mock 的 lane 行里带 " · correctness"） */
+if (fleet.bridged !== true) bad.push(`B 层 bridge 未标记为已安装：installed=${String(fleet.bridged)} ★`);
+if (!fleet.bRoles.some((r) => String(r).includes('correctness'))) {
+  bad.push(`B 层刷新后未出现子代理 lane：${JSON.stringify(fleet.bRoles)} ★`);
+}
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

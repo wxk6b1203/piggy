@@ -23,11 +23,13 @@ if (import.meta.env.DEV) {
     import('@/stores/tabs'),
     import('@/stores/messages'),
     import('@/stores/trajectory'),
-  ]).then(([tabs, messages, trajectory]) => {
+    import('@/stores/fleet'),
+  ]).then(([tabs, messages, trajectory, fleet]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
       useTrajectory: trajectory.useTrajectory,
+      useFleet: fleet.useFleet,
     };
   });
 }

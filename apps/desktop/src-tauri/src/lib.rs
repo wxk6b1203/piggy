@@ -149,6 +149,8 @@ pub fn run() {
                         .map(PathBuf::from);
                     // 权限守卫脚本 + 持久化的默认档位（「工作区内修改」缺脚本会拒绝启动）
                     reg.guard_script = crate::pi::permission::guard_script_path(resource_dir.as_deref());
+                    // 桥接扩展（docs/06 §4）：缺失只让 Fleet 面板显示"未安装"，不影响会话
+                    reg.bridge_script = crate::pi::resources::bridge_script_path(resource_dir.as_deref());
                     reg.default_permission = state
                         .perf
                         .read()
@@ -160,12 +162,17 @@ pub fn run() {
                             "[piggy] 权限守卫脚本缺失：档位「工作区内修改」将拒绝启动（仅可查看/完全权限不受影响）"
                         ),
                     }
+                    match &reg.bridge_script {
+                        Some(p) => eprintln!("[piggy] 子代理桥接扩展: {}", p.display()),
+                        None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
+                    }
                 } else {
                     // resource_dir 拿不到时也必须初始化守卫与档位：
                     // 之前整块都在 `if let Some(rd)` 里，于是 resource_dir 一失败，
                     // guard_script 就静默保持 None → 默认档位拒绝启动一切会话（实测踩到）
                     let mut reg = state.registry.lock().await;
                     reg.guard_script = crate::pi::permission::guard_script_path(None);
+                    reg.bridge_script = crate::pi::resources::bridge_script_path(None);
                     reg.default_permission = state
                         .perf
                         .read()

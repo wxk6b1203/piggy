@@ -7,20 +7,18 @@
 
 ## 1. 当前状态
 
-DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
+DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已完成并验证。
 
 | 检查 | 结果 |
 |---|---|
-| `tsc --noEmit` | 通过 |
-| `vitest` | 104/104（含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序） |
-| `cargo test` | 68 + 3 + 1 + fixtures 全绿 |
-| `cargo test --features contract` | 可编译通过（此前是坏的，默认不编译所以没暴露） |
+| `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
+| `vitest` | **146/146**：apps/desktop 114（15 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView）+ `packages/piggy-bridge` 32（含产物新鲜度门禁） |
+| `cargo test` | **89 + 3 + 1** + fixtures 全绿（新增 fleet 状态机/结果收集/容量排队 16 条、argv 组装 8 条、扩展资源定位 4 条） |
+| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
-| `tauri build --bundles app` | 通过；打包版启动 **0 条 webview 错误**，且日志确认按 `workspace` 档拉起 pi 并带上包内守卫脚本 |
-| 真实 pi 0.87.1 加载守卫扩展 | 无错误；三个档位的 `--tools` 取值均被接受、握手成功 |
-| 真实 pi 0.87.1 失败回合抓包 | 确认 `stopReason:"error"`/`"aborted"` + 空 `content`，转写与轨迹均已可见（规矩 12） |
-| `ui:startup` 启动核对 | 恢复布局（含面板 id 与 tabId 分叉）后：store 与面板一致、每个标签在 mock registry 里都存在、关闭按钮在内（激活常显 / 非激活 hover 显现）、徽标渲染、重载后仍成立 |
-| **`pnpm tauri dev` 人工确认** | ✅ 用户确认渲染正常（2026-09-23） |
+| `ui:startup` | 全绿，且**新增第 4 段**：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness） |
+| 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
+| 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
 
 ### 1.1 权限档位（Composer 工具行左侧）
 
@@ -36,8 +34,11 @@ DSH UI 对齐 + 权限档位 + pi 打包修复**已完成并验证**。
 
 ```bash
 pnpm dev                                        # Vite :5195
+pnpm build:bridge                               # piggy-bridge 源码 → resources/piggy-bridge.js（改扩展后必跑）
+pnpm --filter piggy-bridge test                 # 桥接扩展单测 + 产物新鲜度门禁
+pnpm test:contract                              # 真实 pi 契约测试（C12–C14 覆盖子代理双层，会消耗少量 token）
 pnpm --filter @piggy/desktop ui:debug           # 截图 + 错误 + 布局体检（--strict 进 CI）
-pnpm --filter @piggy/desktop ui:startup         # 启动核对：恢复布局后 store/面板/registry 是否一致
+pnpm --filter @piggy/desktop ui:startup         # 启动核对：布局恢复一致性 + Fleet 面板 A/B 两层
 pnpm --filter @piggy/desktop icons:gen          # 重生成 codicon 名联合类型
 pnpm --filter @piggy/desktop icons:seti         # 同步 Seti 文件图标（需 VSCODE_REF）
 pnpm --filter @piggy/desktop themes:sync        # 同步 VS Code tokenColors
@@ -111,19 +112,49 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     `params.tabId` 找**，不能拼 `session:${tabId}`——拼字符串永远找不到，表现为点侧栏里
     已经打开的会话时又开一个重复标签，Rust 还会以「会话文件已被标签页 X 打开」拒绝。
     见 `EditorArea.findSessionPanel`。
+15. **`get_messages` 的 data 是 `{"messages":[…]}`，不是裸数组**（`docs/rpc-commands.md` 明写）。
+    只认裸数组的解析器会**静默返回空**——Fleet 的 lane 结果收集就这样错过过：每条 lane
+    都正常 settle，但结果恒为空、下游 `{upstream}` 永远显示"(无输出)"，界面看不出异常。
+    现在 `fleet::last_assistant_text` 两种形状都认，且契约测试 C14 用真实 `get_messages` 兜住。
+16. **给 pi 写扩展时，先读它自己的类型，别照文档猜**（`@earendil-works/pi-coding-agent`
+    `dist/core/extensions/types.d.ts`；workspace 里已把它作为 `packages/piggy-bridge` 的
+    devDependency，可直接 `tsc` 校验）。三条曾经全写错、且因为"从未被加载"而长期没暴露：
+    - 注册命令是 `pi.registerCommand(name, { description, handler })`（**对象形参**，不是 `(name, fn)`）；
+    - UI 在 **`ctx.ui`** 上，不是 `pi.ui`；`setWidget` 签名是 `setWidget(key, content, options)`；
+    - 跨扩展通信是 **`pi.events`**（`on/emit`），`pi.on` 只吃 pi 自己的生命周期事件名。
+    加载一个 `handler` 不是函数的命令，pi 只发 `extension_error{error:"command.handler is not a function"}`，
+    而 `prompt` 的 response 仍是 `success:true`——**"命令被受理"不等于"命令跑起来了"**，
+    验证必须看回执（C12 就是为此存在的）。
+17. **`cmd()` 直传 camelCase，mock 也必须读 camelCase**（Tauri 侧才做 snake_case 映射）。
+    mock 的 `fleet_start` 曾读 `a.template_id` → 浏览器里 `templateId` 恒为 `"undefined"`、
+    lane 集合永远走默认分支，而真机正常。**mock 撒谎比 mock 缺失更危险**。
+18. **mock 不能把自己的内部对象直接 emit 给 store**：immer 的 auto-freeze 会冻结写进 state 的对象，
+    之后 mock 的定时器再改它就会 `TypeError: Cannot assign to read only property 'status'`。
+    真机每次发的是新 JSON，所以 mock 也要 `structuredClone` 后再发。
+19. **bridge 的载荷与 store 的解析必须成对改**：`lanes` 在**顶层**（bridge 归一化产物），
+    不是 `status.lanes`。这两处曾各自按不同理解实现 → 真机上"载荷到了、面板永远空白"。
+    改任一侧都要动 `src/test/fleet.test.ts` 里那份**真实抓包 fixture**。
+20. **本机 pi 安装缺 `marked`**（`@earendil-works/pi-tui` 的依赖，store link 与 global 两处都没有）。
+    主 pi 进程不走那条路径所以日常无感，但 **pi-subagents 的 async runner 子进程**会崩在
+    `ERR_MODULE_NOT_FOUND: Cannot find package 'marked'`，表现是"子代理派发成功但立刻 failed"。
+    修复：`pnpm add -g @earendil-works/pi-coding-agent@0.87.1`。排查入口：
+    `$TMPDIR/pi-subagents-uid-<uid>/async-subagent-runs/<runId>/runner.stderr.log`。
 
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
+| **本机 pi 缺 `marked`（阻塞 B 层"派发子代理"）** | 见规矩 20。修`pnpm add -g @earendil-works/pi-coding-agent@0.87.1` 之前，`/piggy:spawn` 派出的子代理会立刻 failed（通道本身正常）。**需用户决定是否重装全局 pi** |
+| **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②真机 steer 往返（参数与回执解析已有单测）；③`/piggy:cost` 真机往返（本机 pi-subagents 0.70.1 不声明该能力）；④dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | `CodeBlock.tsx` 的 shiki 动态导入 | `import(\`shiki/langs/${id}.mjs\`)` 是模板串，Vite 分析不了（启动有警告）。有 try/catch 兜底退回纯文本，但生产下这些语言无高亮 |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
 | **WebKit 渲染** | 未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是启动路径，不等于逐像素复核 |
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
-| 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`。fork 若改了 `piConfig.configDir`，Piggy 的面板会指向另一个目录。要支持需加设置项（docs/17 §2.3） |
+| 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`（`SpawnArgs.envs` 已具备透传能力，只差设置项）。要支持需加设置项（docs/17 §2.3） |
 | `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |
+| pi 扩展 API 版本耦合 | `packages/piggy-bridge` 的类型对着 pi 0.87.1 校验；pi 升级后需重跑 `pnpm --filter piggy-bridge typecheck` 与 `pnpm test:contract`（C12–C14）。这是唯一会因 pi 升级而静默失效的接缝 |
 
 ## 5. 验收方式
 

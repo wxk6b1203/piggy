@@ -1009,6 +1009,27 @@ body {
 .pg-fleet-lane-role { min-width: 0; color: var(--pg-fg-secondary); }
 .pg-fleet-lane-status { color: var(--pg-fg-dim); font-size: var(--pg-fs-11); font-variant-numeric: tabular-nums; }
 .pg-fleet-lane-result { width: 100%; color: var(--pg-fg-dim); font-size: var(--pg-fs-11); padding-left: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* lane 操作区（steer 输入 + 提升为标签页） */
+.pg-fleet-lane-block { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+.pg-fleet-lane-open { background: none; border: none; color: var(--pg-fg-dim); cursor: pointer; display: inline-flex; padding: 0; flex: none; }
+.pg-fleet-lane-open:hover { color: var(--pg-accent); }
+.pg-fleet-steer { display: flex; gap: var(--pg-sp-2); padding-left: 16px; align-items: center; }
+.pg-fleet-steer input {
+  flex: 1; min-width: 0; background: var(--pg-bg-app); color: var(--pg-fg);
+  border: 1px solid var(--pg-border-l2); border-radius: var(--pg-r-sm);
+  font-size: var(--pg-fs-11); padding: 2px var(--pg-sp-3); outline: none;
+}
+.pg-fleet-steer input:focus { border-color: var(--pg-accent); }
+.pg-fleet-steer button {
+  flex: none; background: none; border: 1px solid var(--pg-border-l2); border-radius: var(--pg-r-sm);
+  color: var(--pg-fg-secondary); cursor: pointer; font-size: var(--pg-fs-11); padding: 2px var(--pg-sp-3);
+}
+.pg-fleet-steer button:hover:not(:disabled) { border-color: var(--pg-accent); color: var(--pg-accent); }
+.pg-fleet-steer button:disabled { opacity: 0.4; cursor: default; }
+.pg-fleet-refresh { background: none; border: none; color: var(--pg-fg-dim); cursor: pointer; display: inline-flex; padding: 0 0 0 var(--pg-sp-3); vertical-align: middle; }
+.pg-fleet-refresh:hover:not(:disabled) { color: var(--pg-accent); }
+.pg-fleet-refresh:disabled { opacity: 0.4; cursor: default; }
+.pg-fleet-synced { font-weight: 400; }
 
 /* bash 面板 */
 .pg-bashpanel { display: flex; flex-direction: column; height: 100%; background: var(--pg-bg-app); }

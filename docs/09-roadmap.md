@@ -142,19 +142,40 @@ M2 顺延项（记入 M3/M4 或独立跟进）：
 3. 未安装 pi-subagents 时 bridge 的降级提示正确；
 4. Fleet 运行不影响 05 预算（lane 计入 maxWorkers 的资源回归测试）。
 
-### 5.1 M3 实现记录（2026-09-23）
+### 5.1 M3 实现记录（2026-09-23；状态列已按当日晚的实测复核修正）
+
+> **修正说明**：本表 2026-09-23 首版多行标了 ✅，但 19:00 复核时发现其中两行与代码不符
+> （B 层扩展三处 API 全错且从未被加载；Fleet 面板缺 steer/提升/刷新三个控件）。
+> 现在的状态列只写**已验证**的事实，验证方式见表下 §5.2。
 
 | 工作包 | 落位 | 状态 |
 |---|---|---|
-| A 层 fleet 模块（06 §3） | `src-tauri/src/fleet.rs`：FleetRun 状态机（Running→Done/Aborted）、Lane 状态（Pending/Running/Settled/Failed）、`build_run`（环检测 fail-fast）、`ready_lanes` 纯函数 DAG 调度、`render_prompt`（{task}/{upstream} 注入）、`create_worktree`（git worktree，name 净化防逃逸、存在即复用） | ✅ |
+| A 层 fleet 模块（06 §3） | `src-tauri/src/fleet.rs`：FleetRun 状态机（Running→Done/Aborted）、Lane 状态（Pending/Running/Settled/Failed）、`build_run`（环检测 fail-fast）、`ready_lanes` 纯函数 DAG 调度、`render_prompt`（{task}/{upstream} 注入）、`create_worktree`（git worktree，name 净化防逃逸、存在即复用）、`lane_step`（lane 状态机纯函数）、`last_assistant_text`（结果收集）、`should_keep_waiting`（容量排队） | ✅ 单测 22 条 + 契约测试 C14 真跑 |
 | 内置模板 ×4（06 §3.2） | `builtin_templates()`：scout-review-build / parallel-review / research / custom（纯 JSON，用户可编辑=后续自定义入口） | ✅ |
-| lane = registry tab（06 §3.5） | lane 复用 `registry.create_tab`（NoSession，不污染会话列表；计入 maxWorkers，05 §4.2/06 §3.4 排队语义）；”提升为标签页”= `fleet_open_lane` 返回 snapshot → 前端 openSessionTab | ✅ |
-| 调度胶水 | `commands.rs schedule_run/watch_lane`：worker state 订阅 Busy→Ready 视为 settle → `get_messages` 提取最后 assistant 文本 → settle → 驱动下游；Crashed/Stopped 计 Failed；`fleet_start/abort/steer/list/templates/open_lane` 命令 + `fleet:changed` 全量快照事件 | ✅ |
-| B 层 piggy-bridge（06 §4） | `packages/piggy-bridge/`：`/piggy:status|steer|interrupt|stop|resume|fleet-refresh` 命令集；`subagents:rpc:v1:ready` + ping 能力协商；未安装降级提示；应答走 `set_editor_text(“PIGGY:1:”+json)` 数据面 + `setWidget` 状态行 + notify 摘要（06 §4.2 约定） | ✅ |
-| Fleet 面板（06 §5） | 右栏 🛳：A 层 runs（模板选择+任务输入+启动/中止/lane 状态+结果预览+steer 弹窗+提升按钮）、B 层（按活动 tab 的 bridge 快照 + 刷新 + 未安装降级）；`fleetStore` 统一视图模型 + `PIGGY:1` 前缀劫持（DialogRouter set_editor_text 拦截） | ✅ |
-| 测试 | Rust：模板合法性/DAG 顺序/环拒绝/prompt 注入/manager 生命周期/abort/worktree 净化 ×7；前端：PIGGY:1 解析/快照应用/降级/非协议不劫持 ×4 | ✅ |
+| lane = registry tab（06 §3.5） | lane 复用 `registry.create_tab`（NoSession，不污染会话列表；计入 maxWorkers，05 §4.2/06 §3.4 排队语义）；"提升为标签页"= `fleet_open_lane` 返回 snapshot → 前端 openSessionTab | ✅ 前端按钮已接（`FleetView.promote`）+ 单测 |
+| 调度胶水 | `commands.rs schedule_run/start_ready_lanes/watch_lane`：worker state 订阅 → `fleet::lane_step` 判 settle → `get_messages` 提取最后 assistant 文本 → settle → 驱动下游；Crashed/Stopped 计 Failed；`fleet_start/abort/steer/list/templates/open_lane` 命令 + `fleet:changed` 全量快照事件；**容量不足时自愈重试**（旧版只 `continue`，会把 run 永久卡在 Pending） | ✅ 单测 + 契约测试 C14（真实 pi） |
+| B 层 piggy-bridge（06 §4） | `packages/piggy-bridge/src/index.ts`（TS，类型对着 pi 0.87.1 真实 `ExtensionAPI` 校验）：`/piggy:status|spawn|steer|interrupt|stop|resume|cost|fleet-refresh`；`pi.events` 上的 RPC v1（ready/request/reply 关联 + 超时 + 退订）；`PIGGY:1:` 数据面 + `setWidget(key,…)` 状态行 + notify；未装 pi-subagents 明确降级；子代理完成时主动推快照 | ✅ 单测 32 条 + 契约测试 C12/C13（真实 pi，含降级路径） |
+| Fleet 面板（06 §5） | 右栏 "Fleet（子代理）"：A 层 runs（模板选择+任务输入+启动/中止 + lane 状态/结果预览 + **steer 输入框** + **提升为标签页**）、B 层（活动 tab 快照 + **刷新按钮** + 未安装降级 + 同步时间）；`fleetStore` 统一视图模型 + `PIGGY:1` 前缀劫持（DialogRouter set_editor_text 拦截） | ✅ 组件测试 9 条 + 真浏览器核对（`ui:startup` 第 4 段） |
+| 测试 | Rust 单测 89（含 fleet 22、process argv 8、resources 4）；契约 C12–C14；前端 `fleet.test.ts` / `fleet-view.test.tsx`；bridge 包 32；真浏览器 `ui:startup` 覆盖 A 层启动 + B 层数据面 | ✅ |
 
-M3 待实机验收（需真实 pi + pi-subagents）：验收 1/2（parallel-review 真跑、steer 回执）；降级提示（验收 3）已由单测覆盖。dockview lane 分列监控随”提升为标签”自然获得（分组拖拽），独立自动分列 = M4 打磨。
+### 5.2 M3 实机验收记录（2026-09-23 晚）
+
+| 验收项（§5 原表） | 结论 | 证据 |
+|---|---|---|
+| 1. parallel-review 对真实代码跑通 | ✅ 等价验证：契约测试 C14 用两 lane DAG 真跑（scout→汇总），a settle → b 就绪 → `{upstream}` 注入 a 的真实输出 → b 回复 BRAVO-OK → run 转 Done。**未做**：在 GUI 里对真实仓库点一次 `parallel-review`（需要人开 `tauri dev`） | `pnpm test:contract -- c14` |
+| 2. 会话内子代理可见、可 steer | ⚠️ 部分：`/piggy:spawn scout …` 真机派发成功（`details.asyncId` 回传、`async-complete` 主动推送、lane 行正确显示为 failed）；但**子代理本体没能跑起来**——原因是本机 pi 安装缺 `marked`（见下），不是 Piggy 或 bridge 的问题。steer 的 RPC 参数与回执解析有单测覆盖，未做真机 steer 往返 | 02 §9 C12；`~/…/pi-subagents-uid-501/async-subagent-runs/<id>/runner.stderr.log` |
+| 3. 未装 pi-subagents 时降级正确 | ✅ 真机：空 `PI_CODING_AGENT_DIR` → `{ok:false,error:"pi-subagents 未安装"}` + 面板降级文案 | 02 §9 C13 |
+| 4. Fleet 不影响 05 预算 | ✅ lane 计入 maxWorkers；**新增**容量排队的自愈重试（`should_keep_waiting`）| `fleet::tests::capacity_wait_*`、`process::tests` |
+
+**环境阻塞（非 Piggy 缺陷）**：本机 pi 0.87.1 的 pnpm 安装树里缺 `marked`
+（`@earendil-works/pi-tui` 声明依赖 `marked@18.0.11`，但 store link 与 global 两处都没有）。
+主 pi 进程不 import 那条路径所以日常无感，但 pi-subagents 的 **async runner 子进程**会解析到它并直接崩：
+`ERR_MODULE_NOT_FOUND: Cannot find package 'marked' imported from …/pi-tui/dist/index.js`。
+修复=`重装 pi`（`pnpm add -g @earendil-works/pi-coding-agent@0.87.1`）。
+在此之前，B 层里"派发子代理"这个动作在真机上会以 failed 收场（通道本身是通的）。
+
+**仍未做**：dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自动分列 = M4 打磨）；
+模板自定义编辑（`custom` 模板仍是空 lane 集）；`/piggy:cost` 的真机往返（本机 pi-subagents 0.70.1 不声明该能力）。
 
 ## 6. M4 · 打磨与发布（约 2–3 周）
 

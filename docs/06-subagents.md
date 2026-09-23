@@ -70,10 +70,22 @@ lane worker 可以"提升为标签页"（在主窗口获得完整转录视图）
 
 ## 4. B 层：piggy-bridge 扩展桥接 pi-subagents
 
+> **实现状态（2026-09-23 实测）**：源码在 `packages/piggy-bridge/`（TS，类型对着真实 pi API 校验），
+> 产物 `apps/desktop/src-tauri/resources/piggy-bridge.js`（`pnpm build:bridge`，由测试守卫新鲜度），
+> 由 Rust 在所有档位以 `pi --extension` 注入（`pi/resources.rs::bridge_script_path`）。
+> 真机证据见 02 §9 C12/C13；UI 侧见 09 §5.2。
+>
+> ⚠️ **本条曾长期是"纸面 ✅"**：v1 实现把三处 API 都写错了
+> （`registerCommand(name, fn)` 而非 `(name, {handler})`、`pi.ui.*` 而非 `ctx.ui.*`、
+> `pi.on('subagents:rpc:v1:ready')` 而非 `pi.events`），而且从未被加载过。
+> 用真 pi 一加载就报 `command.handler is not a function` —— 但 `prompt` 仍回 `success:true`，
+> 所以只有"看载荷有没有回来"才能发现。这就是 C12 存在的理由。
+
 ### 4.1 形态
 
-- npm 包 `piggy-bridge`（TS，pi 扩展规范），用户 `pi install npm:piggy-bridge`（或 GUI 设置页一键检测/引导安装）；
-- 加载即注册 `/piggy:*` 扩展命令并监听 pi-subagents 的 `subagents:rpc:v1:ready`。
+- workspace 包 `packages/piggy-bridge`（TS，pi 扩展规范），同时可作为 npm/git 包分发
+  （用户也可以 `pi install ./packages/piggy-bridge`）；
+- 加载即注册 `/piggy:*` 扩展命令并接上 pi-subagents 的 RPC v1 事件缝。
 
 ### 4.2 通道设计（只用文档化能力，02 §8 约束内）
 
@@ -81,45 +93,74 @@ lane worker 可以"提升为标签页"（在主窗口获得完整转录视图）
 
 | 方向 | 机制 | 说明 |
 |---|---|---|
-| GUI → bridge（请求） | `prompt` 发送 `/piggy:<verb> [argsJson]` | 协议保证扩展命令**流式中也立即执行**（02 §7.2），完美匹配"运行中查询舰队状态" |
-| bridge → GUI（应答/数据） | `ctx.ui.set_editor_text`（结构化 JSON 载荷）+ `ctx.ui.notify`（人读摘要） | fire-and-forget，无需用户可见编辑器——载荷约定为 `PIGGY:1:<json>` 前缀，前端拦截解析；`set_editor_text` 语义 = 写用户输入框，Piggy 前端将其劫持为数据通道，不落到真实草稿 |
-| bridge → GUI（持续状态） | `ctx.ui.setWidget`（舰队状态行） | 直接落右栏 Widget 区（02 §8），人读 |
+| GUI → bridge（请求） | `prompt` 发送 `/piggy:<verb> [args]` | 协议保证扩展命令**流式中也立即执行**（02 §7.2），完美匹配"运行中查询舰队状态"；实测**不消耗 token** |
+| bridge → GUI（应答/数据） | `ctx.ui.setEditorText("PIGGY:1:"+json)` + `ctx.ui.notify`（人读摘要） | fire-and-forget；前端把该载荷劫持为数据面，不落到真实草稿 |
+| bridge → GUI（持续状态） | `ctx.ui.setWidget('piggy-fleet', lines)` | 落右栏 Widget 区（02 §8），人读。注意 pi 的签名是 `setWidget(key, content, options)` |
+| bridge → GUI（主动推送） | 订阅 `subagent:async-complete` → 自己发一次 `status` 载荷 | 子代理完成时主动刷新，不必让前端轮询（docs/06 原 §4.3 的设想，现已落地并实测到 `trigger:"async-complete"`） |
 | bridge → GUI（需确认） | `ctx.ui.confirm/select` | 正常弹窗 |
 
 > 为什么不用 `pi.sendMessage`（把数据写进会话）？会污染对话上下文、计费 token。`set_editor_text` 劫持是显式声明的数据面，双向都有版本前缀，易演化。该选择属于 Piggy 与自家扩展的私有约定（两端同仓发布，无第三方兼容负担）。
+
+**载荷形状（实测为准，前端按此解析）**：
+
+```json
+{"kind":"status","ok":true,
+ "status": { …pi-subagents 的 status 应答原样… },   // fleet / asyncSnapshot / text
+ "lanes":  [{"agent":"scout","status":"failed","elapsed":5024}]}  // bridge 归一化后的行，**在顶层**
+```
+
+`lanes` 在顶层是刻意的：它是 bridge 自己的归一化产物（`statusToLanes`），
+不在 pi-subagents 的应答里。前端 `stores/fleet.ts` 顶层优先、`status.lanes` 兜底——
+两边曾经对这个字段的理解不一致，结果真机上"载荷到了、面板空白"。
 
 ### 4.3 桥接动词（`/piggy:` 命令集）
 
 | 命令 | 转发到 subagents RPC v1 | 说明 |
 |---|---|---|
-| `/piggy:status` | `status` | 全舰队快照（runs/lanes/状态/成本）→ JSON 载荷回传 |
-| `/piggy:steer <runId> <index?> <msg>` | `steer` | 转向（回执含 `deliveryStatus`） |
-| `/piggy:interrupt <runId>` | `interrupt` / `stop` | 中断/停止 |
-| `/piggy:resume <runId> <msg>` | `resume` | 续跑 |
-| `/piggy:fleet-refresh` | `manage`（查询类 action） | 刷新（供轮询替代：状态变化时 bridge 主动 setWidget） |
+| `/piggy:status` | `status` | 全舰队快照（fleet DTO + asyncSnapshot）→ JSON 载荷回传；同时刷新状态行 |
+| `/piggy:spawn <agent> <任务>` | `spawn` | **用户直接派发子代理**（不必等模型决定调用 `subagent` 工具）。RPC spawn 只支持 detached async，故固定带 `async:true`；回执里的 `details.asyncId` 就是后续 steer/stop 的目标 |
+| `/piggy:steer <runId> [index] <消息>` | `steer` | 转向；回执 `details.steering.deliveryStatus`（delivered/queued/scheduled/recovered）原样回传 |
+| `/piggy:interrupt <runId>` | `interrupt` | 中断当前回合 |
+| `/piggy:stop <runId>` | `stop` | 停止后台 async run（需存活 run 目录） |
+| `/piggy:resume <runId> <消息>` | `resume` | 续跑 |
+| `/piggy:cost` | `cost` | 成本/用量报告；**按能力位 `ping.capabilities.cost` 门控**（0.71 才有），缺能力时明确报错而不是假装成功 |
+| `/piggy:fleet-refresh` | `status` | status 的别名（面板刷新按钮用同一个契约） |
 
-bridge 内部对 v1 做 `ping` 能力协商（`nonRecoveringSteer` 等能力位），未安装 pi-subagents 时 `/piggy:*` 返回明确的"未安装"提示。
+能力协商：监听 `subagents:rpc:v1:ready` 的载荷即为 `ping` 结果（`methods` / `capabilities` / `session`），
+请求走 `subagents:rpc:v1:request`，回执走 `subagents:rpc:v1:reply:<requestId>`
+（**必须先订阅回执频道再发请求**，否则丢回执）。未收到 ready 时每个动词都回
+`{ok:false,error:"pi-subagents 未安装"}`——不允许静默无声。
 
 ### 4.4 B 层在 UI 的呈现
 
 - 会话内模型调用 `subagent` 工具 → 转录里就是普通 ToolCard（参数含 agent/task，执行期长，卡片显示运行中，结果落地 `tool_execution_end`）——**无需 bridge 也可用**；
-- 安装 bridge 后：右栏 Widget 区实时舰队行（setWidget）、Fleet 面板出现"会话内子代理"分组（status 快照渲染）、每条可 steer/interrupt（面板按钮 → `/piggy:verb` → bridge → v1 RPC）。
+- 装入 bridge 后：右栏 Widget 区出现舰队状态行（`setWidget`）、Fleet 面板的"会话内子代理"分组显示 lane 行（agent · 状态 · 耗时 · tokens · cost），
+  面板右上角的刷新按钮发 `/piggy:status`（扩展命令，**不经过模型**，所以随时可点）；
+- 子代理完成时 bridge 主动推一次快照（`trigger:"async-complete"`），前端无需轮询；
+- 缺 pi-subagents 时面板显示"未安装"降级提示，而不是永远转圈。
 
 ### 4.5 安全与尊重边界
 
 - bridge 不代用户批准任何 `confirm`；Fleet 面板的操作按钮仅覆盖文档化动词；
 - 不抓取/解析 pi-subagents 内部模块（官方缝之外的一切视为私有 API，禁用——升级兼容性的前提）。
+  两个包各自安装、运行时互相不可解析，这是硬约束而非偏好。
 
 ## 5. 呈现统一：Fleet 面板
 
 ```
 Fleet 面板
- ├─ [宿主编排] Runs（A 层）：模板卡片、lane 进度、成本、steer/abort
+ ├─ [宿主编排] Runs（A 层）：模板卡片、lane 进度、每条 lane 的结果预览
+ │    └─ 每条 lane：· steer 输入框（Enter 发送；已 settle 的不再显示）  · [↗] 提升为标签页
  └─ [会话内] ×N 会话（B 层）：每会话的子代理快照（来自 /piggy:status）
-      └─ lane 行：agent · 状态 · elapsed · tokens/cost · [steer] [stop]
+      └─ lane 行：agent · 状态 · elapsed · tokens/cost
 ```
 
-两层数据源不同（A：Rust 事件流；B：bridge 查询/推送），但视图模型统一（`fleetStore`），交互动词语义对齐（steer/interrupt 在两层同按钮）。GUI 驻留位置：左侧栏 "Fleet" 视图（导航入口）+ 右侧栏 "子代理" 视图（跟随活动会话上下文，04 §1.4）+ 可展开的工具 tab 大图（04 §1.6）。
+两层数据源不同（A：Rust 事件流 `fleet:changed`；B：bridge 查询/推送），但视图模型统一（`fleetStore`），
+交互动词语义对齐（steer 在两层都是"给这条 lane 追加指令"）。
+GUI 驻留位置：右栏 "Fleet（子代理）" 视图（04 §1.4）+ lane 提升后在 dockview 里获得完整转录（04 §1.6）。
+
+A 层每条 lane 的"提升为标签页"走 `fleet_open_lane` → `openSessionTab`：
+lane 本来就是 registry 里的一个 worker/tab（06 §3.5），提升只是把它挂进主窗口的 dockview。
 
 ## 6. 演进
 

@@ -83,18 +83,9 @@ impl PermissionMode {
 /// 打包布局（tauri `bundle.resources` 保留相对路径）：
 ///   macOS  → Contents/Resources/resources/piggy-guard.js
 ///   其他   → <exe 同级>/resources/piggy-guard.js
-/// 因此按「resource_dir 两级候选 + 源码树兜底」依次探测。
+/// 探测逻辑见 `pi/resources.rs::extension_script`（与 piggy-bridge 共用同一套）。
 pub fn guard_script_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(rd) = resource_dir {
-        for cand in [rd.join("resources/piggy-guard.js"), rd.join("piggy-guard.js")] {
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    // 开发态：cargo 以 CARGO_MANIFEST_DIR = src-tauri 编译，脚本就在它下面
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/piggy-guard.js");
-    dev.is_file().then_some(dev)
+    crate::pi::resources::guard_script_path(resource_dir)
 }
 
 #[cfg(test)]

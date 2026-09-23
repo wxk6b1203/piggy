@@ -16,9 +16,10 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdout;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SessionTarget {
     /// 默认：新会话（按 cwd 规则落盘）
+    #[default]
     New,
     /// `--no-session`：临时草稿
     NoSession,
@@ -26,7 +27,7 @@ pub enum SessionTarget {
     Path(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SpawnArgs {
     pub cwd: PathBuf,
     pub pi_bin: PathBuf,
@@ -37,38 +38,38 @@ pub struct SpawnArgs {
     pub permission: PermissionMode,
     /// 守卫扩展脚本路径；仅 `Workspace` 档使用，缺失时拒绝启动（不静默降级）。
     pub guard_script: Option<PathBuf>,
+    /// 桥接扩展脚本路径（`piggy-bridge.js`，docs/06 §4）。**可选**：缺失只是 Fleet 少一条
+    /// 数据面，会话本身照常可用，所以这里缺失不报错、只记日志。
+    pub bridge_script: Option<PathBuf>,
+    /// 追加给 pi 的环境变量。目前用于契约测试隔离配置目录
+    /// （`PI_CODING_AGENT_DIR` → 一个没有 pi-subagents 的空目录，从而验证降级路径）。
+    pub envs: Vec<(String, String)>,
 }
 
-pub async fn spawn_worker(
-    tab_id: &str,
-    args: SpawnArgs,
-    sink: Arc<dyn EventSink>,
-) -> Result<Worker, String> {
-    let mut cmd = tokio::process::Command::new(&args.pi_bin);
-    cmd.arg("--mode")
-        .arg("rpc")
-        .current_dir(&args.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .env("NO_COLOR", "1");
+/// 组装 pi 的 argv（不含二进制本身）。
+///
+/// 抽成纯函数是为了让「权限档位/扩展注入到底传了什么」可被单测覆盖——
+/// 这层如果错了，界面显示的档位和进程实际拿到的能力就会不一致，
+/// 而那是最难从现象反推的一类 bug（见 docs/15 规矩 8）。
+pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
+    let mut out: Vec<std::ffi::OsString> = vec!["--mode".into(), "rpc".into()];
     match &args.session {
-        SessionTarget::NoSession => {
-            cmd.arg("--no-session");
-        }
+        SessionTarget::NoSession => out.push("--no-session".into()),
         SessionTarget::Path(p) => {
-            cmd.arg("--session").arg(p);
+            out.push("--session".into());
+            out.push(p.into());
         }
         SessionTarget::New => {}
     }
     if let Some(n) = &args.name {
-        cmd.arg("--name").arg(n);
+        out.push("--name".into());
+        out.push(n.into());
     }
     // 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
     // 不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
     if let Some(list) = args.permission.tool_allowlist() {
-        cmd.arg("--tools").arg(list);
+        out.push("--tools".into());
+        out.push(list.into());
     }
     // 路径守卫（pi `-e`）：只有「工作区内修改」需要。
     // 脚本缺失时**必须报错而不是静默降级**——否则用户以为修改被限制在 cwd 内、实际没有，
@@ -81,7 +82,38 @@ pub async fn spawn_worker(
                     .to_string(),
             );
         };
-        cmd.arg("--extension").arg(guard);
+        out.push("--extension".into());
+        out.push(guard.into());
+    }
+    // 桥接扩展（piggy-bridge）：所有档位都注入。它只注册 `/piggy:*` 命令与数据面，
+    // 不注册任何工具，因此不影响 `--tools` 白名单的语义。
+    if let Some(bridge) = args.bridge_script.as_ref().filter(|p| p.is_file()) {
+        out.push("--extension".into());
+        out.push(bridge.into());
+    }
+    Ok(out)
+}
+
+pub async fn spawn_worker(
+    tab_id: &str,
+    args: SpawnArgs,
+    sink: Arc<dyn EventSink>,
+) -> Result<Worker, String> {
+    let argv = cli_args(&args)?;
+    let mut cmd = tokio::process::Command::new(&args.pi_bin);
+    cmd.current_dir(&args.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env("NO_COLOR", "1");
+    for a in &argv {
+        cmd.arg(a);
+    }
+    for (k, v) in &args.envs {
+        cmd.env(k, v);
+    }
+    if args.permission.needs_path_guard() {
         // 白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入。
         cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
     }
@@ -326,4 +358,117 @@ async fn handle_line(
 #[allow(dead_code)]
 fn _assert_ame_debug(a: &Ame) {
     let _ = format!("{a:?}");
+}
+
+/* ---------------- 测试：argv 组装（权限档位 + 扩展注入） ---------------- */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(permission: PermissionMode) -> SpawnArgs {
+        SpawnArgs {
+            cwd: std::env::temp_dir(),
+            pi_bin: PathBuf::from("/usr/bin/true"),
+            session: SessionTarget::New,
+            name: None,
+            permission,
+            guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
+        }
+    }
+
+    fn argv(args: &SpawnArgs) -> Vec<String> {
+        cli_args(args)
+            .expect("argv 组装失败")
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn tmp_file(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(name);
+        std::fs::write(&p, "// test").unwrap();
+        p
+    }
+
+    #[test]
+    fn full_permission_passes_no_tools_flag() {
+        let a = args(PermissionMode::Full);
+        let v = argv(&a);
+        assert_eq!(v, vec!["--mode", "rpc"]);
+        assert!(!v.iter().any(|x| x == "--tools"));
+    }
+
+    #[test]
+    fn restricted_modes_carry_the_allowlist() {
+        assert!(argv(&args(PermissionMode::ReadOnly)).contains(&"read,grep,find,ls".to_string()));
+        // Workspace 档必须有守卫才允许组装 argv（缺守卫是硬错误，见下一个测试）
+        let mut a = args(PermissionMode::Workspace);
+        a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
+        let workspace = argv(&a);
+        assert!(workspace.contains(&"read,grep,find,ls,write,edit".to_string()));
+        assert!(!workspace.iter().any(|x| x.contains("bash")), "不应放开 shell: {workspace:?}");
+    }
+
+    #[test]
+    fn workspace_without_the_guard_refuses_to_start() {
+        // 守卫缺失必须是硬错误：静默启动 = 用户以为有边界、实际没有
+        let err = cli_args(&args(PermissionMode::Workspace)).unwrap_err();
+        assert!(err.starts_with("GUARD_SCRIPT_MISSING"), "{err}");
+    }
+
+    #[test]
+    fn workspace_with_the_guard_injects_it() {
+        let mut a = args(PermissionMode::Workspace);
+        a.guard_script = Some(tmp_file("piggy-test-guard.js"));
+        let v = argv(&a);
+        let idx = v.iter().position(|x| x == "--extension").expect("应注入守卫");
+        assert!(v[idx + 1].ends_with("piggy-test-guard.js"));
+    }
+
+    #[test]
+    fn bridge_is_injected_in_every_permission_mode() {
+        // 桥接只注册命令、不注册工具，所以不受 --tools 白名单影响，档位不该改变它是否注入
+        let bridge = tmp_file("piggy-test-bridge.js");
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Full] {
+            let mut a = args(mode);
+            a.bridge_script = Some(bridge.clone());
+            let v = argv(&a);
+            let idx = v.iter().position(|x| x == "--extension").expect("应注入桥接");
+            assert!(v[idx + 1].ends_with("piggy-test-bridge.js"), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn both_extensions_are_injected_side_by_side() {
+        let mut a = args(PermissionMode::Workspace);
+        a.guard_script = Some(tmp_file("piggy-test-guard2.js"));
+        a.bridge_script = Some(tmp_file("piggy-test-bridge2.js"));
+        let v = argv(&a);
+        assert_eq!(v.iter().filter(|x| *x == "--extension").count(), 2, "{v:?}");
+    }
+
+    #[test]
+    fn missing_bridge_is_skipped_not_fatal() {
+        // 资源缺失（打包漏带/被删）时桥接静默缺席，但会话必须能起来
+        let mut a = args(PermissionMode::Full);
+        a.bridge_script = Some(PathBuf::from("/nonexistent/piggy-bridge.js"));
+        assert!(!argv(&a).iter().any(|x| x == "--extension"));
+    }
+
+    #[test]
+    fn session_and_name_flags_keep_their_order() {
+        let mut a = args(PermissionMode::Full);
+        a.session = SessionTarget::Path("/tmp/s.jsonl".into());
+        a.name = Some("fleet:abc/scout".into());
+        assert_eq!(
+            argv(&a),
+            vec!["--mode", "rpc", "--session", "/tmp/s.jsonl", "--name", "fleet:abc/scout"]
+        );
+        let mut b = args(PermissionMode::Full);
+        b.session = SessionTarget::NoSession;
+        assert!(argv(&b).contains(&"--no-session".to_string()));
+    }
 }

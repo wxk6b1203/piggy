@@ -42,7 +42,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/piggy-guard.js"
+      "resources/piggy-guard.js",
+      "resources/piggy-bridge.js"
     ]
   },
   "plugins": {

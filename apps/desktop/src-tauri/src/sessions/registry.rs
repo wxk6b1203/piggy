@@ -43,8 +43,11 @@ pub struct Registry {
     /// pi 来源与自定义路径（设置项；默认 system，见 pi/discovery.rs）
     pub pi_source: PiSource,
     pub pi_custom_path: Option<PathBuf>,
-    /// 权限守卫扩展脚本（pi/permission.rs::guard_script_path）；setup 时填充
+    /// 权限守卫扩展脚本（pi/resources.rs::guard_script_path）；setup 时填充
     pub guard_script: Option<PathBuf>,
+    /// 桥接扩展脚本（pi/resources.rs::bridge_script_path，docs/06 §4）；setup 时填充。
+    /// 缺失只影响 Fleet 数据面，不影响会话启动。
+    pub bridge_script: Option<PathBuf>,
     /// 新建标签页的默认档位（持久化在 ~/.piggy/config.json）
     pub default_permission: PermissionMode,
     /// tab_id → Tab（docs/03 §2.7）
@@ -75,6 +78,7 @@ impl Registry {
             pi_source: PiSource::default(),
             pi_custom_path: None,
             guard_script: None,
+            bridge_script: None,
             default_permission: PermissionMode::default(),
             tabs: HashMap::new(),
             open_files: HashMap::new(),
@@ -167,6 +171,7 @@ impl Registry {
         sink: Arc<dyn EventSink>,
     ) -> Result<Worker, String> {
         let guard = self.guard_script.clone();
+        let bridge = self.bridge_script.clone();
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),
             pi_bin,
@@ -174,6 +179,8 @@ impl Registry {
             name: name.clone(),
             permission,
             guard_script: guard.clone(),
+            bridge_script: bridge.clone(),
+            envs: Vec::new(),
         };
         let args = build(self.resolve_bin()?);
         match spawn_worker(tab_id, args.clone(), sink.clone()).await {

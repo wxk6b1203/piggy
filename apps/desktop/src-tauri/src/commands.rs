@@ -655,6 +655,9 @@ pub async fn session_rename(
                 // 这个 worker 只用来调一次 set_session_name 改元数据，不该带任何工具能力
                 permission: PermissionMode::ReadOnly,
                 guard_script: None,
+                // 改名的临时 worker 也不需要 Fleet 数据面
+                bridge_script: None,
+                envs: Vec::new(),
             },
             sink(&app),
         )
@@ -979,52 +982,68 @@ fn fleet_emit(app: &AppHandle, state: &State<'_, AppState>) {
     let _ = app.emit("fleet:changed", state.fleet.snapshot());
 }
 
-/// 提取最后一条 assistant 消息文本（06 §3.3 结果收集，无需新增 RPC）。
+/// 提取最后一条 assistant 消息文本（06 §3.3 结果收集）。
+/// 实现已移到 `fleet::last_assistant_text`：那里有单测，也能被契约测试复用。
 fn last_assistant_text(messages: &Value) -> Option<String> {
-    let arr = messages.as_array()?;
-    let text_of = |content: &Value| -> String {
-        match content {
-            Value::String(s) => s.clone(),
-            Value::Array(blocks) => blocks
-                .iter()
-                .filter_map(|b| {
-                    if b["type"] == "text" {
-                        b["text"].as_str().map(String::from)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(""),
-            _ => String::new(),
-        }
-    };
-    arr.iter()
-        .rev()
-        .find(|m| m["role"] == "assistant" || m["message"]["role"] == "assistant")
-        .map(|m| {
-            if m.get("message").is_some() {
-                text_of(&m["message"]["content"])
-            } else {
-                text_of(&m["content"])
-            }
-        })
-        .filter(|s| !s.is_empty())
+    crate::fleet::last_assistant_text(messages)
 }
 
-/// 调度一轮：把所有就绪 lane 拉起（资源上限由 create_tab 的 maxWorkers 兜底排队）。
+/// 调度：把就绪 lane 拉起来；**资源上限导致的排队在这里自愈**（06 §3.4）。
+///
+/// 为什么要有这个循环：`schedule_run` 的再次触发点是「某条 lane settle」。如果所有就绪
+/// lane 都因 `MAX_WORKERS` 起不来，就永远不会有 settle —— run 会永久停在 Pending。
+/// 所以撞上限时不能只 `continue`，必须自己等额度。整个 run 只有一个调度任务在跑
+/// （settle 回调与 start 各自触发一次，但都走这个函数，不会递归）。
 async fn schedule_run(app: AppHandle, run_id: String) {
-    let state = app.state::<AppState>();
-    let ready = {
-        let Some(run) = state.fleet.get(&run_id) else { return };
-        if run.status != crate::fleet::RunStatus::Running {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let started = std::time::Instant::now();
+    loop {
+        let ready = {
+            let state = app.state::<AppState>();
+            let Some(run) = state.fleet.get(&run_id) else { return };
+            if run.status != crate::fleet::RunStatus::Running {
+                return;
+            }
+            run.ready_lanes()
+        };
+        if ready.is_empty() {
             return;
         }
-        run.ready_lanes()
-    };
+        let hit_capacity = start_ready_lanes(&app, &run_id, ready).await;
+        if !hit_capacity {
+            // 全部起来了：后续推进由各 lane 的 settle 回调负责
+            return;
+        }
+        let waited = started.elapsed();
+        let (status, still_ready) = {
+            let state = app.state::<AppState>();
+            match state.fleet.get(&run_id) {
+                Some(run) => (run.status.clone(), run.ready_lanes()),
+                None => return,
+            }
+        };
+        if !crate::fleet::should_keep_waiting(&status, still_ready.len(), waited, MAX_WAIT) {
+            if waited >= MAX_WAIT {
+                eprintln!(
+                    "[fleet] run {run_id} 等待 worker 额度超过 {} 分钟，仍有 {} 条 lane 未启动",
+                    MAX_WAIT.as_secs() / 60,
+                    still_ready.len()
+                );
+            }
+            return;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// 拉起给定的就绪 lane；返回是否撞到 worker 上限（撞到 = 还有 lane 没起来）。
+async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) -> bool {
+    let state = app.state::<AppState>();
+    let mut hit_capacity = false;
     for lane_key in ready {
         let (prompt, cwd) = {
-            let Some(run) = state.fleet.get(&run_id) else { return };
+            let Some(run) = state.fleet.get(run_id) else { return hit_capacity };
             let Some(lane) = run.lane(&lane_key).cloned() else { continue };
             let prompt = crate::fleet::render_prompt(&lane.prompt, &run.task, &run, &lane);
             let cwd = if lane.worktree {
@@ -1047,46 +1066,44 @@ async fn schedule_run(app: AppHandle, run_id: String) {
             // lane 继承当前默认档位：Fleet 是"替用户跑任务"，不该偷偷提权
             let lane_permission = reg.default_permission;
             match reg
-                .create_tab(
-                    &sink(&app),
-                    cwd.clone(),
-                    SessionTarget::NoSession,
-                    Some(lane_label),
-                    lane_permission,
-                )
+                .create_tab(&sink(app), cwd.clone(), SessionTarget::NoSession, Some(lane_label), lane_permission)
                 .await
             {
                 Ok(snap) => snap.tab_id,
                 Err(e) => {
                     eprintln!("[fleet] lane {lane_key} 启动失败: {e}");
-                    // MAX_WORKERS = 排队（下一次调度触发）；其余直接计失败
-                    if !e.starts_with("MAX_WORKERS") {
-                        state.fleet.fail_lane_by_key(&run_id, &lane_key);
-                        fleet_emit(&app, &state);
+                    if e.starts_with("MAX_WORKERS") {
+                        hit_capacity = true;
+                    } else {
+                        state.fleet.fail_lane_by_key(run_id, &lane_key);
+                        fleet_emit(app, &state);
                     }
                     continue;
                 }
             }
         };
-        state.fleet.bind_tab(&run_id, &lane_key, &tab_id);
+        state.fleet.bind_tab(run_id, &lane_key, &tab_id);
         let worker = state.registry.lock().await.tabs.get(&tab_id).and_then(|t| t.worker.clone());
-        fleet_emit(&app, &state);
+        fleet_emit(app, &state);
         if let Some(worker) = worker.clone() {
-            watch_lane(app.clone(), run_id.clone(), lane_key.clone(), tab_id, worker.clone());
+            watch_lane(app.clone(), run_id.to_string(), tab_id, worker.clone());
             if let Err(e) = worker.prompt(&prompt, None, None).await {
                 eprintln!("[fleet] lane {lane_key} prompt 失败: {e}");
-                state.fleet.fail_lane_by_key(&run_id, &lane_key);
-                fleet_emit(&app, &state);
+                state.fleet.fail_lane_by_key(run_id, &lane_key);
+                fleet_emit(app, &state);
             }
         }
     }
+    hit_capacity
 }
 
-/// lane 状态监听：Busy→Ready 视为 settle（收集结果 + 驱动下游）；崩溃计失败。
+/// lane 状态监听：`fleet::lane_step` 判定终态（Busy→Ready = settle，崩溃 = 失败）。
+///
+/// 判定逻辑刻意放在 `fleet.rs` 的纯函数里：这里只做 IO（取消息、emit、驱动下游），
+/// 而"什么算跑完"由纯函数定义——两侧都有测试（单测 + 契约测试跑真实 pi）。
 fn watch_lane(
     app: AppHandle,
     run_id: String,
-    _lane_key: String,
     tab_id: String,
     worker: crate::pi::client::Worker,
 ) {
@@ -1098,10 +1115,10 @@ fn watch_lane(
             if rx.changed().await.is_err() {
                 return;
             }
-            let s = *rx.borrow();
-            match s {
-                crate::pi::client::WorkerState::Busy => was_busy = true,
-                crate::pi::client::WorkerState::Ready if was_busy => {
+            let (now_busy, outcome) = crate::fleet::lane_step(was_busy, *rx.borrow());
+            was_busy = now_busy;
+            match outcome {
+                Some(crate::fleet::LaneOutcome::Settled) => {
                     let text = worker
                         .get_messages()
                         .await
@@ -1116,12 +1133,12 @@ fn watch_lane(
                     }
                     return;
                 }
-                crate::pi::client::WorkerState::Crashed | crate::pi::client::WorkerState::Stopped => {
+                Some(crate::fleet::LaneOutcome::Failed) => {
                     state.fleet.fail_lane(&tab_id);
                     fleet_emit(&app, &state);
                     return;
                 }
-                _ => {}
+                None => {}
             }
         }
     });

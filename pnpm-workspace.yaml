@@ -3,4 +3,16 @@ packages:
   - packages/*
 
 allowBuilds:
+  # 这两个包只作为 piggy-bridge 的**类型依赖**（@earendil-works/pi-coding-agent 传递引入）
+  # 进入 workspace，运行时从不执行：显式拒绝其安装脚本，保持供应链面最小。
+  '@google/genai': false
   esbuild: true
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - '@earendil-works/chord@0.87.1'
+  - '@earendil-works/pi-agent-core@0.87.1'
+  - '@earendil-works/pi-ai@0.87.1'
+  - '@earendil-works/pi-coding-agent@0.87.1'
+  - '@earendil-works/pi-telemetry@0.87.1'
+  - '@earendil-works/pi-tui@0.87.1'

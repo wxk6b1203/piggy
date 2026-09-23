@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::pi::client::WorkerState;
 
 /* ---------------- 模板（纯数据，06 §3.2） ---------------- */
 
@@ -213,6 +216,93 @@ pub fn render_prompt(template_prompt: &str, task: &str, run: &FleetRun, lane: &L
     template_prompt
         .replace("{task}", task)
         .replace("{upstream}", &upstream)
+}
+
+/* ---------------- lane 生命周期判定（从 IO 胶水里抽出来，可单测 + 契约测试共用） ---------------- */
+
+/// lane 的终态判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneOutcome {
+    /// 这一轮跑完了 → 收集结果、驱动下游
+    Settled,
+    /// 进程崩了/被停了 → 计失败
+    Failed,
+}
+
+/// lane 的 worker 状态机（`commands::watch_lane` 的全部判定逻辑）。
+///
+/// 入参是「此前是否见过 Busy」与当前状态，返回「更新后的 was_busy」与「是否产生终态」：
+/// - `Busy` 之后回到 `Ready` = 这一轮结束了 → Settled；
+/// - `Crashed` / `Stopped` = 失败；
+/// - 其余（包括"刚 spawn 还没跑就 Ready"）不产生终态 —— 否则 lane 会在 prompt
+///   真正发出前就被判定完成，DAG 会带着空结果往下跑。
+pub fn lane_step(was_busy: bool, state: WorkerState) -> (bool, Option<LaneOutcome>) {
+    match state {
+        WorkerState::Busy => (true, None),
+        WorkerState::Ready if was_busy => (was_busy, Some(LaneOutcome::Settled)),
+        WorkerState::Crashed | WorkerState::Stopped => (was_busy, Some(LaneOutcome::Failed)),
+        _ => (was_busy, None),
+    }
+}
+
+/// 容量等待的继续条件（06 §3.4：lane 计入 maxWorkers，资源不足时**排队**而不是溢出）。
+///
+/// 之前 `MAX_WORKERS` 只是 `continue` 掉——没有任何东西会在额度释放后重新调度，
+/// 于是"当前 tab 数已达上限"时整个 run 会永久停在 Pending（实测死锁）。
+pub fn should_keep_waiting(
+    status: &RunStatus,
+    ready_lanes: usize,
+    waited: Duration,
+    max_wait: Duration,
+) -> bool {
+    *status == RunStatus::Running && ready_lanes > 0 && waited < max_wait
+}
+
+/* ---------------- 结果收集（06 §3.3：agent_settled 后取最后一条 assistant 文本） ---------------- */
+
+/// 从 `get_messages` 的返回里取最后一条 assistant 消息的纯文本。
+///
+/// 形状必须两种都认：
+/// - RPC `get_messages` 的 `data` 是 **`{"messages": [...]}`**（官方 `docs/rpc-commands.md`
+///   明写），Fleet 拿到的就是这一层；
+/// - 事件流里直接就是裸消息数组。
+///
+/// 只认裸数组是一个真实存在过的 bug：lane 会 settle 但结果恒为空，
+/// 下游 `{upstream}` 永远显示"(无输出)"，而界面看起来一切正常。
+pub fn last_assistant_text(messages: &Value) -> Option<String> {
+    let arr = match messages {
+        Value::Array(a) => a,
+        Value::Object(o) => o.get("messages")?.as_array()?,
+        _ => return None,
+    };
+    let text_of = |content: &Value| -> String {
+        match content {
+            Value::String(s) => s.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| {
+                    if b["type"] == "text" {
+                        b["text"].as_str().map(String::from)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        }
+    };
+    arr.iter()
+        .rev()
+        .find(|m| m["role"] == "assistant" || m["message"]["role"] == "assistant")
+        .map(|m| {
+            if m.get("message").is_some() {
+                text_of(&m["message"]["content"])
+            } else {
+                text_of(&m["content"])
+            }
+        })
+        .filter(|s| !s.is_empty())
 }
 
 /* ---------------- Manager（IO 胶水；调度决策走上面的纯函数） ---------------- */
@@ -565,5 +655,99 @@ mod tests {
     fn worktree_path_sanitizes_name() {
         let p = worktree_path(&PathBuf::from("/repo"), "../../etc/passwd");
         assert!(!p.to_string_lossy().contains(".."));
+    }
+
+    /* ---- lane 状态机：这四条曾经是 watch_lane 里的隐式行为，现在被钉住 ---- */
+
+    #[test]
+    fn busy_then_ready_settles_the_lane() {
+        let (busy, outcome) = lane_step(false, WorkerState::Busy);
+        assert!(busy, "见到 Busy 要记住");
+        assert_eq!(outcome, None, "Busy 本身不是终态");
+        assert_eq!(lane_step(true, WorkerState::Ready), (true, Some(LaneOutcome::Settled)));
+    }
+
+    #[test]
+    fn ready_before_busy_is_not_a_settle() {
+        // spawn 完成后 worker 就是 Ready：若不看 was_busy，lane 会在 prompt 之前被判完成
+        assert_eq!(lane_step(false, WorkerState::Ready), (false, None));
+        assert_eq!(lane_step(false, WorkerState::Spawning), (false, None));
+    }
+
+    #[test]
+    fn crash_and_stop_fail_the_lane() {
+        for s in [WorkerState::Crashed, WorkerState::Stopped] {
+            assert_eq!(lane_step(true, s).1, Some(LaneOutcome::Failed), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn stuck_on_busy_keeps_waiting() {
+        assert_eq!(lane_step(true, WorkerState::Busy), (true, None));
+    }
+
+    /* ---- 容量排队：MAX_WORKERS 不再是死锁 ---- */
+
+    #[test]
+    fn capacity_wait_ends_on_progress_or_abort() {
+        let max = Duration::from_secs(600);
+        let none = Duration::from_secs(0);
+        // 还在跑 + 有就绪 lane + 未超时 → 继续等
+        assert!(should_keep_waiting(&RunStatus::Running, 2, none, max));
+        // 没有就绪 lane（都在跑或都完成）→ 不用等
+        assert!(!should_keep_waiting(&RunStatus::Running, 0, none, max));
+        // run 被中止/完成 → 立刻停
+        assert!(!should_keep_waiting(&RunStatus::Aborted, 3, none, max));
+        assert!(!should_keep_waiting(&RunStatus::Done, 3, none, max));
+        // 超时兜底：不无限占着一个后台任务
+        assert!(!should_keep_waiting(&RunStatus::Running, 1, max, max));
+    }
+
+    /* ---- 结果收集：真实 get_messages 形状 ---- */
+
+    #[test]
+    fn last_assistant_text_reads_wrapped_and_bare_shapes() {
+        let wrapped = json!([
+            {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "问题"}]}},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "回答一"}]}}
+        ]);
+        assert_eq!(last_assistant_text(&wrapped).as_deref(), Some("回答一"));
+        let bare = json!([{"role": "assistant", "content": "纯字符串回复"}]);
+        assert_eq!(last_assistant_text(&bare).as_deref(), Some("纯字符串回复"));
+    }
+
+    #[test]
+    fn last_assistant_text_accepts_the_rpc_get_messages_envelope() {
+        // 真实 get_messages 的 data 形状：{"messages": [...]}（docs/rpc-commands.md）
+        // 契约测试 C13 就是用这个形状跑出来的——它曾经让每条 lane 的结果恒为空。
+        let rpc = json!({
+            "messages": [
+                {"role": "system", "content": "系统提示"},
+                {"role": "user", "content": "任务"},
+                {"role": "assistant", "content": [{"type": "text", "text": "ALPHA"}]}
+            ]
+        });
+        assert_eq!(last_assistant_text(&rpc).as_deref(), Some("ALPHA"));
+    }
+
+    #[test]
+    fn last_assistant_text_tolerates_other_shapes() {
+        assert_eq!(last_assistant_text(&json!({"messages": []})), None);
+        assert_eq!(last_assistant_text(&json!({"other": []})), None);
+        assert_eq!(last_assistant_text(&json!("字符串")), None);
+        assert_eq!(last_assistant_text(&json!(null)), None);
+    }
+
+    #[test]
+    fn last_assistant_text_takes_the_latest_and_skips_empty() {
+        let v = json!([
+            {"role": "assistant", "content": [{"type": "text", "text": "旧"}]},
+            {"role": "assistant", "content": [{"type": "toolCall", "name": "read"}]},
+            {"role": "user", "content": "插一句"}
+        ]);
+        // 最后一条 assistant 只有工具调用 → 不返回"旧"（那会让下游拿到过期结论）
+        assert_eq!(last_assistant_text(&v), None);
+        assert_eq!(last_assistant_text(&json!([])), None);
+        assert_eq!(last_assistant_text(&json!({})), None);
     }
 }

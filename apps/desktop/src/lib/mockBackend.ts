@@ -446,54 +446,86 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   pi_compact: () => ({ summary: 'mock 压缩摘要' }),
   pi_export_html: () => ({ path: '/Users/mock/Downloads/session.html' }),
   pi_bash: () => ({ output: 'mock-bash-output', exitCode: 0, cancelled: false, truncated: false }),
-  /* M3 Fleet（mock 演示：启动 → 2s 后全部 settle，驱动面板） */
+  /* M3 Fleet（mock 演示：启动 → 2.5s 后全部 settle，驱动面板）
+   *
+   * ⚠️ 参数名：`cmd()` 直传 camelCase（Tauri 侧才做 snake_case 映射），
+   * 所以 mock 处理器也**必须读 camelCase**。这里曾读 `a.template_id`，
+   * 于是 mock 下 templateId 恒为 "undefined"、lane 集合永远走默认分支——
+   * 真机正常、mock 骗人，正是 docs/15 规矩 4 说的那类分歧。 */
   fleet_templates: () => ({
     'parallel-review': { label: '并行评审' },
     'scout-review-build': { label: '侦察 → 评审 + 构建' },
     research: { label: '调研汇总' },
     custom: { label: '自定义' },
   }),
-  fleet_list: () => ({ runs: [] }),
+  fleet_list: () => ({ runs: mockFleet.runs }),
   fleet_start: (a) => {
+    const templateId = String(a.templateId ?? '');
     const runId = `mock-run-${Date.now()}`;
-    const lanes = a.template_id === 'scout-review-build'
-      ? ['scout', 'review', 'build']
-      : a.template_id === 'research'
-        ? ['res-1', 'res-2', 'synth']
-        : ['r-correctness', 'r-tests', 'r-complexity'];
-    const snapshot = {
-      runs: [{
-        id: runId,
-        templateId: String(a.template_id),
-        task: String(a.task),
-        cwd: String(a.cwd),
-        status: 'running',
-        lanes: lanes.map((k) => ({ key: k, role: k, status: 'running', tabId: `mock-${runId}-${k}` })),
-      }],
+    const lanes = MOCK_LANES[templateId] ?? MOCK_LANES['parallel-review']!;
+    const lanesOf = (status: string, preview?: string) =>
+      lanes.map((k) => ({
+        key: k,
+        role: k,
+        status,
+        tabId: `mock-${runId}-${k}`,
+        ...(preview ? { resultPreview: preview } : {}),
+      }));
+    const run = {
+      id: runId,
+      templateId,
+      task: String(a.task ?? ''),
+      cwd: String(a.cwd ?? ''),
+      status: 'running' as string,
+      lanes: lanesOf('running'),
     };
-    setTimeout(() => emit('fleet:changed', snapshot), 400);
+    mockFleet.runs = [run];
+    // 深拷贝再 emit：immer 的 auto-freeze 会冻结被写进 store 的对象，
+    // 直接把自己的内部对象交出去，后面的定时器改它就会
+    // `TypeError: Cannot assign to read only property 'status'`（实测踩到）。
+    // 真机每次发的是新 JSON，所以 mock 也必须发副本。
+    const snapshot = () => structuredClone({ runs: mockFleet.runs });
+    setTimeout(() => emit('fleet:changed', snapshot()), 400);
     setTimeout(() => {
-      emit('fleet:changed', {
-        runs: [{
-          ...snapshot.runs[0],
-          status: 'done',
-          lanes: lanes.map((k) => ({ key: k, role: k, status: 'settled', tabId: `mock-${runId}-${k}`, resultPreview: 'mock 结论：一切正常。' })),
-        }],
-      });
+      run.status = 'done';
+      run.lanes = lanesOf('settled', 'mock 结论：一切正常。');
+      emit('fleet:changed', snapshot());
     }, 2500);
     return runId;
   },
-  fleet_abort: () => null,
-  fleet_steer: () => true,
-  fleet_open_lane: (a) => ({
-    tab_id: `mock-${a.runId}-${a.laneKey}`,
-    cwd: '/Users/mock/proj',
-    session_file: null,
-    session_id: null,
-    session_name: null,
-    worker_state: 'ready',
-    state: {},
-  }),
+  fleet_abort: (a) => {
+    const run = mockFleet.runs.find((r) => r.id === a.runId);
+    if (!run) throw new Error(`run 不存在: ${String(a.runId)}`);
+    run.status = 'aborted';
+    run.lanes = run.lanes.map((l) =>
+      l.status === 'running' || l.status === 'pending' ? { ...l, status: 'failed' } : l,
+    );
+    emit('fleet:changed', structuredClone({ runs: mockFleet.runs }));
+    return null;
+  },
+  fleet_steer: (a) => {
+    const run = mockFleet.runs.find((r) => r.id === a.runId);
+    if (!run) throw new Error(`run 不存在: ${String(a.runId)}`);
+    const lane = run.lanes.find((l) => l.key === a.laneKey);
+    if (!lane) throw new Error(`lane 不存在: ${String(a.laneKey)}`);
+    if (!String(a.message ?? '').trim()) throw new Error('steer 需要非空消息');
+    // 真机语义：流式中 = true（已转向），空闲 = false（当普通补发）
+    return lane.status === 'running';
+  },
+  fleet_open_lane: (a) => {
+    const run = mockFleet.runs.find((r) => r.id === a.runId);
+    const lane = run?.lanes.find((l) => l.key === a.laneKey);
+    if (!run || !lane) throw new Error(`lane 不存在: ${String(a.laneKey)}`);
+    return {
+      tab_id: lane.tabId,
+      cwd: run.cwd || '/Users/mock/proj',
+      session_file: null,
+      session_id: null,
+      session_name: `${lane.role} · ${run.task.slice(0, 24)}`,
+      worker_state: 'ready',
+      state: {},
+    };
+  },
   pi_abort_bash: () => null,
 };
 
@@ -502,6 +534,12 @@ async function mockPrompt(args: Record<string, unknown>) {
   // 前端 cmd() 直传 camelCase（Tauri 侧才做 snake_case 映射）
   const tabId = String(args.tabId ?? args.tab_id ?? TAB);
   const text = String(args.message ?? '');
+  // 扩展命令：真实 pi 里 `/piggy:*` 由扩展即时执行、**不经过模型**（docs/06 §4.2），
+  // mock 照抄这个语义——否则浏览器里点"刷新子代理"会得到一段假回复，掩盖链路问题。
+  if (text.startsWith('/piggy:')) {
+    mockBridgeCommand(tabId, text);
+    return;
+  }
   const emitCommit = (type: string, extra: Record<string, unknown> = {}): void =>
     emit(`pi:commit:${tabId}`, { type, ...extra });
   emitCommit('agent_start');
@@ -524,6 +562,64 @@ async function mockPrompt(args: Record<string, unknown>) {
 }
 function emitFrame(tabId: string, frame: unknown) {
   emit(`pi:frame:${tabId}`, frame);
+}
+
+/** mock 的 Fleet 运行（对应 Rust `FleetManager`）：跨命令共享，才能像真机一样被 steer/abort。 */
+const mockFleet: {
+  runs: Array<{
+    id: string;
+    templateId: string;
+    task: string;
+    cwd: string;
+    status: string;
+    lanes: Array<{ key: string; role: string; status: string; tabId: string; resultPreview?: string }>;
+  }>;
+} = { runs: [] };
+
+const MOCK_LANES: Record<string, string[]> = {
+  'scout-review-build': ['scout', 'review', 'build'],
+  research: ['res-1', 'res-2', 'synth'],
+  'parallel-review': ['r-correctness', 'r-tests', 'r-complexity'],
+  custom: ['lane-1'],
+};
+
+/**
+ * mock 的 piggy-bridge（B 层）：把扩展命令的应答按真机形状回传。
+ *
+ * 真机路径是 `bridge → ctx.ui.setEditorText("PIGGY:1:"+json)` → pi 发
+ * `extension_ui_request{method:'set_editor_text'}` → Piggy 的前端劫持。
+ * 这里直接发同一个事件形状，所以前端那条解析/劫持逻辑在浏览器里也被真实走过一遍。
+ */
+function mockBridgeCommand(tabId: string, text: string): void {
+  const payload = text.startsWith('/piggy:status') || text.startsWith('/piggy:fleet-refresh')
+    ? {
+        kind: 'status',
+        ok: true,
+        status: {
+          text: 'In-memory subagent status: 2 active children.',
+          fleet: { version: 1, totalActive: 2, omitted: 0, entries: [] },
+        },
+        lanes: [
+          { agent: 'reviewer · correctness', status: 'running', elapsed: 4_200, tokens: 1_280 },
+          { agent: 'builder', status: 'complete', elapsed: 9_800, tokens: 3_400, cost: 0.0123 },
+        ],
+      }
+    : text.startsWith('/piggy:spawn')
+      ? { kind: 'spawn', ok: true, agent: text.split(/\s+/)[1] ?? 'agent', runId: 'mock-async-run' }
+      : { kind: 'bridge', ok: false, verb: text.slice(1), error: 'mock：该动词未在浏览器里模拟' };
+  emit(`pi:ui-req:${tabId}`, {
+    type: 'extension_ui_request',
+    id: `mock-ui-${now()}`,
+    method: 'set_editor_text',
+    text: `PIGGY:1:${JSON.stringify(payload)}`,
+  });
+  emit(`pi:ui-req:${tabId}`, {
+    type: 'extension_ui_request',
+    id: `mock-ui-w-${now()}`,
+    method: 'setWidget',
+    widgetKey: 'piggy-fleet',
+    widgetLines: ['fleet: mock 舰队状态行'],
+  });
 }
 
 export const isMock = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);

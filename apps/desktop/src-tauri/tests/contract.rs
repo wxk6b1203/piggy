@@ -37,6 +37,8 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
             // 契约测试只验证 RPC 协议，不需要守卫脚本；用完全权限档避免依赖外部资源
             permission: PermissionMode::Full,
             guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
         },
         Arc::new(NullSink),
     )
@@ -117,6 +119,8 @@ async fn c3_id_echo() {
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
             guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
         },
         sink.clone(),
     )
@@ -240,6 +244,8 @@ async fn c7_megabyte_lines() {
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
             guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
         },
         sink.clone(),
     )
@@ -331,6 +337,8 @@ async fn e2e_streaming_pipeline() {
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
             guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
         },
         sink.clone(),
     )
@@ -386,6 +394,8 @@ async fn e2e_crash_recovery() {
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
             guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
         },
         sink.clone(),
     )
@@ -415,4 +425,284 @@ async fn e2e_crash_recovery() {
     assert_eq!(n, 0, "崩溃后无新增（游标即崩溃前 leaf）");
     w2.shutdown().await;
     cleanup_session(&file);
+}
+
+/* ================= M3：子代理双层（docs/06） ================= */
+
+/// 桥接扩展产物路径。源码在 packages/piggy-bridge，产物由 `pnpm build:bridge` 生成到 resources。
+fn bridge_script() -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/piggy-bridge.js");
+    assert!(
+        p.is_file(),
+        "缺少桥接扩展产物（先跑 pnpm build:bridge）: {}",
+        p.display()
+    );
+    p
+}
+
+/// 从事件流里取出 bridge → GUI 的数据面载荷（`PIGGY:1:` + JSON）。
+fn bridge_payloads(sink: &CollectorSink) -> Vec<Value> {
+    sink.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(ch, _)| ch.starts_with("pi:ui-req:"))
+        .filter(|(_, v)| v["method"] == "set_editor_text")
+        .filter_map(|(_, v)| v["text"].as_str().map(str::to_string))
+        .filter_map(|t| t.strip_prefix("PIGGY:1:").and_then(|j| serde_json::from_str::<Value>(j).ok()))
+        .collect()
+}
+
+/// 事件流里是否出现过某个扩展 UI 方法（notify/setWidget 等 fire-and-forget 面）。
+fn saw_ui_method(sink: &CollectorSink, method: &str) -> bool {
+    sink.events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(ch, v)| ch.starts_with("pi:ui-req:") && v["method"] == method)
+}
+
+/// 等 `PIGGY:1:` 载荷出现（扩展命令是异步的：prompt 的 response 先回，载荷随后到）。
+async fn wait_payloads(sink: &CollectorSink, n: usize, tries: usize) -> Vec<Value> {
+    for _ in 0..tries {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let got = bridge_payloads(sink);
+        if got.len() >= n {
+            return got;
+        }
+    }
+    bridge_payloads(sink)
+}
+
+/// C12：piggy-bridge 被真实 pi 加载，`/piggy:status` 经 RPC 数据面回传载荷。
+///
+/// 这一条锁的是**桥接本身可用**：注册形状（`registerCommand(name, {handler})`）、
+/// UI 通道（`ctx.ui.setEditorText`）、RPC v1 协商（`subagents:rpc:v1:*`）三者缺一不可。
+/// 2026-09-23 的旧实现写成 `registerCommand(name, fn)`，加载后每次调用都报
+/// `command.handler is not a function`，而 prompt 仍然 success —— 所以必须用真实回执来验。
+///
+/// 装了 pi-subagents 走 `ok:true` 分支，没装走 `ok:false` 分支，两者都算通过：
+/// 被测的是通道，不是本机装了哪些包。
+#[tokio::test]
+async fn c12_bridge_status_payload_over_rpc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sink = Arc::new(CollectorSink::default());
+    let w = spawn_worker(
+        "bridge",
+        SpawnArgs {
+            cwd: tmp.path().to_path_buf(),
+            pi_bin: pi_bin(),
+            session: SessionTarget::NoSession,
+            name: None,
+            permission: PermissionMode::Full,
+            guard_script: None,
+            bridge_script: Some(bridge_script()),
+            envs: Vec::new(),
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap();
+
+    w.prompt("/piggy:status", None, None).await.expect("prompt accepted");
+    let payloads = wait_payloads(&sink, 1, 40).await;
+    assert!(!payloads.is_empty(), "C12 FAIL: 没有收到 PIGGY:1 载荷（扩展命令未执行？）");
+    let payload = &payloads[0];
+    assert_eq!(payload["kind"], "status", "C12 FAIL: 载荷 kind 不对: {payload}");
+    assert!(saw_ui_method(&sink, "setWidget"), "C12 FAIL: 未见到舰队状态行（setWidget）");
+    assert!(saw_ui_method(&sink, "notify"), "C12 FAIL: 未见到人读摘要（notify）");
+
+    if payload["ok"] == true {
+        let status = &payload["status"];
+        assert!(
+            status["fleet"].is_object() || status["asyncSnapshot"].is_object(),
+            "C12 FAIL: ok:true 但没有任何舰队数据: {status}"
+        );
+        let active = status["fleet"]["totalActive"].as_u64().unwrap_or(0);
+        eprintln!("C12: pi-subagents 在线 → ok:true, totalActive={active}, lanes={}", payload["lanes"]);
+    } else {
+        let err = payload["error"].as_str().unwrap_or("");
+        assert!(err.contains("未安装"), "C12 FAIL: 降级理由不含「未安装」: {err}");
+        eprintln!("C12: 本机未装 pi-subagents → 降级载荷正确: {err}");
+    }
+    w.shutdown().await;
+}
+
+/// C13：清空配置目录（无 pi-subagents）时桥接必须**明确降级**，而不是静默无声。
+///
+/// 这同时验证一条容易搞错的前提：pi 在 RPC 模式下、没有任何凭据时也能启动并执行扩展命令
+/// ——扩展命令不走模型，所以这条测试零 token 消耗。
+#[tokio::test]
+async fn c13_bridge_degrades_without_pi_subagents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tempfile::tempdir().unwrap(); // 空目录 = 没有 packages/settings/auth
+    let sink = Arc::new(CollectorSink::default());
+    let w = spawn_worker(
+        "bridge-degraded",
+        SpawnArgs {
+            cwd: tmp.path().to_path_buf(),
+            pi_bin: pi_bin(),
+            session: SessionTarget::NoSession,
+            name: None,
+            permission: PermissionMode::Full,
+            guard_script: None,
+            bridge_script: Some(bridge_script()),
+            envs: vec![(
+                "PI_CODING_AGENT_DIR".to_string(),
+                cfg.path().to_string_lossy().into_owned(),
+            )],
+        },
+        sink.clone(),
+    )
+    .await
+    .unwrap();
+
+    w.prompt("/piggy:status", None, None).await.expect("prompt accepted");
+    let payloads = wait_payloads(&sink, 1, 30).await;
+    assert!(!payloads.is_empty(), "C13 FAIL: 空配置下没有降级载荷");
+    let payload = &payloads[0];
+    assert_eq!(payload["kind"], "status");
+    assert_eq!(payload["ok"], false, "C13 FAIL: 没装 pi-subagents 却报成功: {payload}");
+    assert!(
+        payload["error"].as_str().unwrap_or("").contains("未安装"),
+        "C13 FAIL: 降级理由不对: {payload}"
+    );
+    eprintln!("C13: 空配置目录 → 降级载荷 ✓ ({})", payload["error"]);
+    w.shutdown().await;
+}
+
+/* ---------------- A 层：宿主 Fleet 编排（真实 pi） ---------------- */
+
+/// 按 `commands::schedule_run` + `watch_lane` 的方式跑一条 lane，返回收集到的结果文本。
+///
+/// 用的是**同一份判定逻辑**（`fleet::lane_step`）与**同一个结果提取函数**
+/// （`fleet::last_assistant_text`），所以这条测试不仅验证"pi 能跑"，也验证调度器
+/// 赖以成立的两个前提：Busy→Ready 确实是"这一轮结束"，且 `get_messages` 能取到文本。
+async fn run_lane(
+    mgr: &piggy_lib::fleet::FleetManager,
+    run_id: &str,
+    lane_key: &str,
+    cwd: &Path,
+) -> String {
+    let run = mgr.get(run_id).expect("run 存在");
+    let lane = run.lane(lane_key).expect("lane 存在").clone();
+    let prompt = piggy_lib::fleet::render_prompt(&lane.prompt, &run.task, &run, &lane);
+    assert!(
+        !prompt.contains("{upstream}") && !prompt.contains("{task}"),
+        "占位符必须全部被替换: {prompt}"
+    );
+    let tab_id = format!("lane-{lane_key}");
+    // 对应 commands::start_ready_lanes 的 bind_tab：settle_lane 靠 tab_id 反查 lane
+    assert!(mgr.bind_tab(run_id, lane_key, &tab_id), "bind_tab 失败");
+    let w = spawn_worker(
+        &tab_id,
+        SpawnArgs {
+            cwd: cwd.to_path_buf(),
+            pi_bin: pi_bin(),
+            session: SessionTarget::NoSession,
+            name: Some(format!("fleet:test/{lane_key}")),
+            permission: PermissionMode::Full,
+            guard_script: None,
+            bridge_script: None,
+            envs: Vec::new(),
+        },
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("lane spawn");
+
+    let mut rx = w.subscribe_state();
+    w.prompt(&prompt, None, None).await.expect("lane prompt accepted");
+    let mut was_busy = false;
+    let mut saw_busy = false;
+    let mut settled = false;
+    for _ in 0..240 {
+        // 最多 2 分钟
+        if rx.changed().await.is_err() {
+            break;
+        }
+        let (busy, outcome) = piggy_lib::fleet::lane_step(was_busy, *rx.borrow());
+        was_busy = busy;
+        saw_busy |= busy;
+        match outcome {
+            Some(piggy_lib::fleet::LaneOutcome::Settled) => {
+                settled = true;
+                break;
+            }
+            Some(piggy_lib::fleet::LaneOutcome::Failed) => panic!("lane {lane_key} 失败（Crashed/Stopped）"),
+            None => {}
+        }
+    }
+    assert!(settled, "lane {lane_key} 未在超时内 settle");
+    assert!(saw_busy, "lane {lane_key} 从未进入 Busy —— 那就不是真跑过，而是被误判完成");
+    let messages = w.get_messages().await.expect("get_messages");
+    let text = piggy_lib::fleet::last_assistant_text(&messages).unwrap_or_default();
+    mgr.settle_lane(&tab_id, &text);
+    w.shutdown().await;
+    text
+}
+
+/// C14：两 lane DAG 用真实 pi 跑通 —— 就绪判定、settle 判定、结果收集、`{upstream}` 注入。
+///
+/// 消耗：两次极小 prompt（本机默认 glm-5.3-flash）。
+#[tokio::test]
+async fn c14_fleet_lane_dag_with_real_pi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let template = json!({
+        "lanes": [
+            {
+                "key": "a", "role": "侦察", "depends_on": [],
+                "prompt": "Reply with exactly: ALPHA"
+            },
+            {
+                "key": "b", "role": "汇总", "depends_on": ["a"],
+                "prompt": "上一步的输出是：\n{upstream}\n若其中含 ALPHA 就回复 BRAVO-OK，否则回复 MISSING"
+            }
+        ]
+    });
+    let mgr = piggy_lib::fleet::FleetManager::new();
+    let run = piggy_lib::fleet::build_run("c13".into(), "t", &template, "契约测试任务", tmp.path().to_path_buf())
+        .expect("build_run");
+    assert_eq!(run.ready_lanes(), vec!["a"], "初始只应有 a 就绪（b 依赖 a）");
+    mgr.insert(run);
+
+    let text_a = run_lane(&mgr, "c13", "a", tmp.path()).await;
+    assert!(!text_a.trim().is_empty(), "C14 FAIL: lane a 结果为空");
+    assert!(
+        text_a.to_uppercase().contains("ALPHA"),
+        "C14 FAIL: lane a 没按指令回复: {text_a:?}"
+    );
+
+    // a settle 后 b 才就绪（DAG 顺序由 Rust 侧决定，不靠模型）
+    let run = mgr.get("c13").unwrap();
+    assert_eq!(run.ready_lanes(), vec!["b"], "a 完成后 b 才应就绪");
+    let b_prompt = piggy_lib::fleet::render_prompt(
+        "上一步的输出是：\n{upstream}\n若其中含 ALPHA 就回复 BRAVO-OK，否则回复 MISSING",
+        &run.task,
+        &run,
+        run.lane("b").unwrap(),
+    );
+    assert!(
+        b_prompt.contains(text_a.trim()),
+        "C14 FAIL: 下游 prompt 没带上游真实结果\n上游={text_a:?}\nprompt={b_prompt:?}"
+    );
+
+    let text_b = run_lane(&mgr, "c13", "b", tmp.path()).await;
+    assert!(
+        text_b.to_uppercase().contains("BRAVO"),
+        "C14 FAIL: 汇总 lane 没看到上游内容: {text_b:?}"
+    );
+    assert!(mgr.maybe_finish("c13"), "全部 lane 终态后 run 应转 Done");
+    assert_eq!(
+        mgr.get("c13").unwrap().status,
+        piggy_lib::fleet::RunStatus::Done,
+        "C14 FAIL: run 未结束"
+    );
+    let snap = mgr.snapshot();
+    eprintln!(
+        "C14: DAG 跑通 ✓ a={:?} → b={:?}；快照 lanes={}",
+        text_a.trim(),
+        text_b.trim(),
+        snap["runs"][0]["lanes"]
+    );
 }
