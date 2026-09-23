@@ -21,13 +21,17 @@ Piggy 是一个以 [pi](https://github.com/earendil-works/pi) 为引擎、**Taur
 | 12 | [dsh-ui-spec.md](12-dsh-ui-spec.md) | **DSH 客户端 UI 实现级规格**（源码逐条 `file:line`）：布局/令牌/对话/轨迹/侧栏/右栏 + 复用结论 | 前端开发，**UI 对齐以本篇为准** |
 | 13 | [vscode-asset-inventory.md](13-vscode-asset-inventory.md) | VS Code 资产清点与许可核查（codicons / 主题 JSON / 设计令牌 / 禁用项） | 前端开发 |
 | 14 | [14-ui-assessment-and-dsh-alignment.md](14-ui-assessment-and-dsh-alignment.md) | Piggy 现状体检、缺陷根因、DSH 对齐改造记录与事故记录 | 全体开发 |
+| 15 | [handoff.md](15-handoff.md) | 一页交接：当前状态、常用命令、踩过的规矩、未完成项 | **接手的 agent 先读** |
+| 16 | [pi-config-and-extensions.md](16-pi-config-and-extensions.md) | pi 配置来源与扩展机制（settings/auth/models 真实 schema） | 后端 |
+| 17 | [pi-permissions-and-packaging.md](17-pi-permissions-and-packaging.md) | 权限档位落地、守卫扩展、自定义 pi 打包 | 后端 |
+| 18 | [18-pi-subagents-pnpm-realpath.md](18-pi-subagents-pnpm-realpath.md) | 上游问题：pi-subagents async runner 与 pnpm 软链布局不兼容（根因/A-B 复现/一行补丁/issue 正文） | 后端/环境排查 |
 
 推荐阅读路径：
 
 - **快速理解项目**：00 → 01 → 09
 - **开始写 Rust 侧代码**：01 → 02 → 03 → 08
 - **开始写前端代码**：01 → 04 → **12** → 13 → 07 → 05（11 为历史裁决，冲突处以 12 为准）
-- **做子代理功能**：01 → 06 → 02
+- **做子代理功能**：01 → 06 → 02（环境踩坑先看 18）
 - **评审性能**：05 → 04 §4 → 02 §5
 - **排查 UI 问题**：先跑 `pnpm --filter @piggy/desktop ui:debug`，再读 14
 

@@ -163,19 +163,20 @@ M2 顺延项（记入 M3/M4 或独立跟进）：
 | 验收项（§5 原表） | 结论 | 证据 |
 |---|---|---|
 | 1. parallel-review 对真实代码跑通 | ✅ 等价验证：契约测试 C14 用两 lane DAG 真跑（scout→汇总），a settle → b 就绪 → `{upstream}` 注入 a 的真实输出 → b 回复 BRAVO-OK → run 转 Done。**未做**：在 GUI 里对真实仓库点一次 `parallel-review`（需要人开 `tauri dev`） | `pnpm test:contract -- c14` |
-| 2. 会话内子代理可见、可 steer | ⚠️ 部分：`/piggy:spawn scout …` 真机派发成功（`details.asyncId` 回传、`async-complete` 主动推送、lane 行正确显示为 failed）；但**子代理本体没能跑起来**——原因是本机 pi 安装缺 `marked`（见下），不是 Piggy 或 bridge 的问题。steer 的 RPC 参数与回执解析有单测覆盖，未做真机 steer 往返 | 02 §9 C12；`~/…/pi-subagents-uid-501/async-subagent-runs/<id>/runner.stderr.log` |
+| 2. 会话内子代理可见、可 steer | ✅ **完整往返已验证**：`/piggy:spawn scout …` 真机派发 → 状态 `running`（tokens 实时增长）→ 子代理产出真实结果文件 → 终态 `complete`；`/piggy:steer <runId> …` 回执 `deliveryStatus:"queued"`，pi-subagents 运行记录 `steering:{requested:1,delivered:1,failed:0}`、事件 `requested→queued→routed→delivered` | 02 §9 C12；docs/18 §4 |
 | 3. 未装 pi-subagents 时降级正确 | ✅ 真机：空 `PI_CODING_AGENT_DIR` → `{ok:false,error:"pi-subagents 未安装"}` + 面板降级文案 | 02 §9 C13 |
 | 4. Fleet 不影响 05 预算 | ✅ lane 计入 maxWorkers；**新增**容量排队的自愈重试（`should_keep_waiting`）| `fleet::tests::capacity_wait_*`、`process::tests` |
 
-**环境阻塞（非 Piggy 缺陷）**：本机 pi 0.87.1 的 pnpm 安装树里缺 `marked`
-（`@earendil-works/pi-tui` 声明依赖 `marked@18.0.11`，但 store link 与 global 两处都没有）。
-主 pi 进程不 import 那条路径所以日常无感，但 pi-subagents 的 **async runner 子进程**会解析到它并直接崩：
-`ERR_MODULE_NOT_FOUND: Cannot find package 'marked' imported from …/pi-tui/dist/index.js`。
-修复=`重装 pi`（`pnpm add -g @earendil-works/pi-coding-agent@0.87.1`）。
-在此之前，B 层里"派发子代理"这个动作在真机上会以 failed 收场（通道本身是通的）。
+**环境阻塞（已解决，非 Piggy 缺陷）**：本机是 **pnpm 全局安装的 pi**，而 pi-subagents 的 async runner
+把 pnpm 的**软链路径**当模块 URL 用，导致被别名包的依赖解析不到（`marked`、`@earendil-works/pi-telemetry`…），
+子代理派发成功但 2 秒内 failed。注意这**不是"缺依赖"**——重装 pi 无效（实测错误一字不差），
+补一个依赖只会冒下一个。修法是在 pi-subagents 的 `findPeerPackageDir` 返回值上加一行 `fs.realpathSync`，
+已应用并验证（spawn→complete、steer→delivered）。完整根因、A/B 复现实验与上游 issue 正文见 **docs/18**。
+该补丁位于 `~/.pi/agent/npm/node_modules/pi-subagents/`，**`pi update --extensions` 会覆盖它**。
 
-**仍未做**：dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自动分列 = M4 打磨）；
-模板自定义编辑（`custom` 模板仍是空 lane 集）；`/piggy:cost` 的真机往返（本机 pi-subagents 0.70.1 不声明该能力）。
+**仍未做**：在 GUI 里对真实仓库点一次 `parallel-review`（需要人开 `tauri dev` 点，agent 无法驱动原生窗口）；
+dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自动分列 = M4 打磨）；模板自定义编辑（`custom` 模板仍是空 lane 集）；
+`/piggy:cost` 的真机往返（本机 pi-subagents 0.70.1 不声明该能力）。
 
 ## 6. M4 · 打磨与发布（约 2–3 周）
 
