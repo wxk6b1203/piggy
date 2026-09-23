@@ -24,6 +24,17 @@ export const DICT = {
     'fleet.refresh': '刷新子代理状态（/piggy:status）',
     'fleet.notInstalled': ' · 未安装 piggy-bridge/pi-subagents',
     'fleet.notSynced': '尚未同步（需安装 piggy-bridge 扩展）',
+    'code.fallbackTitle': '代码',
+    'code.copy': '复制代码',
+    'code.lines': '{n} 行',
+    'code.expand': '展开',
+    'code.collapse': '折叠',
+    'code.showMore': '显示更多',
+    'code.showLess': '收起',
+    'code.showAll': '仍要全部显示',
+    'code.truncated': '只渲染了前 {n} 行（共 {total} 行）',
+    'code.hlFailed': '未能高亮',
+    'code.hlUnknown': '未收录此语言',
   },
   'en-US': {
     'app.newSession': 'New Session',
@@ -41,6 +52,17 @@ export const DICT = {
     'fleet.refresh': 'Refresh subagents (/piggy:status)',
     'fleet.notInstalled': ' · piggy-bridge/pi-subagents not installed',
     'fleet.notSynced': 'Not synced yet (install piggy-bridge)',
+    'code.fallbackTitle': 'Code',
+    'code.copy': 'Copy code',
+    'code.lines': '{n} lines',
+    'code.expand': 'Expand',
+    'code.collapse': 'Collapse',
+    'code.showMore': 'Show more',
+    'code.showLess': 'Show less',
+    'code.showAll': 'Render all anyway',
+    'code.truncated': 'Showing first {n} of {total} lines',
+    'code.hlFailed': 'highlight failed',
+    'code.hlUnknown': 'language not bundled',
   },
 } as const;
 
@@ -70,4 +92,14 @@ export function setLang(lang: Lang): void {
 export function t(key: string): string {
   const dicts = DICT as Record<Lang, Record<string, string>>;
   return dicts[current][key] ?? dicts['zh-CN'][key] ?? key;
+}
+
+/**
+ * 带变量的翻译：词典里写 `{n}`，调用方传值。
+ * 词典本身保持 `Record<string, string>`，`DictKey` 才收得住（写错 key = 编译错误）。
+ */
+export function tf(key: DictKey, vars: Record<string, string | number>): string {
+  return t(key).replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in vars ? String(vars[name]) : whole,
+  );
 }

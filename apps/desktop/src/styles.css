@@ -116,7 +116,11 @@ body {
 }
 .pg-thinking summary, .pg-live-thinking summary { cursor: pointer; user-select: none; }
 .pg-thinking-body { white-space: pre-wrap; margin-top: 4px; }
-.pg-toolresult .pg-pre, .pg-bash .pg-pre {
+/* 工具结果的**裸** pre（未走代码卡片的兜底路径）。
+   `:not(.pg-codeblock-pre)` 是必须的：工具结果现在渲染成代码卡片（04 §5.2），
+   少了这个排除，这条 max-height:240px 会盖掉卡片的折叠/展开逻辑 —— 也就是
+   "第 240px 之后够不到"那个 bug 换个地方复发。 */
+.pg-toolresult .pg-pre:not(.pg-codeblock-pre), .pg-bash .pg-pre:not(.pg-codeblock-pre) {
   margin: 4px 0; padding: 8px 10px;
   background: var(--pg-bg-sidebar); border-radius: 6px;
   font-family: var(--pg-mono); font-size: 12px;
@@ -894,18 +898,67 @@ body {
   background: var(--pg-codeblock); color: var(--pg-fg-secondary);
   font-size: 11px; line-height: 18px;
 }
-.pg-codeblock-lang { color: var(--pg-fg-dim); font-family: var(--pg-mono); }
-.pg-codeblock-copy {
+.pg-codeblock-lang {
+  display: inline-flex; align-items: baseline; gap: 8px; min-width: 0;
+  color: var(--pg-fg-dim); font-family: var(--pg-mono);
+}
+.pg-codeblock-lines { color: var(--pg-fg-caption); font-variant-numeric: tabular-nums; }
+/* 高亮没成功/语言没收录：**说出来**。旧实现把这些情况渲染成纯文本，用户只能猜。 */
+.pg-codeblock-hlwarn {
+  flex: none; padding: 0 6px; border-radius: 999px;
+  background: var(--pg-hover); color: var(--pg-fg-caption); font-family: var(--pg-font);
+}
+.pg-codeblock-ops { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.pg-codeblock-btn {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
   width: 24px; height: 24px; padding: 0; border: none; border-radius: var(--pg-r-md);
   background: transparent; color: var(--pg-fg-secondary); cursor: pointer;
 }
-.pg-codeblock-copy:hover { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-codeblock-btn:hover { background: var(--pg-hover); color: var(--pg-fg); }
+/* 正文容器：折叠、超高展开都作用在它身上（pre 自己只负责滚动） */
+.pg-codeblock-body { position: relative; }
+.pg-codeblock-body[data-collapsed] { display: none; }
 .pg-codeblock-pre {
   margin: 0; border-radius: 0; max-height: 420px; overflow: auto;
   padding: 6px 22px 20px;
   font-family: var(--pg-mono); font-size: var(--pg-fs-code-block); line-height: 19px;
 }
+.pg-codeblock:not([data-wrap]) .pg-codeblock-pre { white-space: pre; }
+.pg-codeblock[data-wrap] .pg-codeblock-pre { white-space: pre-wrap; word-break: break-word; }
+/* 展开后不再限高（内容本来就在 DOM 里，这里只是把可视高度放开） */
+.pg-codeblock-body[data-expanded] .pg-codeblock-pre { max-height: none; }
+/* 压底的"显示更多"：不是遮罩而是按钮，键盘可达、读屏可读 */
+.pg-codeblock-more {
+  position: sticky; bottom: 0; left: 0; width: 100%;
+  padding: 6px 0 8px; border: none; cursor: pointer;
+  background: linear-gradient(to bottom, transparent, var(--pg-codeblock) 42%);
+  color: var(--pg-fg-secondary); font: inherit; font-size: 11px;
+}
+.pg-codeblock-more:hover { color: var(--pg-fg); }
+.pg-codeblock-trunc {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 22px 10px; border-top: 0.5px solid var(--pg-border-l2);
+  color: var(--pg-fg-caption); font-size: 11px;
+}
+.pg-codeblock-trunc-btn {
+  padding: 2px 8px; border: 0.5px solid var(--pg-border-l2); border-radius: var(--pg-r-md);
+  background: transparent; color: var(--pg-fg-secondary); font: inherit; font-size: 11px; cursor: pointer;
+}
+.pg-codeblock-trunc-btn:hover { background: var(--pg-hover); color: var(--pg-fg); }
+
+/* diff：逐行**部分高亮**（04 §5.2）。整块语法高亮之外，增/删/块头/元信息各自成色，
+   靠 shiki transformer 打在 `<span class="line">` 上，不是拿字符串切 HTML。 */
+.pg-codeblock .pg-dl-add { background: var(--pg-diff-add-bg); box-shadow: inset 3px 0 var(--pg-diff-add-gutter); }
+.pg-codeblock .pg-dl-del { background: var(--pg-diff-del-bg); box-shadow: inset 3px 0 var(--pg-diff-del-gutter); }
+.pg-codeblock .pg-dl-hunk { background: var(--pg-diff-hunk-bg); color: var(--pg-fg-dim); }
+.pg-codeblock .pg-dl-meta { color: var(--pg-fg-caption); }
+/* 行级背景要铺满整行：shiki 的 `code` 默认是 inline，百分比宽度落不了地。
+   先把 `code` 撑到**最宽那一行**（min-width 保底一屏宽），行再各占 100%——
+   这样横向滚动到右边时色带不会断在半路。
+   `line` 必须留 inline-block：shiki 靠行间的真实换行分行，改成 block 会多渲染空行。 */
+.pg-codeblock .shiki code { display: block; width: max-content; min-width: 100%; }
+.pg-codeblock .shiki .line { display: inline-block; width: 100%; }
+
 /* 行内 code（DSH markdown：r6 / padding 0 5px / 底 rgb(41,41,41)） */
 .pg-assistant .pg-text code, .pg-bubble code {
   display: inline-flex; align-items: center;
@@ -915,6 +968,14 @@ body {
 }
 .pg-codeblock .shiki, .pg-codeblock .shiki span { color: var(--shiki-dark); background-color: transparent !important; font-style: var(--shiki-dark-font-style); }
 [data-theme='light'] .pg-codeblock .shiki, [data-theme='light'] .pg-codeblock .shiki span { color: var(--shiki-light); }
+/* 双主题变量只写在 span 上；行底色是我们自己的，不能被上面那条 `background-color:
+   transparent !important` 抹掉——所以行类要 reclaim 自己的背景。 */
+.pg-codeblock .shiki .pg-dl-add,
+.pg-codeblock .shiki span.pg-dl-add { background-color: var(--pg-diff-add-bg) !important; }
+.pg-codeblock .shiki .pg-dl-del,
+.pg-codeblock .shiki span.pg-dl-del { background-color: var(--pg-diff-del-bg) !important; }
+.pg-codeblock .shiki .pg-dl-hunk,
+.pg-codeblock .shiki span.pg-dl-hunk { background-color: var(--pg-diff-hunk-bg) !important; }
 .pg-image { max-width: 320px; max-height: 240px; border-radius: 6px; cursor: zoom-in; display: block; margin: 4px 0; }
 
 /* Fleet 面板（M3，06 §5） */

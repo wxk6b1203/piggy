@@ -183,6 +183,24 @@ registry 保证一个会话文件同时只被一个 worker 打开（01 §2.2）�
 - 扩展命令（`/xxx`）例外：流式中也立即执行（扩展自管 LLM 交互）；
 - `steer`/`follow_up` 命令不能用于扩展命令（协议禁止）。
 
+**两者到底差在哪（2026-09-23 从 pi 自己的类型注释核对，不是推测）**
+
+pi `AgentSession` 的原文：
+
+| | 投递时机 | 一句话 |
+|---|---|---|
+| `steer`（界面：「转向」） | **"Delivered after the current assistant turn finishes executing its tool calls, before the next LLM call."** | 当前这批工具调用跑完、**下一次 LLM 调用之前**就插进去 → agent 不用停下来，但下一个 thought 就会看到你的话 |
+| `followUp`（界面：「追加」） | **"Delivered only when agent has no more tool calls or steering messages."** | 一直排到 agent **彻底没活**（没有更多工具调用、也没有待投递的 steer）才投递 → 相当于"这一轮干完之后再说的事" |
+
+两点容易误解：
+- **都不是 abort**。两条都只是排队；真正停下 agent 的是 `abort`（界面 `Esc`）。
+  pi 在 `PromptOptions` 上把 steer 注成 `"steer" (interrupt)`，那个 interrupt 指的是
+  "打断流程、插队"，不是"中断会话"——别和 `Esc` 混为一谈；
+- 排队条数与投递粒度另有 `steeringMode` / `followUpMode`（`all` / `one-at-a-time`）控制，
+  Piggy 目前不暴露（用 pi 默认值）。
+
+界面：Composer 的「转向 / 追加」两个按钮，以及 `⏎`=转向 / `⇧⏎`=追加 / `Esc`=中断并取回排队文本（§7.3）。
+
 ### 7.3 Esc 中断流（协议推荐流程）
 
 `clear_queue` → 取回排队文本回填 composer → `abort`（响应到达 = 已 idle）。绑定到 `Esc`（07 键位表）。

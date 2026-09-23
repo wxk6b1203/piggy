@@ -230,8 +230,41 @@ pi:frame:{tabId}（≤60Hz）
 
 ### 5.2 代码块
 
-- Shiki **按需**动态 import（语言首用加载，全局 LRU 上限 16 语言）+ 虚拟化外不渲染（仅可视区高亮，进入视口才高亮）；
-- 代码块头部：语言、复制、折叠（长块默认折叠到 300 行）。
+**高亮（`highlight.ts` + `CodeBlock.tsx`）**
+- Shiki **按需**：core + oniguruma 引擎 + 语言包全部动态 import，初始包不含任何语法；
+- 语言表是**静态字面量** `import('shiki/langs/x.mjs')` × 86（`highlight.ts` 的 `LOADERS`）。
+  **不许写回** `` import(`shiki/langs/${id}.mjs`) ``：裸说明符 + 变量，Vite 的
+  dynamic-import-vars 不分析裸说明符，产物原样保留 → 浏览器抛
+  `Failed to resolve module specifier` → 被 catch 吞成纯文本。这就是 2026-09-23 那次
+  「高亮从来没生效过、且控制台零错误」的根因，见 docs/15 规矩 22；
+- 别名归一（`bash→shellscript`、`ts→typescript`、`c++→cpp`、`text→不高亮`…）；
+  不认识的语言**界面明说"未收录此语言"**，加载失败**明说"未能高亮"** + `console.warn`，
+  绝不静默降级；
+- 全局 LRU 上限 16 语言（shiki 不能卸载语言，超限整体重建）；
+- 进入视口才高亮（IntersectionObserver；无 IO 的环境直接高亮，不少一层功能）。
+
+**diff 的"部分高亮"**
+- `diffLineKind()` 逐行判 `add / del / hunk / meta / ctx`，经 shiki `transformers[].line`
+  打在 `<span class="line">` 上（**不是**拿字符串切 HTML）；
+- 判定顺序关键：`+++`/`---` 是**文件头**，必须先于 `+`/`-` 判掉，
+  否则 `+++ b/x.go` 会被当成"新增了一行"；
+- 底色取 VS Code Dark+/Light+ 的 `insertedLineBackground` / `removedLineBackground`，
+  透明度压到 0.15 上下（`--pg-diff-*-bg`），左侧加 3px 色条。
+
+**折叠（长内容必须够得到，规矩 21）**
+- 标题栏常驻折叠开关（≥6 行才出现，避免碎块噪音）；
+- `> AUTO_COLLAPSE_LINES (40)` 行**默认折叠，但内容全部在 DOM 里**（可 Ctrl+F / 可选中 / 可复制）；
+- 正文 `max-height: 420px`，实际超高时压底给"显示更多"。**量的是 `<pre>` 不是外层 body**：
+  限高长在 `pre` 上，量外层恒得到"没超高"，按钮永远不出现（第一版就这么写错了）；
+- 病态超长（`> MAX_RENDER_LINES (4000)`）**显式截断并说清截了多少** + "仍要全部显示"。
+
+**工具结果走同一张卡**：`MessageView` 的 `toolResult` / `bashExecution` 经
+`inferToolLang()` 按内容认 diff、按 toolName 认 shell，其余纯文本 —— 但三者都拿到
+折叠 / 行数 / 复制 / 超高展开。已知缺口：pi 的 toolResult **不含路径**
+（真机取样只有 `toolCallId/toolName/content/details/isError`），所以 `read`/`write` 的结果
+没法按文件扩展名选语言，只能保持纯文本（不瞎猜颜色）。
+
+**标题栏**：左侧语言（或 toolName）+ 行数 + 高亮状态，右侧折叠 + 复制（各 24×24）。
 
 ### 5.3 特化内容
 

@@ -10,6 +10,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import type { MessageView } from '@/stores/messages';
 import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock, splitFences } from './CodeBlock';
+import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
@@ -49,12 +50,17 @@ export function MessageView({ view }: { view: MessageView }) {
   }
   if (role === 'toolResult') {
     const rm = m as { toolName?: string; content?: ContentBlock[]; isError?: boolean };
+    const text = textOf(rm.content);
+    // 工具结果走**同一个代码卡片**（04 §5.2）：diff 认出来按 diff 上色 + 增删行底色，
+    // 跑命令类工具按 shell 上色，其余纯文本 —— 但三者都拿到折叠、行数、复制、超高展开。
+    // 旧实现是一个裸 `<pre max-height:240px>`：没有高亮、没有折叠、第 N 行之后够不到。
+    const { lang } = inferToolLang(rm.toolName, text);
     return (
       <div className={`pg-message pg-toolresult${rm.isError ? ' pg-error' : ''}`}>
         <div className="pg-role">
           <Icon name={rm.isError ? 'error' : 'check'} size={12} /> {rm.toolName ?? 'tool'}
         </div>
-        <pre className="pg-pre">{textOf(rm.content)}</pre>
+        {text ? <CodeBlock code={text} lang={lang} title={rm.toolName ?? 'tool'} collapsible /> : null}
       </div>
     );
   }
@@ -64,7 +70,9 @@ export function MessageView({ view }: { view: MessageView }) {
       <div className="pg-message pg-bash">
         <div className="pg-role">bash → exit {bm.exitCode ?? '?'}</div>
         <div className="pg-cmd">$ {bm.command}</div>
-        {bm.output ? <pre className="pg-pre">{bm.output}</pre> : null}
+        {bm.output ? (
+          <CodeBlock code={bm.output} lang={inferToolLang('bash', bm.output).lang} title="bash" collapsible />
+        ) : null}
       </div>
     );
   }

@@ -186,6 +186,116 @@ const fleet = await page.evaluate(async () => {
     };
   })();
 
+  // 代码块：**这一节是本次 bug 唯一能在构建/运行期拦住它的地方**。
+  //
+  // 起因：用户截图"代码块没有高亮也没有折叠"。根因是 `import(`shiki/langs/${id}.mjs`)`
+  // —— 裸说明符 + 变量，Vite 的 dynamic-import-vars **不分析裸说明符**，构建期
+  // 连 warning 都不给，产物里原样保留；浏览器执行时抛
+  // `Failed to resolve module specifier`，再被 `.catch(() => setHtml(null))` 吞掉。
+  // 净效果：高亮从来没生效过，而**控制台一条错误都没有**。
+  //
+  // 为什么必须在这里立（不能只靠单测）：vitest 走 Vite 的 SSR transform，模板字符串
+  // 那条路径在 Node 里**能解析成功** —— 把代码改回坏写法，单测依然全绿。实测过。
+  // 只有真浏览器的 ESM 解析 + 真实产物才认得出。所以断言打在**真实 DOM** 上：
+  // 经 `useMessages.hydrate` → Transcript → MessageView → CodeBlock 整条链路。
+  const code = await (async () => {
+    const diffText = [
+      'diff --git a/3_optimize_ws_goroutines/epoll.go b/3_optimize_ws_goroutines/epoll.go',
+      'index 2da34df..0902aa3 100644',
+      '--- a/3_optimize_ws_goroutines/epoll.go',
+      '+++ b/3_optimize_ws_goroutines/epoll.go',
+      '@@ -1,9 +1,9 @@',
+      ' package main',
+      ' ',
+      ' import (',
+      '-    "github.com/gorilla/websocket"',
+      '+    "golang.org/x/sys/unix"',
+      ' )',
+    ].join('\n');
+    const goFence = '```go\npackage main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("hi")\n}\n```';
+    const mid = Array.from({ length: 30 }, (_, i) => `mid ${i + 1}`).join('\n');
+    const long = Array.from({ length: 60 }, (_, i) => `long ${i + 1}`).join('\n');
+
+    stores.useMessages.getState().hydrate(tabId, [
+      { role: 'toolResult', toolCallId: 'probe-diff', toolName: 'bash', content: [{ type: 'text', text: diffText }] },
+      { role: 'assistant', content: [{ type: 'text', text: goFence }] },
+      { role: 'toolResult', toolCallId: 'probe-mid', toolName: 'read', content: [{ type: 'text', text: mid }] },
+      { role: 'toolResult', toolCallId: 'probe-long', toolName: 'read', content: [{ type: 'text', text: long }] },
+    ]);
+    // 等 shiki wasm + 语言 chunk（首次要下载 oniguruma + 语法）
+    await new Promise((r) => setTimeout(r, 3500));
+
+    const cards = [...document.querySelectorAll('.pg-codeblock')];
+    const pick = (sel) => cards.map((c) => c.querySelector(sel)).filter(Boolean);
+    const diffCard = cards.find((c) => c.getAttribute('data-lang') === 'diff');
+    const goCard = cards.find((c) => c.getAttribute('data-lang') === 'go');
+    const colorOf = (el) => (el ? getComputedStyle(el).color : null);
+    const pre = diffCard?.querySelector('pre');
+    const moreCard = cards.find(
+      (c) => c.querySelector('.pg-codeblock-more') && !c.querySelector('.pg-codeblock-body[data-collapsed]'),
+    );
+    const collapsedCard = cards.find((c) => c.querySelector('.pg-codeblock-body[data-collapsed]'));
+
+    // 亮色主题下再量一次：diff 底色是 `!important` 抢回来的，主题一切就可能被
+    // `background-color: transparent !important` 那条双主题规则盖掉。
+    const prevTheme = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = 'light';
+    await new Promise((r) => setTimeout(r, 80));
+    const addBgLight = diffCard?.querySelector('.pg-dl-add')
+      ? getComputedStyle(diffCard.querySelector('.pg-dl-add')).backgroundColor
+      : null;
+    const delBgLight = diffCard?.querySelector('.pg-dl-del')
+      ? getComputedStyle(diffCard.querySelector('.pg-dl-del')).backgroundColor
+      : null;
+    document.documentElement.dataset.theme = prevTheme ?? 'dark';
+
+    return {
+      cards: cards.length,
+      shikiCards: cards.filter((c) => c.querySelector('.shiki')).length,
+      addBgLight,
+      delBgLight,
+      diff: diffCard
+        ? {
+            spans: diffCard.querySelectorAll('.shiki span').length,
+            add: diffCard.querySelectorAll('.pg-dl-add').length,
+            del: diffCard.querySelectorAll('.pg-dl-del').length,
+            hunk: diffCard.querySelectorAll('.pg-dl-hunk').length,
+            addBg: diffCard.querySelector('.pg-dl-add')
+              ? getComputedStyle(diffCard.querySelector('.pg-dl-add')).backgroundColor
+              : null,
+            delBg: diffCard.querySelector('.pg-dl-del')
+              ? getComputedStyle(diffCard.querySelector('.pg-dl-del')).backgroundColor
+              : null,
+            preLines: pre ? pre.textContent.split('\n').length : 0,
+            preScrolls: pre ? pre.scrollHeight > pre.clientHeight : false,
+          }
+        : null,
+      // 高亮的"真"证据：同一块的 token 颜色不止一种（全是同一个色 = 高亮没产出任何东西）
+      goColors: goCard
+        ? [...new Set([...goCard.querySelectorAll('.shiki span')].map(colorOf).filter(Boolean))].length
+        : 0,
+      // 超高时"显示更多"必须出现 —— 量错元素（量外层 body 而不是 pre）时它会**永远不出现**
+      showMore: !!moreCard,
+      // 折叠块的内容必须**全在 DOM 里**（折叠 ≠ 不渲染）
+      collapsedLines: collapsedCard
+        ? collapsedCard.querySelector('pre')?.textContent?.split('\n').length ?? 0
+        : 0,
+      // "静默失败"计数器：声称有语言、却没产出高亮、也**没说一句话**的卡片数。
+      // 旧实现把异常 catch 成纯文本，界面上和控制台里都毫无痕迹 —— 这正是这条 bug
+      // 能活很久的原因。这个数必须恒为 0。
+      silentFail: cards.filter(
+        (c) =>
+          c.getAttribute('data-lang') &&
+          !c.querySelector('.shiki') &&
+          !c.querySelector('.pg-codeblock-hlwarn'),
+      ).length,
+      hlWarns: cards.map((c) => c.querySelector('.pg-codeblock-hlwarn')?.textContent ?? null).filter(Boolean),
+      collapsedHidden: collapsedCard
+        ? getComputedStyle(collapsedCard.querySelector('.pg-codeblock-body')).display === 'none'
+        : false,
+    };
+  })();
+
   return {
     tabId,
     aLaneBlocks,
@@ -193,6 +303,7 @@ const fleet = await page.evaluate(async () => {
     steerCleared,
     bRoles,
     slash,
+    code,
     bridged: stores.useFleet.getState().bridge.installed,
     synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
   };
@@ -230,6 +341,38 @@ else {
   if (!sl.scrollable) bad.push(`补全容器没有溢出（scrollHeight=${sl.scrollHeight} ≤ clientHeight=${sl.clientHeight}），滚动核对失去意义`);
   if (!(sl.scrolledBy > 0)) bad.push(`补全列表 scrollTop 没变化（${sl.scrolledBy}），实际滚不动 ★`);
   if (!sl.lastRowVisible) bad.push(`滚到底后最后一条（${sl.lastRowName}）仍不在可视区内 ★`);
+}
+/* 代码块：真浏览器里必须真的高亮、diff 必须有增删行底色、折叠必须成立且不吞内容 */
+const cb = fleet.code ?? {};
+if (!cb.cards) bad.push('代码块：hydrate 之后一张代码卡片都没渲染出来 ★');
+else {
+  if (!cb.shikiCards) {
+    bad.push('代码块：一张卡都没生成 .shiki —— 语法高亮没生效（语言 chunk 没打进产物？）★');
+  }
+  if (cb.goColors < 3) {
+    bad.push(`代码块：go 的 token 只有 ${cb.goColors} 种颜色，等于没高亮 ★`);
+  }
+  if (!cb.diff) bad.push('代码块：diff 卡片没出现（inferToolLang 没认出 git diff？）★');
+  else {
+    if (cb.diff.spans < 10) bad.push(`代码块：diff 只有 ${cb.diff.spans} 个 token span，高亮没产出 ★`);
+    if (cb.diff.add !== 1) bad.push(`代码块：diff 里"新增行"应恰好 1 行，实际 ${cb.diff.add} ★`);
+    if (cb.diff.del !== 1) bad.push(`代码块：diff 里"删除行"应恰好 1 行，实际 ${cb.diff.del} ★`);
+    if (cb.diff.hunk !== 1) bad.push(`代码块：diff 里块头 @@ 应有底色，实际 ${cb.diff.hunk} ★`);
+    const transparent = (v) => !v || v === 'rgba(0, 0, 0, 0)' || v === 'transparent';
+    if (transparent(cb.diff.addBg)) bad.push(`代码块：新增行没有底色（${cb.diff.addBg}）★`);
+    if (transparent(cb.diff.delBg)) bad.push(`代码块：删除行没有底色（${cb.diff.delBg}）★`);
+    if (transparent(cb.addBgLight) || transparent(cb.delBgLight)) {
+      bad.push(`代码块：亮色主题下 diff 行底色被抹掉了（add=${cb.addBgLight} del=${cb.delBgLight}）★`);
+    }
+    // 11 行 diff 全在 DOM 里（不是被 max-height 切掉）
+    if (cb.diff.preLines < 11) bad.push(`代码块：diff 只渲染了 ${cb.diff.preLines} 行（应 11 行）★`);
+  }
+  if (!cb.showMore) bad.push('代码块：超高块没有"显示更多"按钮（很可能量错了元素，量的是外层 body）★');
+  if (cb.collapsedLines < 60) {
+    bad.push(`代码块：折叠块的内容被吞了，DOM 里只有 ${cb.collapsedLines} 行（应 60 行）★`);
+  }
+  if (!cb.collapsedHidden) bad.push('代码块：60 行的块没有默认折叠 ★');
+  if (cb.silentFail) bad.push(`代码块：有 ${cb.silentFail} 张卡"声称有语言、没高亮、也不吭声"（静默失败又回来了）★`);
 }
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 
