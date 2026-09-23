@@ -69,6 +69,8 @@ export function useAppCommands() {
       title: '选择模型',
       category: '模型',
       keys: 'cmd+l',
+      // Composer 里的模型选择器监听这个信号并展开自己的菜单（Picker.openSignal）。
+      // 信号必须在有活动会话时才有意义——没有 tab 就没有锚点。
       run: () => windowEvents.emit('open-model-picker'),
     });
     registerCommand({

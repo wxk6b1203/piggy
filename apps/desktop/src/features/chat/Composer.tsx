@@ -8,11 +8,12 @@ import { useRef, useState } from 'react';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { wakeIfNeeded } from '@/lib/sleep';
-import { windowEvents } from '@/lib/windowEvents';
 import { useTabMsg } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
 import { useSessionStats } from '@/stores/stats';
 import { Icon } from '@/features/common/Icon';
+import { ModelPicker } from './ModelPicker';
+import { PermissionPicker } from './PermissionPicker';
 import { SessionStatusLine } from './SessionStatusLine';
 
 interface PendingImage {
@@ -255,13 +256,8 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
                 e.target.value = '';
               }}
             />
-            <span
-              className="pg-pill pg-pill-static"
-              title="pi 的工具集由会话信任配置决定（docs/11 §2.2）"
-            >
-              <Icon name="shield" size={12} />
-              工作区内修改
-            </span>
+            <span className="pg-composer-sep" aria-hidden="true" />
+            <PermissionPicker tabId={tabId} />
           </div>
 
           <div className="pg-composer-tools-right">
@@ -290,7 +286,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
                 </button>
               </>
             ) : null}
-            <ModelPill tabId={tabId} />
+            <ModelPicker tabId={tabId} />
             <button
               className="pg-send-btn"
               disabled={!text.trim() && images.length === 0}
@@ -309,24 +305,6 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
         <ContextMeter tabId={tabId} />
       </div>
     </div>
-  );
-}
-
-/** 模型胶囊（DSH `.select`）：模型名 + thinking 级 + chevron。 */
-function ModelPill({ tabId }: { tabId: string }) {
-  const model = useTabs((s) => s.tabs[tabId]?.model);
-  const thinking = useTabs((s) => s.tabs[tabId]?.thinkingLevel);
-  const name = model?.id ?? '未选择模型';
-  return (
-    <button
-      className="pg-pill pg-model-select"
-      onClick={() => windowEvents.emit('open-model-picker', tabId)}
-      title="切换模型与 thinking 级别（⌘L）"
-    >
-      <span className="pg-pill-strong">{name}</span>
-      {thinking ? <span className="pg-pill-dim">{thinking}</span> : null}
-      <Icon name="chevron-down" size={12} />
-    </button>
   );
 }
 
