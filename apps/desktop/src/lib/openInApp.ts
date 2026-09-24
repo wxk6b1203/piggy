@@ -9,6 +9,7 @@
  * 图标按需拉取并缓存在模块里（一次 8KB 左右；34 个应用不该在打开菜单前全下下来）。
  */
 import { cmd } from '@/lib/ipc';
+import { windowEvents } from '@/lib/windowEvents';
 
 /** 上次用哪个应用打开（DSH 的持久化键叫 `dsh.open-in-app.choice`）。 */
 const CHOICE_KEY = 'piggy.open-in-app.choice';
@@ -71,6 +72,20 @@ export function writeChoice(id: string): void {
   } catch {
     // 隐私模式等写不进去：本次会话内仍然生效（调用方自己持有状态）
   }
+  // 广播给**其它已经挂载的会话头部**。DSH 的 choice 是一份共享 store，
+  // 所以"在 A 会话来切成 GoLand"之后 B 会话的主按钮也是 GoLand；
+  // Piggy 每个会话头部各持一份 state，不广播就会出现两个头部各说各话
+  // （而且 B 的主按钮点下去启动的还是旧应用）。
+  windowEvents.emit(CHOICE_EVENT, id);
+}
+
+const CHOICE_EVENT = 'open-in-app-choice';
+
+/** 订阅"别处改了选择"（返回退订函数）。 */
+export function onChoiceChange(handler: (id: string) => void): () => void {
+  return windowEvents.on(CHOICE_EVENT, (id) => {
+    if (id) handler(id);
+  });
 }
 
 /**

@@ -62,6 +62,7 @@ flowchart LR
 | `Cmd/Ctrl+G` | `session.tree` | 打开会话树（右栏聚焦） |
 | `Cmd/Ctrl+Shift+B` | `session.branch-here` | 从选中消息 fork |
 | `Cmd/Ctrl+J` | `terminal.toggle` | bash 直执行面板 |
+| （未绑定） | `openin.pick` | 打开方式：在外部应用（VS Code/终端/访达…）里打开当前会话的工作目录。**故意不给默认键位** —— DSH 也只有会话头部那颗胶囊，与其编一个占用键位的组合，不如让它只在命令面板里可达 |
 
 ### 2.3 转录导航
 

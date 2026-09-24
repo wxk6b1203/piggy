@@ -117,6 +117,15 @@ export function useAppCommands() {
       },
     });
     registerCommand({
+      id: 'openin.pick',
+      title: '打开方式（在外部应用中打开工作目录）',
+      category: '视图',
+      // 与 `model.pick` 同一个套路：命令只发信号，真正的菜单挂在会话头部那颗胶囊上。
+      // **故意不给默认键位** —— DSH 也没有（它的入口只有头部那颗按钮），
+      // 与其编一个占用用户键位的组合，不如让它在命令面板里可达。
+      run: () => windowEvents.emit('open-in-app-picker'),
+    });
+    registerCommand({
       id: 'session.search',
       title: '搜索会话',
       category: '会话',

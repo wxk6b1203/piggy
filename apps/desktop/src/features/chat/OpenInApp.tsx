@@ -15,8 +15,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '@/features/common/Icon';
 import { Picker, type PickerItem } from '@/features/common/Picker';
+import { reportToHost } from '@/features/common/ErrorBoundary';
 import { getLang, t, tf, type Lang } from '@/lib/i18n';
-import { loadApps, loadIcon, openInApp, readChoice, writeChoice } from '@/lib/openInApp';
+import {
+  loadApps,
+  loadIcon,
+  onChoiceChange,
+  openInApp,
+  readChoice,
+  writeChoice,
+} from '@/lib/openInApp';
 
 /**
  * 产品名（DSH 词典里 zh/en **逐字相同**的那些键）。
@@ -135,6 +143,8 @@ export function OpenInApp({ cwd }: { cwd?: string }) {
   const [available, setAvailable] = useState<string[] | null>(null);
   const [choice, setChoice] = useState<string>(() => readChoice());
   const [phase, setPhase] = useState<'idle' | 'busy' | 'error'>('idle');
+  /** 失败原因（Rust 那句话）。只闪一个红框等于没说为什么 —— 挂到 title 上。 */
+  const [reason, setReason] = useState<string | null>(null);
   const inFlight = useRef(false);
   const busyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -157,6 +167,9 @@ export function OpenInApp({ cwd }: { cwd?: string }) {
     [],
   );
 
+  // 别处（另一个会话头部）改了选择 → 跟着变
+  useEffect(() => onChoiceChange(setChoice), []);
+
   // 只保留能命名的 id（词典是前端的，宿主没义务知道显示名）
   const apps = (available ?? []).filter((id) => labelFor(id) !== null);
   const current = apps.find((id) => id === choice) ?? apps[0];
@@ -171,15 +184,24 @@ export function OpenInApp({ cwd }: { cwd?: string }) {
       () => {
         inFlight.current = false;
         clearTimeout(busyTimer.current);
+        setReason(null);
         setPhase('idle');
       },
       (e: unknown) => {
         inFlight.current = false;
         clearTimeout(busyTimer.current);
+        const message = e instanceof Error ? e.message : String(e);
+        setReason(message);
         setPhase('error');
+        // 打包版没有 DevTools：console.error 只有终端看得到，而终端默认也看不到 ——
+        // 经 webview_log 转一道（与 ErrorBoundary 同一条通道），排障时才有一句话可看。
+        reportToHost('error', `[open-in-app] 打开 ${id} 失败：${message}`);
         console.error('[open-in-app] 打开失败', id, e);
         clearTimeout(errorTimer.current);
-        errorTimer.current = setTimeout(() => setPhase('idle'), ERROR_RESET_MS);
+        errorTimer.current = setTimeout(() => {
+          setPhase('idle');
+          setReason(null);
+        }, ERROR_RESET_MS);
       },
     );
   };
@@ -187,7 +209,10 @@ export function OpenInApp({ cwd }: { cwd?: string }) {
   if (current === undefined || !cwd) return null;
 
   const currentLabel = labelFor(current) ?? current;
-  const buttonTitle = phase === 'error' ? t('open.error') : tf('open.title', { app: currentLabel });
+  const buttonTitle =
+    phase === 'error'
+      ? `${t('open.error')}${reason ? `：${reason}` : ''}`
+      : tf('open.title', { app: currentLabel });
 
   const items: PickerItem[] = apps.map((id) => ({
     id,
@@ -217,6 +242,9 @@ export function OpenInApp({ cwd }: { cwd?: string }) {
         width={232}
         title={t('open.aria')}
         buttonTitle={t('open.menu')}
+        // 命令面板的「打开方式」没有自己的按钮：它发这个信号让这里展开真正的菜单。
+        // M1 是单组布局（非活动 tab 卸载 DOM），所以同一时刻只会有一个会话头部在听。
+        openSignal="open-in-app-picker"
         items={items}
         emptyText={t('open.none')}
         onPick={(id) => {

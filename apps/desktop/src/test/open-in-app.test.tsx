@@ -27,6 +27,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listenMoc
 
 import App from '@/App';
 import { OpenInApp, labelFor } from '@/features/chat/OpenInApp';
+import { getCommand } from '@/lib/commands';
 import { resetBootForTest } from '@/features/workspace/AppFrame';
 import { resetOpenInAppCache } from '@/lib/openInApp';
 import { useTabs } from '@/stores/tabs';
@@ -203,7 +204,7 @@ describe('OpenInApp：点下去真的走 IPC', () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(split()!.getAttribute('data-phase')).toBe('error');
-    expect(main()!.getAttribute('aria-label')).toBe('打开失败');
+    expect(main()!.getAttribute('aria-label')).toContain('打开失败');
   });
 
   it('连点两次只发一次（在途去重，避免开出两个窗口）', async () => {
@@ -249,6 +250,96 @@ describe('OpenInApp：接进会话头部', () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(openCalls().at(-1)?.[1]).toEqual({ id: 'finder', path: '/Users/mock/proj' });
+  });
+});
+
+describe('OpenInApp：跨头部的共享状态与可见的失败原因', () => {
+  beforeEach(() => {
+    resetOpenInAppCache();
+    localStorage.removeItem('piggy.open-in-app.choice');
+    invokeMock.mockReset();
+    listenMock.mockClear();
+    listenMock.mockResolvedValue(() => {});
+  });
+  afterEach(async () => {
+    await unmountDom();
+  });
+
+  it('在 A 会话改了应用，B 会话头部跟着变（DSH 的 choice 是一份共享 store）', async () => {
+    mockHost(['vscode', 'goland'], PNG);
+    // 两个会话头部同时挂载（分屏时就是这个形态）
+    await mount(
+      <>
+        <OpenInApp cwd="/proj-a" />
+        <OpenInApp cwd="/proj-b" />
+      </>,
+    );
+    const mains = () => [...domContainer().querySelectorAll<HTMLButtonElement>('.pg-openin-main')];
+    expect(mains().map((b) => b.getAttribute('data-app'))).toEqual(['vscode', 'vscode']);
+
+    // 在第一个上开菜单并选 GoLand
+    await act(async () => {
+      domContainer().querySelectorAll<HTMLButtonElement>('.pg-openin-chevron')[0]!.click();
+    });
+    await drainReact();
+    const goland = menuItems().find((i) => i.textContent?.includes('GoLand'))!;
+    await act(async () => {
+      goland.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // 不广播的话第二个头部会一直显示 VS Code，而且点下去启动的还是 VS Code
+    expect(mains().map((b) => b.getAttribute('data-app'))).toEqual(['goland', 'goland']);
+  });
+
+  it('失败原因挂到 title 上，并转一道到宿主终端（打包版没有 DevTools）', async () => {
+    const hostLog = vi.fn(async (..._args: unknown[]) => undefined);
+    (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke: hostLog };
+    mockHost(['vscode'], PNG, true);
+    await mount(<OpenInApp cwd="/proj" />);
+    await act(async () => {
+      main()!.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // 只闪一个红框等于没说为什么
+    expect(main()!.getAttribute('aria-label')).toContain('应用不可用');
+    expect(main()!.getAttribute('title')).toContain('应用不可用');
+    expect(hostLog.mock.calls.some((c) => String(c[0]) === 'webview_log')).toBe(true);
+    delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+});
+
+describe('OpenInApp：命令面板入口', () => {
+  beforeEach(() => {
+    resetOpenInAppCache();
+    localStorage.removeItem('piggy.open-in-app.choice');
+    resetBootForTest();
+    invokeMock.mockReset();
+    listenMock.mockClear();
+    listenMock.mockResolvedValue(() => {});
+    useTabs.setState({ tabs: {}, order: [], activeTabId: null, unread: {}, banner: null });
+    useMessages.setState({ tabs: {} });
+    useUi.setState({ sidebarOpen: true, paletteOpen: false });
+    mockHost(['finder', 'vscode'], PNG);
+  });
+  afterEach(async () => {
+    await unmountDom();
+  });
+
+  it('跑命令真的会展开菜单（不是发一个没人听的 emit）', async () => {
+    await mount(<App />, 80);
+    expect(document.body.querySelector('.pg-picker-menu')).toBeNull();
+    const cmd = getCommand('openin.pick');
+    expect(cmd, 'openin.pick 必须注册（否则命令面板里没有入口）').toBeTruthy();
+
+    await act(async () => {
+      await cmd!.run({ activeTabId: useTabs.getState().activeTabId });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(document.body.querySelector('.pg-picker-menu')).not.toBeNull();
+    expect(menuItems().map((i) => i.querySelector('.pg-picker-label')?.textContent)).toEqual([
+      '访达',
+      'VS Code',
+    ]);
   });
 });
 

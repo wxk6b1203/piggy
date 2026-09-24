@@ -24,7 +24,7 @@ pub mod resolver;
 pub mod spec;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -138,7 +138,7 @@ pub fn open_in_app_open(id: String, path: String) -> Result<(), String> {
         LaunchOutcome::Launched => Ok(()),
         LaunchOutcome::Missing => {
             // 启动器不见了 = 这份解析过期（用户刚卸载）→ 重解析这一条再报错
-            let gone = refresh_one(&app.id).is_none();
+            let gone = refresh_one(app.id).is_none();
             Err(if gone {
                 format!("{} 已经不在这台机器上了（列表已刷新）", app.id)
             } else {
@@ -235,11 +235,6 @@ pub fn describe_all() -> Vec<String> {
     resolved_apps().iter().map(describe_launch).collect()
 }
 
-/// 目录是否可作为工作区（`open_in_app_open` 的校验独立出来，方便测试）。
-pub fn is_openable_dir(path: &Path) -> bool {
-    path.is_absolute() && path.is_dir()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,8 +264,6 @@ mod tests {
         assert!(validate_directory("/etc/hosts").is_err());
         // NUL 注入
         assert!(validate_directory("/tmp\0/x").is_err());
-        assert!(is_openable_dir(Path::new("/tmp")));
-        assert!(!is_openable_dir(Path::new("/etc/hosts")));
     }
 
     #[test]

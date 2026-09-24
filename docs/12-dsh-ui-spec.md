@@ -2227,6 +2227,10 @@ div.renderer[data-code-preview][data-wrap=true|false]
   **一处有意的偏离**：DSH 主按钮只有图标，Piggy 主按钮**带应用名** —— 用户对这个位置的原话是「稍微显著一点」，
   纯图标在深色头部里太隐形（`ui:startup` 第 8 段量的就是"宽度 ≥70px 且边框宽度 >0"）。
   另：菜单**向下**弹（会话头部在窗口顶部），复用 `Picker` 的 `side="down"`。
+  命令面板里也有一个 `openin.pick`（**无默认键位**）：它发 `open-in-app-picker` 信号让胶囊展开菜单
+  —— 和 `model.pick` → `Picker.openSignal` 同一条路，所以"键盘可达"不是靠一颗隐藏按钮。
+  选择是**跨头部共享**的（DSH 的 choice 是一份共享 store；Piggy 用 `windowEvents` 广播）。
+  失败时除红框外，Rust 那句话会挂到 `title` 上并经 `webview_log` 转进宿主终端（打包版没有 DevTools）。
 - **打开方式（原 DSH 形态）**：不贡献 tab，而是注入 `sidebar.right.tab.document.actions` 与 `…document.unpreviewable`；控件是分裂胶囊 `div.split[data-open-target=file][data-size=compact|large] > button.main + button.chevron`，`.split { height:24px; border:0.5px solid var(--dsw-alias-border-l4); border-radius:9px }`（large: `height:36px; border-radius:14px`），非桌面环境返回 `null`。
 
 ### 6.7 默认有哪些 tab、顺序如何
