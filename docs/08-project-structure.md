@@ -92,7 +92,14 @@ piggy/
 - `core:window:allow-*`（标题/焦点，按需子集）；
 - 插件：`global-shortcut`（可关）、`updater`（M4）、`dialog:allow-open/save`、`opener:default`、`clipboard-manager:allow-read/write`；
 - `fs`：**scope 显式列举** `$HOME/.pi/**`（读写）+ 会话导出/日志目录；项目目录访问只在用户通过 dialog 选择后以运行时 scope 追加；
-- shell：不启用自由 shell；打开文件走 `opener`；
+- shell：不启用自由 shell；
+- **`opener` 不启用**（与本节旧版规划不同）：原计划用 `tauri-plugin-opener` 做「打开方式」，
+  但它的权限面是"任意路径 / 任意 URL"。实际实现改为三个自建窄命令
+  （`open_in_app_list` / `open_in_app_icon` / `open_in_app_open`，见 03 §2.11）：
+  只能启动**宿主自己解析过的白名单应用**，且只能打开**已存在的绝对目录** ——
+  没有 URL、没有任意命令、没有前端可控的 argv。
+  当前 `capabilities/default.json` 仍然是 M0 那三行（`core:default` + `core:window:allow-set-title`），
+  自建命令走 Tauri 的命令通道，不需要额外 capability；
 - CSP：`default-src 'self'`；`connect-src` 无需外网（LLM 请求都发生在 pi 进程）。
 
 ## 7. 发布与版本

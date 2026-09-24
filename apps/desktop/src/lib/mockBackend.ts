@@ -44,6 +44,13 @@ const appCfg: {
 
 let mockTabSeq = 0;
 
+/** `open_in_app_open` 的调用记录（门禁读它来核对参数；真机上这对应"真的启动了哪个应用"）。 */
+export const openCalls: { id: string; path: string }[] = [];
+
+/** 1×1 透明 PNG：把"图标真的走 <img> 渲染"这条路径在 mock 下也走通。 */
+const MOCK_APP_ICON =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 /**
  * 模拟 Rust registry 里"这个 tab 还在不在"（真机行为见 registry.rs::ensure_worker
  * 与 commands.rs::worker_of —— 不存在就 `Err("tab 不存在: <uuid>")`）。
@@ -374,6 +381,21 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         { name: `${base}.json`, isDir: false, size: 512 },
       ],
     };
+  },
+  /* ---------------- 「打开方式」（open_in_app_*）：模拟宿主的解析/图标/启动 ----------------
+   * 三个命令的形状与 Rust 侧一致（list 返回 id 数组、icon 返回 data URL 或 null、
+   * open 返回空）。`openCalls` 记下每次启动的实参，门禁据此断言"点的到底是哪个应用、哪个目录"。
+   */
+  open_in_app_list: () => ['finder', 'vscode', 'goland', 'iterm', 'terminal'],
+  open_in_app_icon: (a) => {
+    const id = String(a.id ?? '');
+    // 两个给真图（走 <img> 路径）、其余不给（走通用图标路径）——两条渲染路径都要被走到
+    if (id !== 'vscode' && id !== 'goland') return null;
+    return MOCK_APP_ICON;
+  },
+  open_in_app_open: (a) => {
+    openCalls.push({ id: String(a.id ?? ''), path: String(a.path ?? '') });
+    return null;
   },
   fs_preview_read: (a) => {
     // 内容随扩展名变化：这样语法高亮/行号/换行等渲染路径在 mock 下也**真的被走到**，

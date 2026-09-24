@@ -132,7 +132,7 @@
  │   │   ├─ <EmptyEditor/>           **一个面板都没有时**盖在编辑区上的占位：
  │   │   │                           水印 🐷 + 基础快捷键表 + 中央入口（点一下就执行）
  │   │   └─ tab 内容路由（viewType → 组件）：
- │   │       ├─ <SessionWorkspace/>  会话 tab：Transcript + Composer（§2.1）
+ │   │       ├─ <SessionWorkspace/>  会话 tab：SessionHead + Transcript + Composer（§2.1）
  │   │       ├─ <FilePreview/>       预览 tab（MonacoHost · Monaco 只读，10 §2）
  │   │       ├─ <DiffPreview/>       预览 tab（Monaco DiffEditor）
  │   │       ├─ <SettingsTab/> <KeymapTab/> <FleetTab/> <LoginTerminalTab/>（M4）
@@ -147,6 +147,12 @@
 
 ```
 <SessionWorkspace>                   每 tab 一个，非活动 tab 卸载 DOM、保留 store
+ ├─ <SessionHead/>               标题 + 右侧操作（仿 DSH §4 B1）
+ │   └─ <OpenInApp/>             「打开方式」分裂胶囊（DSH ui-open-in-app）：
+ │                               主按钮 = 上次用过的应用（图标 + 名字）→ 直接打开当前 cwd；
+ │                               箭头 = 本机全部可用应用（真实图标，宿主抠出来的）。
+ │                               宿主没解析出任何应用 / 会话没有 cwd → 渲染 null（不留死按钮）。
+ │                               可用列表每页只读一次，上次选择跨重启记住（03 §2.11）
  ├─ <Transcript/>                自研：虚拟化容器
  │   ├─ <TurnGroup/>             回合分组（虚拟行）
  │   │   └─ <MessageView/>       自研：按消息类型分发

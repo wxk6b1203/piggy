@@ -35,6 +35,11 @@ export const DICT = {
     'code.truncated': '只渲染了前 {n} 行（共 {total} 行）',
     'code.hlFailed': '未能高亮',
     'code.hlUnknown': '未收录此语言',
+    'open.title': '在 {app} 中打开工作目录',
+    'open.error': '打开失败',
+    'open.menu': '选择打开方式',
+    'open.aria': '打开方式',
+    'open.none': '这台机器上没有可用的应用',
   },
   'en-US': {
     'app.newSession': 'New Session',
@@ -63,6 +68,11 @@ export const DICT = {
     'code.truncated': 'Showing first {n} of {total} lines',
     'code.hlFailed': 'highlight failed',
     'code.hlUnknown': 'language not bundled',
+    'open.title': 'Open workspace in {app}',
+    'open.error': 'Failed to open',
+    'open.menu': 'Choose an app to open in',
+    'open.aria': 'Open in',
+    'open.none': 'No supported app on this machine',
   },
 } as const;
 

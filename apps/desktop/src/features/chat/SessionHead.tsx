@@ -10,6 +10,7 @@ import { useMemo } from 'react';
 import { useTabs } from '@/stores/tabs';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
+import { OpenInApp } from './OpenInApp';
 
 export function SessionHead({ tabId }: { tabId: string }) {
   const tab = useTabs((s) => s.tabs[tabId]);
@@ -38,19 +39,10 @@ export function SessionHead({ tabId }: { tabId: string }) {
         </h1>
       </div>
       <div className="pg-session-head-ops">
-        {/* DSH 这里是「打开方式」分裂胶囊（外部应用菜单）。Piggy 按 docs/11 §2.1 排期 M2，
-            当前既无 opener 插件也未在 capability 里授权，因此**显式置灰**而不是留一个点了没反应的按钮。 */}
-        <button
-          className="pg-icon-btn"
-          title={
-            tab?.cwd
-              ? `「打开方式」排期 M2（需引入 tauri-plugin-opener + 能力授权）。工作区目录：${tab.cwd}`
-              : '「打开方式」排期 M2'
-          }
-          disabled
-        >
-          <Icon name="link-external" size={14} />
-        </button>
+        {/* 「打开方式」分裂胶囊（DSH `ui-open-in-app`）：主按钮 = 上次用过的应用，箭头 = 本机全部可用。
+            这里**不是**只读展示：它真的调用宿主解析出来的启动器（Rust `open_in_app_*`）。
+            宿主没解析出任何应用、或会话还没有 cwd 时，组件自己返回 null（不留死按钮）。 */}
+        <OpenInApp cwd={tab?.cwd} />
         <button
           className="pg-icon-btn"
           title={tab?.cwd ? `工作区目录：${tab.cwd}（更多操作排期 M2）` : '更多操作（排期 M2）'}

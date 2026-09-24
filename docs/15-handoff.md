@@ -12,14 +12,15 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **262/262**：apps/desktop **195**（22 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、**4 条空编辑区占位**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
-| `cargo test` | **94 + 3 + 1** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条） |
-| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含新增 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG） |
+| `vitest` | **276/276**：apps/desktop **209**（24 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、**12 条「打开方式」**、**2 条 IPC 命令名契约**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `cargo test` | **147 + 3 + 4** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条、**「打开方式」53 条**：目录表自检 / 三平台定位链（脚本化假宿主）/ 观察窗四态真进程 / macOS 真机解析与图标提取 / base64 向量） |
+| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 4 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / **图标真的是 128×128 PNG data URL** / 拒绝面 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
+| `ui:startup` 第 8 段 | **「打开方式」分裂胶囊**：会话头部右侧**位置对**（`.pg-session-head-ops` 内、置灰占位已被替掉、「更多」占位还在）+ **够显眼**（26px 高、1px 边框、≥70px 宽、`elementFromPoint` 可点）+ 菜单**向下弹且不出屏** + 5 项里真图标与通用图标**两条渲染路径都出现** + 点 GoLand → **送给宿主的是 `{id:'goland', path:<会话 cwd>}`** + 选择落 localStorage + 重载后冷启动读回 |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
 
@@ -247,6 +248,36 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     一直是旧的）。真浏览器连折带展 3 轮都干净 —— **别拿这个去改布局**，
     把回路交给 `ui:startup` 第 6 段，jsdom 里只测"按钮 → store"那一跳。
 
+27. **"反向核对"需要一份独立于被测数据的金标，否则是循环论证。**
+    移植 DSH「打开方式」时我写了一条看起来很像样的核对：
+    "本机装了目录里声明的那些 bundle，就必须都被解析出来"。
+    它**抓不到它最该抓的错**：把 `iTerm.app` 写成 `iTerm2.app`，那个 bundle 就变成
+    "没装"，断言根本不触发 —— 判定"装没装"用的是**同一份被怀疑的数据**。
+    做法：把 DSH `catalog.ts` 的 macOS bundle 拼写**再抄一遍**当金标
+    （`DSH_MAC_BUNDLES`），于是 ①目录必须逐字包含金标里的拼写（拼写漂移当场红）；
+    ②金标里那些 bundle 在本机真实存在的，必须解析出来（定位链断了也红）。
+    通则：写"X 必须都在结果里"之前先问一句"我拿什么判定 X 应该存在"——
+    如果那个判据来自被测对象本身，这条测试只能证明自洽。
+    同一个方法也用在了"图标"上：`ui:startup` 断言菜单里**真图标与通用图标两条渲染路径都出现**，
+    而不是断言"图标都拿到了"（后者在"全都退化成方块"时照样绿）。
+
+28. **跨进程/IPC 的载荷要校验形状，别信 TypeScript 的返回类型。**
+    `loadApps()` 写的是 `cmd<string[]>('open_in_app_list')`，类型上它一定是数组；
+    实际运行期后端可能回**任何东西**（旧版后端、反序列化失败、以及最常遇到的：
+    测试里那种 `return {}` 的通配 mock）。少一步 `Array.isArray` 校验，
+    渲染期就是 `apps.find is not a function` —— **整棵会话树跟着卸载**，
+    而"打开方式"本来只是个可有可无的按钮。
+    这次是**既有用例**逼出来的：`app-init` / `empty-editor` / `sidebar-rail` 三处
+    通配 mock 都回 `{}`，装上新组件后那三处全红。DSH 的 controller 同样有
+    `if (Array.isArray(payload.apps))` —— 不是防御性编程，是跨进程序列的常态。
+    通则：**每一个新加的"页面级一次性读取"都会打到所有通配 mock 上**；
+    要么校验形状后降级，要么准备好改一堆既有用例。
+    同一轮补上的另一半门禁：`src/test/ipc-names.test.ts` 把**前端 `cmd('x')` 的字面量**
+    与 Rust `generate_handler!` 的注册表对了一遍 —— 跨进程的**命令名是字符串**，
+    拼错一个字母编译期毫无反应，而浏览器门禁跑的是 mock，**永远看不见**。
+    （反证：前端改成 `open_in_app_lst` → 红；Rust 侧删掉一行注册 → 红。）
+
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -259,6 +290,10 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
 | 左侧"常驻视图轨"没做 | docs/04 §1.2 原本规划了一条常驻的 L 轨（VS Code 活动栏语义：切换 会话/Fleet/搜索/资源）。目前只有**折叠态**才出现的 56px 图标轨（= DSH 的折叠侧栏）。两者不是一回事，别混 |
 | `SIDEBAR_AUTO_COLLAPSE = 1024` 没接 | docs/12 §1.5：视口 < 1024px 自动折叠侧栏。Piggy 是纯百分比布局，620px 窗口下侧栏被压到 122px 也不折叠。现在折叠是安全的（有图标轨可点回来），接不接是产品决策 |
+| 「打开方式」的 **Windows 图标** | DSH 那一支用生成的 PowerShell 调 `ExtractAssociatedIcon`（32px）。**本机无法验证**，所以没写：`icons.rs::icon_png(IconSource::Executable)` 直接返回 `None`，前端退化成通用圆角方块（不残废，只是不显示真图标）。要补需在 Windows 上实测 |
+| 「打开方式」的 **Windows/Linux 定位链** | 已按 DSH 逐条移植，并有脚本化假宿主的单测（`reg.exe` 输出解析、`.desktop` 解析、版本目录数值排序、`TryExec→Exec` 回退、无 DISPLAY 时 `xdg-open` 不出现），但**没有在真 Windows/Linux 机器上跑过**。macOS 那一条是真机验证过的 |
+| 「打开方式」**没在真机上真弹过一次应用** | 有意的：跑 `open_in_app_open("finder", …)` 会在用户屏幕上留一个窗口。已覆盖的是：①解析结果里每个启动器都真实存在于磁盘；②图标真抠出来（128×128 PNG）；③启动语义用真实进程测了四态（仍在跑=成功 / 早退非零=失败 / 退出 0=成功 / 不存在=Missing）。**唯一没被测的是"操作系统真的把窗口开出来了"** —— 那一下交给用户点 |
+| 「打开方式」的 **文件级入口** | DSH 还把「打开方式」注入到右侧文档预览的 actions（对**当前文件**打开）。Piggy 只做了工作区目录那一档（会话头部）。文件级要等预览 tab 的 action 位 |
 | **WebKit 渲染** | 未验证（本机缺"屏幕录制"权限 + Playwright WebKit 挂死）。打包版已在真机跑通，但那是启动路径，不等于逐像素复核 |
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`（`SpawnArgs.envs` 已具备透传能力，只差设置项）。要支持需加设置项（docs/17 §2.3） |

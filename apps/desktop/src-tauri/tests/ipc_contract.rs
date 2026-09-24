@@ -40,3 +40,100 @@ async fn fs_list_dir_returns_string_names() {
     assert_eq!(entries[0]["name"].as_str().unwrap(), "sub", "目录应排在最前");
     assert_eq!(entries[1]["name"].as_str().unwrap(), "a.txt");
 }
+
+/* ------------------- 「打开方式」（docs/11 §2.1）------------------- */
+
+/// 最小 base64 解码（**故意**不复用被测代码的编码器：两边独立实现，
+/// 编码器的字母表/填充由 `open_in_app::tests::base64_matches_rfc4648_vectors` 锁住）。
+fn b64_decode(s: &str) -> Vec<u8> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let idx = |c: u8| TABLE.iter().position(|t| *t == c).map(|i| i as u32);
+    let mut out = Vec::new();
+    let bytes: Vec<u8> = s.bytes().filter(|b| *b != b'\n').collect();
+    for chunk in bytes.chunks(4) {
+        let mut n = 0u32;
+        let mut pad = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            let v = if *b == b'=' {
+                pad += 1;
+                0
+            } else {
+                idx(*b).unwrap_or_else(|| panic!("非法 base64 字符: {}", *b as char))
+            };
+            n |= v << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    out
+}
+
+/// 前端拿到的是 `string[]`（id 数组），不是对象、不是 null。
+#[test]
+fn open_in_app_list_returns_string_ids() {
+    let ids = piggy_lib::open_in_app::open_in_app_list();
+    for id in &ids {
+        assert!(!id.is_empty(), "空 id 会被前端当成词典键去查");
+        assert!(
+            id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "id 必须是纯小写字母数字（前端词典的键）: {id}"
+        );
+    }
+    if cfg!(target_os = "macos") {
+        // Finder 与 Terminal 随 macOS 发行 → 这两条恒定可解析。
+        // 少了它们说明定位链断了（而不是"这台机器没装"）。
+        assert!(ids.contains(&"finder".to_string()), "macOS 上必须有 finder: {ids:?}");
+        assert!(ids.contains(&"terminal".to_string()), "macOS 上必须有 terminal: {ids:?}");
+        assert!(ids.len() >= 2, "至少 Finder + Terminal");
+    }
+    // 宿主给的 id 必须能被前端词典命名，否则菜单里会漏项（前端的 `labelFor` 会丢掉它）
+    let named = ["finder", "terminal", "vscode", "goland", "iterm"];
+    for id in ids.iter().filter(|i| named.contains(&i.as_str())) {
+        assert!(named.contains(&id.as_str()));
+    }
+}
+
+/// 图标必须是 `data:image/png;base64,...`，解出来得是 **128×128 的 PNG**。
+/// 这条把"宿主真的抠出了图标"钉在跨 IPC 的那一层（而不是只钉在内部函数上）。
+#[test]
+fn open_in_app_icon_is_a_128px_png_data_url() {
+    let ids = piggy_lib::open_in_app::open_in_app_list();
+    let Some(id) = ids
+        .iter()
+        .find(|i| i.as_str() == "vscode")
+        .or_else(|| ids.iter().find(|i| i.as_str() != "terminal"))
+        .cloned()
+    else {
+        return; // 这台机器上一个应用都没有
+    };
+    let url = piggy_lib::open_in_app::open_in_app_icon(id.clone())
+        .unwrap_or_else(|| panic!("{id} 已解析出来，却拿不到图标"));
+    let payload = url
+        .strip_prefix("data:image/png;base64,")
+        .unwrap_or_else(|| panic!("图标不是 PNG data URL: {}", &url[..40.min(url.len())]));
+    let bytes = b64_decode(payload);
+    assert_eq!(
+        piggy_lib::open_in_app::icons::png_dimensions(&bytes),
+        Some((128, 128)),
+        "{id} 的图标不是 128×128 PNG（{} 字节）",
+        bytes.len()
+    );
+    // 拿不到的应用返回 None（不是报错、也不是空串）
+    assert_eq!(piggy_lib::open_in_app::open_in_app_icon("nope-nope".into()), None);
+}
+
+/// `open_in_app_open` 的拒绝面：未知应用 / 非目录 / 相对路径 一律 Err。
+#[test]
+fn open_in_app_open_rejects_bad_requests() {
+    let err = piggy_lib::open_in_app::open_in_app_open("nope".into(), "/tmp".into()).unwrap_err();
+    assert!(err.contains("不可用"), "{err}");
+    let err = piggy_lib::open_in_app::open_in_app_open("finder".into(), "rel/path".into()).unwrap_err();
+    assert!(err.contains("绝对路径") || err.contains("目录"), "{err}");
+    let err = piggy_lib::open_in_app::open_in_app_open("finder".into(), "/etc/hosts".into()).unwrap_err();
+    assert!(err.contains("目录"), "{err}");
+}

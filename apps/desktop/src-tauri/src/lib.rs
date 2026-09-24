@@ -3,6 +3,7 @@ pub mod config;
 pub mod events;
 pub mod fleet;
 pub mod fs_guard;
+pub mod open_in_app;
 pub mod pi;
 pub mod pty;
 pub mod sessions;
@@ -329,6 +330,9 @@ pub fn run() {
             commands::pi_cycle_thinking,
             commands::pi_get_commands,
             commands::fs_preview_read,
+            open_in_app::open_in_app_list,
+            open_in_app::open_in_app_icon,
+            open_in_app::open_in_app_open,
             commands::fs_list_dir,
             commands::fs_write_edit,
             commands::pi_export_html,

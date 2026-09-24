@@ -526,10 +526,131 @@ await page.evaluate(async () => {
 await page.waitForTimeout(400);
 const emptyBack = await page.evaluate(() => !!document.querySelector('.pg-empty'));
 
+/* ---------- 8. 「打开方式」分裂胶囊（DSH ui-open-in-app 的 Piggy 版） ---------- */
+// 起因（用户）："DSH 有个好用的功能，打开当前的工作项目到某个 IDE/编辑器内……我也想要"，
+// 并指着会话头部右侧说"放在这里，稍微显著一点"。
+//
+// 这一段量三件 jsdom 量不到的事：
+//   ① **位置与显著性**：胶囊在 `.pg-session-head-ops` 里、有边框、够大、中心点真的可点
+//      （用户嫌原来那个置灰图标太隐形）；
+//   ② **菜单向下弹且不出屏**：会话头部在窗口顶部，向上弹会顶飞（Picker 默认是向上）；
+//   ③ **点下去送出去的到底是哪个应用、哪个目录** —— 读 mock 后端自己的调用记录
+//      （`globalThis.__piggyMock`，又一次"必须拿应用自己那一份模块"）。
+const openInCwd = await page.evaluate(async () => {
+  const [{ createTab }, editor] = await Promise.all([
+    import('/src/stores/tabs.ts'),
+    import('/src/features/workspace/EditorArea.tsx'),
+  ]);
+  const snap = await createTab({ cwd: '/Users/mock/proj', sessionPath: '/Users/mock/proj/open-in.jsonl' });
+  editor.openSessionTab(snap, '打开方式');
+  await new Promise((r) => setTimeout(r, 600));
+  return snap.cwd;
+});
+
+const openIn = await page.evaluate(() => {
+  const head = document.querySelector('.pg-session-head-ops');
+  const split = head?.querySelector('.pg-openin-split');
+  const main = split?.querySelector('.pg-openin-main');
+  const chev = split?.querySelector('.pg-openin-chevron');
+  if (!head || !split || !main || !chev) return { present: false };
+  const cs = getComputedStyle(split);
+  const r = split.getBoundingClientRect();
+  const mr = main.getBoundingClientRect();
+  const top = document.elementFromPoint(mr.left + mr.width / 2, mr.top + mr.height / 2);
+  return {
+    present: true,
+    label: main.textContent,
+    app: main.getAttribute('data-app'),
+    width: Math.round(r.width),
+    height: Math.round(r.height),
+    borderWidth: parseFloat(cs.borderTopWidth),
+    radius: cs.borderTopRadius ?? cs.borderRadius,
+    hittable: !!top && (top === main || main.contains(top)),
+    // 只替掉了「打开方式」那一个占位；「更多」的置灰按钮还在（它仍是 M2 排期）
+    linkExternalPlaceholderGone: !head.querySelector('i.codicon-link-external'),
+    morePlaceholderStillThere: !!head.querySelector('button[title*="排期 M2"] i.codicon-more'),
+    beforeChevron: !!(main.compareDocumentPosition(chev) & Node.DOCUMENT_POSITION_FOLLOWING),
+  };
+});
+
+let openInMenuError = null;
+if (openIn.present) {
+  await page
+    .click('.pg-openin-chevron', { timeout: 5000 })
+    .catch((e) => (openInMenuError = String(e).split('\n')[0]));
+  await page.waitForTimeout(300);
+}
+const openInMenu = await page.evaluate(() => {
+  const box = document.querySelector('.pg-picker-menu');
+  const anchor = document.querySelector('.pg-openin-split');
+  const items = [...document.querySelectorAll('.pg-picker-menu .pg-picker-item')];
+  const br = box?.getBoundingClientRect();
+  const ar = anchor?.getBoundingClientRect();
+  return {
+    open: !!box,
+    count: items.length,
+    labels: items.map((i) => i.querySelector('.pg-picker-label')?.textContent ?? null),
+    withImage: items.filter((i) => i.querySelector('img[data-icon-kind="image"]')).length,
+    withGeneric: items.filter((i) => i.querySelector('svg[data-icon-kind="generic"]')).length,
+    belowAnchor: br && ar ? br.top >= ar.bottom - 1 : null,
+    insideViewport: br ? br.top >= 0 && br.bottom <= window.innerHeight + 1 : null,
+  };
+});
+
+// 选 GoLand：记住选择 + 立刻启动 + 主按钮换成它
+let openInPickError = null;
+const openInPick = await page
+  .evaluate(async () => {
+    const items = [...document.querySelectorAll('.pg-picker-menu .pg-picker-item')];
+    const target = items.find((i) => i.querySelector('.pg-picker-label')?.textContent === 'GoLand');
+    if (!target) return { clicked: false };
+    target.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const main = document.querySelector('.pg-openin-main');
+    return {
+      clicked: true,
+      calls: (globalThis.__piggyMock?.openCalls ?? []).map((c) => ({ ...c })),
+      app: main?.getAttribute('data-app') ?? null,
+      label: main?.textContent ?? null,
+      stored: localStorage.getItem('piggy.open-in-app.choice'),
+      menuClosed: !document.querySelector('.pg-picker-menu'),
+    };
+  })
+  .catch((e) => {
+    openInPickError = String(e).split('\n')[0];
+    return { clicked: false };
+  });
+
+// 重载一次：冷启动必须读回上次选择（DSH 也是持久化 last choice）。
+// ⚠️ 第 1 段注册的 addInitScript **每次导航都会清 localStorage**，所以这里把
+// "重载前真实读到的那个值"原样放回去：**写**那一半由上面的 `openInPick.stored` 证明，
+// 这里证明的是另一半 —— 冷启动读到已存的值就显示它（而不是永远显示列表第一个）。
+const storedBeforeReload = await page.evaluate(() =>
+  localStorage.getItem('piggy.open-in-app.choice'),
+);
+await page.addInitScript((v) => {
+  if (v) localStorage.setItem('piggy.open-in-app.choice', v);
+}, storedBeforeReload);
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.dv-tab', { timeout: 15000 });
+await page.waitForTimeout(900);
+const openInAfterReload = await page.evaluate(() => {
+  const main = document.querySelector('.pg-openin-main');
+  return {
+    present: !!main,
+    app: main?.getAttribute('data-app') ?? null,
+    label: main?.textContent ?? null,
+    splits: document.querySelectorAll('.pg-openin-split').length,
+  };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
-    { ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick, emptyBack },
+    {
+      ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
+      emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
+    },
     null,
     1,
   ),
@@ -684,6 +805,45 @@ else {
   }
   if (!emptyBack) bad.push('空编辑区：再次关光标签后占位没回来 ★');
 }
+/* 「打开方式」：位置/显著性/菜单方向/送出参数/记忆 */
+if (!openIn.present) bad.push('打开方式：会话头部右侧没有那枚分裂胶囊（用户指的就是这个位置）★');
+else {
+  if (openIn.label !== '访达') bad.push(`打开方式：默认主按钮是 ${openIn.label}（mock 列表第一个是"访达"）★`);
+  if (!openIn.hittable) bad.push('打开方式：主按钮中心点被别的层挡住，点不到 ★');
+  if (!(openIn.height >= 24)) bad.push(`打开方式：胶囊只有 ${openIn.height}px 高（太隐形，用户要"显著一点"）★`);
+  if (!(openIn.borderWidth > 0)) bad.push('打开方式：胶囊没有边框（跟置灰图标一样隐形）★');
+  if (!(openIn.width >= 70)) bad.push(`打开方式：胶囊只有 ${openIn.width}px 宽（只有图标？用户要"显著一点"）★`);
+  if (!openIn.beforeChevron) bad.push('打开方式：主按钮与箭头的顺序反了 ★');
+  if (!openIn.linkExternalPlaceholderGone) bad.push('打开方式：占位按钮还在（没被真按钮替掉）★');
+  if (!openIn.morePlaceholderStillThere) bad.push('打开方式：顺手把「更多」占位也删了？它仍是 M2 排期 ★');
+}
+if (!openInMenu.open) bad.push(`打开方式：箭头点不开菜单${openInMenuError ? `（${openInMenuError}）` : ''} ★`);
+else {
+  if (openInMenu.count !== 5) bad.push(`打开方式：菜单里 ${openInMenu.count} 项（mock 给了 5 个）★`);
+  if (openInMenu.withImage < 1) bad.push('打开方式：一个真实应用图标都没渲染（全退化成通用方块了？）★');
+  if (openInMenu.withGeneric < 1) bad.push('打开方式：图标缺失时没有退化成通用方块（会显示破图）★');
+  if (openInMenu.belowAnchor !== true) bad.push('打开方式：菜单没有从胶囊下方弹出（会话头部在窗口顶部）★');
+  if (openInMenu.insideViewport !== true) bad.push('打开方式：菜单超出可视区 ★');
+}
+if (!openInPick.clicked) {
+  bad.push(`打开方式：菜单里点不到 GoLand${openInPickError ? `（${openInPickError}）` : ''} ★`);
+} else {
+  const last = (openInPick.calls ?? []).at(-1);
+  if (!last) bad.push('打开方式：点了菜单却没送出启动请求 ★');
+  else {
+    if (last.id !== 'goland') bad.push(`打开方式：启动的是 ${last.id}（点的是 GoLand）★`);
+    if (last.path !== openInCwd) bad.push(`打开方式：打开的目录是 ${last.path}，应为会话 cwd ${openInCwd} ★`);
+  }
+  if (openInPick.stored !== 'goland') bad.push(`打开方式：没记住选择（localStorage=${openInPick.stored}）★`);
+  if (openInPick.app !== 'goland') bad.push(`打开方式：选完主按钮没换成 GoLand（还是 ${openInPick.app}）★`);
+  if (!openInPick.menuClosed) bad.push('打开方式：选完菜单没关 ★');
+}
+if (!openInAfterReload.present) bad.push('打开方式：重载后按钮不见了（布局没恢复？）★');
+else if (openInAfterReload.app !== 'goland') {
+  bad.push(`打开方式：重载后忘掉了上次选择（变成 ${openInAfterReload.app}）★`);
+}
+if (openInAfterReload.splits > 1) bad.push(`打开方式：界面上出现了 ${openInAfterReload.splits} 个胶囊（会话头只有一个）★`);
+
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

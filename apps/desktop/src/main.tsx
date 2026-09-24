@@ -37,6 +37,12 @@ if (import.meta.env.DEV) {
     };
     (globalThis as Record<string, unknown>).__piggyCommands = commands;
   });
+  // mock 后端（纯浏览器/mock IPC）的启动调用记录：`ui:startup` 第 8 段要断言
+  // "点「打开方式」时送给宿主的到底是哪个应用、哪个目录"。同样必须拿**应用自己那一份**
+  // mockBackend，另 import 一份会得到空数组（模块实例不同，见上）。
+  void import('@/lib/mockBackend').then((m) => {
+    (globalThis as Record<string, unknown>).__piggyMock = m;
+  });
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

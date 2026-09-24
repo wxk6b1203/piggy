@@ -18,6 +18,11 @@ export interface PickerItem {
   /** 补充说明（第二行小字） */
   detail?: string;
   icon?: IconName;
+  /**
+   * 自定义图标节点（真实应用图标是 `<img>`，不是 codicon 字形）。
+   * 给了它就优先于 `icon` —— 「打开方式」的菜单用它放宿主抠出来的应用图标。
+   */
+  iconNode?: ReactNode;
   active?: boolean;
   disabled?: boolean;
   /** 分组标题（同一 group 只在首项前渲染一次） */
@@ -32,6 +37,11 @@ export interface PickerProps {
   title?: string;
   /** 菜单宽度 */
   width?: number;
+  /**
+   * 弹出方向：`up`（默认，Composer 在窗口底部，向上弹）/ `down`（会话头部，向下弹）。
+   * 会话头部的「打开方式」在窗口顶部，向上弹会顶出可视区。
+   */
+  side?: 'up' | 'down';
   /** 触发按钮的 className / title / 是否禁用 */
   className?: string;
   buttonTitle?: string;
@@ -55,6 +65,7 @@ export function Picker({
   onPick,
   title,
   width = 300,
+  side = 'up',
   className,
   buttonTitle,
   disabled,
@@ -67,7 +78,7 @@ export function Picker({
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; up?: number; down?: number } | null>(null);
 
   const setOpenAndNotify = (next: boolean) => {
     setOpen(next);
@@ -85,13 +96,19 @@ export function Picker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openSignal]);
 
-  // 关闭：点击外部 / Esc。/ 菜单向上弹（锚点在窗口底部），所以用 bottom 定位。
+  // 关闭：点击外部 / Esc。默认向上弹（锚点在窗口底部，用 bottom 定位）；
+  // side='down' 时改成从锚点下缘往下（会话头部）。
   useEffect(() => {
     if (!open) return;
     const anchor = anchorRef.current;
     if (anchor) {
       const r = anchor.getBoundingClientRect();
-      setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)), bottom: window.innerHeight - r.top + 6 });
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+      setPos(
+        side === 'down'
+          ? { left, down: r.bottom + 6 }
+          : { left, up: window.innerHeight - r.top + 6 },
+      );
     }
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
@@ -107,7 +124,7 @@ export function Picker({
       document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open, width]);
+  }, [open, width, side]);
 
   let lastGroup: string | undefined;
 
@@ -132,7 +149,11 @@ export function Picker({
               className="pg-picker-menu"
               role="listbox"
               aria-label={title}
-              style={{ left: pos.left, bottom: pos.bottom, width }}
+              style={{
+                left: pos.left,
+                width,
+                ...(pos.down === undefined ? { bottom: pos.up } : { top: pos.down }),
+              }}
             >
               {title ? <div className="pg-picker-title">{title}</div> : null}
               {loading ? <div className="pg-picker-note">加载中…</div> : null}
@@ -155,7 +176,7 @@ export function Picker({
                           onPick(it.id);
                         }}
                       >
-                        {it.icon ? <Icon name={it.icon} size={13} /> : null}
+                        {it.iconNode ?? (it.icon ? <Icon name={it.icon} size={13} /> : null)}
                         <span className="pg-picker-label">{it.label}</span>
                         {it.hint ? <span className="pg-picker-hint">{it.hint}</span> : null}
                         {it.active ? <Icon name="check" size={13} /> : null}

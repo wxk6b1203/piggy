@@ -2222,7 +2222,12 @@ div.renderer[data-code-preview][data-wrap=true|false]
 - **终端**：注册 `kind: 'terminal'`、`multiple: true`、guide `order: 20`。DOM `section.root[data-sidebar-terminal] > div.status[role=status]? + div.screen`，xterm 挂到 `.screen`，构造参数 `{ minimumContrastRatio: 4.5, cursorBlink: true, fontSize: 13, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollback }`。`.root { padding-top: 8px }`（**没有自己的 38px 工具栏行**，页签条就是它的全部 chrome）；`.screen { flex:1; padding:8px; background: var(--dsw-alias-bg-base) }`。
 - **浏览器**：注册 `kind: 'browser'`、`multiple: true`、guide `order: 30`，`keepMounted: desktop !== undefined`。DOM `div.root > form.toolbar(38px) + div.content > div.viewport`；`.toolbar { height:38px; padding:5px 6px; gap:4px; border-bottom:0.5px solid var(--dsw-alias-border-l3) }`、`.tool` 28×28 圆角 6px、`.address { height:28px; padding: 0 34px 0 9px; background: var(--dsw-alias-bg-layer-1); border:0.5px solid var(--dsw-alias-border-l2); border-radius:6px; font: var(--dsw-font-xxs-12) }`。Web profile 下该插件被禁用（`bundle/web-app/cordis.patch.yml:253-255`）。
 - **文件树**：注册 `kind: 'files'`（page 类型）、guide `order: 10`；body 复用与文档预览同款的 38px 头（`.header { height:38px; padding: 0 6px 0 16px; border-bottom:0.5px solid var(--dsw-alias-border-l3) }`）。
-- **打开方式**：不贡献 tab，而是注入 `sidebar.right.tab.document.actions` 与 `…document.unpreviewable`；控件是分裂胶囊 `div.split[data-open-target=file][data-size=compact|large] > button.main + button.chevron`，`.split { height:24px; border:0.5px solid var(--dsw-alias-border-l4); border-radius:9px }`（large: `height:36px; border-radius:14px`），非桌面环境返回 `null`。
+- **打开方式（已实现，M1）**：Piggy 落在**会话头部右侧**（`SessionHead` 的 ops 区，DSH 的 `conversation.session.header.utilities` 位）。
+  形态照搬：`div.pg-openin-split > button.main + button.chevron`，高 26px、全圆角、1px 边框、主按钮 hover 底色、失败态描边变红。
+  **一处有意的偏离**：DSH 主按钮只有图标，Piggy 主按钮**带应用名** —— 用户对这个位置的原话是「稍微显著一点」，
+  纯图标在深色头部里太隐形（`ui:startup` 第 8 段量的就是"宽度 ≥70px 且边框宽度 >0"）。
+  另：菜单**向下**弹（会话头部在窗口顶部），复用 `Picker` 的 `side="down"`。
+- **打开方式（原 DSH 形态）**：不贡献 tab，而是注入 `sidebar.right.tab.document.actions` 与 `…document.unpreviewable`；控件是分裂胶囊 `div.split[data-open-target=file][data-size=compact|large] > button.main + button.chevron`，`.split { height:24px; border:0.5px solid var(--dsw-alias-border-l4); border-radius:9px }`（large: `height:36px; border-radius:14px`），非桌面环境返回 `null`。
 
 ### 6.7 默认有哪些 tab、顺序如何
 
