@@ -22,8 +22,19 @@ interface PreviewData {
   content: string;
 }
 
-/** `root` = 项目根，仅用于展示相对路径的语境（读取仍走绝对 `path`）。 */
-export function FilePreview({ path, root }: { path: string; root?: string }) {
+/**
+ * `root` = 项目根，仅用于展示相对路径的语境（读取仍走绝对 `path`）。
+ * `visible` = dockview 面板当前是否可见（透给 MonacoHost：不可见就不建编辑器）。
+ */
+export function FilePreview({
+  path,
+  root,
+  visible,
+}: {
+  path: string;
+  root?: string;
+  visible?: boolean;
+}) {
   const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wrap, setWrap] = useState(false);
@@ -117,7 +128,7 @@ export function FilePreview({ path, root }: { path: string; root?: string }) {
           <div className="pg-missing">加载中…</div>
         ) : (
           <>
-            <MonacoHost value={data.content} language={lang} readOnly />
+            <MonacoHost value={data.content} language={lang} readOnly visible={visible} />
             <div className="pg-preview-meta">
               {data.lines.toLocaleString()} 行 · {(data.size / 1024).toFixed(1)} KB
               {root ? ` · ${data.path.startsWith(root) ? data.path.slice(root.length + 1) : ''}` : ''}

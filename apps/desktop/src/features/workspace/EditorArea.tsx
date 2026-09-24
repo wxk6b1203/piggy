@@ -55,12 +55,29 @@ export type PanelParams = SessionParams | SettingsParams | PreviewParams;
 
 /* ---------------- 面板组件注册表 ---------------- */
 
+/**
+ * 预览面板：把 dockview 的**可见性**透给 `FilePreview` → `MonacoHost`。
+ *
+ * 为什么要这一层：dockview 会把非活动面板的 React 树留着（DOM 摘掉、组件不卸载），
+ * 于是"每开一个预览标签就永久多一个活着的 Monaco 实例"—— 实测开到第 7 个就撞上
+ * 旧的 `MAX_INSTANCES = 6` 硬上限，而且撞上之后关标签也回不来。
+ * 这里把 `api.isVisible` 往下传，`MonacoHost` 对不可见的挂载点**根本不创建**编辑器
+ * （切回来再建，~70ms；预览是只读的，代价可控）。
+ */
+function PreviewPanel(props: IDockviewPanelProps<PreviewParams>) {
+  const [visible, setVisible] = useState(props.api.isVisible);
+  useEffect(() => {
+    setVisible(props.api.isVisible);
+    const sub = props.api.onDidVisibilityChange((e) => setVisible(e.isVisible));
+    return () => sub.dispose();
+  }, [props.api]);
+  return <FilePreview path={props.params.path} root={props.params.root} visible={visible} />;
+}
+
 const components = {
   session: (props: IDockviewPanelProps<SessionParams>) => <SessionWorkspace tabId={props.params.tabId} />,
   settings: () => <SettingsTab />,
-  preview: (props: IDockviewPanelProps<PreviewParams>) => (
-    <FilePreview path={props.params.path} root={props.params.root} />
-  ),
+  preview: PreviewPanel,
   missing: () => <div className="pg-missing">会话文件不存在或已删除（可关闭此标签）</div>,
   welcome: () => (
     <div className="pg-welcome">

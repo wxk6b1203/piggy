@@ -119,7 +119,7 @@ worker 空闲（`agent_settled` 后）超过 `idleTimeout`（默认 10min，可�
 
 ### 5.5 编辑器与重资产分块
 
-- Monaco 全家（core+workers+选定语言）为独立异步 chunk，首次打开预览/设置/diff 才加载：chunk ≤ 2MB gzip，加载后 RSS 增量 ≤ 60MB，未加载时 = 0（10 §2.2–2.3）；MonacoHost 单例工厂 + 实例池（并发实例 ≤ 6，预览关闭即 dispose）；
+- Monaco 全家（core+workers+选定语言）为独立异步 chunk，首次打开预览/设置/diff 才加载：chunk ≤ 2MB gzip，加载后 RSS 增量 ≤ 60MB，未加载时 = 0（10 §2.2–2.3）；MonacoHost 单例工厂 + 实例池（**可见才创建 + LRU 保留水位 6**，见 10 §2.3 —— 每实例实测 ~0.5–1.5MB / ~70ms，真正要防的是「标签数量把实例数堆起来」）；
 - Shiki 语言包 LRU 策略不变（§3.5）；聊天内嵌 diff 用自绘轻渲染，不实例化 Monaco（10 §2.1）；
 - xterm.js 实例仅在终端面板可见时挂载，隐藏即 `dispose`（10 §4）。
 

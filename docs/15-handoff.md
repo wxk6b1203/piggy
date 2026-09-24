@@ -12,7 +12,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **286/286**：apps/desktop **219**（24 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、**22 条「打开方式」**、**2 条 IPC 命令名契约**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `vitest` | **292/292**：apps/desktop **225**（25 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、**22 条「打开方式」**、**6 条 Monaco 池策略**、**2 条 IPC 命令名契约**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
 | `cargo test` | **158 + 3 + 8** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条、**「打开方式」64 条**：目录表自检 / 三平台定位链（脚本化假宿主）/ 观察窗四态真进程 / macOS 真机解析与图标提取 / 文件关联真机查询（20 个处理器、默认项唯一）/ 路径校验与拒绝面 / base64 向量） |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 8 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / **图标真的是 128×128 PNG data URL** / 文件关联 `{id,name,default,icon}` 形状（默认项恰好一个）/ 目录也能查关联 / 拒绝面 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
@@ -22,6 +22,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
 | `ui:startup` 第 8 段 | **「打开方式」分裂胶囊**：会话头部右侧**位置对**（`.pg-session-head-ops` 内、置灰占位已被替掉、「更多」占位还在）+ **够显眼**（26px 高、1px 边框、≥70px 宽、`elementFromPoint` 可点）+ 菜单**向下弹且不出屏** + 5 项里真图标与通用图标**两条渲染路径都出现** + 点 GoLand → **送给宿主的是 `{id:'goland', path:<会话 cwd>}`** + 选择落 localStorage + 重载后冷启动读回 |
 | `ui:startup` 第 9 段 | **「打开方式」文件那一档**（预览头部，真浏览器）：胶囊在文档动作位的**最后一格**、compact 24px、有边框、`elementFromPoint` 可点、主按钮名字 = **系统默认应用**（Typora.app）且真图标渲染出来 → 点主按钮送出 `{path:<预览的那个文件>, action:'open', application:'/Applications/Typora.app'}` → 菜单 2 个处理器 + 「显示文件位置」（真图标与通用方块两条路径都出现）→ 点它送出 `{action:'reveal', application:null}`。**顺带锁住语言判定**：`lib.rs` 的语言条必须是 `rust`、token 类 ≥2（预览头部原来那张 16 项本地表认不出 `.rs`） |
+| `ui:startup` 第 10 段 | **Monaco 实例池**（真浏览器）：连开 8 个预览标签 → 池里活着 ≤ 水位（实测恒 6）、界面上零「已达上限」提示、当前预览有实例且语言条 `rust` → 切回第 1 个（多半已被回收）→ 编辑器**重建**、token 类 ≥2、首行内容正确 → 全程堆增长 ≤40MB。（旧行为：第 7 个标签直接显示「请关闭部分预览标签」，且关掉也不恢复） |
 | 真机人工确认 | 「打开方式」在 `tauri dev` 窗口里**由用户手动点过，应用真的弹出来了**（2026-09-24）。这是唯一能证明「操作系统真的把窗口开出来」的一步 —— agent 侧没有窗口驱动能力，也没法在不打扰用户的前提下自己点一次 |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
@@ -301,7 +302,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
 | **`pnpm lint` 是空转** | docs/08 §4 与 docs/10 §2.2 都写着某些红线"lint 强制"，但 `apps/desktop/package.json` **没有 `lint` 脚本**，`pnpm -r --if-present lint` 一个文件都扫不到。手工 `npx eslint .` 现存 **189 error / 35 warning**（含 `no-undef` 打在 `src-tauri/resources/*.js` 这类构建产物上）。二选一：①接上 lint 并清存量（要先把构建产物加进 ignores）；②把文档里的"lint 强制"改成实际执行者（本轮预览语言表那条红线就是这么办的——由 `src/test/preview-lang.test.ts` 承担） |
 | `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
-| 左侧"常驻视图轨"没做 | docs/04 §1.2 原本规划了一条常驻的 L 轨（VS Code 活动栏语义：切换 会话/Fleet/搜索/资源）。目前只有**折叠态**才出现的 56px 图标轨（= DSH 的折叠侧栏）。两者不是一回事，别混 |
+| ~~左侧"常驻视图轨"~~ **已决定不做**（2026-09-24） | docs/04 §1.2 曾规划一条常驻的 44px L 轨（VS Code 活动栏语义）。查 DSH 源码：`ui-layout/.../AppFrame.tsx:183-186` 写明 *neither platform keeps an icon rail* —— 折叠后的重开控件走标题栏（macOS `shell.leading` 座位 / Windows caption 行）。而且左栏只有一个视图（会话列表），轨上没有可切的东西。**计划已从 docs/04 删除**；左侧只有折叠态那条 56px 轨（`SidebarRail`），右侧那条 40px 常驻轨（`RightBar`）保留（它本身也是对 DSH 的偏离 —— DSH 右栏用 dockview tab 条，若哪天要百分百对齐，该动的是这条） |
 | `SIDEBAR_AUTO_COLLAPSE = 1024` 没接 | docs/12 §1.5：视口 < 1024px 自动折叠侧栏。Piggy 是纯百分比布局，620px 窗口下侧栏被压到 122px 也不折叠。现在折叠是安全的（有图标轨可点回来），接不接是产品决策 |
 | 「打开方式」文件级的 **Windows 处理器枚举** | DSH 为此内嵌了一段 C#（`SHAssocEnumHandlers` + `IShellItem` + `SHDefExtractIcon` COM 互操作）。本机无法验证，所以**没写**：Windows 上关联列表返回空，主按钮退成「显示文件位置」，`open`/`reveal` 仍可用（`Invoke-Item` 与 `explorer /select,<file-url>`，后者的 URL 编码有单测）。指定应用打开在 Windows 上明确报错（而不是静默乱开） |
 | 「打开方式」文件级的 **Linux 真机** | `gio info` / `gio mime` / desktop entry 解析都有夹具单测（含嵌套 desktop id、`Name[zh_CN]` 回退、默认项排序），但**没在真 Linux 桌面上跑过** |

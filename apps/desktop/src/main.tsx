@@ -28,7 +28,9 @@ if (import.meta.env.DEV) {
     // 空编辑区列出的快捷键与标题。另 import 一份 `@/lib/commands` 会得到**空表**
     // （模块实例不同，见上），断言会集体假红 —— 实测踩过。
     import('@/lib/commands'),
-  ]).then(([tabs, messages, trajectory, fleet, commands]) => {
+    import('@/features/workspace/EditorArea'),
+    import('@/features/common/monaco-pool'),
+  ]).then(([tabs, messages, trajectory, fleet, commands, editor, pool]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
@@ -36,6 +38,10 @@ if (import.meta.env.DEV) {
       useFleet: fleet.useFleet,
     };
     (globalThis as Record<string, unknown>).__piggyCommands = commands;
+    // 预览相关（ui:startup 第 5/9 段与 Monaco 资源核对用）；另 import 一份会拿到另一个实例
+    (globalThis as Record<string, unknown>).__piggyEditor = editor;
+    // Monaco 实例池：`ui:startup` 第 10 段要读**应用自己那一份**池子的存活数
+    (globalThis as Record<string, unknown>).__piggyMonacoPool = pool;
   });
   // mock 后端（纯浏览器/mock IPC）的启动调用记录：`ui:startup` 第 8 段要断言
   // "点「打开方式」时送给宿主的到底是哪个应用、哪个目录"。同样必须拿**应用自己那一份**

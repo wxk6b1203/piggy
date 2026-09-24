@@ -734,6 +734,64 @@ await page
   .catch((e) => (revealError = String(e).split('\n')[0]));
 const afterReveal = (await pathCalls()).at(-1) ?? null;
 
+/* ---------- 10. Monaco 实例：可见才创建 + 超水位回收（不再有"已达上限"的墙） ---------- */
+// 起因（用户）："monaco editor 很吃资源吗？能放开限制 editor 个数吗？"
+// 实测（`editor.create` 直接量，见 monaco-pool.ts 注释）：首个 ~9MB（含核心），
+// 之后每个 ~0.5–1.5MB / ~70ms。真正的毛病不是开销，而是旧 `MAX_INSTANCES = 6` 那道墙：
+// dockview 保留非活动面板的 React 树 → 每开一个预览标签就永久多一个实例 → 第 7 个开始
+// 显示"请关闭部分预览标签"，而且关掉也回不来（"已超限"只在首次渲染算一次）。
+const monacoBefore = await page.evaluate(() => ({
+  live: globalThis.__piggyMonacoPool?.liveEditors() ?? -1,
+  heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+}));
+
+// 连开 8 个预览标签（每个不同 key = 不同面板，dockview 会把它们都留着）
+await page.evaluate(async () => {
+  const editor = globalThis.__piggyEditor;
+  for (let i = 1; i <= 8; i += 1) {
+    editor.openPreviewTab(`pool-${i}`, `/Users/mock/proj/pool${i}.rs`, `pool${i}.rs`);
+    await new Promise((r) => setTimeout(r, 350));
+  }
+  await new Promise((r) => setTimeout(r, 600));
+});
+const monacoOpened = await page.evaluate(() => {
+  const pool = globalThis.__piggyMonacoPool;
+  const pane = [...document.querySelectorAll('.pg-preview')].at(-1);
+  return {
+    live: pool?.liveEditors() ?? -1,
+    ids: pool?.liveEditorIds?.() ?? [],
+    watermark: pool?.MAX_LIVE_EDITORS ?? null,
+    refused: [...document.querySelectorAll('.pg-missing')].filter((n) =>
+      (n.textContent ?? '').includes('上限'),
+    ).length,
+    tabs: document.querySelectorAll('.dv-tab').length,
+    marks: document.querySelectorAll('.pg-monaco').length,
+    heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+    lastLang: pane?.querySelector('.pg-preview-lang')?.textContent ?? null,
+    lastMounted: !!pane?.querySelector('.monaco-editor'),
+  };
+});
+
+// 切回第一个标签：被回收的那个必须能**重新建出来**（预览内容要真的回来）
+await page.evaluate(async () => {
+  globalThis.__piggyDock?.getPanel('preview:pool-1')?.api.setActive();
+  await new Promise((r) => setTimeout(r, 800));
+});
+const monacoSwitchedBack = await page.evaluate(() => {
+  const pane = [...document.querySelectorAll('.pg-preview')].at(-1);
+  const spans = [...(pane?.querySelectorAll('.view-line span[class^="mtk"]') ?? [])];
+  return {
+    live: globalThis.__piggyMonacoPool?.liveEditors() ?? -1,
+    mounted: !!pane?.querySelector('.monaco-editor'),
+    tokens: new Set(spans.map((s) => s.className)).size,
+    firstLine: pane?.querySelector('.view-line')?.textContent ?? '',
+    refused: [...document.querySelectorAll('.pg-missing')].filter((n) =>
+      (n.textContent ?? '').includes('上限'),
+    ).length,
+    heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+  };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -741,6 +799,7 @@ console.log(
       ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
+      monacoBefore, monacoOpened, monacoSwitchedBack,
     },
     null,
     1,
@@ -976,6 +1035,37 @@ if (!afterReveal || afterReveal.action !== 'reveal') {
 }
 if (afterReveal && afterReveal.application !== null) {
   bad.push(`打开方式（文件）：reveal 不该带 application（送了 ${afterReveal.application}）★`);
+}
+
+/* Monaco 实例池：不许再有"已达上限"的墙，也不许每开一个标签就多留一个实例 */
+if (monacoOpened.refused > 0) {
+  bad.push(`Monaco：开了 8 个预览后出现 ${monacoOpened.refused} 处"实例已达上限"（旧硬上限那道墙又回来了？）★`);
+}
+if (monacoSwitchedBack.refused > 0) {
+  bad.push('Monaco：切回旧标签后仍有"已达上限"提示（超限状态不可恢复）★');
+}
+if (!(monacoOpened.watermark >= 1)) {
+  bad.push('Monaco：读不到实例池的水位（__piggyMonacoPool 没挂上？这条核对是空转）★');
+} else if (monacoOpened.live > monacoOpened.watermark) {
+  bad.push(`Monaco：开 8 个预览后活着 ${monacoOpened.live} 个实例，超过水位 ${monacoOpened.watermark}（没回收？）★`);
+}
+if (monacoOpened.live < 1) bad.push('Monaco：当前可见的预览反而没有实例（可见才创建过头了）★');
+if (!monacoOpened.lastMounted) bad.push('Monaco：最后打开的那个预览没挂上编辑器 ★');
+if (monacoOpened.lastLang !== 'rust') bad.push(`Monaco：最后那个预览的语言条是 ${monacoOpened.lastLang}，应为 rust ★`);
+if (!monacoSwitchedBack.mounted) {
+  bad.push('Monaco：切回被回收的标签后编辑器没重建（预览变空白了）★');
+} else {
+  if (monacoSwitchedBack.tokens < 2) {
+    bad.push(`Monaco：切回来只有 ${monacoSwitchedBack.tokens} 种 token 类（重建后没高亮）★`);
+  }
+  if (!monacoSwitchedBack.firstLine.includes('mock')) {
+    bad.push(`Monaco：切回来内容不对（首行 "${monacoSwitchedBack.firstLine}"）★`);
+  }
+}
+if (monacoBefore.heapMB !== null && monacoOpened.heapMB !== null) {
+  const grew = monacoOpened.heapMB - monacoBefore.heapMB;
+  // 8 个实例全留着的话 ~8-12MB；这里只该多出"可见 + 水位内"的那几个
+  if (grew > 40) bad.push(`Monaco：开 8 个预览多占了 ${grew}MB 堆（回收没生效？）★`);
 }
 
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
