@@ -549,9 +549,9 @@ const openInCwd = await page.evaluate(async () => {
 
 const openIn = await page.evaluate(() => {
   const head = document.querySelector('.pg-session-head-ops');
-  const split = head?.querySelector('.pg-openin-split');
-  const main = split?.querySelector('.pg-openin-main');
-  const chev = split?.querySelector('.pg-openin-chevron');
+  const split = head?.querySelector('.pg-opentarget-split');
+  const main = split?.querySelector('.pg-opentarget-main');
+  const chev = split?.querySelector('.pg-opentarget-chevron');
   if (!head || !split || !main || !chev) return { present: false };
   const cs = getComputedStyle(split);
   const r = split.getBoundingClientRect();
@@ -560,7 +560,9 @@ const openIn = await page.evaluate(() => {
   return {
     present: true,
     label: main.textContent,
-    app: main.getAttribute('data-app'),
+    kind: split.getAttribute('data-open-target'),
+    size: split.getAttribute('data-size'),
+    app: main.getAttribute('data-open-target-id'),
     width: Math.round(r.width),
     height: Math.round(r.height),
     borderWidth: parseFloat(cs.borderTopWidth),
@@ -576,13 +578,13 @@ const openIn = await page.evaluate(() => {
 let openInMenuError = null;
 if (openIn.present) {
   await page
-    .click('.pg-openin-chevron', { timeout: 5000 })
+    .click('.pg-opentarget-chevron', { timeout: 5000 })
     .catch((e) => (openInMenuError = String(e).split('\n')[0]));
   await page.waitForTimeout(300);
 }
 const openInMenu = await page.evaluate(() => {
   const box = document.querySelector('.pg-picker-menu');
-  const anchor = document.querySelector('.pg-openin-split');
+  const anchor = document.querySelector('.pg-opentarget-split');
   const items = [...document.querySelectorAll('.pg-picker-menu .pg-picker-item')];
   const br = box?.getBoundingClientRect();
   const ar = anchor?.getBoundingClientRect();
@@ -606,11 +608,11 @@ const openInPick = await page
     if (!target) return { clicked: false };
     target.click();
     await new Promise((r) => setTimeout(r, 400));
-    const main = document.querySelector('.pg-openin-main');
+    const main = document.querySelector('.pg-opentarget-main');
     return {
       clicked: true,
       calls: (globalThis.__piggyMock?.openCalls ?? []).map((c) => ({ ...c })),
-      app: main?.getAttribute('data-app') ?? null,
+      app: main?.getAttribute('data-open-target-id') ?? null,
       label: main?.textContent ?? null,
       stored: localStorage.getItem('piggy.open-in-app.choice'),
       menuClosed: !document.querySelector('.pg-picker-menu'),
@@ -635,14 +637,102 @@ await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(900);
 const openInAfterReload = await page.evaluate(() => {
-  const main = document.querySelector('.pg-openin-main');
+  const main = document.querySelector('.pg-opentarget-main');
   return {
     present: !!main,
-    app: main?.getAttribute('data-app') ?? null,
+    app: main?.getAttribute('data-open-target-id') ?? null,
     label: main?.textContent ?? null,
-    splits: document.querySelectorAll('.pg-openin-split').length,
+    splits: document.querySelectorAll('.pg-opentarget-split').length,
   };
 });
+
+/* ---------- 9. 「打开方式」文件那一档：系统文件关联（预览头部） ---------- */
+// 与第 8 段的区别是**数据源**：会话头部那颗走宿主白名单目录，预览头部这颗走
+// **操作系统的文件关联**（这个 .md 现在能由哪些应用打开）。这里量的是接线对不对：
+// 主按钮 = 系统默认应用、菜单列出全部处理器 + 「显示文件位置」、三条路送出的参数各不相同。
+//
+// 顺带把**语言判定**也量了：`.rs` 只在新表（`monaco-langs.ts`）里，
+// 预览头部原来那张 16 项的本地表认不出它 —— 那正是"语言条写着 plaintext、
+// 正文一行都不上色"的静默降级（docs/15 规矩 25）。
+// ⚠️ 必须用 page.evaluate 读：Node 侧的 globalThis 上没有 __piggyMock
+const pathCalls = () =>
+  page.evaluate(() => (globalThis.__piggyMock?.pathCalls ?? []).map((c) => ({ ...c })));
+
+const openInFile = await page.evaluate(async () => {
+  const editor = await import('/src/features/workspace/EditorArea.tsx');
+  editor.openPreviewTab('probe', '/Users/mock/proj/lib.rs', 'lib.rs');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15000) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (document.querySelector('.pg-preview-head .pg-opentarget-split')) break;
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  const pane = [...document.querySelectorAll('.pg-preview')].at(-1);
+  const head = pane?.querySelector('.pg-preview-head');
+  const split = head?.querySelector('.pg-opentarget-split');
+  const main = split?.querySelector('.pg-opentarget-main');
+  const chev = split?.querySelector('.pg-opentarget-chevron');
+  if (!head || !split || !main || !chev) return { present: false };
+  const cs = getComputedStyle(split);
+  const r = split.getBoundingClientRect();
+  const mr = main.getBoundingClientRect();
+  const top = document.elementFromPoint(mr.left + mr.width / 2, mr.top + mr.height / 2);
+  return {
+    present: true,
+    kind: split.getAttribute('data-open-target'),
+    size: split.getAttribute('data-size'),
+    title: main.getAttribute('title'),
+    hasIcon: !!main.querySelector('img[data-icon-kind="image"]'),
+    width: Math.round(r.width),
+    height: Math.round(r.height),
+    borderWidth: parseFloat(cs.borderTopWidth),
+    hittable: !!top && (top === main || main.contains(top)),
+    // 它是文档动作位里的**最后一个**（DSH：打开方式在 wrap/reload 之后）
+    lastInHead: [...head.querySelectorAll('button')].at(-1) === chev,
+    // 顺带：语言条现在认得出 .rs（本地那张 16 项表认不出）
+    lang: head.querySelector('.pg-preview-lang')?.textContent ?? null,
+    tokens: new Set(
+      [...(pane?.querySelectorAll('.view-line span[class^="mtk"]') ?? [])].map((s) => s.className),
+    ).size,
+  };
+});
+
+let openInFileError = null;
+if (openInFile.present) {
+  await page.click('.pg-preview-head .pg-opentarget-main', { timeout: 5000 })
+    .catch((e) => (openInFileError = String(e).split('\n')[0]));
+  await page.waitForTimeout(300);
+}
+const afterPrimary = (await pathCalls()).at(-1) ?? null;
+
+if (openInFile.present) {
+  await page.click('.pg-preview-head .pg-opentarget-chevron', { timeout: 5000 })
+    .catch((e) => (openInFileError = String(e).split('\n')[0]));
+  await page.waitForTimeout(250);
+}
+const fileMenu = await page.evaluate(() => {
+  const items = [...document.querySelectorAll('.pg-picker-menu .pg-picker-item')];
+  const box = document.querySelector('.pg-picker-menu')?.getBoundingClientRect();
+  const anchor = document.querySelector('.pg-preview-head .pg-opentarget-split')?.getBoundingClientRect();
+  return {
+    labels: items.map((i) => i.querySelector('.pg-picker-label')?.textContent ?? null),
+    withImage: items.filter((i) => i.querySelector('img[data-icon-kind="image"]')).length,
+    withGeneric: items.filter((i) => i.querySelector('svg[data-icon-kind="generic"]')).length,
+    belowAnchor: box && anchor ? box.top >= anchor.bottom - 1 : null,
+  };
+});
+
+// 选「显示文件位置」：必须走 reveal（不是 open）
+let revealError = null;
+await page
+  .evaluate(async () => {
+    const items = [...document.querySelectorAll('.pg-picker-menu .pg-picker-item')];
+    const target = items.find((i) => (i.textContent ?? '').includes('显示文件位置'));
+    target?.click();
+    await new Promise((r) => setTimeout(r, 400));
+  })
+  .catch((e) => (revealError = String(e).split('\n')[0]));
+const afterReveal = (await pathCalls()).at(-1) ?? null;
 
 await browser.close();
 console.log(
@@ -650,6 +740,7 @@ console.log(
     {
       ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
+      openInFile, afterPrimary, fileMenu, afterReveal,
     },
     null,
     1,
@@ -809,6 +900,8 @@ else {
 if (!openIn.present) bad.push('打开方式：会话头部右侧没有那枚分裂胶囊（用户指的就是这个位置）★');
 else {
   if (openIn.label !== '访达') bad.push(`打开方式：默认主按钮是 ${openIn.label}（mock 列表第一个是"访达"）★`);
+  if (openIn.kind !== 'directory') bad.push(`打开方式：会话头部那颗的 data-open-target 是 ${openIn.kind}，应为 directory ★`);
+  if (openIn.size !== 'large') bad.push(`打开方式：会话头部那颗的 data-size 是 ${openIn.size}，应为 large（带应用名）★`);
   if (!openIn.hittable) bad.push('打开方式：主按钮中心点被别的层挡住，点不到 ★');
   if (!(openIn.height >= 24)) bad.push(`打开方式：胶囊只有 ${openIn.height}px 高（太隐形，用户要"显著一点"）★`);
   if (!(openIn.borderWidth > 0)) bad.push('打开方式：胶囊没有边框（跟置灰图标一样隐形）★');
@@ -843,6 +936,47 @@ else if (openInAfterReload.app !== 'goland') {
   bad.push(`打开方式：重载后忘掉了上次选择（变成 ${openInAfterReload.app}）★`);
 }
 if (openInAfterReload.splits > 1) bad.push(`打开方式：界面上出现了 ${openInAfterReload.splits} 个胶囊（会话头只有一个）★`);
+
+/* 「打开方式」文件那一档 */
+if (!openInFile.present) {
+  bad.push('打开方式（文件）：预览头部没有那颗按钮（桌面能力为真时必须渲染）★');
+} else {
+  if (openInFile.kind !== 'file') bad.push(`打开方式（文件）：data-open-target 是 ${openInFile.kind}，应为 file ★`);
+  if (openInFile.size !== 'compact') bad.push(`打开方式（文件）：data-size 是 ${openInFile.size}，应为 compact（预览头部只有图标）★`);
+  if (!(openInFile.title ?? '').includes('Typora.app')) {
+    bad.push(`打开方式（文件）：主按钮没指向系统默认应用（title=${openInFile.title}）★`);
+  }
+  if (!openInFile.hasIcon) bad.push('打开方式（文件）：默认应用的真图标没渲染出来 ★');
+  if (!(openInFile.height >= 22 && openInFile.height <= 28)) bad.push(`打开方式（文件）：胶囊高 ${openInFile.height}px，与 38px 预览头部不搭 ★`);
+  if (!(openInFile.borderWidth > 0)) bad.push('打开方式（文件）：胶囊没有边框 ★');
+  if (!openInFile.hittable) bad.push('打开方式（文件）：主按钮中心点被别的层挡住 ★');
+  if (!openInFile.lastInHead) bad.push('打开方式（文件）：它不在文档动作位的最后（DSH 在 wrap/reload 之后）★');
+  if (openInFile.lang !== 'rust') bad.push(`预览：lib.rs 的语言条是 ${openInFile.lang}，应为 rust（本地语言表漏了这一门？）★`);
+  if (openInFile.tokens < 2) bad.push(`预览：lib.rs 只有 ${openInFile.tokens} 种 token 类 —— .rs 静默降级成纯文本了 ★`);
+}
+if (openInFileError) bad.push(`打开方式（文件）：点击异常 ${openInFileError} ★`);
+if (!afterPrimary) bad.push('打开方式（文件）：点主按钮没有送出任何请求 ★');
+else {
+  if (afterPrimary.action !== 'open') bad.push(`打开方式（文件）：主按钮送的是 action=${afterPrimary.action} ★`);
+  if (afterPrimary.application !== '/Applications/Typora.app') {
+    bad.push(`打开方式（文件）：主按钮没用系统默认应用（application=${afterPrimary.application}）★`);
+  }
+  if (afterPrimary.path !== '/Users/mock/proj/lib.rs') {
+    bad.push(`打开方式（文件）：打开的是 ${afterPrimary.path}，应为预览的文件 /Users/mock/proj/lib.rs ★`);
+  }
+}
+if (fileMenu.labels.length !== 3) bad.push(`打开方式（文件）：菜单 ${fileMenu.labels.length} 项，应为 2 个处理器 + 显示文件位置（${JSON.stringify(fileMenu.labels)}）★`);
+if (!fileMenu.labels.some((l) => (l ?? '').includes('显示文件位置'))) bad.push('打开方式（文件）：菜单里没有「显示文件位置」★');
+if (fileMenu.withImage < 1) bad.push('打开方式（文件）：处理器没有真图标 ★');
+if (fileMenu.withGeneric < 1) bad.push('打开方式（文件）：图标缺失时没退化成通用方块 ★');
+if (fileMenu.belowAnchor !== true) bad.push('打开方式（文件）：菜单没有从胶囊下方弹出 ★');
+if (revealError) bad.push(`打开方式（文件）：点「显示文件位置」异常 ${revealError} ★`);
+if (!afterReveal || afterReveal.action !== 'reveal') {
+  bad.push(`打开方式（文件）：「显示文件位置」送出的 action=${afterReveal?.action}（应为 reveal）★`);
+}
+if (afterReveal && afterReveal.application !== null) {
+  bad.push(`打开方式（文件）：reveal 不该带 application（送了 ${afterReveal.application}）★`);
+}
 
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 

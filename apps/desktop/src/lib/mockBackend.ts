@@ -47,6 +47,9 @@ let mockTabSeq = 0;
 /** `open_in_app_open` 的调用记录（门禁读它来核对参数；真机上这对应"真的启动了哪个应用"）。 */
 export const openCalls: { id: string; path: string }[] = [];
 
+/** `open_path_open` 的调用记录（门禁据此核对"默认应用 / 指定应用 / 显示位置"三条路）。 */
+export const pathCalls: { path: string; action: string; application: string | null }[] = [];
+
 /** 1×1 透明 PNG：把"图标真的走 <img> 渲染"这条路径在 mock 下也走通。 */
 const MOCK_APP_ICON =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -397,6 +400,26 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     openCalls.push({ id: String(a.id ?? ''), path: String(a.path ?? '') });
     return null;
   },
+  /* ---------------- 文件级（open_path_*）：模拟操作系统的文件关联 ----------------
+   * 真机上这一档由 `osascript`/`gio` 查出来；mock 给两个处理器 + 一个默认项，
+   * 让"默认应用 / 指定应用 / 显示文件位置"三条路都能在浏览器里被走到。
+   */
+  open_path_available: () => true,
+  open_path_applications: (a) => {
+    void a;
+    return [
+      { id: '/Applications/Typora.app', name: 'Typora.app', default: true, icon: MOCK_APP_ICON },
+      { id: '/Applications/Visual Studio Code.app', name: 'Visual Studio Code.app', default: false, icon: null },
+    ];
+  },
+  open_path_open: (a) => {
+    pathCalls.push({
+      path: String(a.path ?? ''),
+      action: String(a.action ?? 'open'),
+      application: a.application === undefined || a.application === null ? null : String(a.application),
+    });
+    return null;
+  },
   fs_preview_read: (a) => {
     // 内容随扩展名变化：这样语法高亮/行号/换行等渲染路径在 mock 下也**真的被走到**，
     // 而不是所有文件都吐同一段文本（那会让高亮相关的回归悄无声息地漏掉）。
@@ -411,6 +434,21 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       css: `:root {\n  --pg-bg-app: rgb(21, 21, 23);\n}\n\n.pg-app {\n  display: flex;\n  height: 100vh;\n}\n`,
       // 每种 token 都来一点（注释/关键字/字符串/数字/标识符）：ui:startup 第 5 节要断言
       // "预览里真的出现了不止一种 token 颜色"，样本太单调的话断言等于没断言
+      // .rs 只在新语言表里（原来的本地表认不出它）—— ui:startup 第 9 段用它证明
+      // "语言表存在 ≠ 预览真的用了它"：样本要含多种 token，否则断言等于没断言
+      rs: `// mock 预览内容
+use std::collections::HashMap;
+
+pub const VERSION: &str = "0.1.0";
+
+pub fn main() {
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    seen.insert("a".to_string(), 1);
+    if seen.len() > 0 {
+        println!("{} {:?}", VERSION, seen);
+    }
+}
+`,
       go: `// mock 预览内容\npackage main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nconst version = "0.1.0"\n\nfunc main() {\n\tif len(os.Args) < 2 {\n\t\tfmt.Println("usage: demo <name>")\n\t\tos.Exit(1)\n\t}\n\tfmt.Printf("hello %s\\n", os.Args[1])\n}\n`,
     };
     const content = samples[ext] ?? `// ${path}\n`;

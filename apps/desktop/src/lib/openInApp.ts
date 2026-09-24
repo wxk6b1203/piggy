@@ -101,3 +101,70 @@ export function resetOpenInAppCache(): void {
   appsPromise = null;
   icons.clear();
 }
+
+/* ---------------------- 文件级：操作系统文件关联 ---------------------- */
+
+/** 一个已注册的文件处理器（Rust `open_in_app::paths::PathApplication`）。 */
+export interface PathApplication {
+  /** macOS = `.app` 绝对路径；Linux = desktop 文件路径；Windows 为空集。 */
+  id: string;
+  name: string;
+  default: boolean;
+  icon: string | null;
+}
+
+let desktopPromise: Promise<boolean> | null = null;
+
+/**
+ * 这台机器能不能把路径交给桌面应用（DSH `canOpenWorkspacePath`）。
+ * 页面级只读一次；读失败按"不能"处理 —— 无头 Linux / SSH 就是这个分支。
+ */
+export function loadDesktop(): Promise<boolean> {
+  desktopPromise ??= cmd<unknown>('open_path_available')
+    .then((v) => v === true)
+    .catch((e) => {
+      console.warn('[open-path] 桌面能力读取失败', e);
+      return false;
+    });
+  return desktopPromise;
+}
+
+/** 某个文件当前注册的处理器；查询失败与"没有处理器"是两件事，用 `failed` 区分。 */
+export async function loadPathApplications(
+  path: string,
+): Promise<{ apps: PathApplication[]; failed: boolean }> {
+  try {
+    const raw = await cmd<unknown>('open_path_applications', { path });
+    if (!Array.isArray(raw)) {
+      console.warn('[open-path] 关联列表载荷不是数组，按"没有处理器"处理', raw);
+      return { apps: [], failed: false };
+    }
+    const apps = raw
+      .filter((a): a is PathApplication => !!a && typeof (a as PathApplication).id === 'string')
+      .map((a) => ({
+        id: a.id,
+        name: typeof a.name === 'string' && a.name ? a.name : a.id,
+        default: a.default === true,
+        icon: typeof a.icon === 'string' && a.icon ? a.icon : null,
+      }));
+    return { apps, failed: false };
+  } catch (e) {
+    console.error('[open-path] 关联列表读取失败', e);
+    return { apps: [], failed: true };
+  }
+}
+
+/** 打开 / 在文件管理器里显示 / 用指定应用打开（Rust `open_path_open`）。 */
+export async function openPath(
+  path: string,
+  action: 'open' | 'reveal',
+  application?: string,
+): Promise<void> {
+  // 显式送 null 而不是省略字段：跨 IPC 的形状要确定（`Option<String>` 收 null）
+  await cmd<void>('open_path_open', { path, action, application: application ?? null });
+}
+
+/** 仅供测试：清掉桌面能力缓存。 */
+export function resetDesktopCacheForTest(): void {
+  desktopPromise = null;
+}

@@ -11,6 +11,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MonacoHost } from '@/features/common/MonacoHost';
 import { Icon } from '@/features/common/Icon';
+import { OpenPathAction } from './OpenPathAction';
+import { langForPath } from '@/features/common/monaco-langs';
 import { toast } from '@/lib/feedback';
 
 interface PreviewData {
@@ -19,13 +21,6 @@ interface PreviewData {
   lines: number;
   content: string;
 }
-
-const LANG: Record<string, string> = {
-  ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-  json: 'json', md: 'markdown', py: 'python', rs: 'rust', go: 'go',
-  sh: 'shell', bash: 'shell', css: 'css', html: 'html', yml: 'yaml', yaml: 'yaml',
-  toml: 'ini', lock: 'ini',
-};
 
 /** `root` = 项目根，仅用于展示相对路径的语境（读取仍走绝对 `path`）。 */
 export function FilePreview({ path, root }: { path: string; root?: string }) {
@@ -62,8 +57,10 @@ export function FilePreview({ path, root }: { path: string; root?: string }) {
   }, [path, data]);
 
   const { dir, name } = useMemo(() => splitPath(data?.path ?? path), [data?.path, path]);
-  const ext = name.split('.').at(-1)?.toLowerCase() ?? '';
-  const lang = LANG[ext] ?? 'plaintext';
+  // 语言**只有这一处判定**（`monaco-langs.ts` 的表 + 逐门懒加载）。
+  // 这里原来还有一张 16 项的本地表：`.rs`/`.java`/`.toml`/`Dockerfile`/`.rb`… 全都不在表里，
+  // 于是"语言条写着 plaintext、正文一行都不上色"——正是 docs/15 规矩 25 那类静默降级。
+  const lang = langForPath(data?.path ?? path);
 
   if (path === '__missing__') {
     return <div className="pg-missing">会话文件不存在或已删除（可关闭此标签）</div>;
@@ -108,6 +105,9 @@ export function FilePreview({ path, root }: { path: string; root?: string }) {
         >
           <Icon name="copy" size={15} />
         </button>
+        {/* DSH `sidebar.right.tab.document.actions` 位：用外部应用打开**这个文件**
+            （系统文件关联，不是工作区目录那一档）。桌面能力不可用时它自己不渲染。 */}
+        <OpenPathAction path={data?.path ?? path} />
       </div>
 
       <div className="pg-preview-body" data-wrap={wrap || undefined}>

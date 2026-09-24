@@ -2231,6 +2231,17 @@ div.renderer[data-code-preview][data-wrap=true|false]
   —— 和 `model.pick` → `Picker.openSignal` 同一条路，所以"键盘可达"不是靠一颗隐藏按钮。
   选择是**跨头部共享**的（DSH 的 choice 是一份共享 store；Piggy 用 `windowEvents` 广播）。
   失败时除红框外，Rust 那句话会挂到 `title` 上并经 `webview_log` 转进宿主终端（打包版没有 DevTools）。
+- **打开方式（文件级，已实现，M1）**：DSH 源码把它注入到 `sidebar.right.tab.document.actions` /
+  `…document.unpreviewable` / `deliverables.*.file.actions`；Piggy 落在**预览 tab 头部最后一格**
+  （wrap/reload/copy 之后，与 DSH 的文档动作位同一个位置）。数据源是**操作系统文件关联**而不是白名单目录：
+  macOS 走 `osascript -l JavaScript` + AppKit `NSWorkspace`（`URLForApplicationToOpenURL` /
+  `URLsForApplicationsToOpenURL`，实测本机 README.md 有 20 个处理器、默认 Typora），
+  Linux 走 `gio info` + `gio mime`，Windows 的处理器枚举要 COM（`SHAssocEnumHandlers`）**没做**。
+  三个动作：默认应用打开 / 用某个已注册处理器打开 / 在文件管理器里显示（Windows 上枚举为空，
+  于是主按钮退成"显示文件位置" —— 与 DSH 拿不到默认应用时的 `revealDefault` 同款行为）。
+  两档共用 DSH 的 `OpenTargetButton` 形状（`data-open-target=directory|file`、`data-size=large|compact`）。
+- **失败反馈**：DSH 用 `open-failure-toast` 逐控件弹一次；Piggy 走 `lib/feedback` 的 `toast.error`，
+  文案带 Rust 那句原因（`打开失败，请重试：目录不存在: /x/y`）。文案与 DSH 的 zh 词典逐条对齐。
 - **打开方式（原 DSH 形态）**：不贡献 tab，而是注入 `sidebar.right.tab.document.actions` 与 `…document.unpreviewable`；控件是分裂胶囊 `div.split[data-open-target=file][data-size=compact|large] > button.main + button.chevron`，`.split { height:24px; border:0.5px solid var(--dsw-alias-border-l4); border-radius:9px }`（large: `height:36px; border-radius:14px`），非桌面环境返回 `null`。
 
 ### 6.7 默认有哪些 tab、顺序如何

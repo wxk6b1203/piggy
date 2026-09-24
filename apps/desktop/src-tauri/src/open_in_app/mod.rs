@@ -20,6 +20,7 @@
 pub mod catalog;
 pub mod host;
 pub mod icons;
+pub mod paths;
 pub mod resolver;
 pub mod spec;
 
@@ -29,6 +30,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use host::{Facts, RealHost};
+use paths::PathApplication;
 use spec::{LaunchOutcome, LaunchSpec, Resolved};
 
 /// 宿主命令（`xcode-select` / `plutil` / `reg.exe`）的单条超时。
@@ -193,6 +195,53 @@ pub fn validate_directory(path: &str) -> Result<PathBuf, String> {
         return Err(format!("目录不存在: {trimmed}"));
     }
     Ok(p)
+}
+
+/* ---------------------- 「打开方式」：文件级（OS 文件关联） ---------------------- */
+
+/// 这台机器的桌面能不能把路径交出去（DSH `canOpenWorkspacePath`）。
+///
+/// 为 false 时前端**不渲染**文件级按钮（而不是渲染一个点了没反应的）——
+/// 无头 Linux / SSH 场景就是这一类。
+#[tauri::command(async)]
+pub fn open_path_available() -> bool {
+    paths::can_open_path(&Facts::detect())
+}
+
+/// 这个文件当前注册的处理器（名字 + 真实图标 + 默认项）；按系统偏好序。
+#[tauri::command(async)]
+pub fn open_path_applications(path: String) -> Result<Vec<PathApplication>, String> {
+    let file = paths::validate_path(&path)?;
+    let facts = Facts::detect();
+    let real = RealHost::new(facts.clone());
+    paths::applications(&real, &facts, &file, ICON_TIMEOUT)
+}
+
+/// 打开 / 在文件管理器里定位 / 用指定应用打开。
+///
+/// `action` 与 `application` 与 DSH 的 `openWorkspacePath` 请求同形：
+/// `reveal` 走定位，`open` + `application` 走指定处理器（**先查注册再启动**），
+/// `open` 不带应用就是系统默认。
+#[tauri::command(async)]
+pub fn open_path_open(
+    path: String,
+    action: String,
+    application: Option<String>,
+) -> Result<(), String> {
+    let file = paths::validate_path(&path)?;
+    let action = paths::PathAction::parse(&action)
+        .ok_or_else(|| format!("未知的打开方式: {action}（只认 open / reveal）"))?;
+    let facts = Facts::detect();
+    let real = RealHost::new(facts.clone());
+    paths::run_action(
+        &real,
+        &facts,
+        &file,
+        action,
+        application.as_deref(),
+        PROBE_TIMEOUT,
+        LAUNCH_WATCH,
+    )
 }
 
 /// 标准 base64（不引依赖：只有这一个用途，且必须有测试锁住字母表与填充）。

@@ -1193,34 +1193,45 @@ body {
 .pg-icon-btn:hover:not(:disabled) { background: var(--pg-hover-solid); color: var(--pg-fg); }
 .pg-icon-btn:disabled { color: var(--pg-fg-faint); cursor: default; }
 
-/* 「打开方式」分裂胶囊（DSH `.split`：h28 + 0.5px 边框 + 全圆角；docs/12 §2225）。
-   与 DSH 的唯一形态差异：主按钮带应用名 —— 这个位置在 Piggy 的深色头部里，
-   纯图标太隐形（用户要求"稍微显著一点"）。 */
-.pg-openin-split {
-  flex: none; display: inline-flex; align-items: stretch; height: 26px;
+/* 「打开方式」共用分裂胶囊（DSH `OpenTargetButton.module.css` 的 `.split/.main/.chevron`）。
+   `data-open-target` 区分目录/文件，`data-size` 区分会话头部（large，带应用名）
+   与预览头部（compact，只有图标）—— 与 DSH 同一套开关。 */
+.pg-opentarget-split {
+  flex: none; display: inline-flex; align-items: stretch;
   border: 1px solid var(--pg-border-l2); border-radius: var(--pg-r-pill);
   overflow: hidden;
 }
-.pg-openin-split[data-phase='error'] { border-color: var(--pg-error); }
-.pg-openin-main {
+.pg-opentarget-split[data-size='large'] { height: 26px; }
+.pg-opentarget-split[data-size='compact'] { height: 24px; border-radius: 9px; }
+.pg-opentarget-split[data-state='busy'] { opacity: 0.6; }
+.pg-opentarget-main {
   display: inline-flex; align-items: center; gap: var(--pg-sp-2);
-  max-width: 168px; padding: 0 var(--pg-sp-3) 0 var(--pg-sp-4);
-  background: none; border: 0; cursor: pointer;
-  color: var(--pg-fg); font: inherit; font-size: var(--pg-fs-11); line-height: var(--pg-lh-11);
+  background: none; border: 0; cursor: pointer; color: var(--pg-fg);
+  font: inherit; font-size: var(--pg-fs-11); line-height: var(--pg-lh-11);
 }
-.pg-openin-main:hover:not(:disabled) { background: var(--pg-hover-solid); }
-.pg-openin-main:disabled { color: var(--pg-fg-faint); cursor: wait; }
-.pg-openin-split[data-phase='error'] .pg-openin-main { color: var(--pg-error); }
-.pg-openin-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pg-openin-chevron {
+.pg-opentarget-split[data-size='large'] .pg-opentarget-main { max-width: 168px; padding: 0 var(--pg-sp-3) 0 var(--pg-sp-4); }
+.pg-opentarget-split[data-size='compact'] .pg-opentarget-main { padding: 0 var(--pg-sp-2) 0 var(--pg-sp-3); }
+.pg-opentarget-main:hover:not(:disabled) { background: var(--pg-hover-solid); }
+.pg-opentarget-main:disabled { color: var(--pg-fg-faint); cursor: wait; }
+.pg-opentarget-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-opentarget-chevron {
   display: inline-flex; align-items: center;
-  padding: 0 var(--pg-sp-3) 0 var(--pg-sp-2);
   background: none; border: 0; border-left: 1px solid var(--pg-border-l2);
   color: var(--pg-fg-dim); cursor: pointer;
 }
-.pg-openin-chevron:hover { background: var(--pg-hover-solid); color: var(--pg-fg); }
-.pg-openin-img { display: block; flex: none; object-fit: contain; user-select: none; border-radius: 3px; }
-.pg-openin-glyph { flex: none; }
+.pg-opentarget-split[data-size='large'] .pg-opentarget-chevron { padding: 0 var(--pg-sp-3) 0 var(--pg-sp-2); }
+.pg-opentarget-split[data-size='compact'] .pg-opentarget-chevron { padding: 0 var(--pg-sp-2) 0 var(--pg-sp-1); }
+.pg-opentarget-chevron:hover { background: var(--pg-hover-solid); color: var(--pg-fg); }
+.pg-opentarget-img { display: block; flex: none; object-fit: contain; user-select: none; border-radius: 3px; }
+.pg-opentarget-glyph { flex: none; }
+/* 查询中：骨架方块（DSH `data-open-target-skeleton`），而不是"什么都不显示" */
+.pg-opentarget-skeleton {
+  display: block; flex: none; border-radius: 4px;
+  background: var(--pg-hover-solid);
+  animation: pg-opentarget-pulse 1.2s var(--pg-ease) infinite;
+}
+@keyframes pg-opentarget-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
+
 
 .pg-ws-tabs { flex: none; display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--pg-border-l2); background: var(--pg-bg-app); }
 .pg-ws-tab { background: none; border: none; color: var(--pg-fg-dim); padding: 6px 12px; font-size: 12px; cursor: pointer; border-bottom: 2px solid transparent; }

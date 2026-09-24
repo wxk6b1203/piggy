@@ -137,3 +137,77 @@ fn open_in_app_open_rejects_bad_requests() {
     let err = piggy_lib::open_in_app::open_in_app_open("finder".into(), "/etc/hosts".into()).unwrap_err();
     assert!(err.contains("目录"), "{err}");
 }
+
+/* ------------- 「打开方式」文件级（DSH path-opener / file-applications） ------------- */
+
+/// 桌面能力是一个**布尔**，且本机（macOS）必须为真。
+#[test]
+fn open_path_available_is_a_boolean() {
+    let available = piggy_lib::open_in_app::open_path_available();
+    if cfg!(target_os = "macos") {
+        assert!(available, "macOS 恒有桌面打开器");
+    }
+}
+
+/// 文件关联列表的**跨 IPC 形状**：`{id, name, default, icon}`，且默认项恰好一个。
+/// 这条跑的是真机（`osascript` + AppKit），因此也顺带证明了那条 JXA 路线在打包环境里可用。
+#[test]
+fn open_path_applications_shape_on_this_machine() {
+    let file = "/Users/wxk/Documents/Project/piggy/README.md";
+    if !std::path::Path::new(file).exists() {
+        return;
+    }
+    let apps = piggy_lib::open_in_app::open_path_applications(file.to_string())
+        .expect("关联查询应当成功");
+    assert!(!apps.is_empty(), "本机 README.md 应当有处理器");
+    let value = serde_json::to_value(&apps).expect("可序列化");
+    let array = value.as_array().expect("是数组");
+    let mut defaults = 0;
+    for entry in array {
+        assert!(entry["id"].is_string(), "id 必须是字符串");
+        assert!(entry["name"].is_string(), "name 必须是字符串");
+        assert!(entry["default"].is_boolean(), "default 必须是布尔（前端按它选主按钮）");
+        assert!(
+            entry["icon"].is_null() || entry["icon"].is_string(),
+            "icon 必须是字符串或 null"
+        );
+        if entry["default"].as_bool() == Some(true) {
+            defaults += 1;
+        }
+    }
+    assert_eq!(defaults, 1, "默认项必须恰好一个");
+}
+
+/// 目录**也能**查出关联（本机实测 `/tmp` → 终端.app）——
+/// 所以"打开工作区"走的是固定白名单目录，不是这张关联列表。
+#[test]
+fn open_path_applications_accepts_a_directory_without_error() {
+    let apps = piggy_lib::open_in_app::open_path_applications("/tmp".to_string())
+        .expect("目录查询不该报错");
+    for app in apps {
+        assert!(std::path::Path::new(&app.id).is_dir(), "关联到的应用不存在: {}", app.id);
+    }
+}
+
+/// 拒绝面：不存在的路径 / 相对路径 / 未知 action 一律 Err（**在启动之前**拦下）。
+#[test]
+fn open_path_open_rejects_bad_requests() {
+    let missing =
+        piggy_lib::open_in_app::open_path_open("/definitely/not/here.md".into(), "open".into(), None)
+            .unwrap_err();
+    assert!(missing.contains("不存在"), "{missing}");
+    let relative =
+        piggy_lib::open_in_app::open_path_open("rel/x.md".into(), "open".into(), None).unwrap_err();
+    assert!(relative.contains("绝对路径"), "{relative}");
+    let bad_action =
+        piggy_lib::open_in_app::open_path_open("/tmp".into(), "delete".into(), None).unwrap_err();
+    assert!(bad_action.contains("未知的打开方式"), "{bad_action}");
+    // 未注册的应用：不许执行（前端传什么字符串都进不来）
+    let unregistered = piggy_lib::open_in_app::open_path_open(
+        "/tmp".into(),
+        "open".into(),
+        Some("/Applications/Definitely-Not-Registered.app".into()),
+    )
+    .unwrap_err();
+    assert!(unregistered.contains("没有注册"), "{unregistered}");
+}

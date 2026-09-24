@@ -98,6 +98,8 @@ piggy/
   （`open_in_app_list` / `open_in_app_icon` / `open_in_app_open`，见 03 §2.11）：
   只能启动**宿主自己解析过的白名单应用**，且只能打开**已存在的绝对目录** ——
   没有 URL、没有任意命令、没有前端可控的 argv。
+  文件级同款：`open_path_available` / `open_path_applications` / `open_path_open`，
+  只认"已存在的绝对路径"，指定应用时必须**此刻真的注册在系统关联里**；
   当前 `capabilities/default.json` 仍然是 M0 那三行（`core:default` + `core:window:allow-set-title`），
   自建命令走 Tauri 的命令通道，不需要额外 capability；
 - CSP：`default-src 'self'`；`connect-src` 无需外网（LLM 请求都发生在 pi 进程）。

@@ -231,26 +231,37 @@ pub fn launch_detached(
     watch: Duration,
     env: &HashMap<String, String>,
 ) -> LaunchOutcome {
-    let (command, args) = match spec {
+    match spec {
         LaunchSpec::ShellOpen => {
             let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
-            (opener.to_string(), vec![dir.to_string()])
+            spawn_watched(opener, &[dir.to_string()], watch, env, &[])
         }
-        LaunchSpec::Argv { command, args, .. } => (command.clone(), launch_args(args, dir)),
-    };
-    let extra: Vec<(String, String)> = match spec {
-        LaunchSpec::Argv { env, .. } => env.clone(),
-        LaunchSpec::ShellOpen => Vec::new(),
-    };
+        LaunchSpec::Argv { command, args, env: extra } => {
+            spawn_watched(command, &launch_args(args, dir), watch, env, extra)
+        }
+    }
+}
 
-    let mut cmd = Command::new(&command);
-    cmd.args(&args)
+/// 用**完整 argv** 启动并观察早期失败（不做任何参数代入）。
+///
+/// 与 `launch_detached` 分开的理由：文件/目录那一档（`paths.rs`）的参数已经在
+/// 调用点拼好（有的还带平台自己的转义，比如 PowerShell 的单引号字面量），
+/// 再走一次"追加目录"只会多出一个空参数。
+pub fn spawn_watched(
+    command: &str,
+    args: &[String],
+    watch: Duration,
+    env: &HashMap<String, String>,
+    extra_env: &[(String, String)],
+) -> LaunchOutcome {
+    let mut cmd = Command::new(command);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_clear()
         .envs(scrubbed_env(env))
-        .envs(extra);
+        .envs(extra_env.iter().cloned());
     detach(&mut cmd);
 
     let mut child = match cmd.spawn() {

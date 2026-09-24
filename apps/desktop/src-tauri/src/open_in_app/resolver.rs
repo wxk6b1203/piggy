@@ -231,6 +231,8 @@ pub struct DesktopEntry {
     pub exec: Option<String>,
     pub try_exec: Option<String>,
     pub icon: Option<String>,
+    /// 全部键值（含 `Name[zh_CN]` 这类本地化键）——「打开方式」按语言取显示名要用。
+    pub fields: HashMap<String, String>,
 }
 
 /// 解析 `[Desktop Entry]` 段的 `Exec` / `TryExec` / `Icon`（其它段忽略）。
@@ -250,12 +252,14 @@ pub fn parse_desktop_entry(text: &str) -> DesktopEntry {
         let Some((key, value)) = trimmed.split_once('=') else {
             continue;
         };
-        match key.trim() {
-            "Exec" => entry.exec = Some(value.trim().to_string()),
-            "TryExec" => entry.try_exec = Some(value.trim().to_string()),
-            "Icon" => entry.icon = Some(value.trim().to_string()),
+        let (key, value) = (key.trim().to_string(), value.trim().to_string());
+        match key.as_str() {
+            "Exec" => entry.exec = Some(value.clone()),
+            "TryExec" => entry.try_exec = Some(value.clone()),
+            "Icon" => entry.icon = Some(value.clone()),
             _ => {}
         }
+        entry.fields.insert(key, value);
     }
     entry
 }
@@ -278,10 +282,60 @@ pub fn xdg_data_directories(facts: &Facts) -> Vec<PathBuf> {
 }
 
 pub fn find_desktop_entry(host: &dyn Host, facts: &Facts, desktop_id: &str) -> Option<DesktopEntry> {
+    let path = find_desktop_file(host, facts, desktop_id)?;
+    Some(parse_desktop_entry(&host.read_file(&path)?))
+}
+
+/// desktop entry 文件路径。
+///
+/// XDG 允许**嵌套目录**（`applications/kde4/foo.desktop`），其 id 是相对
+/// `applications/` 的路径把 `/` 换成 `-`（`kde4-foo`）。DSH 同样处理这一层；
+/// 只找顶层目录会让一部分已安装的应用在「打开方式」里消失。
+pub fn find_desktop_file(host: &dyn Host, facts: &Facts, desktop_id: &str) -> Option<PathBuf> {
     for dir in xdg_data_directories(facts) {
-        let path = dir.join("applications").join(format!("{desktop_id}.desktop"));
-        if let Some(text) = host.read_file(&path) {
-            return Some(parse_desktop_entry(&text));
+        let root = dir.join("applications");
+        // 顶层直接命中（绝大多数）优先：少一次 read_dir，也让假宿主不必实现目录枚举
+        let direct = root.join(format!("{desktop_id}.desktop"));
+        if host.is_file(&direct) {
+            return Some(direct);
+        }
+        if let Some(found) = find_desktop_in(host, &root, &root, desktop_id, 0) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_desktop_in(
+    host: &dyn Host,
+    root: &Path,
+    dir: &Path,
+    desktop_id: &str,
+    depth: u8,
+) -> Option<PathBuf> {
+    if depth > 3 {
+        return None; // 防目录环/无底洞
+    }
+    let entries = host.read_dir(dir)?;
+    for name in &entries {
+        let path = dir.join(name);
+        if !host.is_dir(&path) {
+            let rel = path
+                .strip_prefix(root)
+                .ok()?
+                .to_string_lossy()
+                .replace('/', "-");
+            if rel == format!("{desktop_id}.desktop") {
+                return Some(path);
+            }
+        }
+    }
+    for name in &entries {
+        let path = dir.join(name);
+        if host.is_dir(&path) {
+            if let Some(found) = find_desktop_in(host, root, &path, desktop_id, depth + 1) {
+                return Some(found);
+            }
         }
     }
     None

@@ -134,6 +134,8 @@
  │   │   └─ tab 内容路由（viewType → 组件）：
  │   │       ├─ <SessionWorkspace/>  会话 tab：SessionHead + Transcript + Composer（§2.1）
  │   │       ├─ <FilePreview/>       预览 tab（MonacoHost · Monaco 只读，10 §2）
+ │   │       │   └─ <OpenPathAction/>  头部最后一格：「用外部应用打开**这个文件**」
+ │   │       │                        （系统文件关联；与目录那档共用 <OpenTargetButton>）
  │   │       ├─ <DiffPreview/>       预览 tab（Monaco DiffEditor）
  │   │       ├─ <SettingsTab/> <KeymapTab/> <FleetTab/> <LoginTerminalTab/>（M4）
  │   ├─ <ViewRail side="right"/> + <RightBarHost/>   右侧栏视图宿主（§1.6）
@@ -149,6 +151,7 @@
 <SessionWorkspace>                   每 tab 一个，非活动 tab 卸载 DOM、保留 store
  ├─ <SessionHead/>               标题 + 右侧操作（仿 DSH §4 B1）
  │   └─ <OpenInApp/>             「打开方式」分裂胶囊（DSH ui-open-in-app）：
+ │                               数据 = 宿主白名单目录；渲染 = <OpenTargetButton kind="directory">：
  │                               主按钮 = 上次用过的应用（图标 + 名字）→ 直接打开当前 cwd；
  │                               箭头 = 本机全部可用应用（真实图标，宿主抠出来的）。
  │                               宿主没解析出任何应用 / 会话没有 cwd → 渲染 null（不留死按钮）。
@@ -161,6 +164,11 @@
  │   └─ <CompactorBanner/> <RetryToast/> …（生命周期横幅）
  └─ <Composer/>                  自研 + antd Upload 粘贴/拖拽
 ```
+
+**语言判定只有一处**：预览的语法高亮走 `features/common/monaco-langs.ts::langForPath`
+（按扩展名 + 整文件名 → Monaco 语言 id，逐门懒加载）。`FilePreview` 里曾经还有一张 16 项的本地表，
+于是 `.rs`/`.java`/`.toml`/`Dockerfile` 这类**语言表里明明有**的文件在界面上是"语言条写着 plaintext、
+正文一行不上色"（docs/15 规矩 25 那类静默降级）。加语言 = 改 `monaco-langs.ts` 一处。
 
 **antd 边界铁律**（01 §3.4）：`Transcript` 子树（除横幅类一次性组件）、`TabStrip`、`ViewRail`、`StatusBar`、`CommandPalette` 禁止引入 antd 组件；代码评审以 lint 规则固化（`no-restricted-imports` 按目录白名单，08 §4）。
 ## 3. 状态管理细则

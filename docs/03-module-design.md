@@ -145,24 +145,31 @@ pub struct TabDescriptor {
 
 ### 2.11 `open_in_app/` — 「打开方式」（外部应用）
 
-会话头部那枚分裂胶囊的宿主半边，移植 DSH `@deepseek-ai/dsh-host-open-in-app`。
-四个文件各管一件事：
+「打开方式」两个档的宿主半边：会话头部（打开**工作区目录**，移植 DSH
+`@deepseek-ai/dsh-host-open-in-app`）与文档预览头部（打开**这个文件**，移植 DSH
+`native-command/path-opener.ts` + `file-applications.ts`）。五个文件各管一件事：
 
 | 文件 | 职责 |
 |---|---|
 | `catalog.rs` | **编译期白名单**（34 条）：编辑器/IDE、Git GUI、终端、文件管理器，每条声明按平台依次尝试的定位链 |
 | `resolver.rs` | 把定位链解析成"这台机器上**验过的**启动器"（`app` / `xcode` / `cli` / `file` / `app-paths` / `install-record` / `scan` / `github-desktop` / `desktop` / `fixed`），含 `reg.exe` 输出与 `.desktop` 解析 |
 | `icons.rs` | 图标提取：macOS `plutil` + `sips` 出 128px PNG；Linux 走 hicolor/pixmaps；**Windows 未实现**（返回 None，前端画通用图标） |
+| `paths.rs` | **文件级**那一档：操作系统文件关联（查处理器 + 默认项 + 32px 图标）、`open`/`reveal`/指定应用三个动作。macOS 走 `osascript -l JavaScript` + AppKit `NSWorkspace`（实测 0.4s / 20+ 处理器），Linux 走 `gio info` + `gio mime` + desktop entry，Windows 只做 open/reveal |
 | `host.rs` | 宿主事实（platform/home/app_roots/env/ssh）+ `Host` trait（可注入）+ 有超时的宿主命令 + **脱离父进程组、洗净凭据环境**的启动器 |
 
-三条不变量（都有测试）：
+六个命令：`open_in_app_list` / `open_in_app_icon` / `open_in_app_open`（目录），
+`open_path_available` / `open_path_applications` / `open_path_open`（文件，`action = open | reveal`）。
+
+四条不变量（都有测试）：
 
 1. **只报验过的启动器** —— 光有安装记录/注册表项不算，必须落到磁盘上真实存在的文件；
 2. **一台机器只解析一次**（进程内缓存），只有"启动时发现可执行文件没了"才重解析那一条；
-3. **`open_in_app_open` 只认已解析的启动器 + 已存在的绝对目录** —— 这是它敢叫"打开方式"而不是"任意命令执行"的全部理由。
+3. **`open_in_app_open` 只认已解析的启动器 + 已存在的绝对目录**；
+4. **`open_path_open` 只认已存在的绝对路径**，且带 `application` 时**先查一遍系统注册列表再启动**
+   —— 前端传什么字符串都进不了执行面。这四条合起来才是它敢叫"打开方式"而不是"任意命令执行"的理由。
 
 为什么不用 `tauri-plugin-opener`（11 §2.1 原计划）：那个插件的权限面是"任意路径/任意 URL"，
-而这里需要的只是"用白名单应用打开一个已存在的目录"。自建三个窄命令，权限面小得多（08 §6）。
+而这里需要的只是"用白名单应用打开一个已存在的目录/文件"。自建六个窄命令，权限面小得多（08 §6）。
 
 ### 2.12 `fleet/` — 宿主侧舰队编排（详设见 06 §3）
 

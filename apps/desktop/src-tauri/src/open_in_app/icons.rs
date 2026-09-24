@@ -107,8 +107,13 @@ fn bundle_icon_png(host: &dyn Host, bundle: &Path, timeout: Duration) -> Option<
 fn linux_icon_bytes(host: &dyn Host, facts: &Facts, desktop_id: &str) -> Option<Vec<u8>> {
     let entry = find_desktop_entry(host, facts, desktop_id)?;
     let icon = entry.icon.filter(|s| !s.is_empty())?;
-    if Path::new(&icon).is_absolute() {
-        return read_icon_file(host, Path::new(&icon));
+    theme_icon_bytes(host, facts, &icon)
+}
+
+/// 图标名（或绝对路径）→ 图标文件字节。「打开方式」的文件关联列表也用这一条。
+pub fn theme_icon_bytes(host: &dyn Host, facts: &Facts, icon: &str) -> Option<Vec<u8>> {
+    if Path::new(icon).is_absolute() {
+        return read_icon_file(host, Path::new(icon));
     }
     for dir in xdg_data_directories(facts) {
         for size in HICOLOR_SIZES {
