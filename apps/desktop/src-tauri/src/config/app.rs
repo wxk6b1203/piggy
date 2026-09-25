@@ -63,6 +63,36 @@ pub struct PerfConfig {
     /// 详见 `pi/process.rs::cli_args` 的注释。
     #[serde(default)]
     pub subagent_delegation: bool,
+    /// 生成的会话标题最多多少个**字符**（不是字节；docs/03 §2.16）。
+    ///
+    /// 按字符算是刻意的：DSH 用 UTF-8 字节上限，于是"20 字节"在中文下只有 6 个字。
+    /// 用户说的"字数"就是字符数。默认 20（侧栏一行约 220px 放得下）。
+    #[serde(default = "default_title_max_chars")]
+    pub title_max_chars: u32,
+    /// 标题取材：first（只看第一条）/ recent（只看最近几条）/ both（默认）。
+    #[serde(default)]
+    pub title_source: crate::sessions::title::TitleStrategy,
+    /// 生成标题用哪个模型，`"provider/modelId"`。`None` = **跟会话自己的模型**
+    /// （会话文件里最后一次 `model_change`）。填了就用它——想用便宜模型刷标题时用。
+    #[serde(default)]
+    pub title_model: Option<String>,
+}
+
+fn default_title_max_chars() -> u32 {
+    crate::sessions::title::DEFAULT_MAX_CHARS
+}
+
+/// 把 `"provider/modelId"` 拆开。只切第一个 `/`——模型 id 里可能含 `/`
+/// （`openrouter` 那类 `vendor/model` 形态），provider 名不会含。
+pub fn split_model_ref(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let (p, m) = s.split_once('/')?;
+    let (p, m) = (p.trim(), m.trim());
+    if p.is_empty() || m.is_empty() {
+        None
+    } else {
+        Some((p.to_string(), m.to_string()))
+    }
 }
 
 fn default_max_workers() -> u32 {
@@ -82,6 +112,9 @@ impl Default for PerfConfig {
             pi_source: crate::pi::discovery::PiSource::default(),
             pi_path: None,
             subagent_delegation: false,
+            title_max_chars: default_title_max_chars(),
+            title_source: crate::sessions::title::TitleStrategy::default(),
+            title_model: None,
         }
     }
 }
@@ -91,6 +124,19 @@ impl PerfConfig {
         self.max_workers = self.max_workers.clamp(1, 64);
         // 上限兜底 24h；0 保留为"永不回收"语义
         self.idle_timeout_min = self.idle_timeout_min.min(24 * 60);
+        // 标题字数：config.json 是可以手改的，0 会让每个标题都变成空串——
+        // 那正好是最坏的结果（空标题覆盖掉用户原来的名字），所以这里兜住。
+        self.title_max_chars = self.title_max_chars.clamp(1, 200);
+        // 标题模型写成 `provider/modelId` 才有意义；写错了就丢掉（回落"跟会话"），
+        // 而不是留着一个每次生成都报错的字符串。
+        if let Some(m) = self.title_model.as_deref() {
+            let m = m.trim();
+            self.title_model = if m.is_empty() || split_model_ref(m).is_none() {
+                None
+            } else {
+                Some(m.to_string())
+            };
+        }
     }
 }
 

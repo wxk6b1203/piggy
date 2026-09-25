@@ -7,7 +7,7 @@ use crate::pi::permission::PermissionMode;
 use crate::pi::process::SessionTarget;
 use crate::sessions::list;
 use crate::sessions::registry::{spawn_tab_watcher, SharedRegistry, TabSnapshot};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
@@ -360,12 +360,27 @@ pub async fn perf_config_save(
     pi_path: Option<String>,
     // 子代理委派开关（docs/06 §6）。不传 = 保持既有值。
     subagent_delegation: Option<bool>,
+    // 标题生成（docs/03 §2.16）。都不传 = 保持既有值。
+    title_max_chars: Option<u32>,
+    title_source: Option<String>,
+    title_model: Option<String>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
     let mut cfg = app::perf_config_load();
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
+    if let Some(n) = title_max_chars {
+        cfg.title_max_chars = n.clamp(1, 200);
+    }
+    if let Some(s) = title_source.as_deref() {
+        cfg.title_source = crate::sessions::title::TitleStrategy::parse(s)?;
+    }
+    if let Some(m) = title_model.as_deref() {
+        let m = m.trim();
+        // 空串 = 清掉覆盖（回到"跟会话自己的模型"），不是"用一个空模型名"
+        cfg.title_model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
 
     // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）
     let plan = crate::pi::discovery::plan_source_change(
@@ -650,10 +665,13 @@ pub async fn session_delete(path: String) -> Result<(), String> {
 }
 
 /// 关闭会话重命名：临时 worker → set_session_name → 关闭。
-#[tauri::command]
-pub async fn session_rename(
-    app: AppHandle,
-    state: State<'_, AppState>,
+/// 起一个只读临时 worker，只为调一次 `set_session_name`。
+///
+/// 抽出来是因为**改名的两条入口**（手工重命名、生成标题）必须完全同一条路：
+/// 自己往会话文件里塞 `session_info` 会与 pi 的写入格式分叉。
+async fn set_session_name_via_worker(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
     path: String,
     name: String,
 ) -> Result<(), String> {
@@ -679,13 +697,117 @@ pub async fn session_rename(
                 // 只读档位，本来就不会走到委派（cli_args 里档位判定也会拦下）
                 subagent_policy: None,
             },
-            sink(&app),
+            sink(app),
         )
         .await?
     };
     let out = worker.set_session_name(&name).await;
     worker.shutdown().await;
     out.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn session_rename(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<(), String> {
+    set_session_name_via_worker(&app, &state, path, name).await
+}
+
+/// 生成标题**会拿什么去生成**（不调用模型）。界面用它做预览与排查。
+#[tauri::command]
+pub async fn session_title_source(path: String) -> Result<Value, String> {
+    let cfg = app::perf_config_load();
+    tokio::task::spawn_blocking(move || {
+        let src = crate::sessions::title::read_source(std::path::Path::new(&path))?;
+        Ok::<Value, String>(crate::sessions::title::describe(
+            &src,
+            cfg.title_source,
+            cfg.title_max_chars,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 生成会话标题（docs/03 §2.16）。
+///
+/// 会**另起一个一次性 pi 进程**（`-p --no-session -nt -nc`）：
+/// 用哪个 provider/model、哪把密钥、走不走代理都由 pi 自己解析，
+/// 而且 `--no-session` 保证这段生成对话**不进被命名那个会话的转录**。
+///
+/// `apply` 默认 true：生成完直接写进会话名（走 `set_session_name`）。
+/// 返回里同时给 `raw`（模型原样输出）与 `title`（收拾过的），
+/// 以及"这次用的是哪个模型"——否则用户看到一个不满意的标题无从判断该换什么。
+#[tauri::command]
+pub async fn session_title_generate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    apply: Option<bool>,
+) -> Result<Value, String> {
+    let cfg = app::perf_config_load();
+    let max_chars = cfg.title_max_chars.clamp(1, 200);
+    let strategy = cfg.title_source;
+    let source = {
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || crate::sessions::title::read_source(std::path::Path::new(&path)))
+            .await
+            .map_err(|e| e.to_string())??
+    };
+    let (system, user) = crate::sessions::title::build_prompt(&source, strategy, max_chars);
+
+    // 用哪个模型：设置里指定了就用它，否则**跟会话自己的**（会话文件里最后一次
+    // model_change）。会话里也没有（新建还没发过消息）→ 都不传，让 pi 用它自己的默认。
+    let (provider, model_id) =
+        crate::sessions::title::pick_model(cfg.title_model.as_deref(), &source)?;
+    let cwd = source
+        .cwd
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+
+    let pi_bin = {
+        let mut reg = state.registry.lock().await;
+        reg.resolve_bin()?
+    };
+    let generated = crate::sessions::title::generate(
+        &pi_bin,
+        &cwd,
+        provider.as_deref(),
+        model_id.as_deref(),
+        &system,
+        &user,
+        max_chars,
+    )
+    .await?;
+
+    if !generated.usable {
+        // **不要**用空标题覆盖用户原来的名字。这是最容易发生的一种数据损坏：
+        // 模型这次抽风返回空，用户原来手改的名字就没了。
+        return Err(format!(
+            "模型没有给出可用的标题（原样输出：{:?}）——已保留原来的名字",
+            generated.raw.chars().take(80).collect::<String>()
+        ));
+    }
+
+    let mut applied = false;
+    if apply.unwrap_or(true) {
+        set_session_name_via_worker(&app, &state, path.clone(), generated.title.clone()).await?;
+        applied = true;
+    }
+
+    let mut out = serde_json::to_value(&generated).map_err(|e| e.to_string())?;
+    out["applied"] = json!(applied);
+    out["modelUsed"] = match (&provider, &model_id) {
+        (Some(p), Some(m)) => json!(format!("{p}/{m}")),
+        _ => Value::Null,
+    };
+    out["source"] = crate::sessions::title::describe(&source, strategy, max_chars);
+    Ok(out)
 }
 
 #[tauri::command]

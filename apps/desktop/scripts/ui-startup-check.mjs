@@ -1042,6 +1042,122 @@ const settingsEdge = await page.evaluate(async () => {
   return { probe, first, second };
 });
 
+/* ---------- 14. 会话标题生成 + 右键菜单（docs/03 §2.16、docs/04 §2.4） ----------
+ * 三件事只有在真浏览器里才量得到或才成立：
+ *   (a) **菜单的贴边内收**——jsdom 的 getBoundingClientRect 全是 0，
+ *       被视口切掉一半这种坏法在那里永远量不出来（docs/15 规矩 32）；
+ *   (b) 右键是**真按键**（`page.mouse.click(..., {button:'right'})`），
+ *       `contextmenu` 事件在真浏览器里走的是另一条路；
+ *   (c) 生成完侧栏那一行**真的换了文字**——这条要跨 IPC + 重渲染。 */
+const sessionTitle = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const rows = qa('.pg-session-row');
+  return {
+    rowCount: rows.length,
+    firstRect: rows[0]?.getBoundingClientRect().toJSON() ?? null,
+    hasIcon: !!rows[0]?.querySelector('.pg-session-titlegen'),
+    iconLabel: rows[0]?.querySelector('.pg-session-titlegen')?.getAttribute('aria-label') ?? null,
+    titleBefore: (rows[0]?.querySelector('.pg-session-title')?.textContent ?? '').trim(),
+  };
+});
+
+// 真右键：在会话行上按下右键，菜单应该出现在指针位置附近
+if (sessionTitle.firstRect) {
+  await page.mouse.click(
+    Math.round(sessionTitle.firstRect.x + 60),
+    Math.round(sessionTitle.firstRect.y + sessionTitle.firstRect.height / 2),
+    { button: 'right' },
+  );
+  await page.waitForTimeout(400);
+}
+const menuProbe = await page.evaluate(() => {
+  const m = document.querySelector('.pg-menu');
+  if (!m) return { present: false };
+  const r = m.getBoundingClientRect();
+  const items = [...m.querySelectorAll('.pg-menu-label')].map((e) => (e.textContent ?? '').trim());
+  return {
+    present: true,
+    role: m.getAttribute('role'),
+    items,
+    // 贴边内收：菜单必须整个落在视口里
+    insideViewport:
+      r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+    rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+    // 菜单项不能竖排（中文按钮塌成竖排是踩过的坑）
+    anyWrapped: [...m.querySelectorAll('.pg-menu-item')].some(
+      (i) => i.getBoundingClientRect().height > 40,
+    ),
+    focused: document.activeElement === m,
+    inBody: m.parentElement === document.body || m.closest('body') !== null,
+  };
+});
+
+// 右下角再开一次：必须往左上翻，而不是被切掉
+const cornerProbe = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const row = document.querySelector('.pg-session-row');
+  if (!row) return { ok: false };
+  window.dispatchEvent(new Event('scroll', { bubbles: true }));
+  await sleep(100);
+  const r = row.getBoundingClientRect();
+  row.dispatchEvent(
+    new MouseEvent('contextmenu', {
+      bubbles: true,
+      clientX: window.innerWidth - 2,
+      clientY: window.innerHeight - 2,
+    }),
+  );
+  await sleep(250);
+  const m = document.querySelector('.pg-menu');
+  if (!m) return { ok: false, why: 'menu 没开' };
+  const b = m.getBoundingClientRect();
+  const out = {
+    ok: true,
+    insideViewport: b.left >= 0 && b.top >= 0 && b.right <= window.innerWidth && b.bottom <= window.innerHeight,
+    // 原点在右下角 → 菜单必须整体在指针左侧/上方
+    flipped:
+      b.right <= window.innerWidth - 1 && b.bottom <= window.innerHeight - 1,
+  };
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(150);
+  out.closedByEscape = !document.querySelector('.pg-menu');
+  return out;
+});
+
+// 点「生成标题」：走完整的 IPC 往返，侧栏那一行必须换文字
+let titleRun = { clicked: false };
+if (sessionTitle.firstRect) {
+  await page.mouse.click(
+    Math.round(sessionTitle.firstRect.x + 60),
+    Math.round(sessionTitle.firstRect.y + sessionTitle.firstRect.height / 2),
+    { button: 'right' },
+  );
+  await page.waitForTimeout(300);
+  const clicked = await page.evaluate(() => {
+    const items = [...document.querySelectorAll('.pg-menu-item')];
+    const hit = items.find((i) => (i.textContent ?? '').includes('生成标题'));
+    if (!hit) return false;
+    hit.click();
+    return true;
+  });
+  await page.waitForTimeout(900);
+  titleRun = await page.evaluate(
+    (before) => {
+      const row = document.querySelector('.pg-session-row');
+      return {
+        clicked: true,
+        titleAfter: (row?.querySelector('.pg-session-title')?.textContent ?? '').trim(),
+        changed: (row?.querySelector('.pg-session-title')?.textContent ?? '').trim() !== before,
+        menuClosed: !document.querySelector('.pg-menu'),
+        ops: (globalThis.__piggyMock?.sessionTitleOps ?? []).map((o) => o.name),
+      };
+    },
+    sessionTitle.titleBefore,
+  );
+  titleRun.clicked = clicked;
+}
+
 /* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
  * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
  * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
@@ -1194,6 +1310,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
+      sessionTitle, menuProbe, cornerProbe, titleRun,
     },
     null,
     1,
@@ -1491,6 +1608,48 @@ else {
     bad.push('配置页：自定义设置默认没折叠（DSH 是折叠的，密钥才是主字段）★');
   }
 }
+/* 会话标题 + 右键菜单（第 14 段） */
+{
+  const st = sessionTitle ?? {};
+  if (!st.rowCount) bad.push('会话标题：侧栏一行会话都没有，这条核对失去意义 ★');
+  if (!st.hasIcon) bad.push('会话标题：会话行上没有「生成标题」图标（第三个入口缺了）★');
+  if (!/标题/.test(st.iconLabel ?? '')) {
+    bad.push(`会话标题：图标的可访问名是 "${st.iconLabel}"，应当说明它做什么 ★`);
+  }
+  const mp = menuProbe ?? {};
+  if (!mp.present) bad.push('会话标题：在会话行上真右键没有唤出菜单 ★');
+  else {
+    if (mp.role !== 'menu') bad.push(`会话标题：菜单的 role 是 ${mp.role}，应为 menu ★`);
+    if (!mp.insideViewport) bad.push(`会话标题：菜单超出了视口（${JSON.stringify(mp.rect)}）★`);
+    if (mp.anyWrapped) bad.push('会话标题：有菜单项被折成两行（中文文案竖排/折行）★');
+    if (!mp.focused) bad.push('会话标题：菜单打开后没有拿到焦点（键盘用不了）★');
+    if (!(mp.items ?? []).some((i) => String(i).includes('生成标题'))) {
+      bad.push(`会话标题：菜单里没有「生成标题」（只有 ${JSON.stringify(mp.items)}）★`);
+    }
+    if (!(mp.items ?? []).some((i) => String(i).includes('重命名'))) {
+      bad.push('会话标题：菜单里没有「重命名」——右键菜单应当是会话操作的完整入口 ★');
+    }
+  }
+  const cp = cornerProbe ?? {};
+  if (!cp.ok) bad.push(`会话标题：右下角右键这一路没跑通（${cp.why ?? '菜单没开'}）★`);
+  else {
+    if (!cp.insideViewport) bad.push('会话标题：在窗口右下角右键时菜单被视口切掉了（没有贴边内收）★');
+    if (!cp.flipped) bad.push('会话标题：右下角右键时菜单没有往左上翻 ★');
+    if (!cp.closedByEscape) bad.push('会话标题：Escape 关不掉菜单 ★');
+  }
+  const tr = titleRun ?? {};
+  if (!tr.clicked) bad.push('会话标题：菜单里点不到「生成标题」★');
+  else {
+    if (!(tr.ops ?? []).includes('session_title_generate')) {
+      bad.push(`会话标题：点生成没有发出 session_title_generate（发了 ${JSON.stringify(tr.ops)}）★`);
+    }
+    if (!tr.changed) {
+      bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
+    }
+    if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+}
+
 /* 插件页（第 13 段）：四种来源、状态归属、启停真的落到 pi 的文件上、安装真的起任务 */
 {
   const p = plugins ?? {};

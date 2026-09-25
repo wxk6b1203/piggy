@@ -1,6 +1,6 @@
 /** 会话侧栏：工作区分组 + 折叠 + 搜索 + 新建/改名/导出/删除。
  *  顶部品牌行与行高/选中态对齐 DSH（docs/12 §5）；图标用 VS Code codicons（docs/13）。 */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { windowEvents } from '@/lib/windowEvents';
 import { Modal, Input, Button } from 'antd';
 import { cmd } from '@/lib/ipc';
@@ -17,6 +17,9 @@ import {
 } from '@/stores/sessions';
 import { openSessionTab, openSettingsTab, focusSessionTab } from './EditorArea';
 import { Icon } from '@/features/common/Icon';
+import { ContextMenu, type MenuItem } from '@/features/common/ContextMenu';
+import { SessionTitlePreview } from './SessionTitlePreview';
+import { describeRun, generateTitle, loadTitleSource, type TitleSourceInfo } from '@/lib/sessionTitle';
 import { toast, confirm } from '@/lib/feedback';
 import { useUi } from '@/stores/ui';
 
@@ -30,6 +33,16 @@ export function SessionsSidebar() {
   const [renameText, setRenameText] = useState('');
   const [newProject, setNewProject] = useState<{ open: boolean; cwd: string }>({ open: false, cwd: '' });
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  /** 右键菜单：位置 + 针对哪个会话。null = 没开。 */
+  const [menu, setMenu] = useState<{ at: { x: number; y: number }; session: SessionMeta } | null>(null);
+  /** 正在生成标题的会话 path（同一时刻只允许一个：生成是一次模型调用） */
+  const [titling, setTitling] = useState<string | null>(null);
+  /** 「看看会拿什么去生成」的预览。 */
+  const [preview, setPreview] = useState<{
+    session: SessionMeta;
+    info: TitleSourceInfo | null;
+    error: string | null;
+  } | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const theme = useUi((s) => s.theme);
   const toggleTheme = useUi((s) => s.toggleTheme);
@@ -50,6 +63,40 @@ export function SessionsSidebar() {
     () => new Set(Object.values(tabs).map((t) => t.sessionFile).filter(Boolean) as string[]),
     [tabs],
   );
+
+  /**
+   * 生成/重新生成标题。
+   *
+   * 三处入口（右键菜单、悬停图标、命令面板）都走这一个函数——行为分叉是这类
+   * "再加一个入口"最容易出的问题（比如只有一个入口会刷新列表）。
+   */
+  const doGenerateTitle = useCallback(
+    async (m: SessionMeta) => {
+      if (titling) return;
+      setTitling(m.path);
+      try {
+        const r = await generateTitle(m.path);
+        // 生成完重新拉列表：界面显示的必须就是磁盘上的（不做本地合并）
+        await load();
+        toast.success(`标题已更新为「${r.title}」（${describeRun(r)}）`);
+      } catch (e) {
+        toast.error(`生成标题失败：${e}`);
+      } finally {
+        setTitling(null);
+      }
+    },
+    [titling, load],
+  );
+
+  /** 打开"素材预览"：列出这次会拿哪几条消息去生成（不调用模型，免费）。 */
+  const openTitlePreview = useCallback(async (m: SessionMeta) => {
+    setPreview({ session: m, info: null, error: null });
+    try {
+      setPreview({ session: m, info: await loadTitleSource(m.path), error: null });
+    } catch (e) {
+      setPreview({ session: m, info: null, error: String(e) });
+    }
+  }, []);
 
   const q = query.trim().toLowerCase();
   const sidebar = useMemo(
@@ -167,6 +214,41 @@ export function SessionsSidebar() {
     return list.slice(0, 4);
   }, [sidebar]);
 
+  /** 菜单项：会话行的全部操作都能从这儿够到（悬停图标放不下更多了）。 */
+  const menuItems = useCallback(
+    (m: SessionMeta): MenuItem[] => {
+      const hasName = !!m.name;
+      return [
+        { id: 'open', label: '打开会话', onSelect: () => void openSession(m) },
+        {
+          id: 'title',
+          label: hasName ? '重新生成标题' : '生成标题',
+          hint: '调用模型，按会话内容起一个短标题',
+          disabled: titling !== null,
+          onSelect: () => void doGenerateTitle(m),
+        },
+        {
+          id: 'title-preview',
+          label: '看看会拿什么去生成',
+          hint: '不调用模型，只列出取材的消息',
+          disabled: titling !== null,
+          onSelect: () => void openTitlePreview(m),
+        },
+        {
+          id: 'rename',
+          label: '重命名…',
+          onSelect: () => {
+            setRenaming(m);
+            setRenameText(m.name ?? sessionTitle(m));
+          },
+        },
+        { id: 'export', label: '导出 HTML', onSelect: () => void doExport(m) },
+        { id: 'delete', label: '删除会话', danger: true, onSelect: () => doDelete(m) },
+      ];
+    },
+    [doGenerateTitle, doDelete, doExport, openSession, titling],
+  );
+
   return (
     <div className="pg-sidebar">
       {/* DSH 品牌行（docs/12 §5.3）：DSH 没有自绘标题栏，品牌落在侧栏顶部 */}
@@ -182,6 +264,21 @@ export function SessionsSidebar() {
           <Icon name="layout-sidebar-left" size={14} />
         </button>
       </div>
+
+      {/* 「看看会拿什么去生成」：不调用模型，先把素材列出来 */}
+      <SessionTitlePreview
+        open={preview !== null}
+        info={preview?.info ?? null}
+        error={preview?.error ?? null}
+        onClose={() => setPreview(null)}
+      />
+
+      {/* 右键菜单：portal 到 body，避免被侧栏的 overflow 裁掉 */}
+      <ContextMenu
+        at={menu?.at ?? null}
+        items={menu ? menuItems(menu.session) : []}
+        onClose={() => setMenu(null)}
+      />
 
       <button className="pg-sidebar-new" onClick={() => setNewProject({ open: true, cwd: '' })}>
         <Icon name="add" size={14} /> 新会话
@@ -239,6 +336,13 @@ export function SessionsSidebar() {
                       key={m.path}
                       className={`pg-session-row${active ? ' pg-active' : ''}`}
                       onClick={() => void openSession(m)}
+                      onContextMenu={(e) => {
+                        // 右键菜单是会话行操作的完整入口；悬停图标只放最常用的三个
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setMenu({ at: { x: e.clientX, y: e.clientY }, session: m });
+                      }}
+                      data-session-path={m.path}
                       title={m.cwd_missing ? `${m.path}（⚠ 项目目录已删除，打开会失败）` : m.path}
                     >
                       <span className="pg-session-title">
@@ -254,6 +358,18 @@ export function SessionsSidebar() {
                         {relTime(createdMs(m))}
                       </span>
                       <span className="pg-session-ops">
+                        <button
+                          className="pg-session-titlegen"
+                          title={m.name ? '重新生成标题' : '生成标题（调用模型）'}
+                          aria-label={m.name ? '重新生成标题' : '生成标题'}
+                          disabled={titling !== null}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void doGenerateTitle(m);
+                          }}
+                        >
+                          <Icon name="edit-sparkle" size={12} spin={titling === m.path} />
+                        </button>
                         <button
                           title="重命名"
                           onClick={(e) => {

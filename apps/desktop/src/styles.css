@@ -1504,3 +1504,47 @@ body {
   line-height: 1.7; color: var(--pg-fg); background: color-mix(in srgb, #d29922 12%, transparent);
   border: 1px solid color-mix(in srgb, #d29922 30%, transparent);
 }
+
+/* ============================ 右键菜单（docs/04 §2.4） ============================
+   portal 到 body：会话行在可滚动的侧栏里，留在原地会被 overflow 裁掉。
+   z-index 高于 dockview 面板与 Monaco，低于 antd 的 Modal（1000）/ message（1010）。 */
+.pg-menu {
+  position: fixed; z-index: 900; min-width: 184px; max-width: 320px;
+  padding: 4px; border-radius: 8px;
+  background: var(--pg-bg-layer-1); border: 1px solid var(--pg-border-l2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  display: flex; flex-direction: column; gap: 1px;
+  outline: none;
+}
+.pg-menu-item {
+  display: flex; align-items: center; gap: var(--pg-sp-3);
+  width: 100%; padding: 5px 8px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--pg-fg); font: inherit; font-size: var(--pg-fs-12);
+  text-align: left; cursor: pointer;
+}
+/* 白空格必须 nowrap：菜单项文案是中文，折行会把菜单撑成两行高（docs/15 规矩 32） */
+.pg-menu-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-menu-hint { flex: none; max-width: 45%; font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-menu-item:hover:not(:disabled), .pg-menu-item.is-active:not(:disabled) { background: var(--pg-hover); }
+.pg-menu-item:disabled { color: var(--pg-fg-dim); cursor: default; }
+.pg-menu-item.is-danger { color: var(--pg-error); }
+.pg-menu-item.is-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--pg-error) 16%, transparent); }
+
+/* 会话行上的「生成标题」图标：与改名/导出/删除同排 */
+.pg-session-titlegen:disabled { opacity: 0.5; cursor: default; }
+
+/* 标题素材预览（不调用模型的免费预览） */
+.pg-title-preview { display: flex; flex-direction: column; gap: var(--pg-sp-3); font-size: var(--pg-fs-12); }
+.pg-title-preview-row { display: flex; gap: var(--pg-sp-3); margin: 0; align-items: baseline; flex-wrap: wrap; }
+.pg-title-preview-row > span:first-child { color: var(--pg-fg-dim); flex: none; }
+.pg-title-preview-block { display: flex; flex-direction: column; gap: 4px; }
+.pg-title-preview-label { margin: 0; color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
+.pg-title-preview-block pre {
+  margin: 0; padding: var(--pg-sp-3); border-radius: 6px; max-height: 120px; overflow: auto;
+  background: var(--pg-bg-layer-2, rgba(0, 0, 0, 0.2));
+  font-family: var(--pg-mono); font-size: var(--pg-fs-11); white-space: pre-wrap; word-break: break-word;
+}
+.pg-title-preview-block ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pg-title-preview-note { margin: 0; color: var(--pg-fg-dim); font-size: var(--pg-fs-11); line-height: 1.6; }
+.pg-title-preview-note code { font-family: var(--pg-mono); }

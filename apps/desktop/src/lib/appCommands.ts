@@ -13,6 +13,32 @@ import {
 } from '@/features/workspace/EditorArea';
 import { createTab } from '@/stores/tabs';
 import { windowEvents } from '@/lib/windowEvents';
+import { toast } from '@/lib/feedback';
+import { describeRun, generateTitle } from '@/lib/sessionTitle';
+import { useSessions } from '@/stores/sessions';
+
+/**
+ * 生成/重新生成**当前会话**的标题（docs/03 §2.16）。
+ *
+ * 与侧栏右键菜单走同一个后端命令。这里必须先解析出"当前会话的 path"——
+ * 命令面板只知道 `activeTabId`，会话文件在 tabs store 里。
+ */
+export async function generateTitleForActiveTab(): Promise<void> {
+  const { tabs, activeTabId } = useTabs.getState();
+  const path = activeTabId ? tabs[activeTabId]?.sessionFile : null;
+  if (!path) {
+    toast.error('当前没有打开任何会话');
+    return;
+  }
+  try {
+    const r = await generateTitle(path);
+    // 侧栏显示的是 session_list 的结果，生成完必须重新拉一次
+    await useSessions.getState().load();
+    toast.success(`标题已更新为「${r.title}」（${describeRun(r)}）`);
+  } catch (e) {
+    toast.error(`生成标题失败：${e}`);
+  }
+}
 
 /**
  * 新建会话标签。
@@ -33,6 +59,20 @@ export function useAppCommands() {
   useEffect(() => {
     const ui = () => useUi.getState();
     const tabs = () => useTabs.getState();
+
+    registerCommand({
+      id: 'session.title.generate',
+      title: '生成会话标题',
+      category: '会话',
+      run: () => void generateTitleForActiveTab(),
+    });
+
+    registerCommand({
+      id: 'session.title.regenerate',
+      title: '重新生成会话标题',
+      category: '会话',
+      run: () => void generateTitleForActiveTab(),
+    });
 
     registerCommand({
       id: 'palette.open',

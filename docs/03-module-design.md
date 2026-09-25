@@ -282,6 +282,60 @@ RPC 没有对应命令，所以改动对**新开的会话**生效——界面明
 `builtins_generated.rs` 由 `scripts/gen-plugin-builtins.mjs` 从 pi 源码的
 `builtInExtensions` 生成（`--check` 可核对），因为内置扩展**没有运行时枚举接口**。
 
+### 2.16 `sessions/title.rs` — 会话标题生成
+
+pi **没有**标题生成：`set_session_name` 只负责把名字写进会话文件
+（`{"type":"session_info","name":…}`，`session-manager.ts:1316`），谁决定叫什么名字是客户端的事。
+所以侧栏此前显示的是回落链（`name` → `first_message` → 文件名）——长会话的第一条消息
+往往是一整段话，在 220px 宽的侧栏里被省略号截得没法看。
+
+**为什么是"另起一个一次性 pi 进程"而不是 Piggy 直接发 HTTP**：与插件管理同一条理由
+（自己实现必然与 pi 分叉）。标题要用哪个 provider/model、哪把密钥（auth.json /
+models.json / 环境变量三级）、走不走代理、`compat` 覆盖、OAuth 刷新——pi 都已经处理好了。
+
+```text
+pi -p --no-session -nt -nc [--provider P --model M] --system-prompt SYS -- USER
+```
+
+| 参数 | 为什么 |
+|---|---|
+| `-p` | 打印模式：模型正文直接进 stdout，没有 TUI 转义 |
+| `--no-session` | **不写会话文件**（实测跑完 sessions 目录多 0 个文件） |
+| `-nt` | 不带任何工具（实测 `tools: []`）——起标题不该让模型去读文件 |
+| `-nc` | 不读 AGENTS.md/CLAUDE.md（标题与项目上下文无关，读了是噪声） |
+| `--` | 之后一律当消息：提示词里可能出现以 `-` 开头的粘贴内容 |
+
+**标题不进模型输入**：生成在独立进程里、`--no-session`，所以这段对话完全不进
+被命名那个会话的转录。DSH 靠"`session/title` 不是 surface 事件"保证同一件事。
+
+**取材**（`title_source`）：`first`（只看第一条）/ `recent`（只看最近 3 条）/ `both`（默认）。
+资格判定与 DSH 同义：**只取人类用户消息里的文本块**，纯图片/工具结果不算；
+收拾完为空的那条跳过（否则会基于空内容生成）。
+
+**字数上限按字符算**（`title_max_chars`，默认 20）。这是与 DSH 的**有意差异**：
+DSH 用 UTF-8 字节（`maxTitleBytes` 默认 80），于是"20 字节"在中文下只有 6 个字；
+用户说的"字数"是字符数。截断用 `chars()`，天然不会切坏多字节字符。
+
+**提示词逐句对齐 DSH**（`session-title-llm/src/index.ts:194-207`），因为那三句各自
+挡掉一类真实失败：`plain text … no Markdown/XML/terminal control codes`（否则模型回一段
+被 OSC 包住的文本，直接进侧栏就是乱码）、`Use the language of the messages`（中文会话
+不能起英文标题）、字数目标。素材装成 **JSON 数组**（DSH 同款）——比自然语言拼接更不容易
+被消息里的"忽略上面的指示"越界。
+
+命令：
+
+| 命令 | 作用 |
+|---|---|
+| `session_title_source` | 列出**会拿什么去生成**（不调用模型，纯读会话文件） |
+| `session_title_generate` | 生成并（默认）写进会话名；返回 title/raw/用了哪个模型/耗时 |
+
+**失败时绝不覆盖旧名字**：模型没给出可用标题（收拾后为空）时返回错误并**保留原名字**，
+这是这块最可能造成的数据损坏。生成失败的原因（密钥过期、模型名写错）取自 pi 的
+stderr 最后一行。
+
+模型选择（`pick_model`，纯函数）：设置覆盖 > 会话最后一次 `model_change` > 都不给
+（让 pi 用默认）。**成对生效**——只给一半会退化成错配组合，宁可都不传。
+
 ## 3. 前端侧模块（`src/`）
 
 ### 3.1 `lib/ipc.ts`

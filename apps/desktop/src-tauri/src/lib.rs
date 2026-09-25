@@ -320,6 +320,8 @@ pub fn run() {
             commands::session_dir_effective,
             commands::session_delete,
             commands::session_rename,
+            commands::session_title_source,
+            commands::session_title_generate,
             commands::layout_load,
             commands::layout_save,
             commands::pi_get_entries,

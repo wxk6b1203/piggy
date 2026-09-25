@@ -270,6 +270,24 @@ const TAB_SCOPED = new Set([
 ]);
 
 
+/* ---------------- 会话标题生成的 mock 状态（docs/03 §2.16） ---------------- */
+
+/** 门禁用来核对"失败时保留原名字"：置 1 后下一次生成抛错。 */
+export let mockTitleFail = false;
+export function setMockTitleFail(v: boolean) {
+  mockTitleFail = v;
+}
+/** 生成出来的标题按 20 字上限截断（与真机同一条规则），每次换一个以便看出"重新生成"生效了。 */
+let mockTitleSeq = 0;
+let mockTitleNext = '插件管理页的标题生成';
+export const mockTitleCfg = { maxChars: 20, source: 'both' as string };
+export const mockTitleSource = {
+  first: '给 Piggy 加一个根据消息生成会话标题的功能',
+  recent: ['再加一个右键菜单', '要支持重新生成'],
+};
+/** 会话 path → 生成出来的名字（真机是 pi 写进会话文件的 session_info）。 */
+const mockSessionNames = new Map<string, string>();
+
 /* ---------------- 插件页的 mock 状态（docs/04 §2.3） ----------------
    mock 的职责不是"像真的 pi 一样加载扩展"，而是让**门禁能驱动整条交互链**：
    点开关必须真的改状态、点安装必须真的产生一个任务与输出、点删除必须真的把行去掉。
@@ -280,6 +298,9 @@ const TAB_SCOPED = new Set([
 
 /** 门禁据此核对"点了开关之后后端收到了什么、界面有没有跟着变"。 */
 export const pluginOps: { name: string; args: Record<string, unknown> }[] = [];
+
+/** 门禁据此核对"点生成标题有没有真的发出命令"。 */
+export const sessionTitleOps: { name: string; args: Record<string, unknown> }[] = [];
 
 interface MockPluginRow {
   key: string; name: string; kind: string; kindLabel: string;
@@ -576,16 +597,22 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       })),
     ],
   }),
-  session_list: () => [
-    // streaming-fix：创建最早（180 分钟前）但刚被写过（2 分钟前）
-    // layout-wp1  ：创建更晚（40 分钟前）、写入也早
-    // 按 mtime 排会把 streaming-fix 顶到最前；按创建时间排应该是 layout-wp1 在前。
-    sessionMeta('/Users/mock/proj', 'streaming-fix', 2, '帮我看看这个项目的流式渲染管线', 180),
-    sessionMeta('/Users/mock/proj', 'layout-wp1', 40, '工作区布局 v1 落地', 40),
-    sessionMeta('/Users/mock/testpilot', 'nightly-audit', 3_000, '审核夜间构建', 5_000),
-  ],
+  // 生成标题后由 session_title_generate 往 mockSessionNames 里写一条覆盖，
+  // 这里读出来——"生成完侧栏就变"这条链在 mock 里也是真的。
+  session_list: () =>
+    [
+      // streaming-fix：创建最早（180 分钟前）但刚被写过（2 分钟前）
+      // layout-wp1  ：创建更晚（40 分钟前）、写入也早
+      // 按 mtime 排会把 streaming-fix 顶到最前；按创建时间排应该是 layout-wp1 在前。
+      sessionMeta('/Users/mock/proj', 'streaming-fix', 2, '帮我看看这个项目的流式渲染管线', 180),
+      sessionMeta('/Users/mock/proj', 'layout-wp1', 40, '工作区布局 v1 落地', 40),
+      sessionMeta('/Users/mock/testpilot', 'nightly-audit', 3_000, '审核夜间构建', 5_000),
+    ].map((m) => (mockSessionNames.has(m.path) ? { ...m, name: mockSessionNames.get(m.path)! } : m)),
   session_delete: () => {},
-  session_rename: () => {},
+  session_rename: (args) => {
+    // 重命名也走同一张覆盖表：不然门禁里"重命名之后列表变了"会与生成标题不一致
+    mockSessionNames.set(String(args.path ?? ''), String(args.name ?? ''));
+  },
   layout_load: () => {
     try {
       return JSON.parse(localStorage.getItem('pg.mockLayout') ?? '{}');
@@ -712,6 +739,70 @@ pub fn main() {
      auth.json 空着——这是本机 `~/.pi/agent` 的真实样子（用户用 cc-switch 那类工具写的）。
      以前这里只给 auth.json 的假条目，于是"配置页看不到自己真正的提供商"这件事
      在 mock 下永远复现不出来。 */
+  /* ---------------- 会话标题生成（docs/03 §2.16） ----------------
+     mock 里不调模型（那会联网），只把**往返形状**做出来：门禁据此核对
+     "右键菜单能唤出、点了会发命令、标题真的写回会话名、失败有提示"。
+
+     `titleFail` 是给门禁用的开关：设成 1 之后第一次调用抛错，
+     用来核对"失败时保留原来的名字、且用户看得见原因"。 */
+  session_title_source: (args) => {
+    const path = String(args.path ?? '');
+    return {
+      cwd: '/mock/project',
+      provider: 'mock-glm',
+      modelId: 'glm-5.3-flash',
+      firstMessage: mockTitleSource.first,
+      recentMessages: mockTitleSource.recent,
+      userMessageCount: mockTitleSource.recent.length + 1,
+      messageCount: 12,
+      currentName: mockSessionNames.get(path) ?? null,
+      strategy: mockTitleCfg.source,
+      maxChars: mockTitleCfg.maxChars,
+      promptChars: 180,
+    };
+  },
+  session_title_generate: (args) => {
+    const path = String(args.path ?? '');
+    const apply = args.apply !== false;
+    if (mockTitleFail) {
+      mockTitleFail = false;
+      throw new Error(
+        '模型没有给出可用的标题（原样输出：""）——已保留原来的名字',
+      );
+    }
+    const raw = `  「${mockTitleNext}」  `;
+    const title = mockTitleNext;
+    mockTitleSeq += 1;
+    mockTitleNext = mockTitleSeq % 2 === 0 ? '插件管理页的标题生成' : '会话标题：重新生成';
+    if (apply) {
+      // 真机是 pi 往会话文件里追加一条 session_info；mock 里用一层覆盖表体现，
+      // 由 session_list 读出来——这样"生成完重新 load 就能看到新名字"这条链是真的。
+      mockSessionNames.set(path, title);
+    }
+    return {
+      title,
+      raw,
+      provider: 'mock-glm',
+      modelId: 'glm-5.3-flash',
+      modelUsed: 'mock-glm/glm-5.3-flash',
+      elapsedMs: 812,
+      promptChars: 180,
+      applied: apply,
+      source: {
+        cwd: '/mock/project',
+        provider: 'mock-glm',
+        modelId: 'glm-5.3-flash',
+        firstMessage: mockTitleSource.first,
+        recentMessages: mockTitleSource.recent,
+        userMessageCount: 3,
+        messageCount: 12,
+        currentName: null,
+        strategy: 'both',
+        maxChars: 20,
+        promptChars: 180,
+      },
+    };
+  },
   /* ---------------- 插件页（docs/04 §2.3） ---------------- */
   plugin_overview: () => mockPluginOverview(),
   plugin_jobs: () => ({ jobs: [...mockPluginJobs.values()] }),
@@ -1172,6 +1263,7 @@ export async function mockInvoke<T>(name: string, args?: Record<string, unknown>
   // 提供商配置的调用记录（门禁用）。统一在入口记，将来加命令不会漏。
   if (name.startsWith('provider_')) providerOps.push({ name, args: { ...(args ?? {}) } });
   if (name.startsWith('plugin_')) pluginOps.push({ name, args: { ...(args ?? {}) } });
+  if (name.startsWith('session_title')) sessionTitleOps.push({ name, args: { ...(args ?? {}) } });
   if (name === 'pi_prompt' || name === 'pi_steer') {
     void mockPrompt(args ?? {});
     return true as T;

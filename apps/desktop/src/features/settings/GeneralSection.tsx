@@ -10,7 +10,7 @@
  * 设置值不等于结果（有回退、也可能被 PI_BIN 覆盖），必须让人看得见。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Input, Switch } from 'antd';
+import { Button, Input, Select, Switch } from 'antd';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 
@@ -42,6 +42,12 @@ export function GeneralSection() {
   const [delegation, setDelegation] = useState(false);
   const [sessionDir, setSessionDir] = useState<{ dir: string; isCustom: boolean; raw: string | null } | null>(null);
   const [dirInput, setDirInput] = useState('');
+  // 标题生成（docs/03 §2.16）
+  const [titleCfg, setTitleCfg] = useState<{ maxChars: number; source: string; model: string }>({
+    maxChars: 20,
+    source: 'both',
+    model: '',
+  });
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
@@ -54,11 +60,19 @@ export function GeneralSection() {
       idle_timeout_min: number;
       permission_mode?: string;
       subagent_delegation?: boolean;
+      title_max_chars?: number;
+      title_source?: string;
+      title_model?: string | null;
     }>('perf_config_load')
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
         setDelegation(c.subagent_delegation ?? false);
         if (c.permission_mode) setPerm(c.permission_mode);
+        setTitleCfg({
+          maxChars: c.title_max_chars ?? 20,
+          source: c.title_source ?? 'both',
+          model: c.title_model ?? '',
+        });
       })
       .catch(() => {});
     void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
@@ -77,6 +91,7 @@ export function GeneralSection() {
     permissionMode?: string;
     perf?: typeof perf;
     delegation?: boolean;
+    title?: { maxChars: number; source: string; model: string };
   }) => {
     if (busy) return;
     setBusy(true);
@@ -88,6 +103,9 @@ export function GeneralSection() {
         piPath: patch.piPath,
         // 不传 = 保持既有值（后端读-改-写，不会顺手抹掉别的字段）
         subagentDelegation: patch.delegation,
+        titleMaxChars: patch.title?.maxChars ?? titleCfg.maxChars,
+        titleSource: patch.title?.source ?? titleCfg.source,
+        titleModel: patch.title?.model ?? titleCfg.model,
       });
       // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
       if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
@@ -161,6 +179,58 @@ export function GeneralSection() {
         )}
       </div>
       <p className="pg-fg-dim pg-settings-note">已有会话不会移动，新会话写入新目录</p>
+
+      {/* 会话标题生成（docs/03 §2.16）：三个设置项各自对应一个真实的选择 */}
+      <div className="pg-settings-row" data-title-settings>
+        <span className="pg-settings-label">会话标题</span>
+        <span className="pg-fg-dim">最多</span>
+        <Input
+          type="number"
+          min={1}
+          max={200}
+          style={{ width: 84 }}
+          value={titleCfg.maxChars}
+          onChange={(e) =>
+            setTitleCfg((c) => ({ ...c, maxChars: Number(e.target.value) || 1 }))
+          }
+          onBlur={() => void save({ title: titleCfg })}
+          aria-label="标题字数上限"
+        />
+        <span className="pg-fg-dim">个字符</span>
+        <Select
+          style={{ width: 200 }}
+          value={titleCfg.source}
+          onChange={(v) => {
+            const next = { ...titleCfg, source: v };
+            setTitleCfg(next);
+            void save({ title: next });
+          }}
+          aria-label="标题取材"
+          options={[
+            { value: 'both', label: '第一条 + 最近几条' },
+            { value: 'first', label: '只看第一条消息' },
+            { value: 'recent', label: '只看最近几条' },
+          ]}
+        />
+      </div>
+      <div className="pg-settings-row">
+        <span className="pg-settings-label" />
+        <Input
+          style={{ maxWidth: 300 }}
+          placeholder="标题模型：留空 = 跟会话自己的模型"
+          value={titleCfg.model}
+          onChange={(e) => setTitleCfg((c) => ({ ...c, model: e.target.value }))}
+          onBlur={() => void save({ title: titleCfg })}
+          aria-label="标题模型"
+        />
+        <span className="pg-fg-dim">
+          填 <code>provider/modelId</code> 可指定一个更便宜的模型；留空则用该会话最后一次用过的模型
+        </span>
+      </div>
+      <p className="pg-fg-dim pg-settings-note">
+        生成时会新起一个一次性 pi 进程（<code>--no-session</code>），所以这段对话不会进会话转录。
+        入口：会话行右键菜单、行上的 ✎ 图标、命令面板的「生成会话标题」。
+      </p>
 
       <div className="pg-settings-row">
         <span className="pg-settings-label">pi 可执行文件</span>
