@@ -216,8 +216,71 @@ pub struct TabDescriptor {
 | `pi:ui-req:{tabId}` / `pi:ui-req-reply` | → / ← 前端 | Extension UI 子协议（02 §8） |
 | `tabs:changed` / `sessions:changed` | → 前端 | 注册表/列表变化 |
 | `fleet:event:{runId}` | → 前端 | 舰队状态 |
+| `plugin:start:{jobId}` / `plugin:log:{jobId}` / `plugin:done:{jobId}` | → 前端 | 插件任务的起跑/逐行输出/收尾（03 §2.15） |
 
 拆 `frame`（高频、可丢可并）与 `commit`（低频、必达）两通道是渲染分帧（04 §4）与背压策略（05 §3.3）的基础。
+
+### 2.15 `plugin/` — 插件管理（配置页的宿主半边）
+
+pi **没有**任何扩展管理 RPC：`modes/rpc/rpc-types.ts:20-74` 那 33 条命令里一条都不沾
+（未知类型直接 `Unknown command`），`pi list` 只列 settings 里的包且**没有 `--json`**。
+所以"pi 实际会加载哪些插件"只能自己还原，而能做的操作分两条路：
+
+| 操作 | 走哪条路 | 理由 |
+|---|---|---|
+| 盘点 | 读文件（`inventory.rs`） | 无命令可用；`pi list` 不含 `extensions[]` 与发现目录 |
+| 安装 / 删除 / 升级 | `pi install` / `remove` / `update`（`cli.rs`） | 涉及 npm/git 落盘，自己实现必然与 pi 分叉 |
+| 启用 / 停用 | 改 `settings.json`（`mod.rs`） | pi 没有非交互命令，唯一入口是 `pi config` 那个 TUI |
+| 登记 / 移除本地扩展路径 | 改 `settings.json` 的 `extensions[]` | 同上 |
+| 删除发现目录里的条目 | 移到回收站 | pi 对它们没有卸载命令 |
+
+**四个来源与加载优先级**（`core/package-manager.ts:176-192` 的 `resourcePrecedenceRank`）：
+
+| rank | 来源 | 基准目录 |
+|---|---|---|
+| 0 | 项目 `settings.json` 的 `extensions[]` | `<cwd>/.pi` |
+| 1 | 项目发现目录 `.pi/extensions/` | `<cwd>/.pi` |
+| 2 | 全局 `settings.json` 的 `extensions[]` | `~/.pi/agent` |
+| 3 | 全局发现目录 `~/.pi/agent/extensions/` | `~/.pi/agent` |
+| 4 | 包（`packages[]`，npm/git/本地） | 各作用域的 `npm/` `git/` |
+
+同路径被多个来源命中时保留 rank 最小的一条（`package-manager.ts:2585-2593`）。
+另有 `-e` 的 CLI 路径排在全部之前，以及 `builtInExtensions`（随 pi 发布、不可增删）。
+
+**发现规则**（`loader.ts:670-744`，只扫一层）：直接文件 `.ts`/`.js`；子目录有
+`package.json` 的 `pi.extensions[]` 按它加载；否则取 `index.ts`/`index.js`；都不满足就跳过。
+
+**"停用"在 pi 里是通配符，不是布尔开关**（`package-manager.ts:707-780`）：
+
+| 写法 | 含义 | 匹配 |
+|---|---|---|
+| `path` | 声明一个资源 | 路径 |
+| `!glob` | 排除 | minimatch（相对路径/文件名/绝对路径取或） |
+| `+path` | 强制包含（压过 `!`） | **精确**相等 |
+| `-path` | 强制排除（压过 `+`） | **精确**相等 |
+
+判定顺序固定 `!` → `+` → `-`（`isEnabledByOverrides`）。**每个来源只受自己那个作用域的
+通配符影响**：全局的 `-x` 管不到项目发现目录里的文件。
+包的启停另走 `PackageSource` 的对象形式：`autoload:false` + 清掉 `+` 规则 = 不加载。
+
+命令：
+
+| 命令 | 作用 |
+|---|---|
+| `plugin_overview` | 分组盘点到"哪一层哪条规则定的状态" |
+| `plugin_run` | 起 `pi install/remove/update` 任务，返回 `jobId`（输出走 `plugin:log:<id>`） |
+| `plugin_jobs` / `plugin_job_cancel` | 任务列表 / 取消（杀子进程） |
+| `plugin_set_enabled` | 启用停用（写通配符或 `autoload`） |
+| `plugin_add_path` / `plugin_remove_path` | 登记/移除 `extensions[]` 条目 |
+| `plugin_delete_discovered` | 把发现目录里的条目移到回收站 |
+| `plugin_check_source` | 安装前校验（最重要的一条：裸包名会被 pi 当本地路径） |
+| `plugin_project_trust` | 项目是否被 pi 信任（未信任时 `.pi/settings.json` 整份被忽略） |
+
+**生效时机**：已跑起来的 worker 持有旧扩展列表。`/reload` 只在交互式 TUI 里有，
+RPC 没有对应命令，所以改动对**新开的会话**生效——界面明示这一点。
+
+`builtins_generated.rs` 由 `scripts/gen-plugin-builtins.mjs` 从 pi 源码的
+`builtInExtensions` 生成（`--check` 可核对），因为内置扩展**没有运行时枚举接口**。
 
 ## 3. 前端侧模块（`src/`）
 

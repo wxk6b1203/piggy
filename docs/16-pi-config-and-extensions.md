@@ -614,6 +614,88 @@ before `ctx.env`), `ai/src/env-api-keys.ts:176-185` (ambient AWS as last resort)
 
 ---
 
+## 8. Extensions：四个来源、加载优先级与"停用"的真实语义
+
+这一节服务于 Piggy 的插件页（03 §2.15、04 §2.3）。**pi 没有任何扩展管理 RPC**：
+`modes/rpc/rpc-types.ts:20-74` 的 33 条命令里一条都不沾，未知类型直接 `Unknown command`
+（本机实测 `{"type":"extension.list"}` → `success:false, error:"Unknown command"`）。
+`pi list` 只列 settings 的 `packages[]`，**没有 `--json`**，也不含 `extensions[]` 与发现目录。
+
+### 8.1 加载优先级（`core/package-manager.ts:176-192`）
+
+| rank | 来源 | 基准目录 |
+|---|---|---|
+| 0 | 项目 `settings.json` 的 `extensions[]` | `<cwd>/.pi` |
+| 1 | 项目发现目录 `<cwd>/.pi/extensions/` | `<cwd>/.pi` |
+| 2 | 全局 `settings.json` 的 `extensions[]` | `<agentDir>` |
+| 3 | 全局发现目录 `<agentDir>/extensions/` | `<agentDir>` |
+| 4 | 包资源（`packages[]` 里的 npm/git/本地） | 各作用域的 `npm/`、`git/` |
+
+同路径去重保留 rank 最小的一条（`package-manager.ts:2585-2593`）。
+`-e/--extension` 的 CLI 路径排在全部之前。项目作用域**需要项目被信任**
+（`settings-manager.ts:410-413`：未信任时项目 settings 整份返回 `{}`；信任记录在
+`<agentDir>/trust.json`）。
+
+### 8.2 什么算一个扩展（`core/extensions/loader.ts:657-744`）
+
+只扫**一层**：直接文件 `.ts`/`.js`；子目录有 `package.json` 的 `pi.extensions[]` 就按它加载
+（声明的入口全不存在时回落到 `index.ts`/`index.js`）；否则取 `index.ts`/`index.js`；
+都不满足则跳过。模块必须 default 导出一个函数，否则
+`Extension does not export a valid factory function`。
+
+### 8.3 "停用"= 资源通配符，不是布尔开关（`package-manager.ts:707-780`）
+
+| 写法 | 含义 | 匹配方式 |
+|---|---|---|
+| `path` | 声明一个资源 | 路径 |
+| `!glob` | 排除 | minimatch（对 相对路径 / 文件名 / 绝对路径 取或） |
+| `+path` | 强制包含（压过 `!`） | **精确**相等 |
+| `-path` | 强制排除（压过 `+`） | **精确**相等 |
+
+判定顺序固定为 `!` → `+` → `-`（`isEnabledByOverrides`，`package-manager.ts:712-728`）。
+**每个来源只受自己那个作用域的规则影响**（`addAutoDiscoveredResources` 按作用域分别施加），
+所以全局的 `-x` 关不掉项目发现目录里的同名文件。
+
+包走另一套：`PackageSource` 的对象形式 `{source, autoload, extensions[], ...}`，
+`autoload:false` 时只有被 `+` 规则命中的入口才加载
+（`applyAutoloadDisabledPatterns`，`package-manager.ts:787-806`）。
+`pi config` 那个 TUI 写的就是这些通配符（`config-selector.ts:542` 的 `-${pattern}`）。
+
+### 8.4 落盘位置（`package-manager.ts:2025-2114`）
+
+| 来源 | 全局 | 项目 |
+|---|---|---|
+| npm | `<agentDir>/npm/node_modules/<pkg>` | `<cwd>/.pi/npm/node_modules/<pkg>` |
+| git | `<agentDir>/git/<host>/<owner>/<repo>` | `<cwd>/.pi/git/...` |
+| 本地 | 不复制，直接在 settings 里记一条（相对**设置文件所在目录**的路径） | 同左 |
+| `-e` 临时 | `<agentDir>/tmp/extensions/<prefix>/<sha256-8>` | — |
+
+实测：`pi install /Users/…/pi-guardrails` 写进全局 settings.json 的是
+`../../../../../Users/…/pi-guardrails`（相对 `~/.pi/agent`），不是绝对路径。
+
+### 8.5 内置扩展
+
+`src/extensions/index.ts` 的 `builtInExtensions` 目前只有 **`llama.cpp`**（`hidden: true`）。
+它作为 inline factory 被**无条件**加载（`resource-loader.ts:559-567`），
+`--no-extensions` 也关不掉（本机实测：`pi --mode rpc --no-extensions` 仍返回 `llama` 命令）。
+**没有运行时枚举接口**，所以 Piggy 在编译期从源码固化
+（`plugin/builtins_generated.rs`，生成脚本带 `--check`）。
+
+### 8.6 冲突是致命的
+
+两个扩展注册同名**工具**或 **flag** → 报错并 `process.exit(1)`，**所有模式**都是
+（`resource-loader.ts:1064-1100` + `main.ts:896-906`）。同名**命令**不致命，
+会被重命名成 `dup:1`/`dup:2`（`runner.ts:739-772`）。
+运行期优先级：工具与 flag 先注册者赢，快捷键**后**注册者赢。
+
+### 8.7 安全模型：没有
+
+扩展在 pi 进程内以用户权限运行，能读文件、拿凭据、看会话；没有沙箱、没有签名、
+没有安装前审批（`docs/security.md`、`docs/extensions.md:5`）。
+`-a/--approve` 只管**项目信任**（目录级，存 `~/.pi/agent/trust.json`），不针对单个扩展。
+
+---
+
 ## Uncertain
 
 - **`PI_CODING_AGENT_SESSION_DIR` has no `getSessionsDir()` consumer.** `getSessionsDir()` (`config.ts:572-574`) ignores the env var; the override is applied only in `main.ts:675-679`. Embedders that call `SessionManager.create(cwd, getSessionsDir())` directly will not honour it.

@@ -65,7 +65,7 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 | 2 | 会话管理：sessions/list.rs（扫描+watcher）+ 侧栏会话视图 + new/switch/rename/delete/export/fork/clone | G2 核心；依赖 WP1 侧栏 | ✅ |
 | 3 | 模型/Thinking + Composer 完整态：Cmd+L 选择器、thinking 循环、图片粘贴/拖拽、斜杠补全 | 小而高频，提前保持日常可用 | ✅ |
 | 4 | Monaco 基座：worker/CSP/懒加载/实例池/主题注册（风险 spike 前置） | M1 最大技术未知数，尽早排雷 | ✅ |
-| 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | ✅（schema 校验 M2；2026-09-24 重做为**提供商配置页**：DSH 版式左导航 + 提供商列表/编辑卡片/检测/获取可用模型，见 03 §2.12、04 §2.2） |
+| 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | ✅（schema 校验 M2；2026-09-24 重做为**提供商配置页**：DSH 版式左导航 + 提供商列表/编辑卡片/检测/获取可用模型，见 03 §2.12、04 §2.2；2026-09-24 增**插件页**：四个来源分组盘点 + 装/删/升级/启停 + 路径登记，见 03 §2.15、04 §2.3） |
 | 6 | 快捷键 v1 + 命令面板（CommandRegistry/KeymapService/Cmd+K） | 独立性强 | ✅（含改绑 UI + 冲突检测） |
 | 7 | 轨迹视图 v1（对话\|轨迹页签、事件流、context_edit 渲染） | 数据源现成 | ✅ |
 | 8 | 收尾验收：bash 面板、setStatus/setWidget 槽位、三条用户故事 E2E、rpc-demo 实测、G2 勾验 | 对齐 M1 五条验收 | ✅（bash=RPC pre 流，xterm M2；E2E=Playwright mock 冒烟，tauri-driver 实机 E2E M2） |

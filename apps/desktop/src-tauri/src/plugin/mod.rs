@@ -400,7 +400,7 @@ fn add_path_at(
             return Err("要登记到本项目，得先打开一个项目目录".into());
         }
         let dirs = ScopeDirs::new(agent_dir.to_path_buf(), cwd.unwrap_or_default());
-        let resolved = inventory::resolve_local(&path, &dirs.base_dir(scope));
+        let resolved = inventory::resolve_local(path, &dirs.base_dir(scope));
         if !resolved.exists() {
             return Err(format!("路径不存在：{}", resolved.display()));
         }

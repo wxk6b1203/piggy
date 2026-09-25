@@ -20,6 +20,7 @@ piggy/
 │     │  │  ├─ sessions/          # registry list tree
 │     │  │  ├─ config/            # auth models settings app（03 §2.10）
 │     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
+│     │  │  ├─ plugin/            # 插件盘点/安装升级/启停/路径登记（03 §2.15）
 │     │  │  ├─ fleet/
 │     │  │  └─ events.rs  shortcuts.rs
 │     │  ├─ tests/contract.rs     # 02 §9 契约测试（需 PATH 上的 pi）

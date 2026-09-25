@@ -325,6 +325,24 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     flex 行里被挤压的应当是输入框而不是按钮（`flex: none`）。
     同族：菜单出屏、被水印层挡住、胶囊高 0px —— 都是"DOM 对了但人看不到"。
 
+33. **"开关"这种控件会替用户脑补一套语义；当底层的语义不是布尔时，必须把依据写在旁边。**
+    pi 没有 `enabled` 字段，停用只有 `-`/`!` 通配符（松散扩展）与 `autoload:false`（包）
+    两条路，而且**每个来源只受自己那个作用域的通配符影响**（全局的 `-x` 管不到项目发现目录）。
+    插件页因此每行都带 `enabledBy`（展开可见），写的是"哪份 settings.json 里的哪条规则"。
+    只说"已停用"是同义反复——用户想知道的是**他该去改哪儿**。
+    同族：模型页的 `keySource`、pi 二进制来源、会话目录（规矩 30）。
+    反面教材就在这一页的开关上：一旦只给开关不给依据，"我明明开着 pi 却没加载"
+    和"我点了停用它还在跑"这两类问题都无从查起。
+
+34. **门禁的选择器写错，是不会报错的——它只会静默地什么都没选中，然后断言"没打开"。**
+    插件页的门禁一开始用 `.ant-modal-content` 找对话框。那是 **antd v5 的类名**；
+    6.6.5 换成了 rc-dialog 1.10 的结构，只生成 `-body` / `-footer`
+    （`@rc-component/dialog/es/Dialog/Content/Panel.js:59,101`），没有 `-content`。
+    于是弹窗明明开着、里面的按钮也点得到，断言却一路判"没打开"，还连带
+    编出一个"弹窗要 6 秒才出现"的假象（实测改对选择器后是 **101ms**）。
+    通则：**门禁里选择器选空时要当成失败，而不是当成"条件不成立"**；
+    能用 `[role=...]` 或 `data-*` 就别用组件库的内部类名（它们随版本改）。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -355,6 +373,13 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 提供商「检测」的 **自定义 headers** | pi 支持 `providers.<id>.headers`（含 `${ENV}` 模板），但配置页不编辑它们，检测请求也不带 —— 靠 header 鉴权的网关会得到 401。要支持得先决定**怎么把带密钥的 header 安全地送到前端以外的 Rust 侧**（现在的做法是前端只送 baseUrl/api/一次性 key） |
 | auth.json **没有原始 JSON 编辑器** | 有意为之：密钥只在 Rust 侧脱敏读出（`provider_list` 的 `keyMasked`），明文不进渲染进程。「高级」节只有 models.json / settings.json。要改密钥走「模型」页 |
 | 提供商页的 **模型能力标记** | pi 的模型定义还有 `cost`、`compat`、`thinkingLevelMap`、`inputLimits` 等界面没暴露的字段。现在靠"未知字段原样保留"保证不丢，但没有表单 —— 要改用「高级」节的原始 JSON 编辑器 |
+| **插件内置表随 pi 版本漂移** | `plugin/builtins_generated.rs` 是从 pi v0.87.1 源码的 `builtInExtensions` 生成的快照（目前只有 `llama.cpp`，且 `hidden: true`）。pi 升级后要重跑 `node apps/desktop/scripts/gen-plugin-builtins.mjs <pi 源码根>`（`--check` 可复核）。与提供商目录同类的**静默漂移** |
+| 插件页的 **Windows/Linux 真机** | 发现规则、路径解析、通配符判定、落点布局都有单测，且有一条**真机核对**（`cargo test --lib -- --ignored real_machine`：读出这台机器真实的 3 个 npm 包 + `pi-guardrails` 发现目录 + `llama.cpp` 内置）。但只在 macOS 上跑过；Windows 的盘符/`\` 路径与 git-bash 路径未验证 |
+| 插件**安装/升级没在真机上完整跑过一次** | 参数拼装（`plugin_cli_plan_matches_pi_flags`）与流式任务机制有单测 + 门禁（mock），但"点安装 → npm 真的从网上装下来"这一步要联网，没在自动化里跑。失败路径（网络/权限/依赖冲突）靠任务面板显示原始输出，**未实测各种失败文案** |
+| 插件**工具名冲突会让 pi 直接退出** | 两个扩展注册同名工具时 pi 在**所有模式**下 `exit(1)`（`resource-loader.ts:1064-1100` + `main.ts:896-906`），而且是启动即失败。界面**不检测**这种情况（要检测得先真的加载一遍扩展）。用户看到的现象是"新装的插件一装上 pi 就起不来了"，只能靠 `pi -ne` 或删插件自救。已记在 docs/03 §2.15 的来源说明里 |
+| 插件**没有权限模型** | pi 的扩展在进程内以用户权限运行，没有沙箱、没有签名、没有安装前审批（`docs/security.md`），`-a/--approve` 只管项目信任。安装对话框里有明确提示，但**这是提示不是防线** |
+| 插件页的 **skills/prompts/themes** | pi 的 `PackageSource` 可以过滤四类资源（`extensions`/`skills`/`prompts`/`themes`），本页只做 `extensions`。启停包时会保留其它三类的规则（不清掉），但它们没有界面 |
+| 插件**升级的版本比较** | 调 `pi update --extension <source>` 由 pi 自己判断（npm 比 `npm view`、git 比 `ls-remote`），界面**不显示"有新版"**（那需要额外的网络查询）。所以"升级"按钮是无条件可点的，点了才知道有没有更新。pinned 的源（`@1.0.0` / `@v1`）pi 明确不移动 |
 | pi 扩展 API 版本耦合 | `packages/piggy-bridge` 的类型对着 pi 0.87.1 校验；pi 升级后需重跑 `pnpm --filter piggy-bridge typecheck` 与 `pnpm test:contract`（C12–C14）。这是唯一会因 pi 升级而静默失效的接缝 |
 
 ## 5. 验收方式
