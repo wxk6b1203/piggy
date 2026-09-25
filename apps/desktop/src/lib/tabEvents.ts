@@ -1,5 +1,5 @@
 /**
- * per-tab 事件接线（docs/03 §2.12）：幂等挂载，tab 关闭时拆除。
+ * per-tab 事件接线（docs/03 §2.14）：幂等挂载，tab 关闭时拆除。
  * 帧：仅活动 tab 走实时块；commit：一律入 per-tab store；后台 settled → 未读徽标。
  */
 import { on, cmd } from '@/lib/ipc';

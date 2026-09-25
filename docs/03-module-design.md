@@ -171,11 +171,40 @@ pub struct TabDescriptor {
 为什么不用 `tauri-plugin-opener`（11 §2.1 原计划）：那个插件的权限面是"任意路径/任意 URL"，
 而这里需要的只是"用白名单应用打开一个已存在的目录/文件"。自建六个窄命令，权限面小得多（08 §6）。
 
-### 2.12 `fleet/` — 宿主侧舰队编排（详设见 06 §3）
+### 2.12 `provider/` — 提供商与模型配置（配置页的宿主半边）
+
+配置页「模型」一节的后端（前端见 04 §2.2）。**它不新增任何配置存储**：读写的都是
+`~/.pi/agent/auth.json` / `models.json`（+ 只读 `models-store.json`），写进 pi 的文件，
+终端里的 `pi` 立刻就能用。
+
+| 文件 | 职责 |
+|---|---|
+| `catalog_generated.rs` | **生成物**：pi v0.87.1 的提供商目录（41 条：id / 展示名 / 默认 baseUrl / 默认协议 / 协议全集 / 密钥环境变量）。由 `apps/desktop/scripts/gen-provider-catalog.mjs` 从 pi 源码生成（`types.ts` 的 `KnownProvider`、`providers/all.ts` 的顺序、`providers/*.ts` 的 `createProvider({...})`、`env-api-keys.ts` 的 envMap），`--check` 可复核 |
+| `catalog.rs` | 目录查询 + 列举端点规则（Anthropic 系 `{root}/v1/models`，其余 `{base}/models`，抄 DSH `discovery.ts::listingUrl`）+ 结构性测试 |
+| `overview.rs` | **总览合成**：`内置目录 ∪ auth.json ∪ models.json ∪ 环境变量` → 一行一个提供商，且每个值都带"从哪来"。密钥来源顺序 = pi 的解析顺序（`provider-composer.ts:347-375`：凭据 > models.json 的 apiKey > 环境变量） |
+| `edit.rs` | 写 `models.json` 的 `providers.<id>`：只动界面拥有的字段（name/baseUrl/api/apiKey/models），**未知字段原样保留**；模型行按 id 字段级合并；空串 = 删键（pi 的 schema 对这些键有 `minLength: 1`） |
+| `discover.rs` | 「获取可用模型 / 检测」：**本地模型目录优先**（`models-store.json`，不联网），否则真发一次 HTTP 问端点（`reqwest`，15s 超时，4MB 响应上限，`data[]`/`models{}` 两种形状，单行坏数据跳过） |
+| `mod.rs` | 六个 Tauri 命令：`provider_overview` / `provider_save` / `provider_set_key` / `provider_remove_key` / `provider_remove` / `provider_discover` |
+
+三条设计要点：
+
+1. **为什么目录要在编译期固化**：pi 的 RPC 没有"列出所有提供商"这条命令
+   （`rpc-types.ts` 的 RpcCommand 只有 set_model / cycle_model / get_available_models，
+   而 `getAvailableSnapshot()` 只返回**已配置可用**的模型）。配置页恰恰要展示
+   "还没配置的那些"，所以目录必须自带；而目录内容必须来自 pi 源码——抄错一个 id，
+   用户就会写出一份 pi 认不出的配置（本项目真实踩过：auth.json 的字段名写成 `api_key`）。
+2. **密钥来源必须显示**：同一个提供商可以同时存在三处密钥，只有一处生效。
+   `keySource` 字段就是给界面显示用的，另有 `hasInlineKey` 用来警告
+   "models.json 里那把当前不生效"。
+3. **TLS crypto provider 要自己装**：`reqwest` 用的是 rustls 的 no-provider 变体
+   （tauri 与 updater 都这么配），不先 `install_default()` 的话 `Client::builder().build()`
+   会**直接 panic**（不是返回错误）。`discover.rs` 里按 tauri 自己的做法先装一次。
+
+### 2.13 `fleet/` — 宿主侧舰队编排（详设见 06 §3）
 
 - FleetRun / FleetLane 状态机、模板库（scout/reviewer/worker…）、并行 spawn、steer/中断、结果收集（`get_last_assistant_text` + `agent_settled`）。
 
-### 2.13 `events.rs` — 前端事件总线
+### 2.14 `events.rs` — 前端事件总线
 
 统一事件命名（前端 `listen` 的全部通道在此枚举）：
 

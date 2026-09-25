@@ -211,3 +211,128 @@ fn open_path_open_rejects_bad_requests() {
     .unwrap_err();
     assert!(unregistered.contains("没有注册"), "{unregistered}");
 }
+
+/* ------------------- 提供商配置（docs/03 §2.12）------------------- */
+
+/// 构造一个只含 provider 配置的临时 agent 目录（**不碰真实 `~/.pi/agent`**）。
+fn agent_fixture(models: &str, auth: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("models.json"), models).unwrap();
+    fs::write(dir.path().join("auth.json"), auth).unwrap();
+    dir
+}
+
+/// 前端 `ProviderRow` 依赖的键集合。改 Rust 侧的字段名而没同步改前端 =
+/// 界面上一片空白，而浏览器测试用的 mock 是另写的一份，永远发现不了。
+/// 所以这里把键集合**逐个锁死**（多一个键可以，少一个/改名不行）。
+#[test]
+fn provider_overview_row_shape() {
+    let dir = agent_fixture(
+        r#"{"providers":{"my-relay":{
+            "name":"My Relay","baseUrl":"https://relay.example/v1","api":"openai-completions",
+            "apiKey":"sk-relay-1234567890",
+            "models":[{"id":"glm-4.6","name":"GLM 4.6","reasoning":true,"contextWindow":200000,"maxTokens":8192}]}}}"#,
+        "{}",
+    );
+    let out = piggy_lib::provider::overview::overview_at(dir.path()).expect("overview ok");
+
+    let rows = out["providers"].as_array().expect("providers 是数组");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    for key in [
+        "provider", "name", "declared", "baseUrl", "baseUrlSource", "api", "apiSource", "apis", "envVar",
+        "keySource", "keyMasked", "keyKind", "hasInlineKey", "models", "cachedModels", "isDefault",
+    ] {
+        assert!(row.get(key).is_some(), "provider 行缺少字段 {key}：{row}");
+    }
+    assert!(row["provider"].is_string());
+    assert!(row["name"].is_string());
+    assert!(row["declared"].is_boolean());
+    assert!(row["apis"].is_array());
+    assert!(row["models"].is_array());
+    assert!(row["cachedModels"].is_number());
+    assert!(row["isDefault"].is_boolean());
+    assert_eq!(row["keySource"], "models_json", "内联密钥的来源标错");
+    assert!(
+        row["keyMasked"].as_str().unwrap().starts_with("sk-rel"),
+        "掩码应保留前缀：{}",
+        row["keyMasked"]
+    );
+
+    // 目录 + 协议选项也要是前端能直接吃的形状
+    let catalog = out["catalog"].as_array().expect("catalog 是数组");
+    assert!(catalog.len() >= 40, "内置目录只有 {} 条", catalog.len());
+    for c in catalog.iter().take(5) {
+        for key in ["id", "name", "baseUrl", "api", "envVar", "apis"] {
+            assert!(c.get(key).is_some(), "目录项缺少 {key}：{c}");
+        }
+    }
+    let apis = out["apiOptions"].as_array().expect("apiOptions 是数组");
+    assert!(apis.iter().all(|a| a.is_string()), "apiOptions 必须是字符串数组");
+    assert!(out["paths"]["models"].is_string());
+    assert!(out["defaults"]["provider"].is_string());
+}
+
+/// 保存一个提供商：返回值是**存进去的那份**，且落盘内容与之一致。
+#[test]
+fn provider_save_returns_the_saved_entry() {
+    let dir = agent_fixture(r#"{"providers":{"keep":{"name":"Keep Me","custom":"untouched"}}}"#, "{}");
+    let saved = piggy_lib::provider::edit::save_at(
+        dir.path(),
+        "new-one",
+        &serde_json::json!({
+            "name": "New One",
+            "baseUrl": "https://new.example/v1",
+            "api": "openai-completions",
+            "models": [{ "id": "m1", "reasoning": true, "contextWindow": 128000 }]
+        }),
+    )
+    .expect("save ok");
+    assert_eq!(saved["name"], "New One");
+    assert_eq!(saved["models"][0]["id"], "m1");
+
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("models.json")).unwrap()).unwrap();
+    assert_eq!(on_disk["providers"]["new-one"]["name"], "New One");
+    assert_eq!(on_disk["providers"]["new-one"]["models"][0]["contextWindow"], 128000);
+    assert_eq!(
+        on_disk["providers"]["keep"]["custom"], "untouched",
+        "保存一个提供商把别的提供商动了"
+    );
+
+    // 空串 = 删键（pi 的 schema 对 name/baseUrl/api 都有 minLength: 1）
+    piggy_lib::provider::edit::save_at(
+        dir.path(),
+        "new-one",
+        &serde_json::json!({"name": "", "baseUrl": "", "api": ""}),
+    )
+    .unwrap();
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("models.json")).unwrap()).unwrap();
+    let entry = on_disk["providers"]["new-one"].as_object().unwrap();
+    assert!(
+        !entry.contains_key("name") && !entry.contains_key("baseUrl") && !entry.contains_key("api"),
+        "空串该删键，实际留下了：{entry:?}"
+    );
+}
+
+/// 非法请求要有明确的拒绝面（不是静默写坏文件）。
+#[test]
+fn provider_writes_reject_unusable_input() {
+    let dir = agent_fixture("{}", "{}");
+    let err = piggy_lib::provider::edit::save_at(dir.path(), "a/b", &serde_json::json!({"name":"x"}))
+        .expect_err("带斜杠的 id 应该被拒");
+    assert!(err.contains('/'), "{err}");
+    let err = piggy_lib::provider::edit::save_at(
+        dir.path(),
+        "ok",
+        &serde_json::json!({"models":[{"id":"m"},{"id":"m"}]}),
+    )
+    .expect_err("重复模型 id 应该被拒");
+    assert!(err.contains("重复"), "{err}");
+    // 被拒之后文件里**一个提供商都没有**（不许写一半：先校验再落盘）
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("models.json")).unwrap()).unwrap();
+    let written = on_disk["providers"].as_object().map(|o| o.len()).unwrap_or(0);
+    assert_eq!(written, 0, "被拒的请求还是写进去了：{on_disk}");
+}

@@ -1,7 +1,7 @@
 //! pi 配置文件读写（docs/03 §2.10）：auth.json / models.json / settings.json。
 //! 原则：原子写（tmp+rename）、写前 .bak 备份、未知字段保留、绝不存密钥到 Piggy 配置。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn expand_home(p: &str) -> PathBuf {
     if p == "~" {
@@ -54,14 +54,14 @@ pub fn session_dir_effective() -> Result<serde_json::Value, String> {
     }))
 }
 
-fn agent_dir() -> PathBuf {
+pub(crate) fn agent_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()
         .join(".pi/agent")
 }
 
-fn read_json(path: &PathBuf) -> Result<serde_json::Value, String> {
+pub(crate) fn read_json(path: &PathBuf) -> Result<serde_json::Value, String> {
     match std::fs::read_to_string(path) {
         Ok(raw) => {
             let t = raw.trim();
@@ -75,7 +75,7 @@ fn read_json(path: &PathBuf) -> Result<serde_json::Value, String> {
     }
 }
 
-fn write_json_atomic(path: &PathBuf, v: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn write_json_atomic(path: &PathBuf, v: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -139,7 +139,7 @@ fn describe_credential(entry: &serde_json::Value) -> (String, Option<String>) {
     ("unknown".to_string(), None)
 }
 
-fn mask_secret(s: &str) -> String {
+pub(crate) fn mask_secret(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= 10 {
         return "•".repeat(chars.len());
@@ -153,7 +153,12 @@ fn mask_secret(s: &str) -> String {
 /// auth-storage.ts:233-266）。这里曾写成 `api_key` —— pi 的校验器容忍未知字段所以不报错，
 /// 结果是**静默失效**：用户以为存好了，pi 却回落到环境变量、认证一直不过。
 pub fn auth_set_key(provider: &str, api_key: &str) -> Result<(), String> {
-    let path = agent_dir().join("auth.json");
+    auth_set_key_at(&agent_dir(), provider, api_key)
+}
+
+/// 同 [`auth_set_key`]，但显式指定 agent 目录（provider 模块与测试用）。
+pub(crate) fn auth_set_key_at(agent: &Path, provider: &str, api_key: &str) -> Result<(), String> {
+    let path = agent.join("auth.json");
     let mut v = read_json(&path)?;
     if !v.is_object() {
         v = serde_json::json!({});
@@ -164,7 +169,12 @@ pub fn auth_set_key(provider: &str, api_key: &str) -> Result<(), String> {
 
 /// 删除 provider 凭据（= logout）。
 pub fn auth_remove(provider: &str) -> Result<(), String> {
-    let path = agent_dir().join("auth.json");
+    auth_remove_at(&agent_dir(), provider)
+}
+
+/// 同 [`auth_remove`]，但显式指定 agent 目录。
+pub(crate) fn auth_remove_at(agent: &Path, provider: &str) -> Result<(), String> {
+    let path = agent.join("auth.json");
     let mut v = read_json(&path)?;
     if let Some(obj) = v.as_object_mut() {
         obj.remove(provider);
@@ -200,7 +210,7 @@ pub fn settings_write(v: &serde_json::Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod auth_shape_tests {
-    use super::describe_credential;
+    use super::{auth_remove_at, auth_set_key_at, describe_credential};
 
     /// 契约：auth.json 的 api_key 条目字段名是 `key`（pi auth/types.ts:17-20）。
     /// 写成 `api_key` 会被 pi 静默忽略——本项目真实踩过，故锁死。
@@ -241,5 +251,32 @@ mod auth_shape_tests {
         let (kind, masked) = describe_credential(&serde_json::json!("sk-bare"));
         assert_eq!(kind, "unknown");
         assert!(masked.is_none());
+    }
+
+    /// 写进 auth.json 的字段名必须是 `key`，且**不能**顺手把别的 provider 抹掉
+    /// （配置页的"设置密钥"走的就是这条路）。
+    #[test]
+    fn auth_write_round_trip_keeps_other_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path().to_path_buf();
+        auth_set_key_at(&agent, "a", "sk-a").unwrap();
+        auth_set_key_at(&agent, "b", "sk-b").unwrap();
+        let raw = std::fs::read_to_string(agent.join("auth.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["a"], serde_json::json!({"type":"api_key","key":"sk-a"}), "字段名必须是 key: {raw}");
+        assert_eq!(v["b"]["key"], "sk-b");
+        // 覆盖同一个 provider 只换值，不新增条目
+        auth_set_key_at(&agent, "a", "sk-a2").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 2);
+        assert_eq!(v["a"]["key"], "sk-a2");
+        auth_remove_at(&agent, "a").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("auth.json")).unwrap()).unwrap();
+        assert!(v.get("a").is_none());
+        assert_eq!(v["b"]["key"], "sk-b", "删 a 把 b 也删了");
+        // 备份文件也要有（原子写契约）
+        assert!(agent.join("auth.json.bak").exists());
     }
 }

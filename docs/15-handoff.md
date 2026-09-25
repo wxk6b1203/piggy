@@ -7,14 +7,14 @@
 
 ## 1. 当前状态
 
-DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已完成并验证。
+DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + **提供商配置页（本轮）** 已完成并验证。
 
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **292/292**：apps/desktop **225**（25 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、**22 条「打开方式」**、**6 条 Monaco 池策略**、**2 条 IPC 命令名契约**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
-| `cargo test` | **158 + 3 + 8** + fixtures 全绿（fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条含**委派开关的档位组合/缺失 fail-closed**、扩展资源定位 4 条、**「打开方式」64 条**：目录表自检 / 三平台定位链（脚本化假宿主）/ 观察窗四态真进程 / macOS 真机解析与图标提取 / 文件关联真机查询（20 个处理器、默认项唯一）/ 路径校验与拒绝面 / base64 向量） |
-| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 8 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / **图标真的是 128×128 PNG data URL** / 文件关联 `{id,name,default,icon}` 形状（默认项恰好一个）/ 目录也能查关联 / 拒绝面 |
+| `vitest` | **320/320**：apps/desktop **253**（28 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
+| `cargo test` | **197 + 3 + 11**（另有 2 条 `#[ignore]` 的真机核对：`real_home` / `real_network`）全绿：fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条（含**委派开关的档位组合/缺失 fail-closed**）、扩展资源定位 4 条、「打开方式」64 条（目录表自检 / 三平台定位链 / 观察窗四态真进程 / macOS 真机解析与图标提取 / 文件关联真机查询 / 路径校验与拒绝面 / base64 向量）、**提供商 40 条**（生成目录的自检 + 手写金标 / 总览合成的来源与优先级 / models.json 增删改与未知字段保留 / **真 socket 的列举请求与解析**（含 401、非 JSON、超大、单行坏数据）/ auth.json 写入往返） |
+| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **11** 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
@@ -23,6 +23,9 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** 已
 | `ui:startup` 第 8 段 | **「打开方式」分裂胶囊**：会话头部右侧**位置对**（`.pg-session-head-ops` 内、置灰占位已被替掉、「更多」占位还在）+ **够显眼**（26px 高、1px 边框、≥70px 宽、`elementFromPoint` 可点）+ 菜单**向下弹且不出屏** + 5 项里真图标与通用图标**两条渲染路径都出现** + 点 GoLand → **送给宿主的是 `{id:'goland', path:<会话 cwd>}`** + 选择落 localStorage + 重载后冷启动读回 |
 | `ui:startup` 第 9 段 | **「打开方式」文件那一档**（预览头部，真浏览器）：胶囊在文档动作位的**最后一格**、compact 24px、有边框、`elementFromPoint` 可点、主按钮名字 = **系统默认应用**（Typora.app）且真图标渲染出来 → 点主按钮送出 `{path:<预览的那个文件>, action:'open', application:'/Applications/Typora.app'}` → 菜单 2 个处理器 + 「显示文件位置」（真图标与通用方块两条路径都出现）→ 点它送出 `{action:'reveal', application:null}`。**顺带锁住语言判定**：`lib.rs` 的语言条必须是 `rust`、token 类 ≥2（预览头部原来那张 16 项本地表认不出 `.rs`） |
 | `ui:startup` 第 10 段 | **Monaco 实例池**（真浏览器）：连开 8 个预览标签 → 池里活着 ≤ 水位（实测恒 6）、界面上零「已达上限」提示、当前预览有实例且语言条 `rust` → 切回第 1 个（多半已被回收）→ 编辑器**重建**、token 类 ≥2、首行内容正确 → 全程堆增长 ≤40MB。（旧行为：第 7 个标签直接显示「请关闭部分预览标签」，且关掉也不恢复） |
+| `ui:startup` 第 11 段 | **提供商配置页**（真浏览器 + mock IPC）：左导航 `模型/通用设置/高级` → 列表两行（自定义/默认标记 + 状态点 + **密钥来源写在 meta 里**）→ 点「编辑」出卡片（密钥框提示"已配置"、自定义设置默认折叠）→ 点「检测」**真发 `provider_discover`**（带 provider/baseUrl/api，密钥留空=用已存的那把）且界面写出"连上了哪个地址、列了几个模型" → 「获取可用模型」把清单拉进对话框（已在表里的禁用）→ 勾一个「添加所选」进模型表 → 输密钥点「保存」→ **先 `provider_save` 再 `provider_set_key`**、存储位置跟随现状（这一行本来在 models.json 就还写 models.json）、列表 meta 刷新 + "已保存 XX" 回执 → 从目录添加（下拉里已配置的不出现、地址预填目录默认值、保存后进列表） |
+| 真机 `~/.pi/agent` 跑总览 | `cargo test --lib -- --ignored real_home --nocapture` 打印出这台机器上配置页会显示的两行：`DeepSeek (cc-switch-deep-seek)` / `Zhipu GLM (cc-switch-zhipu-glm)`，**密钥来源都是 `models_json`（内联）**、默认项是后者、内置目录 41 条 10 种协议。这正是这个功能存在的理由：本机 auth.json 是空的，**旧配置页因此什么也不显示** |
+| 真机网络核对 | `cargo test --lib -- --ignored real_network --nocapture`：不带密钥打 `https://api.deepseek.com/models` → 拿到 `HTTP 401（API 密钥可能不对或没有权限）：Authentication Fails (governor)`。证明 DNS + TLS + 真 HTTP + 状态码映射 + 端点原文这一整条链路是通的（刻意不用用户的密钥） |
 | 真机人工确认 | 「打开方式」在 `tauri dev` 窗口里**由用户手动点过，应用真的弹出来了**（2026-09-24）。这是唯一能证明「操作系统真的把窗口开出来」的一步 —— agent 侧没有窗口驱动能力，也没法在不打扰用户的前提下自己点一次 |
 | 真实 pi 0.87.1 加载 piggy-bridge | `/piggy:status` 回 `ok:true` + 真实 fleet/asyncSnapshot；空配置目录回 `ok:false` 降级（C12/C13） |
 | 真实 pi 0.87.1 跑 Fleet DAG | 两 lane：a settle → b 就绪 → `{upstream}` 注入真实输出 → b 回 BRAVO-OK → run Done（C14） |
@@ -292,6 +295,16 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     找不到调用点的表要按"未接线"对待。同族的有：`needsLoad`、`seti-icons`、主题令牌表。
     （反证：只把 `.rs` 改回本地表行为 → 门禁第 9 段立刻报"lib.rs 的语言条是 plaintext，应为 rust"。）
 
+30. **同一个东西能存在三处时，界面必须显示"哪一处生效"。**
+    pi 解析 API 密钥的优先级是 `auth.json` 凭据 > `models.json` 的 `apiKey` > 环境变量
+    （`provider-composer.ts:347-375`）。而本机真实形态就是"两处都有"：cc-switch 那类工具把密钥
+    写进 models.json，auth.json 是空的。如果配置页只写"已配置"，用户改了 models.json 里那把旧 key
+    会以为生效了 —— 实际一直是 auth.json 里那把在赢。**这类"改错了也不知道"比报错难查十倍。**
+    所以 `provider_overview` 的每一行都带 `keySource`/`hasInlineKey`，列表与编辑卡片都显示来源，
+    两处都有时给黄条警告 + 一键"从 models.json 删掉它"（门禁第 11 段核对 meta 里真的有来源）。
+    通则：**凡是"有默认值 / 有回退 / 有多来源"的配置项，界面上都要能看出当前生效的是哪一个**
+    （同族：pi 二进制来源、会话目录、API 地址来自目录还是 models.json）。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -315,6 +328,12 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`（`SpawnArgs.envs` 已具备透传能力，只差设置项）。要支持需加设置项（docs/17 §2.3） |
 | `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |
+| **提供商目录随 pi 版本漂移** | `provider/catalog_generated.rs` 是从 pi v0.87.1 源码生成的快照。pi 升级后必须重跑 `node apps/desktop/scripts/gen-provider-catalog.mjs <pi 源码根>`（可用 `--check` 复核）。不重跑不会报错，只会"少几个新提供商"或"某个 baseUrl 过时"—— 属于**静默漂移**，所以这一行留在这里当提醒 |
+| 提供商「检测」的 **Windows/Linux 真机** | 列举端点的 URL/鉴权头规则有单测（含 anthropic 系的 `/v1/models` 与 `x-api-key`）、真 socket 集成测试、以及一次**真机网络**核对（`cargo test --lib -- --ignored real_network`：不带密钥打 `https://api.deepseek.com/models`，拿到 401 + 端点原文"Authentication Fails"）。但只在 macOS 上跑过；代理/企业证书等环境差异未验证 |
+| 提供商「检测」的 **非标准鉴权协议** | Azure（`api-key` 头 + `api-version` 查询）、Codex（OAuth）这类**不猜**：`discovery.ts` 的 DSH 版本也把它们排除在外（"猜错会把鉴权失败报成'这家没有模型'"）。这些提供商仍可保存配置，只是「获取可用模型」会返回明确的"不支持列举" |
+| 提供商「检测」的 **自定义 headers** | pi 支持 `providers.<id>.headers`（含 `${ENV}` 模板），但配置页不编辑它们，检测请求也不带 —— 靠 header 鉴权的网关会得到 401。要支持得先决定**怎么把带密钥的 header 安全地送到前端以外的 Rust 侧**（现在的做法是前端只送 baseUrl/api/一次性 key） |
+| auth.json **没有原始 JSON 编辑器** | 有意为之：密钥只在 Rust 侧脱敏读出（`provider_list` 的 `keyMasked`），明文不进渲染进程。「高级」节只有 models.json / settings.json。要改密钥走「模型」页 |
+| 提供商页的 **模型能力标记** | pi 的模型定义还有 `cost`、`compat`、`thinkingLevelMap`、`inputLimits` 等界面没暴露的字段。现在靠"未知字段原样保留"保证不丢，但没有表单 —— 要改用「高级」节的原始 JSON 编辑器 |
 | pi 扩展 API 版本耦合 | `packages/piggy-bridge` 的类型对着 pi 0.87.1 校验；pi 升级后需重跑 `pnpm --filter piggy-bridge typecheck` 与 `pnpm test:contract`（C12–C14）。这是唯一会因 pi 升级而静默失效的接缝 |
 
 ## 5. 验收方式

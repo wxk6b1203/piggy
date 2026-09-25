@@ -18,7 +18,8 @@ piggy/
 │     │  │  ├─ commands/          # IPC 薄层（pi_*.rs session_*.rs config_*.rs fleet_*.rs app_*.rs）
 │     │  │  ├─ pi/                # discovery process codec client protocol coalesce
 │     │  │  ├─ sessions/          # registry list tree
-│     │  │  ├─ config/            # auth models settings app
+│     │  │  ├─ config/            # auth models settings app（03 §2.10）
+│     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
 │     │  │  ├─ fleet/
 │     │  │  └─ events.rs  shortcuts.rs
 │     │  ├─ tests/contract.rs     # 02 §9 契约测试（需 PATH 上的 pi）
@@ -56,6 +57,12 @@ piggy/
 
 - 前端运行时依赖白名单：`react` `react-dom` `antd`（≥6.6，React 19 原生支持，无需 v5-patch 包）`@ant-design/icons`（v6，与 antd 配套） `zustand` `immer` `@tanstack/react-virtual` `@tauri-apps/api` `@tauri-apps/plugin-*` `unified/remark/rehype 系` `shiki` `monaco-editor`（ESM 按需 + workers）`@monaco-editor/react` `@vscode/codicons` `@xterm/xterm` + addons `react-resizable-panels` `dockview` `zod`。CodeMirror 全家不在白名单；Monaco 禁全语言打包（lint 强制，10 §2.2）；antd 遵循 04 §6（VS Code 形态覆写、mask blur 关闭、禁用 Splitter）。新增依赖 = PR 说明 + 体积/性能影响评估；
 - Rust 依赖最小化：tokio、serde/serde_json、tauri、notify、sysinfo、portable-pty（M4）；不引重型框架；
+- `reqwest` + `rustls` 是**例外但为零成本**：两者早已在依赖树里（`tauri-plugin-updater` 用它们），
+  加为直接依赖只是让"检测 / 获取可用模型"能真发一次 HTTP（03 §2.12）。features 必须与 updater
+  保持一致（`default-features = false, features = ["json","stream"]` + `rustls/ring`）：
+  换成 reqwest 的默认 features 会把 rustls 的 aws-lc-rs 供应商拽进来（镜像上取不到，且平白多编一份 TLS 栈）。
+  注意 reqwest 走的是 rustls 的 **no-provider** 变体 —— 建 Client 前必须自己
+  `install_default()`，否则**直接 panic**（03 §2.12 要点 3）；
 - **零遥测 SDK、零分析 SDK**（00 隐私立场；崩溃遥测若未来引入须 opt-in 并单列 ADR）。
 
 ## 4. 代码规范与质量门（PR 阻断项）

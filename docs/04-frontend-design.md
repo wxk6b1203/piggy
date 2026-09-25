@@ -136,13 +136,45 @@
  │   │       │   └─ <OpenPathAction/>  头部最后一格：「用外部应用打开**这个文件**」
  │   │       │                        （系统文件关联；与目录那档共用 <OpenTargetButton>）
  │   │       ├─ <DiffPreview/>       预览 tab（Monaco DiffEditor）
- │   │       ├─ <SettingsTab/> <KeymapTab/> <FleetTab/> <LoginTerminalTab/>（M4）
+ │   │       ├─ <SettingsTab/>       设置工具 tab：**左侧竖排导航 + 右侧内容**（DSH 设置弹窗
+ │   │       │                       的版式），三节：模型 / 通用设置 / 高级（§2.2）
+ │   │       ├─ <KeymapTab/> <FleetTab/> <LoginTerminalTab/>（M4）
  │   ├─ <ViewRail side="right"/> + <RightBarHost/>   右侧栏视图宿主（§1.6）
  │   ├─ <PanelHost/>                 底部面板：终端（xterm）/输出（§1.7）
  │   └─ <StatusBar/>                 状态栏（antd-free）
  ├─ <DialogRouter/>                  Extension UI 弹窗（antd，02 §8）
  └─ <CommandPalette/>                自研
 ```
+
+### 2.2 设置页（SettingsTab）
+
+版式抄 DSH 的设置弹窗：**左侧竖排导航 + 右侧内容列**（DSH `ui-settings` 的 shell）。
+横向胶囊在条目变多以后会挤成一团，而这一页的条目只会继续长（插件、Agent 预设…）。
+
+三节，对应"配置 pi 的三层需要"：
+
+| 节 | 内容 | 组件 |
+|---|---|---|
+| **模型**（默认） | 提供商列表（名字 + 状态点 + 编辑/删除）→ 一比一对应的编辑卡片 → 添加流程。卡片内：API 密钥（主字段）+「检测」+ 折叠的「自定义设置」（API 地址 / API 协议 / 模型目录 / 获取可用模型） | `ProvidersSection` + `ProviderEditor` + `ModelRows` + `FetchModelsDialog` |
+| **通用设置** | 会话目录、pi 可执行文件、新会话默认权限、并发上限、子代理委派 | `GeneralSection` |
+| **高级** | `models.json` / `settings.json` 的原始 JSON 编辑器（表单覆盖不到的字段的逃生口） | `AdvancedSection` |
+
+「模型」一节对齐 DSH `ui-settings-models`（`ModelsSection` / `ProviderEditor` / `ModelListEditor`），
+并针对 pi 的实际情况做了三处**有意的差异**：
+
+1. **密钥来源写在脸上**。pi 的密钥有三级来源且只有一级生效
+   （`provider-composer.ts:347-375`：auth.json 凭据 > models.json 的 `apiKey` > 环境变量）。
+   本机真实形态就同时存在（cc-switch 那类工具把密钥写进 models.json，auth.json 是空的），
+   所以列表行与编辑卡片都显示"当前生效的密钥来自：X"，且当两处都有时给出黄色警告 +
+   一键"从 models.json 删掉它"。只写"已配置"= 用户改了没生效也查不出来。
+2. **状态点只有两种**（有密钥 / 没密钥），与 DSH 的 credential dot 同义；DSH 的"首跑姿态"
+   （一个提供商都没配时把添加卡直接展开）照搬。
+3. **检测/获取可用模型优先读 pi 的本地模型目录**（`models-store.json`，`pi update` 维护），
+   目录里没有才真发一次 HTTP。这与 DSH `discovery.ts` 的规则一致（"目录里有的就不上网问"），
+   但数据源搬到了 pi 的缓存上。结果里带 `source`/`url`，界面写清楚"这条是目录里的还是问出来的"。
+
+数据只有一个来源：`provider_overview`（03 §2.12）。任何写操作之后**重新拉取**，
+前端不做本地合并——否则界面显示的和 pi 真正读到的会分叉。
 
 ### 2.1 SessionWorkspace（会话 tab 内部）
 

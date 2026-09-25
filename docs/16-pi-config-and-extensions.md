@@ -593,6 +593,25 @@ before `ctx.env`), `ai/src/env-api-keys.ts:176-185` (ambient AWS as last resort)
 `RuntimeCredentials` overlays a non-persistent `--api-key` on top of the store
 (`core/runtime-credentials.ts:26-27  return override ? { type: "api_key", key: override } : this.store.read(providerId, options);`).
 
+### 7.5 配置页要用的两条"pi 不给"的事实（2026-09-24 复核）
+
+这两条决定了 Piggy 的提供商目录必须是**自带**的（实现见 03 §2.12）：
+
+1. **RPC 没有"列出所有提供商"这条命令。** `packages/coding-agent/src/modes/rpc/rpc-types.ts`
+   的 `RpcCommand` 联合里与模型相关的只有 `set_model` / `cycle_model` / `get_available_models`；
+   而最后一个走的是 `session.modelRuntime.getAvailableSnapshot()`（`rpc-mode.ts:490-493`），
+   `model-runtime.ts:423-425` 返回的是 `this.snapshot.available` —— **只含已配置可用的模型**。
+   所以"还没配置的提供商"从 RPC 拿不到。
+2. **CLI 也只列可用的。** 本机实测：`pi --list-models` 只打印出了用户 models.json 里那两个
+   自定义路由下的 3 个模型（`cc-switch-deep-seek/deepseek-flash`、`cc-switch-zhipu-glm/glm-5.3`…），
+   pi 内置目录里那 40 来家一个都没出现。`pi auth check` 则必须显式给 `--provider`/`--model`，
+   同样不能枚举。
+
+补充一条**可用的**本地数据源：`models-store.json`（`core/models-store.ts:52` 默认
+`join(getAgentDir(), "models-store.json")`，形状 `{ "<provider>": { models: Model[] } }`，
+由 `pi update` 维护的远端目录缓存）。Piggy 的「获取可用模型」优先读它 —— 不联网就能拿到
+模型 id / 名字 / 上下文窗口 / 输出上限，这正是 DSH `discovery.ts` "目录里有的就不上网问"的语义。
+
 ---
 
 ## Uncertain

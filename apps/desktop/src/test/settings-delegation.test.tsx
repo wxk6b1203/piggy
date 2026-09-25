@@ -66,14 +66,14 @@ afterEach(async () => {
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 
-/** 设置页有四个 tab，委派开关在「运行」里；默认停在 Provider 认证。 */
+/** 设置页左侧导航的第一项是「模型」，委派开关在「通用设置」里。 */
 async function mountRuntime() {
   mountDom(<SettingsTab />);
   await flush();
-  const btn = [...domContainer().querySelectorAll<HTMLButtonElement>('.pg-settings-tabs button')].find(
-    (b) => b.textContent === '运行',
+  const btn = [...domContainer().querySelectorAll<HTMLButtonElement>('.pg-settings-navitem')].find(
+    (b) => b.textContent === '通用设置',
   );
-  if (!btn) throw new Error('找不到「运行」标签页');
+  if (!btn) throw new Error('找不到「通用设置」导航项');
   await act(async () => {
     btn.click();
     await new Promise((r) => setTimeout(r, 30));

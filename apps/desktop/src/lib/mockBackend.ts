@@ -50,6 +50,97 @@ export const openCalls: { id: string; path: string }[] = [];
 /** `open_path_open` 的调用记录（门禁据此核对"默认应用 / 指定应用 / 显示位置"三条路）。 */
 export const pathCalls: { path: string; action: string; application: string | null }[] = [];
 
+/**
+ * 所有 `provider_*` 调用的记录（门禁据此核对"检测送出了什么""保存先写配置还是先写密钥"）。
+ * 在 `mockInvoke` 里**统一**记，避免将来加了新命令却忘了记 —— 那样门禁会静默变成空转。
+ */
+export const providerOps: { name: string; args: Record<string, unknown> }[] = [];
+
+/** 提供商配置的 mock 副本：形状与 `provider_overview` 的一行一致，写入要真的记住。 */
+interface MockProvider {
+  provider: string;
+  name?: string;
+  baseUrl?: string;
+  api?: string;
+  keySource?: string;
+  keyMasked?: string | null;
+  hasInlineKey?: boolean;
+  models?: { id: string; name?: string; reasoning?: boolean; contextWindow?: number; maxTokens?: number }[];
+}
+const mockProviders: Record<string, MockProvider> = {
+  'cc-switch-zhipu-glm': {
+    provider: 'cc-switch-zhipu-glm',
+    name: 'Zhipu GLM',
+    baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+    api: 'anthropic-messages',
+    keySource: 'models_json',
+    keyMasked: 'sk-mock…glm1',
+    hasInlineKey: true,
+    models: [
+      { id: 'glm-5.3', name: 'glm-5.3', reasoning: true, contextWindow: 1000000, maxTokens: 128000 },
+      { id: 'glm-5.3-flash', name: 'glm-5.3-flash', reasoning: true, contextWindow: 1000000, maxTokens: 128000 },
+    ],
+  },
+  'cc-switch-deep-seek': {
+    provider: 'cc-switch-deep-seek',
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    api: 'openai-completions',
+    keySource: 'models_json',
+    keyMasked: 'sk-mock…dsk1',
+    hasInlineKey: true,
+    models: [
+      { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', reasoning: true, contextWindow: 1000000, maxTokens: 384000 },
+    ],
+  },
+};
+
+/** 目录子集（真实目录有 41 条，由 `scripts/gen-provider-catalog.mjs` 从 pi 源码生成）。 */
+const CATALOG_SUBSET = [
+  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', api: 'openai-completions', envVar: 'DEEPSEEK_API_KEY', apis: ['openai-completions'] },
+  { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', envVar: 'ANTHROPIC_API_KEY', apis: ['anthropic-messages'] },
+  { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses', envVar: 'OPENAI_API_KEY', apis: ['openai-responses'] },
+  { id: 'google', name: 'Google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', api: 'google-generative-ai', envVar: 'GEMINI_API_KEY', apis: ['google-generative-ai'] },
+  { id: 'zai', name: 'Z.AI', baseUrl: 'https://api.z.ai/api/coding/paas/v4', api: 'openai-completions', envVar: 'ZAI_API_KEY', apis: ['openai-completions'] },
+  { id: 'moonshotai', name: 'Moonshot AI', baseUrl: 'https://api.moonshot.ai/v1', api: 'openai-completions', envVar: 'MOONSHOT_API_KEY', apis: ['openai-completions'] },
+  { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', api: 'openai-completions', envVar: 'OPENROUTER_API_KEY', apis: ['anthropic-messages', 'openai-completions'] },
+  { id: 'github-copilot', name: 'GitHub Copilot', baseUrl: 'https://api.individual.githubcopilot.com', api: '', envVar: 'COPILOT_GITHUB_TOKEN', apis: [] },
+];
+
+/** 把 mock 的写入投影成 `provider_overview` 的行（顺序与 Rust 一致：目录项在前）。 */
+function providerRows() {
+  const order = CATALOG_SUBSET.map((c) => c.id);
+  return Object.values(mockProviders)
+    .map((p) => {
+      const cat = CATALOG_SUBSET.find((c) => c.id === p.provider);
+      return {
+        provider: p.provider,
+        name: p.name ?? cat?.name ?? p.provider,
+        declared: !!cat,
+        baseUrl: p.baseUrl ?? cat?.baseUrl ?? '',
+        baseUrlSource: p.baseUrl ? 'models_json' : cat ? 'catalog' : 'none',
+        api: p.api ?? cat?.api ?? '',
+        apiSource: p.api ? 'models_json' : cat ? 'catalog' : 'none',
+        apis: cat?.apis ?? [],
+        envVar: cat?.envVar ?? '',
+        keySource: p.keySource ?? 'none',
+        keyMasked: p.keyMasked ?? null,
+        keyKind: p.keySource === 'none' ? '' : 'api_key',
+        hasInlineKey: !!p.hasInlineKey,
+        models: p.models ?? [],
+        cachedModels: 0,
+        // 与 defaults.provider 对齐（真机来自 settings.json 的 defaultProvider）
+        isDefault: p.provider === 'cc-switch-zhipu-glm',
+      };
+    })
+    .sort((a, b) => {
+      const ia = order.indexOf(a.provider);
+      const ib = order.indexOf(b.provider);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+}
+
+
 /** 1×1 透明 PNG：把"图标真的走 <img> 渲染"这条路径在 mock 下也走通。 */
 const MOCK_APP_ICON =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -469,6 +560,99 @@ pub fn main() {
   }),
   auth_set_key: () => null,
   auth_remove: () => null,
+  /* ---- 提供商配置（docs/04 §3.4） ----
+     mock 的形状**照抄真机**：两台 models.json 自定义路由（内联密钥，其中一个带模型目录），
+     auth.json 空着——这是本机 `~/.pi/agent` 的真实样子（用户用 cc-switch 那类工具写的）。
+     以前这里只给 auth.json 的假条目，于是"配置页看不到自己真正的提供商"这件事
+     在 mock 下永远复现不出来。 */
+  provider_overview: () => ({
+    providers: providerRows(),
+    catalog: CATALOG_SUBSET,
+    apiOptions: [
+      'openai-completions',
+      'mistral-conversations',
+      'openai-responses',
+      'azure-openai-responses',
+      'openai-codex-responses',
+      'anthropic-messages',
+      'bedrock-converse-stream',
+      'google-generative-ai',
+      'google-vertex',
+      'pi-messages',
+    ],
+    defaults: { provider: 'cc-switch-zhipu-glm', model: 'glm-5.3-flash' },
+    paths: {
+      agent: '/Users/mock/.pi/agent',
+      auth: '/Users/mock/.pi/agent/auth.json',
+      models: '/Users/mock/.pi/agent/models.json',
+      settings: '/Users/mock/.pi/agent/settings.json',
+    },
+  }),
+  provider_save: (a) => {
+    const id = String(a.provider);
+    const patch = (a.patch ?? {}) as Record<string, unknown>;
+    const cur = mockProviders[id] ?? { provider: id, keySource: 'none', hasInlineKey: false };
+    const next = { ...cur };
+    // 空串 = 删键（回落到 pi 目录默认值），与 Rust provider_save 的语义一致
+    for (const key of ['name', 'baseUrl', 'api'] as const) {
+      if (key in patch) {
+        const v = String(patch[key] ?? '').trim();
+        if (v) next[key] = v;
+        else delete next[key];
+      }
+    }
+    if ('models' in patch) {
+      const rows = (patch.models ?? []) as { id: string }[];
+      if (rows.length) next.models = rows as never;
+      else delete next.models;
+    }
+    mockProviders[id] = next;
+    return next;
+  },
+  provider_set_key: (a) => {
+    const id = String(a.provider);
+    const prev = mockProviders[id] ?? { provider: id };
+    mockProviders[id] = {
+      ...prev,
+      keySource: a.store === 'models' ? 'models_json' : 'auth',
+      keyMasked: 'sk-mock…cdef',
+      hasInlineKey: a.store === 'models' ? true : (prev.hasInlineKey ?? false),
+    };
+    return null;
+  },
+  provider_remove_key: (a) => {
+    const id = String(a.provider);
+    const cur = mockProviders[id];
+    if (cur) {
+      const store = String(a.store ?? 'both');
+      if (store === 'both') {
+        mockProviders[id] = { ...cur, keySource: 'none', keyMasked: null, hasInlineKey: false };
+      } else if (store === 'models') {
+        mockProviders[id] = { ...cur, hasInlineKey: false };
+      } else {
+        mockProviders[id] = { ...cur, keySource: cur.hasInlineKey ? 'models_json' : 'none', keyMasked: null };
+      }
+    }
+    return null;
+  },
+  provider_remove: (a) => {
+    delete mockProviders[String(a.provider)];
+    return null;
+  },
+  /** 「检测 / 获取可用模型」：形状与 Rust `provider_discover` 一致。 */
+  provider_discover: (a) => {
+    const base = String(a.baseUrl ?? '').replace(/\/+$/, '');
+    const anthropicStyle = String(a.api ?? '') === 'anthropic-messages';
+    return {
+      source: 'network',
+      url: anthropicStyle ? `${base.replace(/\/v1$/, '')}/v1/models?limit=1000` : `${base}/models`,
+      keySource: a.apiKey ? 'typed' : 'models_json',
+      models: [
+        { id: 'mock-flash', name: 'Mock Flash', contextWindow: 128000, maxTokens: 32000 },
+        { id: 'mock-pro', name: 'Mock Pro', contextWindow: 1000000, maxTokens: 384000 },
+      ],
+    };
+  },
   models_read: () => ({
     providers: {
       'mock-ollama': {
@@ -770,6 +954,8 @@ if (typeof window !== 'undefined' && isMock) {
 
 export async function mockInvoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
   await new Promise((r) => setTimeout(r, 30)); // 模拟 IPC 延迟
+  // 提供商配置的调用记录（门禁用）。统一在入口记，将来加命令不会漏。
+  if (name.startsWith('provider_')) providerOps.push({ name, args: { ...(args ?? {}) } });
   if (name === 'pi_prompt' || name === 'pi_steer') {
     void mockPrompt(args ?? {});
     return true as T;

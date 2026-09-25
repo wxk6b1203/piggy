@@ -34,6 +34,16 @@ tokio = { version = "1", features = [
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 notify = "7"
+# 「获取可用模型 / 检测」要真发一次 HTTP（列模型）。reqwest 早已在依赖树里
+# （tauri-plugin-updater 用它），所以加进来不增加链接产物，只是让它可被直接调用。
+# features 与 tauri-plugin-updater 里的 reqwest 保持一致（default-features = false +
+# json/stream）：这样加进来只是让已有依赖可被直接调用，不改变依赖图，
+# 也就不会把 rustls 的 aws-lc-rs 供应商拽进来（镜像上取不到那个版本）。
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+# reqwest 走的是 rustls 的 no-provider 变体（tauri 与 updater 都这么配），
+# 所以进程里必须有人先装一个 crypto provider，否则建 Client 时直接 panic。
+# 与 tauri/src/protocol/tauri.rs:44 和 tauri-plugin-updater/src/updater.rs:492 同款做法。
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 trash = "5"
 
 [dev-dependencies]

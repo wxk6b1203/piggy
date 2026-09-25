@@ -792,6 +792,136 @@ const monacoSwitchedBack = await page.evaluate(() => {
   };
 });
 
+
+/* ---------- 11. 提供商配置页（「模型」一节，DSH ui-settings-models 的 Piggy 版） ----------
+ * 起因（用户）："很多 GUI coding agent 都有方便的 provider/模型配置页面，帮我优化本项目的配置页"，
+ * 并给了 DSH 的设置页与另一个 agent 的提供商管理页两张截图。
+ *
+ * 这一段要拦的是**jsdom 拦不住**的那几类失败：
+ *   ① 列表根本没接上 IPC（长着提供商的样子，其实是写死的空态）；
+ *   ② 密钥来源不说清楚 —— 本机真实形态就是"models.json 内联密钥 + auth.json 为空"，
+ *      而 pi 的优先级是 auth > models.json > 环境变量，界面不写来源 = 改了没生效也查不出来；
+ *   ③ "检测"是个假按钮（不真发请求、或发了不带地址/协议）；
+ *   ④ "获取可用模型"拿回来的清单进不了模型表；
+ *   ⑤ 保存的载荷形状不对（该空串删键的写成空串、该跟随现状的偷偷换地方）；
+ *   ⑥ 列表不会随保存刷新（保存成功但行没变 = 用户以为没保存）。
+ */
+const providers = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const btn = (root, text) =>
+    qa('button', root).find((b) => (b.textContent ?? '').trim() === text) ?? null;
+  /** 受控输入必须用原生 setter 绕过 React 的 value tracker，否则事件被判成"值没变"。 */
+  const type = async (input, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(30);
+  };
+
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(700);
+
+  const nav = qa('.pg-settings-navitem').map((b) => (b.textContent ?? '').trim());
+  const cardOf = (id) => qa('.pg-provider-card').find((c) => c.dataset.provider === id) ?? null;
+  const rowIds = () => qa('.pg-provider-card').map((c) => c.dataset.provider);
+  const listMeta = () => {
+    const c = cardOf('cc-switch-deep-seek');
+    return c ? (c.querySelector('.pg-provider-meta')?.textContent ?? '') : null;
+  };
+  const list = {
+    nav,
+    rows: rowIds(),
+    dotsOn: qa('.pg-cred-dot.is-on').length,
+    dotsOff: qa('.pg-cred-dot.is-off').length,
+    meta: listMeta(),
+    // 自定义标记与"默认"标记必须看得见
+    tags: qa('.pg-provider-card .pg-provider-tag').map((t) => t.textContent),
+    addButton: !!btn(document, '+ 添加模型提供商'),
+  };
+
+  // 编辑 → 检测：必须真发一次 provider_discover，并把"测了什么"写出来
+  const card = cardOf('cc-switch-deep-seek');
+  btn(card, '编辑')?.click();
+  await sleep(300);
+  const editor = cardOf('cc-switch-deep-seek')?.querySelector('.pg-provider-editor') ?? null;
+  const edit = {
+    present: !!editor,
+    keyPlaceholder: editor?.querySelector('[data-testid="pg-key-input"]')?.placeholder ?? null,
+    keyMeta: editor?.querySelector('.pg-key-meta')?.textContent ?? null,
+    storeValue: editor?.querySelector('.pg-key-meta .ant-select-content')?.textContent ?? null,
+    customizedCollapsed: editor ? !editor.querySelector('.pg-customized')?.open : null,
+  };
+  // 读 mock 后端自己的调用记录（又是"必须拿应用自己那一份模块"）
+  const ops = () => (globalThis.__piggyMock?.providerOps ?? []).map((o) => ({ name: o.name, args: { ...o.args } }));
+  btn(editor, '检测')?.click();
+  await sleep(700);
+  const probe = {
+    ok: editor?.querySelector('.pg-probe-ok')?.textContent ?? null,
+    error: editor?.querySelector('.pg-error')?.textContent ?? null,
+    ops: ops(),
+  };
+
+  // 获取可用模型 → 勾一个 → 加入模型表
+  editor?.querySelector('.pg-customized')?.setAttribute('open', '');
+  await sleep(150);
+  btn(editor, '获取可用模型')?.click();
+  await sleep(700);
+  const dialogRows = qa('[data-fetch-id]').map((r) => r.dataset.fetchId);
+  const alreadyDisabled = qa('[data-fetch-id="deepseek-flash"] input').every((i) => i.disabled);
+  const box = qa('[data-fetch-id="mock-pro"] input')[0] ?? null;
+  box?.click();
+  await sleep(150);
+  const adopt = qa('.ant-modal-footer button').find((b) => (b.textContent ?? '').includes('添加所选')) ?? null;
+  adopt?.click();
+  await sleep(400);
+  const modelRowIds = qa('.pg-modelrows-table tbody tr').map(
+    (tr) => tr.querySelector('input')?.value ?? '',
+  );
+  const fetch = { dialogRows, alreadyDisabled, adoptedVisible: modelRowIds.includes('mock-pro'), modelRowIds };
+
+  // 保存：先写配置、再写密钥；密钥存储位置跟随现状（这一行是 models.json 内联）
+  const keyInput = editor?.querySelector('[data-testid="pg-key-input"]') ?? null;
+  if (keyInput) await type(keyInput, 'sk-ui-gate-key');
+  const before = ops().length;
+  btn(editor, '保存')?.click();
+  await sleep(1200);
+  const save = {
+    meta: listMeta(),
+    savedNotice: document.querySelector('.pg-providers-saved')?.textContent ?? null,
+    rows: rowIds(),
+  };
+
+  // 添加流程：目录里挑一个（deepseek 还没配置）→ 地址要带出目录默认值
+  btn(document, '+ 添加模型提供商')?.click();
+  await sleep(300);
+  const selectContent = document.querySelector('[data-testid="pg-catalog-select"] .ant-select-content');
+  selectContent?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  await sleep(400);
+  const options = qa('.ant-select-item-option').map((o) => (o.textContent ?? '').trim());
+  const opt = qa('.ant-select-item-option').find((o) => (o.textContent ?? '').includes('deepseek'));
+  if (opt) {
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    opt.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    opt.click();
+  }
+  await sleep(400);
+  const addEditor = document.querySelector('.pg-provider-addcard .pg-provider-editor');
+  const add = {
+    options,
+    editorPresent: !!addEditor,
+    // 选目录项后地址应预填成目录里的默认值（而不是空白让人自己猜）
+    baseUrl: addEditor?.querySelector('[data-testid="pg-baseurl-input"]')?.value ?? null,
+    apiText: addEditor?.querySelector('.pg-customized-body .ant-select-content')?.textContent ?? null,
+  };
+  btn(addEditor, '保存')?.click();
+  await sleep(1200);
+  add.rowsAfterSave = rowIds();
+  add.noticeAfterSave = document.querySelector('.pg-providers-saved')?.textContent ?? null;
+
+  return { list, edit, probe, fetch, save, add, opsAfterSave: ops().slice(before) };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -799,7 +929,7 @@ console.log(
       ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
-      monacoBefore, monacoOpened, monacoSwitchedBack,
+      monacoBefore, monacoOpened, monacoSwitchedBack, providers,
     },
     null,
     1,
@@ -1066,6 +1196,92 @@ if (monacoBefore.heapMB !== null && monacoOpened.heapMB !== null) {
   const grew = monacoOpened.heapMB - monacoBefore.heapMB;
   // 8 个实例全留着的话 ~8-12MB；这里只该多出"可见 + 水位内"的那几个
   if (grew > 40) bad.push(`Monaco：开 8 个预览多占了 ${grew}MB 堆（回收没生效？）★`);
+}
+
+
+/* 提供商配置页：列表 / 来源 / 检测 / 获取模型 / 保存 / 添加 */
+if (providers.list.nav.join(',') !== '模型,通用设置,高级') {
+  bad.push(`配置页：左导航是 ${JSON.stringify(providers.list.nav)}，应为 模型/通用设置/高级（DSH 版式）★`);
+}
+if (providers.list.rows.length < 2) {
+  bad.push(`配置页：列表只有 ${JSON.stringify(providers.list.rows)} —— 没接上 provider_overview？★`);
+}
+if (providers.list.dotsOn < 2) bad.push(`配置页：${providers.list.rows.length} 个提供商里只有 ${providers.list.dotsOn} 个亮着"已配置"点 ★`);
+if (!(providers.list.meta ?? '').includes('models.json')) {
+  bad.push(`配置页：列表没说密钥来源（meta="${providers.list.meta}"）★`);
+}
+if (!providers.list.tags.includes('自定义') || !providers.list.tags.includes('默认')) {
+  bad.push(`配置页：自定义/默认标记没渲染（tags=${JSON.stringify(providers.list.tags)}）★`);
+}
+if (!providers.list.addButton) bad.push('配置页：没有「+ 添加模型提供商」入口 ★');
+
+if (!providers.edit.present) bad.push('配置页：点「编辑」没有出现编辑卡片 ★');
+else {
+  if (!(providers.edit.keyPlaceholder ?? '').includes('已配置')) {
+    bad.push(`配置页：已配置的提供商密钥框占位是 "${providers.edit.keyPlaceholder}"（应提示已配置）★`);
+  }
+  if (!(providers.edit.keyMeta ?? '').includes('models.json')) {
+    bad.push(`配置页：编辑卡片没写"当前生效的密钥来自哪"（"${providers.edit.keyMeta}"）★`);
+  }
+  if (!providers.edit.customizedCollapsed) {
+    bad.push('配置页：自定义设置默认没折叠（DSH 是折叠的，密钥才是主字段）★');
+  }
+}
+const probeCall = providers.probe.ops.at(-1) ?? null;
+if (!probeCall || probeCall.name !== 'provider_discover') {
+  bad.push(`配置页：「检测」没有发出 provider_discover（发的是 ${probeCall?.name ?? '什么都没有'}）★`);
+} else {
+  const a = probeCall.args;
+  if (a.provider !== 'cc-switch-deep-seek') bad.push(`配置页：检测的是 ${String(a.provider)} ★`);
+  if (a.baseUrl !== 'https://api.deepseek.com/v1') bad.push(`配置页：检测没带 API 地址（${String(a.baseUrl)}）★`);
+  if (a.api !== 'openai-completions') bad.push(`配置页：检测没带 API 协议（${String(a.api)}）★`);
+  if (a.apiKey !== null) bad.push('配置页：没重新输密钥却把密钥送出去了（应该用已存的那把）★');
+}
+if (!(providers.probe.ok ?? '').includes('个模型')) {
+  bad.push(`配置页：检测成功但界面没说测到了什么（${providers.probe.ok ?? providers.probe.error}）★`);
+}
+if (providers.fetch.dialogRows.length < 2) {
+  bad.push(`配置页：获取可用模型只拿到 ${JSON.stringify(providers.fetch.dialogRows)} ★`);
+}
+if (!providers.fetch.alreadyDisabled) bad.push('配置页：已在表里的模型没有禁用勾选（会重复添加）★');
+if (!providers.fetch.adoptedVisible) {
+  bad.push(`配置页：勾选后"添加所选"没进模型表（表里是 ${JSON.stringify(providers.fetch.modelRowIds)}）★`);
+}
+if (!(providers.save.meta ?? '').includes('sk-mock')) {
+  bad.push(`配置页：保存后列表没刷新（meta="${providers.save.meta}"）★`);
+}
+if (!(providers.save.savedNotice ?? '').includes('已保存')) {
+  bad.push('配置页：保存后没有"已保存 XX"的回执 ★');
+}
+const saved = providers.opsAfterSave ?? [];
+const saveIdx = saved.findIndex((o) => o.name === 'provider_save');
+const keyIdx = saved.findIndex((o) => o.name === 'provider_set_key');
+if (saveIdx < 0) bad.push('配置页：点保存没有发出 provider_save ★');
+if (keyIdx < 0) bad.push('配置页：输入了新密钥却没有 provider_set_key ★');
+if (saveIdx >= 0 && keyIdx >= 0 && saveIdx > keyIdx) {
+  bad.push('配置页：先写密钥再写配置（配置写失败会留下"密钥已换、地址没换"的半张卡）★');
+}
+const setKeyOp = keyIdx >= 0 ? saved[keyIdx] : null;
+if (setKeyOp) {
+  if (setKeyOp.args.provider !== 'cc-switch-deep-seek') bad.push(`配置页：密钥写给 ${String(setKeyOp.args.provider)} ★`);
+  if (setKeyOp.args.store !== 'models') {
+    bad.push(`配置页：密钥存储位置没跟随现状（这一行的密钥本来在 models.json，却写到了 ${String(setKeyOp.args.store)}）★`);
+  }
+}
+const saveOp = saveIdx >= 0 ? saved[saveIdx] : null;
+const patch = (saveOp?.args.patch ?? {}) ;
+if (saveOp && !('name' in patch && 'baseUrl' in patch && 'api' in patch && 'models' in patch)) {
+  bad.push(`配置页：保存的载荷字段不全（${JSON.stringify(Object.keys(patch))}）★`);
+}
+if (providers.add.options.length > 0 && !providers.add.options.join('|').includes('deepseek')) {
+  bad.push(`配置页：目录下拉里没有可添加的提供商（${JSON.stringify(providers.add.options)}）★`);
+}
+if (!providers.add.editorPresent) bad.push('配置页：从目录选了一个提供商却没出现编辑卡片 ★');
+else if (!(providers.add.baseUrl ?? '').startsWith('https://api.deepseek.com')) {
+  bad.push(`配置页：从目录添加时地址没预填目录默认值（"${providers.add.baseUrl}"）★`);
+}
+if (!(providers.add.rowsAfterSave ?? []).includes('deepseek')) {
+  bad.push(`配置页：从目录添加并保存后，列表里没有它（${JSON.stringify(providers.add.rowsAfterSave)}）★`);
 }
 
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
