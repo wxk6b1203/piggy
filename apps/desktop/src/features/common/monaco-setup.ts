@@ -5,6 +5,33 @@
 import * as monaco from 'monaco-editor/editor/editor.api';
 import { VSCODE_THEME_RULES } from './vscode-theme-tokens';
 import { LANG_LOADERS } from './monaco-langs';
+
+/* ---------------- 编辑器贡献（2026-09-24 补） ----------------
+ * 这段是**必须的**，删掉会有两个后果（都实测过）：
+ *   ① 预览里**没有 ⌘F 查找、没有代码折叠、没有右键菜单**：只 import `editor.api` 时，
+ *      59 个编辑器贡献（find / folding / bracketMatching / contextmenu / hover / suggest…）
+ *      一个都不在图里，Monaco 就是个"能显示文字、能高亮"的壳（实测 folding 装饰 0 个、
+ *      `.find-widget` 不出现、`.monaco-menu-container` 不出现）。
+ *   ② 一创建 **JSON** 编辑器就抛 5 条 `[createInstance] … depends on UNKNOWN service`：
+ *      JSON 语言服务（`languages/features/json/workerManager.js`）会静态拉进
+ *      monaco 自己那份"编辑器贡献清单"`internal/common/workers.js`，而其中 5 个贡献依赖的
+ *      单例服务**在 0.56 的 esm 包里没有任何模块注册**（全仓 grep `codeLensCache` 零引用）。
+ *      开发模式下 DI 是 strict 的，于是实例化即抛；生产模式只静默跳过 —— 也就是"功能悄悄没有"。
+ *
+ * 为什么不直接 import `editor.main`：那是"贡献 + 全部 90 多门语言"，
+ * 会把按需语言加载（docs/10 §2.2 红线）一锅端掉。
+ * `internal/common/workers.js` 的贡献清单与 `editor.main` 的**逐条相同**（59 条，已核对），
+ * 差的只有语言 —— 正是这里要的那一半。它带 `internal/` 前缀，升级 monaco 时若路径变了会
+ * **编译期报错**（不是静默失效），这正是我们要的失败方式。
+ */
+import 'monaco-editor/internal/common/workers.js';
+// ↑ 那份清单里被实例化、却没人注册单例的 5 个服务（谁依赖谁见括号）
+import 'monaco-editor/platform/actionWidget/browser/actionWidget.js'; // IActionWidgetService（右键代码操作）
+import 'monaco-editor/editor/common/services/treeViewsDndService.js'; // treeViewsDndService
+import 'monaco-editor/editor/contrib/codelens/browser/codeLensCache.js'; // ICodeLensCache
+import 'monaco-editor/editor/contrib/inlayHints/browser/inlayHintsController.js'; // IInlayHintsCache
+import 'monaco-editor/editor/contrib/suggest/browser/suggestMemory.js'; // ISuggestMemories
+
 // JSON 语言贡献 + workers（JSON 走带 worker 的语言服务，schema 校验见 §3.3；
 // 其余语言的**词法定义**按需加载，见下方 ensureLanguage 与 monaco-langs.ts）
 import 'monaco-editor/language/json/monaco.contribution';

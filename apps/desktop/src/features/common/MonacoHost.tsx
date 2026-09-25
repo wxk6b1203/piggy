@@ -42,6 +42,15 @@ export function MonacoHost(props: {
   const theme = useUi((s) => s.theme);
   const onChangeRef = useRef(props.onChange);
   onChangeRef.current = props.onChange;
+  /**
+   * 当前外部值（每次渲染刷新）。两个用途：
+   *   ① 建好之后外部值才到时要写进去（见下面的同步 effect）；
+   *   ② 判断一次内容变化是"用户改的"还是"我们刚写进去的" —— 编程式 `setValue`
+   *      会**同步**触发 `onDidChangeModelContent`，不区分的话会把"载入"报成"用户编辑"，
+   *      设置页的"保存"按钮就会在什么都没改的时候亮起来。
+   */
+  const valueRef = useRef(props.value);
+  valueRef.current = props.value;
   const visible = props.visible ?? true;
   // 每个挂载点一个稳定 id（StrictMode 双挂载也复用同一个）
   const hostId = useMemo(() => `monaco-${(hostSeq += 1)}`, []);
@@ -113,16 +122,39 @@ export function MonacoHost(props: {
             mod.monaco.editor.getModel(uri) ?? mod.monaco.editor.createModel(props.value, lang, uri);
           ed.setModel(modelRef.current);
         }
-        dispoRef.current = ed.onDidChangeModelContent(() => onChangeRef.current?.(ed.getValue()));
+        dispoRef.current = ed.onDidChangeModelContent(() => {
+          const v = ed.getValue();
+          // 与我们刚写进去的外部值相同 = 这次变化是同步 effect 干的，不是用户在打字
+          if (v === valueRef.current) return;
+          onChangeRef.current?.(v);
+        });
       });
 
     // ⚠️ 这里**只取消"这一次创建"**，不销毁已经建好的实例 —— 隐藏时保留正是本组件的设计
     return () => {
       cancelled = true;
     };
-    // value/language 只在创建时生效（预览内容静态，docs/10 §2.3）
+    // language 只在创建时生效（预览内容静态，docs/10 §2.3）；value 由下面的同步 effect 负责
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mod, el, visible, epoch, hostId, destroy]);
+
+  /**
+   * 外部值变化 → 写进活着的编辑器。
+   *
+   * **这条是必需的，别再删**：编辑器的初值只在 `create()` 那一刻取一次，而"值"往往是
+   * 异步来的（设置页的 JSON 是 IPC 读回来的）。第一次打开时 Monaco 还要下载 chunk，
+   * 值先到，看起来一切正常；**第二次打开 chunk 已在内存里**，编辑器在一个微任务内就建好了，
+   * 此时值还没回来 → 界面停在初始的 `{}`，而且再也不会更新。
+   * 用户看到的正是"第一次点高级有配置，第二次点就没了"（2026-09-24 实测复现）。
+   *
+   * 只在"确实不同"时写，所以不会打断正在打字的人；光标与撤销栈会重置，
+   * 这对"外部内容替换"是正确语义。
+   */
+  useEffect(() => {
+    const ed = edRef.current;
+    if (!ed || ed.getValue() === props.value) return;
+    ed.setValue(props.value);
+  }, [props.value, mod, epoch]);
 
   // 主题热切换
   useEffect(() => {

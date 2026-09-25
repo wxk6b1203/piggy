@@ -44,6 +44,19 @@ VS Code 是同类产品里被验证最充分的"代码工作台"设计。本文�
 
 ### 2.2 打包与加载
 
+0. **编辑器贡献必须显式加载**（2026-09-24 补，用户实测反馈"预览里没有查找/折叠"）：
+   `monaco-editor/editor/editor.api` **只带 API，不带 59 个编辑器贡献**（find / folding / bracketMatching /
+   contextmenu / hover / suggest / comment / multicursor…）—— 不加载它们，Monaco 就是个"能显示文字、能上色"
+   的壳：**⌘F 唤不出查找框、没有折叠控件、没有右键菜单**（实测 folding 装饰 0 个、`.find-widget` 不出现）。
+   而官方入口 `editor.main` 是"贡献 + 全部 90 多门语言"，会把上面第 1 条红线一锅端掉。所以
+   `monaco-setup.ts` 里显式 import monaco 自己那份**只含贡献**的清单 `internal/common/workers.js`
+   （与 `editor.main` 的贡献逐条相同，59 条，已核对），语言仍然逐门懒加载。
+   ⚠️ 该清单里被实例化的 5 个贡献依赖**在 0.56 的 esm 包里没有任何模块注册**的单例
+   （`ICodeLensCache` / `IInlayHintsCache` / `ISuggestMemories` / `treeViewsDndService` / `actionWidgetService`，
+   全仓 grep `codeLensCache` 零引用）——不补注册，一创建 JSON 编辑器就抛 `[createInstance] … depends on
+   UNKNOWN service`（开发模式 DI 是 strict 的会抛；生产模式静默跳过 = 功能悄悄没有）。
+   代价（实测）：`monaco-setup` chunk 24 kB → **1,204 kB（gzip 307 kB）**，`editor.api` chunk 不变，
+   仍在该节预算内。
 1. **ESM 按需 + 语言逐门懒加载**：`monaco-editor/editor/editor.api` **一门语言都不带**（这不是缺陷，是 ESM 发行版的默认形态）。语言定义在 `src/features/common/monaco-langs.ts` 里逐门写成 `import('monaco-editor/languages/definitions/<lang>/register')` 的**字面量**，Vite 才会为每门语言切**独立 chunk**，只有真的打开该语言的文件时才下载。当前白名单 **55 门**（go/python/rust/ts/js/java/c/cpp/md/json/yaml/toml≈ini/sql/sh/dockerfile/…），认不出的扩展名 = `plaintext`、一个字节都不下。
    **禁全语言注册**（`basic-languages/monaco.contribution` / `languages/register.all`，一次进 84 门）：这条红线由 `src/test/preview-lang.test.ts` 的源码门在每次 `pnpm test` 时拦。
    ⚠️ 本行此前写的是"lint 强制"——**当时并没有任何东西在执行它**：`apps/desktop/package.json` 里根本没有 `lint` 脚本，`pnpm lint` 一个文件都扫不到（`eslint.config.js` 里现在确实有这条规则，等 lint 接上即生效）。教训：**写在文档里的"强制"必须能指出是哪条命令在强制**。
@@ -55,9 +68,15 @@ VS Code 是同类产品里被验证最充分的"代码工作台"设计。本文�
 
 ### 2.3 实例纪律（过预算的关键）
 
-- **MonacoHost 单例工厂 + 实例池**：所有 Monaco 挂载点经 `features/common/MonacoHost`（04 §2），全局共享 worker；并发实例上限 6，超限复用（预览 tab 单实例可替换语义天然配合，04 §1.3）；
+- **MonacoHost 单例工厂 + 实例池**：所有 Monaco 挂载点经 `features/common/MonacoHost`（04 §2），全局共享 worker；保留水位 6，超水位回收最久没显示过的隐藏实例（**可见才创建**，04 §1.3）；
+- **`value` 变化必须写进活着的编辑器**（2026-09-24 补）：初值只在 `create()` 那一刻取一次，而值常常是异步来的
+  （设置页的 JSON 是 IPC 读回来的）。第一次打开时 Monaco 还要下 chunk，值先到、看起来正常；**第二次打开
+  chunk 已在内存里**，编辑器在一个微任务内就建好了，值还没回来 → 停在初始 `{}` 且此后永不更新
+  （用户原话："第一次点击高级会有配置，第二次点击就没了"）。现在 `MonacoHost` 有一个外部值同步 effect，
+  并且用 `v === valueRef.current` 把"编程式写入"和"用户打字"区分开 —— 否则载入会被当成编辑，
+  保存按钮会在什么都没改的时候亮起来；
 - **dispose 纪律**：预览 tab 关闭/被覆盖即 `model.dispose()` + `editor.dispose()`；diff 预览的临时 model 用后即弃；
-- **预算线**（05 §2/§5.5）：Monaco 异步 chunk ≤ 2MB gzip（core+workers+选定语言）；加载后 RSS 增量 ≤ 60MB；未加载时 = 0；
+- **预算线**（05 §2/§5.5）：Monaco 异步 chunk ≤ 2MB gzip（core+贡献+workers+选定语言）。2026-09-24 实测：`editor.api` 697 kB gzip + `monaco-setup`（贡献+主题）307 kB gzip + 两个 worker ≈ 200 kB gzip，合计 ≈ 1.2MB gzip，仍在预算内；加载后 RSS 增量 ≤ 60MB；未加载时 = 0；
 - 只读预览统一 `readOnly + domReadOnly + minimap:false + wordWrap` 预设，避免每实例开重特性。
 
 ### 2.4 主题：一份四吃

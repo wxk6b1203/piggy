@@ -295,6 +295,9 @@ body {
   background: var(--pg-bg-sidebar); color: var(--pg-fg);
   border: 1px solid var(--pg-border-l2); border-radius: 6px;
   padding: 4px 14px; font-size: 12px; cursor: pointer;
+  /* 按钮文字永远不折行：在 flex 行里被挤窄时，中文会变成**竖排单字**（实测「检测」两字
+     各占一行、按钮 51×44），看起来就像坏了。宁可溢出也不要竖排。 */
+  white-space: nowrap;
 }
 .pg-btn:hover { border-color: var(--pg-accent); }
 .pg-btn-primary { background: var(--pg-accent); border-color: var(--pg-accent); color: #fff; }
@@ -821,6 +824,8 @@ body {
 .pg-field { display: flex; flex-direction: column; gap: var(--pg-sp-2); }
 .pg-field-label { font-size: var(--pg-fs-12); font-weight: 600; }
 .pg-key-row { display: flex; gap: var(--pg-sp-3); align-items: center; max-width: 560px; }
+/* 输入框让位给按钮，而不是反过来把按钮压成一列竖排字 */
+.pg-key-row > .pg-btn { flex: none; }
 .pg-key-meta { display: flex; align-items: center; gap: var(--pg-sp-5); flex-wrap: wrap; font-size: var(--pg-fs-12); }
 .pg-key-store { display: inline-flex; align-items: center; gap: var(--pg-sp-2); }
 .pg-probe-ok { margin: 0; color: #3fb950; font-size: var(--pg-fs-12); }

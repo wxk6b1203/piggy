@@ -922,6 +922,127 @@ const providers = await page.evaluate(async () => {
   return { list, edit, probe, fetch, save, add, opsAfterSave: ops().slice(before) };
 });
 
+/* ---------- 12. 配置页与预览的两个"只有真跑才会暴露"的坑（2026-09-24 用户实测反馈） ----------
+ * ① **「检测」按钮的文字变成竖排单字**：`.pg-key-row` 是 flex 行，按钮 `flex-shrink` 默认 1，
+ *    而中文按钮的 min-content 宽度 = **一个字**，于是"检测"两字各占一行（实测 51×44）。
+ *    截图里那个按钮看起来就像坏了 —— 这类"几何塌掉"jsdom 量不到。
+ * ② **第二次点「高级」JSON 就空了**：Monaco 的初值只在 create() 那一刻取一次，而值是异步读来的。
+ *    第一次打开时 Monaco 还要下 chunk，值先到（正常）；第二次 chunk 已在内存里，编辑器在一个
+ *    微任务内就建好了，值还没回来 → 停在初始 `{}`，且此后永不更新。
+ *    顺带锁住修法的副作用：编程式写入**不许**把编辑器标成"已编辑"（保存按钮得还是灰的）。
+ * ③ 顺带量一下**编辑器贡献**在不在（⌘F / 折叠）：只 import `editor.api` 时一个贡献都不在图里。
+ *
+ * ⚠️ ③ 必须排在 ② 之前：JSON 语言服务自己会把编辑器贡献拽进依赖图（monaco 0.56 的
+ * `languages/features/json/workerManager.js` → `internal/common/workers.js`），先开「高级」
+ * 的话这条核对永远是绿的 —— 那样"预览里没有折叠"这个真问题会被漏掉（反证时实测过）。
+ */
+
+/* ---------- 12a. 编辑器贡献：折叠控件（真浏览器量 DOM 装饰） ---------- */
+const contributions = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await globalThis.__piggyEditor.openPreviewTab('contrib-1', '/Users/mock/proj/lib.rs', 'lib.rs');
+  await sleep(1600);
+  // ⚠️ 不能取 `.at(-1)`：dockview 把非活动面板的 React 树留着（DOM 里在、布局里不在），
+  // 而 `MonacoHost` 对不可见面板**根本不创建**编辑器 —— 取末位会量到一个没有编辑器的隐藏面板。
+  // 按"真的有尺寸"挑当前可见的那个。
+  const pane = [...document.querySelectorAll('.pg-preview')].find((p) => {
+    const r = p.getBoundingClientRect();
+    return p.querySelector('.monaco-editor') && r.width > 50 && r.height > 50;
+  });
+  const ed = pane?.querySelector('.monaco-editor');
+  // 点击坐标要落在**正文行**上：编辑器左边缘 +40px 是行号/装订线，实测点在那里
+  // `document.activeElement` 还是 BODY（编辑器没拿到焦点）→ 后面 ⌘F 自然无效。
+  const lineRect = ed?.querySelector('.view-line')?.getBoundingClientRect() ?? null;
+  const boxRect = ed?.getBoundingClientRect() ?? null;
+  return {
+    folding: ed?.querySelectorAll('.codicon-folding-expanded, .codicon-folding-collapsed').length ?? -1,
+    lines: ed?.querySelectorAll('.view-line').length ?? -1,
+    clickAt: lineRect
+      ? { x: Math.round(lineRect.left + 60), y: Math.round(lineRect.top + 6) }
+      : boxRect
+        ? { x: Math.round(boxRect.left + 150), y: Math.round(boxRect.top + 20) }
+        : null,
+  };
+});
+
+/* ---------- 12b. 编辑器贡献：⌘F 查找框 ----------
+ * 用**真按键**：合成 keydown 在 Monaco 0.56（EditContext 输入路径）下不生效，
+ * 实测合成事件 false、真按键 true —— 门禁不能因此报假红。 */
+if (contributions.clickAt) {
+  await page.mouse.click(contributions.clickAt.x, contributions.clickAt.y);
+  await page.waitForTimeout(300);
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
+  await page.waitForTimeout(700);
+}
+contributions.findWidget = await page.evaluate(() => ({
+  inDocument: document.querySelectorAll('.find-widget').length,
+  inPreview: [...document.querySelectorAll('.pg-preview')].reduce(
+    (n, p) => n + p.querySelectorAll('.find-widget').length, 0),
+}));
+
+/* ---------- 12c. 配置页：「检测」按钮几何 + 两次进「高级」 ---------- */
+const settingsEdge = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const section = async (label) => {
+    const b = qa('.pg-settings-navitem').find((x) => (x.textContent ?? '').trim() === label);
+    if (!b) throw new Error(`找不到设置节：${label}`);
+    b.click();
+    await sleep(900);
+  };
+  const editorText = (file) => {
+    const host = document.querySelector(`[data-raw-file="${file}"] .pg-monaco`);
+    const lines = [...(host?.querySelectorAll('.view-line') ?? [])].map((l) => l.textContent ?? '');
+    return { lines: lines.length, text: lines.join('\n') };
+  };
+  const saveDisabled = (file) => {
+    const box = document.querySelector(`[data-raw-file="${file}"]`);
+    // antd 会在两个汉字之间插空格，所以按"去掉空白后相等"来认
+    const b = [...(box?.querySelectorAll('button') ?? [])].find(
+      (x) => (x.textContent ?? '').replace(/\s/g, '') === '保存',
+    );
+    return b ? b.disabled : null;
+  };
+
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(700);
+
+  // ① 「检测」按钮的几何
+  await section('模型');
+  const card = qa('.pg-provider-card')[0];
+  [...(card?.querySelectorAll('button') ?? [])].find((b) => (b.textContent ?? '').trim() === '编辑')?.click();
+  await sleep(500);
+  const probeBtn = qa('.pg-key-row button').find((b) => (b.textContent ?? '').trim() === '检测') ?? null;
+  const rect = probeBtn?.getBoundingClientRect() ?? null;
+  const probe = probeBtn
+    ? {
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        whiteSpace: getComputedStyle(probeBtn).whiteSpace,
+        // 一行放得下：滚动高度与可视高度一致（竖排时 scrollHeight 会远超 clientHeight）
+        fitsOneLine: Math.abs(probeBtn.scrollHeight - probeBtn.clientHeight) <= 2,
+        rowW: Math.round(document.querySelector('.pg-key-row')?.getBoundingClientRect().width ?? 0),
+      }
+    : null;
+
+  // ② 两次进「高级」
+  await section('高级');
+  const first = {
+    models: editorText('models_read'),
+    settings: editorText('settings_read'),
+    saveDisabled: [saveDisabled('models_read'), saveDisabled('settings_read')],
+  };
+  await section('通用设置');
+  await section('高级');
+  const second = {
+    models: editorText('models_read'),
+    settings: editorText('settings_read'),
+    saveDisabled: [saveDisabled('models_read'), saveDisabled('settings_read')],
+  };
+  return { probe, first, second };
+});
+
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -929,7 +1050,7 @@ console.log(
       ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
-      monacoBefore, monacoOpened, monacoSwitchedBack, providers,
+      monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions,
     },
     null,
     1,
@@ -1282,6 +1403,50 @@ else if (!(providers.add.baseUrl ?? '').startsWith('https://api.deepseek.com')) 
 }
 if (!(providers.add.rowsAfterSave ?? []).includes('deepseek')) {
   bad.push(`配置页：从目录添加并保存后，列表里没有它（${JSON.stringify(providers.add.rowsAfterSave)}）★`);
+}
+
+
+/* 配置页几何 + Monaco 外部值同步（用户实测反馈的两个坑） */
+if (!settingsEdge.probe) bad.push('配置页：编辑卡片里找不到「检测」按钮（这条核对是空转）★');
+else {
+  const p = settingsEdge.probe;
+  if (p.whiteSpace !== 'nowrap') bad.push(`配置页：「检测」按钮的 white-space 是 ${p.whiteSpace}，中文会被折成竖排单字 ★`);
+  if (!p.fitsOneLine) bad.push(`配置页：「检测」按钮文字没在一行里放下（${p.w}×${p.h}，scrollHeight≠clientHeight）★`);
+  if (!(p.h <= 36)) bad.push(`配置页：「检测」按钮高 ${p.h}px（单行应该 ~27px，44px 就是竖排两行了）★`);
+  if (!(p.w >= 44)) bad.push(`配置页：「检测」按钮只有 ${p.w}px 宽（两个字 + 内边距应该 ≥44）★`);
+}
+const firstModels = settingsEdge.first.models;
+const secondModels = settingsEdge.second.models;
+if (firstModels.lines < 2 || firstModels.text.trim() === '{}') {
+  bad.push(`配置页：第一次进「高级」时 models.json 编辑器是空的（${firstModels.lines} 行）★`);
+}
+if (secondModels.text !== firstModels.text) {
+  bad.push(
+    `配置页：切走再回「高级」，JSON 内容变了（第一次 ${firstModels.lines} 行 → 第二次 ${secondModels.lines} 行）` +
+      '—— Monaco 的 value 只在创建时取一次，异步值到晚了就永远停在初始值 ★',
+  );
+}
+if (settingsEdge.first.settings.lines < 2 || settingsEdge.second.settings.lines < 2) {
+  bad.push('配置页：settings.json 编辑器也是空的（同一个原因）★');
+}
+for (const [i, d] of [...settingsEdge.first.saveDisabled, ...settingsEdge.second.saveDisabled].entries()) {
+  if (d !== true) {
+    bad.push(`配置页：第 ${i + 1} 次读到的保存按钮不是 disabled —— 编程式写入被当成了"用户编辑"★`);
+  }
+}
+/* 编辑器贡献：只有 editor.api 时，预览里既没有折叠控件也唤不出 ⌘F 查找框（实测 0 / false） */
+const contrib = contributions;
+if (!(contrib.lines > 0)) bad.push('预览：编辑器贡献那条核对是空转（连正文行都没渲染）★');
+if (!(contrib.folding > 0)) {
+  bad.push('预览：没有折叠控件 —— 编辑器贡献（folding 等 59 个）没进依赖图，Monaco 退化成一个只会上色的壳 ★');
+}
+if (!contrib.clickAt) {
+  bad.push('预览：拿不到可点的编辑器坐标，⌘F 那条核对是空转 ★');
+} else if (contrib.findWidget.inDocument === 0 || contrib.findWidget.inPreview === 0) {
+  bad.push(
+    `预览：⌘F 唤不出查找框（全文档 ${contrib.findWidget.inDocument} 个、预览里 ${contrib.findWidget.inPreview} 个）` +
+      '—— find 贡献没加载 ★',
+  );
 }
 
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
