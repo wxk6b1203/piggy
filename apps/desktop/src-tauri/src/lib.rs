@@ -5,6 +5,7 @@ pub mod fleet;
 pub mod fs_guard;
 pub mod open_in_app;
 pub mod pi;
+pub mod plugin;
 pub mod provider;
 pub mod pty;
 pub mod sessions;
@@ -346,6 +347,16 @@ pub fn run() {
             provider::provider_remove_key,
             provider::provider_remove,
             provider::provider_discover,
+            plugin::plugin_overview,
+            plugin::plugin_run,
+            plugin::plugin_jobs,
+            plugin::plugin_job_cancel,
+            plugin::plugin_set_enabled,
+            plugin::plugin_add_path,
+            plugin::plugin_remove_path,
+            plugin::plugin_delete_discovered,
+            plugin::plugin_check_source,
+            plugin::plugin_project_trust,
             commands::auth_list,
             commands::auth_set_key,
             commands::auth_remove,

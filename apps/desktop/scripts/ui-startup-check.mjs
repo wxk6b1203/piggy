@@ -1042,6 +1042,149 @@ const settingsEdge = await page.evaluate(async () => {
   return { probe, first, second };
 });
 
+/* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
+ * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
+ * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
+ * plugin_set_enabled 且界面跟着变；(c) 点安装会真的产生一个任务并显示输出。 */
+const plugins = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const nav = (label) => {
+    const b = qa('.pg-settings-navitem').find((x) => (x.textContent ?? '').trim() === label);
+    if (!b) throw new Error(`找不到设置节：${label}`);
+    b.click();
+  };
+  const ops = () =>
+    (globalThis.__piggyMock?.pluginOps ?? []).map((o) => ({ name: o.name, args: { ...o.args } }));
+
+  nav('插件');
+  await sleep(700);
+
+  const groups = qa('[data-plugin-group]').map((g) => ({
+    id: g.getAttribute('data-plugin-group'),
+    title: (g.querySelector('.pg-plugin-group-title')?.textContent ?? '').trim(),
+    count: Number(g.getAttribute('data-plugin-count') ?? -1),
+  }));
+  const rows = qa('.pg-plugin-row').map((r) => ({
+    key: r.getAttribute('data-plugin-key'),
+    name: (r.querySelector('.pg-plugin-name')?.textContent ?? '').trim(),
+    kind: (r.querySelector('.pg-plugin-kind')?.textContent ?? '').trim(),
+    enabled: r.getAttribute('data-plugin-enabled') === '1',
+    missing: r.classList.contains('is-missing'),
+    // 行高：塌成竖排时行高会异常变大（"检测按钮竖起来"就是这个形状）
+    h: Math.round(r.getBoundingClientRect().height),
+  }));
+  const switches = qa('.pg-plugin-row .ant-switch');
+  const switchBox = switches[0]?.getBoundingClientRect() ?? null;
+  const rowBox = qa('.pg-plugin-row')[0]?.getBoundingClientRect() ?? null;
+
+  // 展开一条被 `-` 规则停用的：详情必须说清是哪一层哪条规则
+  const off = qa('.pg-plugin-row').find((r) => r.getAttribute('data-plugin-enabled') === '0');
+  off?.querySelector('.pg-plugin-name')?.click();
+  await sleep(300);
+  const enabledBy = (off?.querySelector('[data-plugin-enabled-by]')?.textContent ?? '').trim();
+  const detailDl = !!off?.querySelector('.pg-plugin-detail');
+
+  // 点开关：必须发出 plugin_set_enabled，且写完重新拉取后状态真的变了
+  const before = ops().length;
+  const target = qa('.pg-plugin-row').find((r) => r.getAttribute('data-plugin-key')?.includes('quiet.ts'));
+  target?.querySelector('.ant-switch')?.click();
+  await sleep(600);
+  const sent = ops().slice(before).filter((o) => o.name === 'plugin_set_enabled');
+  const afterToggle = qa('.pg-plugin-row')
+    .find((r) => r.getAttribute('data-plugin-key')?.includes('quiet.ts'))
+    ?.getAttribute('data-plugin-enabled');
+
+  // 内置那条必须没有开关（pi 的内置扩展不可管理）
+  const builtinRow = qa('.pg-plugin-row').find((r) => r.getAttribute('data-plugin-key')?.startsWith('builtin:'));
+  // pi 内置扩展不可管理：开关要么不渲染，要么必须是 disabled（DSH 的做法是渲染但禁用）
+  const builtinSwitchEl = builtinRow?.querySelector('.ant-switch') ?? null;
+  const builtinSwitch = builtinSwitchEl ? { disabled: builtinSwitchEl.disabled } : null;
+
+  // 安装流程：裸包名要被拦下并给出 npm: 写法；填入示例后能装。
+  //
+  // ⚠️ 选择器用 `[role="dialog"]`，**不要**用 `.ant-modal-content`：
+  // 那是 antd v5 的类名，6.6.5 换成了 rc-dialog 1.10 的结构
+  // （`@rc-component/dialog/es/Dialog/Content/Panel.js:59,101` 只生成
+  // `-body` / `-footer`，没有 `-content`）。用它选择会**静默选不到**——
+  // 弹窗明明开着，断言却以为没开。
+  const addBtn = qa('.pg-plugin-head-actions button')
+    .find((b) => (b.textContent ?? '').replace(/\s/g, '') === '添加插件');
+  const addBtnFound = !!addBtn;
+  addBtn?.click();
+  const clickAt = performance.now();
+  let dialogMs = -1;
+  for (let i = 0; i < 60; i += 1) {
+    if (document.querySelector('[role="dialog"]')) {
+      dialogMs = Math.round(performance.now() - clickAt);
+      break;
+    }
+    await sleep(100);
+  }
+  const dlg = document.querySelector('[role="dialog"]');
+  const dlgBtn = (label) =>
+    [...(dlg?.querySelectorAll('button') ?? [])].find(
+      (b) => (b.textContent ?? '').replace(/\s/g, '') === label,
+    ) ?? null;
+  const input = dlg?.querySelector('input[type="text"]') ?? null;
+  let bareProblem = '';
+  if (input) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '@scope/pkg');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(700);
+    bareProblem = (dlg.querySelector('.pg-plugin-dialog-error')?.textContent ?? '').trim();
+  }
+  const installDisabledWhenBad = dlgBtn('安装')?.disabled ?? null;
+  dlg?.querySelectorAll('.pg-plugin-guide li button')[0]?.click();
+  await sleep(700);
+  const filled = input?.value ?? '';
+  const installEnabled = dlgBtn('安装') ? !dlgBtn('安装').disabled : null;
+  const recognized = (dlg?.querySelector('.pg-plugin-dialog-ok')?.textContent ?? '').trim();
+  dlgBtn('安装')?.click();
+  await sleep(1500);
+  const job = document.querySelector('.pg-plugin-job');
+  const jobText = (job?.textContent ?? '').trim();
+  const jobLog = (job?.querySelector('.pg-plugin-job-log')?.textContent ?? '').trim();
+  const installOps = ops().filter((o) => o.name === 'plugin_run');
+
+  return {
+    navLabels: qa('.pg-settings-navitem').map((b) => (b.textContent ?? '').trim()),
+    groups,
+    rows,
+    switchRowAligned:
+      switchBox && rowBox ? Math.abs(switchBox.top + switchBox.height / 2 - (rowBox.top + rowBox.height / 2)) < 12 : null,
+    switchBox: switchBox ? { w: Math.round(switchBox.width), h: Math.round(switchBox.height) } : null,
+    // 行内所有控件的垂直中心是否在同一条线上（塌成两行时会对不齐）
+    rowCenters: (() => {
+      const r = qa('.pg-plugin-row')[0];
+      if (!r) return null;
+      const end = r.querySelector('.pg-plugin-end');
+      const cs = [...(end?.querySelectorAll('.ant-switch, button') ?? [])].map((e) => {
+        const b = e.getBoundingClientRect();
+        return Math.round(b.top + b.height / 2);
+      });
+      return cs.length === 0 ? null : Math.max(...cs) - Math.min(...cs);
+    })(),
+    enabledBy,
+    detailDl,
+    sent,
+    afterToggle,
+    builtinSwitch: builtinSwitch === null ? null : builtinSwitch.disabled,
+    addBtnFound,
+    dialogMs,
+    bareProblem,
+    installDisabledWhenBad,
+    filled,
+    recognized,
+    installEnabled,
+    jobPresent: !!job,
+    jobHasOutput: jobLog.includes('pi install'),
+    jobText: jobText.slice(0, 200),
+    installOps: installOps.map((o) => o.args),
+  };
+});
+
 
 await browser.close();
 console.log(
@@ -1050,7 +1193,7 @@ console.log(
       ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
-      monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions,
+      monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
     },
     null,
     1,
@@ -1321,8 +1464,8 @@ if (monacoBefore.heapMB !== null && monacoOpened.heapMB !== null) {
 
 
 /* 提供商配置页：列表 / 来源 / 检测 / 获取模型 / 保存 / 添加 */
-if (providers.list.nav.join(',') !== '模型,通用设置,高级') {
-  bad.push(`配置页：左导航是 ${JSON.stringify(providers.list.nav)}，应为 模型/通用设置/高级（DSH 版式）★`);
+if (providers.list.nav.join(',') !== '模型,插件,通用设置,高级') {
+  bad.push(`配置页：左导航是 ${JSON.stringify(providers.list.nav)}，应为 模型/插件/通用设置/高级（DSH 版式）★`);
 }
 if (providers.list.rows.length < 2) {
   bad.push(`配置页：列表只有 ${JSON.stringify(providers.list.rows)} —— 没接上 provider_overview？★`);
@@ -1348,6 +1491,79 @@ else {
     bad.push('配置页：自定义设置默认没折叠（DSH 是折叠的，密钥才是主字段）★');
   }
 }
+/* 插件页（第 13 段）：四种来源、状态归属、启停真的落到 pi 的文件上、安装真的起任务 */
+{
+  const p = plugins ?? {};
+  const labels = p.navLabels ?? [];
+  if (labels.join(',') !== '模型,插件,通用设置,高级') {
+    bad.push(`插件页：左导航是 ${JSON.stringify(labels)}，应含「插件」★`);
+  }
+  const groupIds = (p.groups ?? []).map((g) => g.id).join(',');
+  if (groupIds !== 'project,global,builtin') {
+    bad.push(`插件页：分组是 ${JSON.stringify(p.groups)}，应为 本项目/全局/pi 内置（按 pi 的加载优先级排）★`);
+  }
+  const rows = p.rows ?? [];
+  if (rows.length < 5) bad.push(`插件页：只渲染了 ${rows.length} 行（mock 有 5 条，跨四种来源）★`);
+  const kinds = new Set(rows.map((r) => r.kind));
+  for (const k of ['插件包', '发现目录', 'pi 内置']) {
+    if (!kinds.has(k)) bad.push(`插件页：没有「${k}」类型的行（类型徽标没按来源渲染）★`);
+  }
+  if (!rows.some((r) => !r.enabled)) bad.push('插件页：没有"已停用"的行，停用态没渲染 ★');
+  if (!rows.some((r) => r.missing)) bad.push('插件页：没有"找不到文件"的行（声明了但没装的必须显示出来）★');
+  // 几何：行不能塌（按钮/开关竖排时行高会异常；这是用户实测过的坑）
+  const tall = rows.filter((r) => r.h > 120);
+  if (tall.length) bad.push(`插件页：有 ${tall.length} 行高 ${tall.map((r) => r.h).join('/')}px，行内元素塌成竖排了 ★`);
+  if (p.switchRowAligned === false) bad.push('插件页：开关与行内容没有垂直居中（版式塌了）★');
+  if (p.switchBox && !(p.switchBox.w >= 20 && p.switchBox.w <= 44 && p.switchBox.h >= 12 && p.switchBox.h <= 24)) {
+    bad.push(`插件页：开关尺寸是 ${p.switchBox.w}×${p.switchBox.h}，不像一个正常的 Switch（塌了？）★`);
+  }
+  if (typeof p.rowCenters === 'number' && p.rowCenters > 6) {
+    bad.push(`插件页：同一行里控件的垂直中心相差 ${p.rowCenters}px —— 行内元素折行了 ★`);
+  }
+  if (typeof p.dialogMs === 'number' && p.dialogMs > 1500) {
+    bad.push(`插件页：点「添加插件」到弹窗出现用了 ${p.dialogMs}ms（超过 1.5s，用户会以为没反应）★`);
+  }
+  // 状态归属：规矩 30 —— 必须说得出是哪一层哪条规则
+  if (!p.detailDl) bad.push('插件页：点名字没有展开详情 ★');
+  if (!/规则|autoload|默认加载|内置/.test(p.enabledBy ?? '')) {
+    bad.push(`插件页：展开后没说清"状态是谁定的"（"${p.enabledBy}"）★`);
+  }
+  // 启停：必须真的发出命令，并且写完重拉后状态翻转
+  if ((p.sent ?? []).length === 0) bad.push('插件页：点开关没有发出 plugin_set_enabled ★');
+  else {
+    const a = p.sent.at(-1).args;
+    if (a.enabled !== true) bad.push(`插件页：把停用的打开时送出的 enabled=${String(a.enabled)} ★`);
+    if (!String(a.key ?? '').includes('quiet.ts')) bad.push(`插件页：送出的 key 不对（${String(a.key)}）★`);
+  }
+  if (p.afterToggle !== '1') {
+    bad.push(`插件页：点开关后那一行仍是 data-plugin-enabled=${String(p.afterToggle)}（没重拉或没生效）★`);
+  }
+  // pi 内置扩展不可管理：不该有开关
+  if (p.builtinSwitch === false) {
+    bad.push('插件页：pi 内置扩展那行的开关是可点的（pi 里它不可停用，-ne 也关不掉）★');
+  }
+  // 安装流程
+  if (!(p.dialogMs >= 0)) bad.push('插件页：点「添加插件」没打开对话框 ★');
+  if (!/裸名字|npm:/.test(p.bareProblem ?? '')) {
+    bad.push(`插件页：裸包名没有被拦下并提示 npm: 写法（"${p.bareProblem}"）★`);
+  }
+  if (p.installDisabledWhenBad !== true) {
+    bad.push('插件页：来源非法时「安装」按钮仍可点 ★');
+  }
+  if (p.filled !== 'npm:pi-guardrails') bad.push(`插件页：「填入示例」没把示例填进输入框（"${p.filled}"）★`);
+  if (!/npm/.test(p.recognized ?? '')) bad.push(`插件页：合法来源没显示"识别为什么"（"${p.recognized}"）★`);
+  if (p.installEnabled !== true) bad.push('插件页：合法的来源没能让「安装」按钮可点 ★');
+  if ((p.installOps ?? []).length === 0) bad.push('插件页：点安装没有发出 plugin_run ★');
+  else {
+    const a = p.installOps.at(-1);
+    if (a.action !== 'install') bad.push(`插件页：plugin_run 的 action=${String(a.action)} ★`);
+    if (a.source !== 'npm:pi-guardrails') bad.push(`插件页：plugin_run 的 source=${String(a.source)} ★`);
+    if (a.scope !== 'global') bad.push(`插件页：plugin_run 的 scope=${String(a.scope)} ★`);
+  }
+  if (!p.jobPresent) bad.push('插件页：安装后没有出现任务面板（长任务的输出必须看得见）★');
+  else if (!p.jobHasOutput) bad.push(`插件页：任务面板没有显示命令输出（"${p.jobText}"）★`);
+}
+
 const probeCall = providers.probe.ops.at(-1) ?? null;
 if (!probeCall || probeCall.name !== 'provider_discover') {
   bad.push(`配置页：「检测」没有发出 provider_discover（发的是 ${probeCall?.name ?? '什么都没有'}）★`);

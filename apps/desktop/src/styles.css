@@ -1365,3 +1365,142 @@ body {
 .pg-tab-action:hover { background: var(--pg-hover); color: var(--pg-fg); }
 .pg-tab-action-danger { color: var(--pg-error); font-weight: 600; }
 .pg-tab-action-danger:hover { color: var(--pg-error); background: color-mix(in srgb, var(--pg-error) 16%, transparent); }
+
+/* ============================ 插件页（docs/04 §2.3） ============================
+   版式对齐 DSH 的插件页：分组 → 卡片行 → 行内身份/开关。
+   与「模型」页共用 --pg-* 令牌，所以两页看起来是同一个界面。
+   刻意不做表格：每行的身份是"类型徽标 + 名字 + 来源串"，表格列宽会把
+   长来源串（`git:github.com/…@v1.2.3`）挤成一团。 */
+.pg-plugin { display: flex; flex-direction: column; gap: var(--pg-sp-5); }
+.pg-plugin-loading { color: var(--pg-fg-dim); }
+.pg-plugin-error { color: var(--pg-error); }
+
+.pg-plugin-head { display: flex; align-items: flex-start; gap: var(--pg-sp-5); }
+.pg-plugin-title { margin: 0; font-size: var(--pg-fs-16); font-weight: 600; }
+.pg-plugin-intro { margin: var(--pg-sp-2) 0 0; color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-plugin-head-actions { margin-left: auto; display: flex; gap: var(--pg-sp-3); flex: none; }
+
+.pg-plugin-note,
+.pg-plugin-warn {
+  margin: 0; padding: var(--pg-sp-3) var(--pg-sp-4); border-radius: 6px;
+  font-size: var(--pg-fs-12); line-height: 1.6;
+  border: 1px solid var(--pg-border-l2); background: var(--pg-bg-layer-1); color: var(--pg-fg-dim);
+}
+.pg-plugin-warn { border-color: color-mix(in srgb, var(--pg-warn, #d29922) 40%, transparent); color: var(--pg-fg); }
+.pg-plugin-note code,
+.pg-plugin-warn code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); }
+
+/* 分组 */
+.pg-plugin-group { display: flex; flex-direction: column; gap: var(--pg-sp-3); }
+.pg-plugin-group-head { display: flex; align-items: baseline; gap: var(--pg-sp-3); }
+.pg-plugin-group-title { margin: 0; font-size: var(--pg-fs-13); font-weight: 600; }
+.pg-plugin-group-count {
+  font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+  border: 1px solid var(--pg-border-l2); border-radius: 999px; padding: 0 7px;
+}
+.pg-plugin-group-dir {
+  margin-left: auto; font-family: var(--pg-mono); font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%;
+}
+
+/* 行 */
+.pg-plugin-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pg-plugin-row {
+  border: 1px solid transparent; border-radius: 8px; padding: var(--pg-sp-3) var(--pg-sp-4);
+  background: var(--pg-bg-layer-1);
+}
+.pg-plugin-row:hover { border-color: var(--pg-border-l2); }
+.pg-plugin-row.is-off .pg-plugin-name { color: var(--pg-fg-dim); }
+.pg-plugin-row.is-missing { border-color: color-mix(in srgb, var(--pg-error) 35%, transparent); }
+.pg-plugin-rowline { display: flex; align-items: center; gap: var(--pg-sp-4); min-width: 0; }
+.pg-plugin-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pg-plugin-titleline { display: flex; align-items: center; gap: var(--pg-sp-3); flex-wrap: wrap; }
+.pg-plugin-name {
+  border: 0; background: transparent; padding: 0; cursor: pointer; text-align: left;
+  font: inherit; font-size: var(--pg-fs-14); font-weight: 600; color: var(--pg-fg);
+}
+.pg-plugin-name:hover { text-decoration: underline; }
+.pg-plugin-source {
+  font-family: var(--pg-mono); font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.pg-plugin-tag {
+  font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+  border: 1px solid var(--pg-border-l2); border-radius: 4px; padding: 0 5px;
+}
+.pg-plugin-tag.is-danger { color: var(--pg-error); border-color: color-mix(in srgb, var(--pg-error) 40%, transparent); }
+.pg-plugin-end { margin-left: auto; display: flex; align-items: center; gap: var(--pg-sp-3); flex: none; }
+.pg-plugin-switch { display: inline-flex; flex: none; }
+
+/* 类型徽标：四种来源四种颜色 */
+.pg-plugin-kind {
+  flex: none; font-size: var(--pg-fs-11); padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--pg-border-l2); color: var(--pg-fg-dim); white-space: nowrap;
+}
+.pg-plugin-kind.is-package { color: #58a6ff; border-color: color-mix(in srgb, #58a6ff 40%, transparent); }
+.pg-plugin-kind.is-discovered { color: #3fb950; border-color: color-mix(in srgb, #3fb950 40%, transparent); }
+.pg-plugin-kind.is-path { color: #d29922; border-color: color-mix(in srgb, #d29922 40%, transparent); }
+.pg-plugin-kind.is-builtin { color: var(--pg-fg-dim); }
+
+/* 展开的详情 */
+.pg-plugin-detail {
+  margin: var(--pg-sp-4) 0 0; padding: var(--pg-sp-3) 0 0;
+  border-top: 1px solid var(--pg-border-l2);
+  display: grid; grid-template-columns: max-content 1fr; gap: var(--pg-sp-2) var(--pg-sp-4);
+  font-size: var(--pg-fs-12);
+}
+.pg-plugin-detail dt { color: var(--pg-fg-dim); }
+.pg-plugin-detail dd { margin: 0; min-width: 0; }
+.pg-plugin-path { display: flex; align-items: center; gap: var(--pg-sp-3); flex-wrap: wrap; }
+.pg-plugin-path code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); word-break: break-all; }
+.pg-plugin-entries { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pg-plugin-entries code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); word-break: break-all; }
+.pg-plugin-dim { color: var(--pg-fg-dim); }
+.pg-plugin-empty { margin: 0; color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+
+/* 任务面板：安装/升级的原始输出 */
+.pg-plugin-job {
+  border: 1px solid var(--pg-border-l2); border-radius: 8px; padding: var(--pg-sp-4);
+  background: var(--pg-bg-layer-1); display: flex; flex-direction: column; gap: var(--pg-sp-3);
+}
+.pg-plugin-job-head { display: flex; align-items: center; gap: var(--pg-sp-3); }
+.pg-plugin-job-title { font-size: var(--pg-fs-13); font-weight: 600; }
+.pg-plugin-job-target { font-family: var(--pg-mono); font-size: var(--pg-fs-11); color: var(--pg-fg-dim); font-weight: 400; }
+.pg-plugin-job-actions { margin-left: auto; }
+.pg-plugin-job-cmd { display: flex; gap: var(--pg-sp-3); align-items: baseline; flex-wrap: wrap; }
+.pg-plugin-job-cmd code { font-family: var(--pg-mono); font-size: var(--pg-fs-11); }
+.pg-plugin-job-cwd { font-size: var(--pg-fs-11); color: var(--pg-fg-dim); }
+.pg-plugin-job-log {
+  margin: 0; max-height: 220px; overflow: auto; padding: var(--pg-sp-3);
+  background: var(--pg-bg-layer-2, rgba(0, 0, 0, 0.2)); border-radius: 6px;
+  font-family: var(--pg-mono); font-size: var(--pg-fs-11); line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all;
+}
+.pg-plugin-job-fail { margin: 0; color: var(--pg-error); font-size: var(--pg-fs-12); line-height: 1.6; }
+
+/* 安装对话框 */
+.pg-plugin-dialog-intro { margin: 0 0 var(--pg-sp-3); color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-plugin-dialog-error { margin: var(--pg-sp-2) 0 0; color: var(--pg-error); font-size: var(--pg-fs-12); line-height: 1.6; }
+.pg-plugin-dialog-ok { margin: var(--pg-sp-2) 0 0; color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-plugin-scope { border: 0; margin: var(--pg-sp-5) 0 0; padding: 0; }
+.pg-plugin-scope legend { padding: 0; font-size: var(--pg-fs-12); color: var(--pg-fg-dim); margin-bottom: var(--pg-sp-2); }
+.pg-plugin-scope .ant-radio-wrapper { display: flex; align-items: baseline; margin-bottom: var(--pg-sp-2); }
+.pg-plugin-guide { margin-top: var(--pg-sp-5); border-top: 1px solid var(--pg-border-l2); padding-top: var(--pg-sp-4); }
+.pg-plugin-guide-title { margin: 0 0 var(--pg-sp-3); font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
+.pg-plugin-guide ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--pg-sp-3); }
+.pg-plugin-guide li { display: flex; align-items: flex-start; gap: var(--pg-sp-3); }
+.pg-plugin-guide-index {
+  flex: none; width: 18px; height: 18px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; font-size: var(--pg-fs-11);
+  background: var(--pg-bg-layer-2, rgba(255, 255, 255, 0.08)); color: var(--pg-fg-dim);
+}
+.pg-plugin-guide-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pg-plugin-guide-name { font-size: var(--pg-fs-12); font-weight: 600; }
+.pg-plugin-guide-hint { font-size: var(--pg-fs-11); color: var(--pg-fg-dim); line-height: 1.6; }
+.pg-plugin-guide-example { font-size: var(--pg-fs-11); color: var(--pg-fg-dim); }
+.pg-plugin-guide-example code { font-family: var(--pg-mono); }
+.pg-plugin-guide-safety {
+  margin: var(--pg-sp-4) 0 0; padding: var(--pg-sp-3); border-radius: 6px; font-size: var(--pg-fs-11);
+  line-height: 1.7; color: var(--pg-fg); background: color-mix(in srgb, #d29922 12%, transparent);
+  border: 1px solid color-mix(in srgb, #d29922 30%, transparent);
+}

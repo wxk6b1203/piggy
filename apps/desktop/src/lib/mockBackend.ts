@@ -269,6 +269,153 @@ const TAB_SCOPED = new Set([
   'tab_sleep',
 ]);
 
+
+/* ---------------- 插件页的 mock 状态（docs/04 §2.3） ----------------
+   mock 的职责不是"像真的 pi 一样加载扩展"，而是让**门禁能驱动整条交互链**：
+   点开关必须真的改状态、点安装必须真的产生一个任务与输出、点删除必须真的把行去掉。
+   所以这里维护一份可变状态，写入就改它。
+
+   数据覆盖**四种来源各一条 + 一条缺失**——门禁据此核对"类型徽标/启用状态/
+   缺失标记"是不是按来源分别渲染的。 */
+
+/** 门禁据此核对"点了开关之后后端收到了什么、界面有没有跟着变"。 */
+export const pluginOps: { name: string; args: Record<string, unknown> }[] = [];
+
+interface MockPluginRow {
+  key: string; name: string; kind: string; kindLabel: string;
+  sourceKind: string; sourceKindLabel: string; scope: string; scopeLabel: string;
+  source: string; path: string; exists: boolean; enabled: boolean; enabledBy: string;
+  version: string | null; description: string | null; entries: string[];
+  removable: boolean; updatable: boolean; loadRank: number;
+}
+
+/** 四种来源各一条，外加一条"声明了但没装上"。 */
+const mockPluginRows: MockPluginRow[] = [
+  {
+    key: 'project:discovered:/mock/project/.pi/extensions/local.ts',
+    name: 'local.ts', kind: 'discovered', kindLabel: '发现目录',
+    sourceKind: 'discovered', sourceKindLabel: '发现目录',
+    scope: 'project', scopeLabel: '本项目',
+    source: '/mock/project/.pi/extensions/local.ts',
+    path: '/mock/project/.pi/extensions/local.ts',
+    exists: true, enabled: true, enabledBy: '默认加载（没有任何规则排除它）',
+    version: null, description: null,
+    entries: ['/mock/project/.pi/extensions/local.ts'],
+    removable: true, updatable: false, loadRank: 1,
+  },
+  {
+    key: 'global:package:npm:pi-guardrails',
+    name: 'pi-guardrails', kind: 'package', kindLabel: '插件包',
+    sourceKind: 'npm', sourceKindLabel: 'npm 包',
+    scope: 'global', scopeLabel: '全局',
+    source: 'npm:pi-guardrails',
+    path: '/mock/home/.pi/agent/npm/node_modules/pi-guardrails',
+    exists: true, enabled: true,
+    enabledBy: '这条包在 settings.json 的 packages 里没有过滤规则 → pi 加载它提供的全部资源',
+    version: '0.1.0', description: 'pi extension: read-before-write guard',
+    entries: ['/mock/home/.pi/agent/npm/node_modules/pi-guardrails/index.ts'],
+    removable: true, updatable: true, loadRank: 4,
+  },
+  {
+    key: 'global:package:npm:@me/never-installed',
+    name: '@me/never-installed', kind: 'package', kindLabel: '插件包',
+    sourceKind: 'npm', sourceKindLabel: 'npm 包',
+    scope: 'global', scopeLabel: '全局',
+    source: 'npm:@me/never-installed',
+    path: '/mock/home/.pi/agent/npm/node_modules/@me/never-installed',
+    exists: false, enabled: true,
+    enabledBy: '这条包在 settings.json 的 packages 里没有过滤规则 → pi 加载它提供的全部资源',
+    version: null, description: null, entries: [],
+    removable: true, updatable: true, loadRank: 4,
+  },
+  {
+    key: 'global:discovered:/mock/home/.pi/agent/extensions/quiet.ts',
+    name: 'quiet.ts', kind: 'discovered', kindLabel: '发现目录',
+    sourceKind: 'discovered', sourceKindLabel: '发现目录',
+    scope: 'global', scopeLabel: '全局',
+    source: '/mock/home/.pi/agent/extensions/quiet.ts',
+    path: '/mock/home/.pi/agent/extensions/quiet.ts',
+    exists: true, enabled: false,
+    enabledBy: '被 /mock/home/.pi/agent/settings.json 的 - 规则强制排除',
+    version: null, description: null,
+    entries: ['/mock/home/.pi/agent/extensions/quiet.ts'],
+    removable: true, updatable: false, loadRank: 3,
+  },
+  {
+    key: 'builtin:builtin:llama.cpp',
+    name: 'llama.cpp', kind: 'builtin', kindLabel: 'pi 内置',
+    sourceKind: 'builtin', sourceKindLabel: '内置',
+    scope: 'builtin', scopeLabel: 'pi 内置',
+    source: 'llama.cpp', path: '(pi 内置：packages/coding-agent/src/extensions/llama)',
+    exists: true, enabled: true,
+    enabledBy: 'pi 内置扩展：随 pi 发布，不可增删，-ne 也关不掉',
+    version: null, description: null, entries: [],
+    removable: false, updatable: false, loadRank: -1,
+  },
+];
+
+const mockPluginJobs = new Map<string, {
+  id: string; action: string; target: string; command: string; cwd: string;
+  running: boolean; exitCode: number | null; lines: string[]; truncated: boolean;
+  error: string | null; startedMs: number;
+}>();
+let mockJobSeq = 0;
+
+function emitPlugin(channel: string, payload: unknown) {
+  const set = bus.get(channel);
+  if (!set) return;
+  for (const h of set) h(payload);
+}
+
+function mockPluginOverview() {
+  const groups = [
+    { id: 'project', label: '本项目', dir: '/mock/project/.pi', settingsPath: '/mock/project/.pi/settings.json' },
+    { id: 'global', label: '全局', dir: '/mock/home/.pi/agent', settingsPath: '/mock/home/.pi/agent/settings.json' },
+    { id: 'builtin', label: 'pi 内置', dir: '（随 pi 发布）', settingsPath: null },
+  ].map((g) => {
+    const plugins = mockPluginRows.filter((r) => r.scope === g.id);
+    return { ...g, count: plugins.length, plugins };
+  });
+  const enabled = mockPluginRows.filter((r) => r.enabled).length;
+  return {
+    agentDir: '/mock/home/.pi/agent',
+    agentDirFromEnv: false,
+    projectDir: '/mock/project',
+    groups,
+    warnings: [],
+    counts: {
+      total: mockPluginRows.length,
+      enabled,
+      disabled: mockPluginRows.length - enabled,
+      missing: mockPluginRows.filter((r) => !r.exists).length,
+      updatable: mockPluginRows.filter((r) => r.updatable).length,
+    },
+  };
+}
+
+/** 与 Rust 的 `plugin_check_source` 同一条规则：裸包名要被指出来。 */
+function mockCheckSource(source: string) {
+  const s = source.trim();
+  if (!s) return { ok: false, problem: '请填写来源', hint: '', sourceKind: 'local', sourceKindLabel: '本地路径' };
+  if (s.startsWith('npm:')) {
+    return { ok: true, problem: null, hint: '', sourceKind: 'npm', sourceKindLabel: 'npm 包' };
+  }
+  if (['git:', 'github:', 'http:', 'https:', 'ssh://', 'git://'].some((p) => s.startsWith(p))) {
+    return { ok: true, problem: null, hint: '', sourceKind: 'git', sourceKindLabel: 'git 仓库' };
+  }
+  const bare = /^@[^/]+\/[^/]+$/.test(s) || (!s.includes('/') && /^[a-z0-9][a-z0-9._~-]*$/.test(s));
+  if (bare) {
+    return {
+      ok: false,
+      problem: 'pi 会把裸名字当本地路径，而不是 npm 包名',
+      hint: `想装 npm 包请写成 npm:${s}`,
+      sourceKind: 'local',
+      sourceKindLabel: '本地路径',
+    };
+  }
+  return { ok: true, problem: null, hint: '', sourceKind: 'local', sourceKindLabel: '本地路径' };
+}
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {
     // 与真机一致：收割上一 JS 上下文遗留的全部 tab（registry 清空）。
@@ -565,6 +712,74 @@ pub fn main() {
      auth.json 空着——这是本机 `~/.pi/agent` 的真实样子（用户用 cc-switch 那类工具写的）。
      以前这里只给 auth.json 的假条目，于是"配置页看不到自己真正的提供商"这件事
      在 mock 下永远复现不出来。 */
+  /* ---------------- 插件页（docs/04 §2.3） ---------------- */
+  plugin_overview: () => mockPluginOverview(),
+  plugin_jobs: () => ({ jobs: [...mockPluginJobs.values()] }),
+  plugin_job_cancel: (args) => {
+    const id = String(args.jobId ?? '');
+    const job = mockPluginJobs.get(id);
+    if (job) {
+      job.running = false;
+      job.exitCode = -1;
+      job.error = '已取消';
+      emitPlugin(`plugin:done:${id}`, { id, exitCode: -1, error: '已取消', ok: false });
+    }
+    return {};
+  },
+  plugin_project_trust: () => ({
+    trusted: true,
+    matched: '/mock/project',
+    dir: '/mock/project',
+    trustFile: '/mock/home/.pi/agent/trust.json',
+  }),
+  plugin_check_source: (args) => mockCheckSource(String(args.source ?? '')),
+  plugin_set_enabled: (args) => {
+    const key = String(args.key ?? '');
+    const row = mockPluginRows.find((r) => r.key === key);
+    if (!row) throw new Error(`找不到插件 ${key}`);
+    if (row.kind === 'builtin') throw new Error('pi 内置扩展不能停用');
+    row.enabled = args.enabled === true;
+    row.enabledBy = row.enabled
+      ? '默认加载（没有任何规则排除它）'
+      : '被 /mock/home/.pi/agent/settings.json 的 - 规则强制排除';
+    return { ok: true };
+  },
+  plugin_delete_discovered: (args) => {
+    const key = String(args.key ?? '');
+    const i = mockPluginRows.findIndex((r) => r.key === key);
+    if (i < 0) throw new Error(`找不到插件 ${key}`);
+    mockPluginRows.splice(i, 1);
+    return { ok: true };
+  },
+  plugin_remove_path: () => ({ ok: true }),
+  plugin_add_path: () => ({ ok: true }),
+  plugin_run: (args) => {
+    const action = String(args.action ?? 'install');
+    const source = String(args.source ?? '(全部)');
+    const id = `job-${++mockJobSeq}`;
+    const job = {
+      id,
+      action,
+      target: source,
+      command: `/mock/bin/pi ${action} ${source}`,
+      cwd: '/mock/project',
+      running: true,
+      exitCode: null as number | null,
+      lines: [`> pi ${action} ${source}`, 'added 1 package in 0.4s'],
+      truncated: false,
+      error: null as string | null,
+      startedMs: Date.now(),
+    };
+    mockPluginJobs.set(id, job);
+    // 真机是流式的；mock 里异步收尾，好让"运行中 → 已完成"这条状态转换也能被门禁看到
+    setTimeout(() => {
+      job.running = false;
+      job.exitCode = 0;
+      emitPlugin(`plugin:log:${id}`, { id, stream: 'stdout', line: 'done' });
+      emitPlugin(`plugin:done:${id}`, { id, exitCode: 0, error: null, ok: true });
+    }, 120);
+    return { jobId: id };
+  },
   provider_overview: () => ({
     providers: providerRows(),
     catalog: CATALOG_SUBSET,
@@ -956,6 +1171,7 @@ export async function mockInvoke<T>(name: string, args?: Record<string, unknown>
   await new Promise((r) => setTimeout(r, 30)); // 模拟 IPC 延迟
   // 提供商配置的调用记录（门禁用）。统一在入口记，将来加命令不会漏。
   if (name.startsWith('provider_')) providerOps.push({ name, args: { ...(args ?? {}) } });
+  if (name.startsWith('plugin_')) pluginOps.push({ name, args: { ...(args ?? {}) } });
   if (name === 'pi_prompt' || name === 'pi_steer') {
     void mockPrompt(args ?? {});
     return true as T;

@@ -336,3 +336,160 @@ fn provider_writes_reject_unusable_input() {
     let written = on_disk["providers"].as_object().map(|o| o.len()).unwrap_or(0);
     assert_eq!(written, 0, "被拒的请求还是写进去了：{on_disk}");
 }
+
+/* ============================ 插件（docs/03 §2.15） ============================ */
+
+/// `plugin_overview` 的行形状。**这里手写的键名是独立的一份**，与
+/// `src/lib/plugins.ts` 的 `PluginRow` 接口各锁一遍——两边同时改错才可能漏。
+///
+/// 为什么值得单锁：插件页行里的 `key` 是启停/删除的回传标识，
+/// 形状变了而前端没跟着改，表现是"点了开关什么都没发生"（前端拿到 undefined 的 key），
+/// 而不是报错。
+#[test]
+fn plugin_overview_row_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = tmp.path().join("agent");
+    let proj = tmp.path().join("proj");
+    std::fs::create_dir_all(agent.join("npm/node_modules/@a/b")).unwrap();
+    std::fs::create_dir_all(agent.join("extensions")).unwrap();
+    std::fs::create_dir_all(proj.join(".pi/extensions")).unwrap();
+    std::fs::write(agent.join("extensions/g.ts"), "export default 1").unwrap();
+    std::fs::write(proj.join(".pi/extensions/p.ts"), "export default 1").unwrap();
+    std::fs::write(agent.join("npm/node_modules/@a/b/index.ts"), "export default 1").unwrap();
+    std::fs::write(
+        agent.join("npm/node_modules/@a/b/package.json"),
+        r#"{"name":"@a/b","version":"1.2.3","description":"d","pi":{"extensions":["./index.ts"]}}"#,
+    )
+    .unwrap();
+    std::fs::write(agent.join("settings.json"), r#"{"packages":["npm:@a/b"]}"#).unwrap();
+
+    let out = piggy_lib::plugin::inventory::overview(&agent, Some(&proj)).expect("overview ok");
+
+    for key in ["agentDir", "agentDirFromEnv", "projectDir", "groups", "warnings", "counts"] {
+        assert!(out.get(key).is_some(), "plugin_overview 缺少字段 {key}：{out}");
+    }
+    let c = &out["counts"];
+    for key in ["total", "enabled", "disabled", "missing", "updatable"] {
+        assert!(c[key].is_number(), "counts 缺少数字字段 {key}：{c}");
+    }
+    let groups = out["groups"].as_array().expect("groups 是数组");
+    assert_eq!(
+        groups.iter().map(|g| g["id"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["project", "global", "builtin"],
+        "分组顺序必须与 pi 的加载优先级一致"
+    );
+    for g in groups {
+        for key in ["id", "label", "dir", "settingsPath", "count", "plugins"] {
+            assert!(g.get(key).is_some(), "分组缺少字段 {key}：{g}");
+        }
+    }
+
+    let rows: Vec<&serde_json::Value> = groups
+        .iter()
+        .flat_map(|g| g["plugins"].as_array().unwrap())
+        .collect();
+    // 1 个项目发现 + 1 个全局发现 + 1 个包 + N 个内置
+    assert_eq!(rows.len(), 3 + rows.iter().filter(|r| r["kind"] == "builtin").count());
+    for row in &rows {
+        for key in [
+            "key", "name", "kind", "kindLabel", "sourceKind", "sourceKindLabel", "scope", "scopeLabel",
+            "source", "path", "exists", "enabled", "enabledBy", "version", "description", "entries",
+            "removable", "updatable", "loadRank",
+        ] {
+            assert!(row.get(key).is_some(), "插件行缺少字段 {key}：{row}");
+        }
+        assert!(row["enabled"].is_boolean());
+        assert!(row["exists"].is_boolean());
+        assert!(row["removable"].is_boolean());
+        assert!(row["updatable"].is_boolean());
+        assert!(row["loadRank"].is_number());
+        assert!(row["entries"].is_array());
+        // key 是启停/删除的回传标识：必须是 "<scope>:<kind>:<source>" 且 scope 合法
+        let key = row["key"].as_str().unwrap();
+        let scope = key.split(':').next().unwrap();
+        assert!(
+            ["project", "global", "builtin"].contains(&scope),
+            "key 的 scope 段不可识别：{key}"
+        );
+        assert_eq!(key.split(':').nth(1).unwrap(), row["kind"].as_str().unwrap());
+    }
+    // 内置那一条：名字必须来自 builtInExtensions，不能是从说明文字里取的文件名
+    let builtin = rows.iter().find(|r| r["kind"] == "builtin").expect("应有内置");
+    assert!(
+        !builtin["name"].as_str().unwrap().ends_with(')'),
+        "内置名字取错了（从说明性路径里取了文件名）：{}",
+        builtin["name"]
+    );
+    assert_eq!(builtin["removable"], false);
+    assert_eq!(builtin["updatable"], false);
+}
+
+/// 启停写下去的**正是 pi 认的**形状。
+///
+/// 这是全页最容易"看起来成功其实没用"的地方：pi 没有 enabled 字段，
+/// 停用只有 `-`/`!` 通配符（松散扩展）与 `autoload:false`（包）两条路。
+/// 写错形状 pi 不报错，只是**继续加载**。
+#[test]
+fn plugin_enable_writes_pis_own_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = tmp.path().join("agent");
+    std::fs::create_dir_all(agent.join("extensions")).unwrap();
+    std::fs::write(agent.join("extensions/foo.ts"), "export default 1").unwrap();
+    std::fs::write(agent.join("settings.json"), "{}").unwrap();
+
+    let key = format!("global:discovered:{}", agent.join("extensions/foo.ts").display());
+    let out = piggy_lib::plugin::set_enabled_at(&agent, &key, false, None).expect("停用 ok");
+    assert_eq!(
+        out["settings"]["extensions"],
+        serde_json::json!(["-extensions/foo.ts"]),
+        "停用发现目录里的扩展要写精确排除规则（pi 的 config-selector 就是这么写的）"
+    );
+    // 读写闭环：写完之后盘点必须同意它被停用了
+    let v = piggy_lib::plugin::inventory::overview(&agent, None).unwrap();
+    let row = &v["groups"][0]["plugins"][0];
+    assert_eq!(row["enabled"], false);
+    assert!(row["enabledBy"].as_str().unwrap().contains("- 规则"));
+
+    // 包：停用必须落成 autoload:false（字符串形式 = 全加载，塌回去就等于没停用）
+    std::fs::write(agent.join("settings.json"), r#"{"packages":["npm:@a/b"]}"#).unwrap();
+    let off = piggy_lib::plugin::set_enabled_at(&agent, "global:package:npm:@a/b", false, None).unwrap();
+    assert_eq!(off["settings"]["packages"][0]["autoload"], false);
+    let on = piggy_lib::plugin::set_enabled_at(&agent, "global:package:npm:@a/b", true, None).unwrap();
+    assert_eq!(
+        on["settings"]["packages"],
+        serde_json::json!(["npm:@a/b"]),
+        "启用要塌回字符串形式，与 pi install 写出来的一致"
+    );
+}
+
+/// 裸包名必须在**动手之前**被拦下：pi 的 `isLocalPath` 只看前缀，
+/// `@scope/pkg` 会被当本地路径，实测报 `Path does not exist: …/@scope/pkg`。
+#[test]
+fn plugin_check_source_catches_bare_package_names() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let bare = rt
+        .block_on(piggy_lib::plugin::plugin_check_source("@scope/pkg".into()))
+        .unwrap();
+    assert_eq!(bare["ok"], false);
+    assert!(bare["hint"].as_str().unwrap().contains("npm:@scope/pkg"));
+
+    let ok = rt
+        .block_on(piggy_lib::plugin::plugin_check_source("npm:@scope/pkg".into()))
+        .unwrap();
+    assert_eq!(ok["ok"], true);
+    assert_eq!(ok["sourceKind"], "npm");
+}
+
+/// 插件命令行的参数形状（与 `pi install --help` 逐字对齐）。
+#[test]
+fn plugin_cli_plan_matches_pi_flags() {
+    let g = piggy_lib::plugin::cli::plan("install", Some("npm:@a/b"), "global", None).unwrap();
+    assert_eq!(g.args, vec!["install", "npm:@a/b"]);
+    let p = piggy_lib::plugin::cli::plan("install", Some("npm:@a/b"), "project", Some("/p")).unwrap();
+    assert_eq!(p.args, vec!["install", "npm:@a/b", "--local", "--approve"]);
+    // 升级的默认目标**不能**是 pi 自己（pi 的默认是 self，会升级二进制）
+    let u = piggy_lib::plugin::cli::plan("update", None, "global", None).unwrap();
+    assert_eq!(u.args, vec!["update", "--extensions"]);
+    // 项目作用域没有目录 → 报错，而不是悄悄写到全局
+    assert!(piggy_lib::plugin::cli::plan("install", Some("npm:@a/b"), "project", None).is_err());
+}

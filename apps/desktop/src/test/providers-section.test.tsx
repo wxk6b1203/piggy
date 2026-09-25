@@ -463,10 +463,10 @@ describe('模型配置页：添加与删除', () => {
 });
 
 describe('设置页导航', () => {
-  it('左导航三节，默认停在「模型」，切到「高级」显示原始 JSON 编辑器', async () => {
+  it('左导航四节，默认停在「模型」，切到「高级」显示原始 JSON 编辑器', async () => {
     mountDom(<SettingsTab />);
     await flush();
-    expect(qa('.pg-settings-navitem').map((b) => b.textContent)).toEqual(['模型', '通用设置', '高级']);
+    expect(qa('.pg-settings-navitem').map((b) => b.textContent)).toEqual(['模型', '插件', '通用设置', '高级']);
     expect(q('.pg-providers')).toBeTruthy();
     await act(async () => {
       byText<HTMLButtonElement>('.pg-settings-navitem', '高级')!.click();
