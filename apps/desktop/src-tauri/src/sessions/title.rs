@@ -81,7 +81,13 @@ const PER_MESSAGE_CHARS: usize = 400;
 const GENERATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 从会话文件里读出来的生成素材。
+///
+/// `rename_all = "camelCase"`：**跨 IPC 的形状一律 camelCase**。
+/// 前端是 TypeScript，读的是 `elapsedMs`；不加这一行 Rust 会发 `elapsed_ms`，
+/// 前端拿到 `undefined` —— 而且**不会报错**，只会把 `NaN` 和 `undefined`
+/// 直接渲染给用户（这个 bug 真的发生过，见 `generated_result_keys_are_camel_case`）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TitleSource {
     pub cwd: Option<String>,
     /// 会话最后一次 `model_change` 的 provider（没有就 None → 用全局默认）
@@ -297,6 +303,7 @@ pub fn build_prompt(source: &TitleSource, strategy: TitleStrategy, max_chars: u3
 
 /// 生成结果（**返回给前端的形状，契约由 tests 锁死**）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Generated {
     /// 收拾干净、已按上限截断的标题
     pub title: String,
@@ -704,6 +711,85 @@ mod tests {
         }
     }
 
+    /// **跨 IPC 的键必须是 camelCase。**
+    ///
+    /// 这条用例是补票：第一版 `Generated` 忘了写 `rename_all = "camelCase"`，
+    /// 于是前端 `describeRun()` 里 `r.elapsedMs / 1000` 得到 `NaN`、
+    /// `r.promptChars` 得到 `undefined`，用户看到的提示是
+    /// 「（cc-switch-zhipu-glm/glm-5.3-flash · NaNs · 素材 undefined 字）」。
+    ///
+    /// 为什么以前没被发现：前端单测 mock 的是 `session_title_generate`，它返回的是
+    /// **手写的 camelCase**——mock 与 Rust 各写各的，谁也没对着谁。
+    /// 所以这里逐个键名写死（不复用 struct 字段名），与
+    /// `src/test/session-title-shape.test.ts` 的那份清单互为独立金标。
+    #[test]
+    fn generated_result_keys_are_camel_case() {
+        let g = Generated {
+            title: "t".into(),
+            raw: "r".into(),
+            provider: Some("p".into()),
+            model_id: Some("m".into()),
+            elapsed_ms: 12,
+            prompt_chars: 34,
+            usable: true,
+        };
+        let v = serde_json::to_value(&g).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        for k in [
+            "title",
+            "raw",
+            "provider",
+            "modelId",
+            "elapsedMs",
+            "promptChars",
+            "usable",
+        ] {
+            assert!(keys.contains(&k), "生成结果缺少 {k}（实际 {keys:?}）");
+        }
+        // 反向：绝不能出现 snake_case 的那几个（正是这次的事故形状）
+        for bad in ["model_id", "elapsed_ms", "prompt_chars"] {
+            assert!(!keys.contains(&bad), "生成结果漏出了 snake_case 键 {bad}：{keys:?}");
+        }
+        // 数字必须是数字（前端要拿去做算术；null/字符串都会渲染成 NaN/undefined）
+        assert!(v["elapsedMs"].is_number(), "{}", v["elapsedMs"]);
+        assert!(v["promptChars"].is_number(), "{}", v["promptChars"]);
+    }
+
+    /// `session_title_source` 的形状同样锁一遍（它是另一个手拼的 json!）。
+    #[test]
+    fn source_description_keys_are_camel_case() {
+        let src = TitleSource {
+            cwd: Some("/p".into()),
+            provider: Some("p".into()),
+            model_id: Some("m".into()),
+            first_message: Some("f".into()),
+            recent_messages: vec!["r".into()],
+            user_message_count: 1,
+            current_name: None,
+            message_count: 2,
+        };
+        let v = describe(&src, TitleStrategy::Both, 20);
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        for k in [
+            "cwd",
+            "provider",
+            "modelId",
+            "firstMessage",
+            "recentMessages",
+            "userMessageCount",
+            "messageCount",
+            "currentName",
+            "strategy",
+            "maxChars",
+            "promptChars",
+        ] {
+            assert!(keys.contains(&k), "素材描述缺少 {k}（实际 {keys:?}）");
+        }
+        for bad in ["model_id", "first_message", "recent_messages", "max_chars"] {
+            assert!(!keys.contains(&bad), "素材描述漏出了 snake_case 键 {bad}");
+        }
+    }
+
     /// 模型选择：覆盖 > 会话自己的 > 都不给，且**成对**生效。
     #[test]
     fn model_selection_prefers_the_override_then_the_session() {
@@ -759,3 +845,4 @@ mod tests {
         assert_eq!(v, TitleStrategy::First);
     }
 }
+

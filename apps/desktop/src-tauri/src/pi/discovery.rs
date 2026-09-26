@@ -59,7 +59,13 @@ impl PiSource {
     }
 }
 
+/// 跨 IPC 的形状一律 camelCase（前端读的是 `fromEnv`）。
+///
+/// ⚠️ 这里曾经漏了 `rename_all`，于是 Rust 发 `from_env`、前端读 `fromEnv`、
+/// 两边都不报错 —— 「被环境变量 PI_BIN 覆盖」那条警告**从来没显示过**。
+/// 同类事故见 `sessions/title.rs::Generated`（会把 `NaN` 渲染给用户）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PiBinary {
     pub path: PathBuf,
     pub version: String,

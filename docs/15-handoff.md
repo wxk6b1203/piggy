@@ -360,6 +360,23 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     Piggy 里这类"多入口"已经不少（新建会话的 ⌘N 与图标轨、打开方式的分屏假设），
     做法统一是：入口只负责"拿到参数"，行为写在一个函数里。
 
+37. **Rust 的 struct 漏了 `rename_all = "camelCase"` 时，两边都不会报错——只是把 `NaN` 渲染给用户。**
+    真机点「生成标题」，用户收到的是：
+    `标题已更新为「问候与日期询问」（cc-switch-zhipu-glm/glm-5.3-flash · NaNs · 素材 undefined 字）`。
+    根因是 `Generated` 发 `elapsed_ms` / `prompt_chars` / `model_id`，前端读 `elapsedMs` /
+    `promptChars` / `modelId`：`undefined / 1000` 是 `NaN`，模板串照单全收。
+    **为什么门禁全绿也抓不到**：前端单测与浏览器门禁跑的都是 **mock**，而 mock 是按前端读法
+    手写的——两边自洽，真机那一侧没有任何检查。这与规矩 27 是同一件事的另一面：
+    **两份手写清单互为金标**，前提是**两侧都有测试各自对着自己的实现**。
+    修法：① 结构加 `rename_all`；② `ipc_contract.rs` 里逐个键名写死（不复用字段名）；
+    ③ 前端在 IPC 边界归一化（`normalizeTitleResult`），让任何漂移退化成"少说一句"
+    而不是 `NaN`。
+    顺带扫出**同类的第二起**：`PiBinary.from_env` vs 前端 `fromEnv`——
+    表现是「被 `PI_BIN` 覆盖」那条警告**从来没显示过**（静默缺失，比 NaN 更难发现）。
+    ⚠️ 扫描时**差点改坏一个对的**：`PathApplication` 字段叫 `is_default`，线格式却是
+    `default`（字段级 `#[serde(rename)]`）。**判形状要看真正的序列化结果，不要看字段名**——
+    这条被新加的契约测试当场拦下，也写进了那条用例的注释里。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |

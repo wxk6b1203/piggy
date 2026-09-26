@@ -493,3 +493,74 @@ fn plugin_cli_plan_matches_pi_flags() {
     // 项目作用域没有目录 → 报错，而不是悄悄写到全局
     assert!(piggy_lib::plugin::cli::plan("install", Some("npm:@a/b"), "project", None).is_err());
 }
+
+/// **跨 IPC 的键必须是 camelCase**（docs/15 规矩 37）。
+///
+/// 这一条是三次真实事故换来的，且三次的形状完全一样：Rust 的 struct 漏了
+/// `#[serde(rename_all = "camelCase")]`，前端按 camelCase 读 —— **两边都不报错**：
+///
+/// | 结构 | Rust 发出去 | 前端读 | 表现 |
+/// |---|---|---|---|
+/// | `Generated` | `elapsed_ms` / `prompt_chars` | `elapsedMs` / `promptChars` | 提示里出现 `NaNs`、`素材 undefined 字` |
+/// | `PiBinary` | `from_env` | `fromEnv` | 「被 PI_BIN 覆盖」那条警告**从未显示过** |
+///
+/// 反例（**不是** bug，别照着"修"）：`PathApplication` 的字段叫 `is_default`，
+/// 线格式却是 `default` —— 因为它带了字段级的 `#[serde(rename = "default")]`。
+/// 我第一版按字段名猜它坏了、还"顺手修了"，被这条测试当场拦下：
+/// **判形状要看真正的序列化结果，不要看字段名。**
+///
+/// 为什么门禁全绿也抓不到：前端浏览器门禁跑的是 **mock**，mock 是按前端读法手写的，
+/// 两边自洽；真机那一侧没有任何检查。所以形状必须在**这一层**逐个键锁死。
+#[test]
+fn plugin_and_title_payloads_are_camel_case() {
+    use serde_json::json;
+
+    // Generated（标题生成结果）
+    let g = piggy_lib::sessions::title::Generated {
+        title: "t".into(),
+        raw: "r".into(),
+        provider: None,
+        model_id: Some("m".into()),
+        elapsed_ms: 1,
+        prompt_chars: 2,
+        usable: true,
+    };
+    let v = serde_json::to_value(&g).unwrap();
+    for k in ["modelId", "elapsedMs", "promptChars"] {
+        assert!(v.get(k).is_some(), "Generated 缺 {k}：{v}");
+    }
+    for bad in ["model_id", "elapsed_ms", "prompt_chars"] {
+        assert!(v.get(bad).is_none(), "Generated 漏出 snake_case {bad}：{v}");
+    }
+    assert!(v["elapsedMs"].is_number() && v["promptChars"].is_number());
+
+    // PiBinary（pi 二进制解析结果）——这条事故的表现是"警告从不出现"
+    let bin = piggy_lib::pi::discovery::PiBinary {
+        path: std::path::PathBuf::from("/usr/local/bin/pi"),
+        version: "0.87.1".into(),
+        source: piggy_lib::pi::discovery::PiSource::System,
+        via: "PATH".into(),
+        from_env: true,
+    };
+    let b = serde_json::to_value(&bin).unwrap();
+    assert!(b.get("fromEnv").is_some(), "PiBinary 缺 fromEnv：{b}");
+    assert!(b.get("from_env").is_none(), "PiBinary 漏出 from_env：{b}");
+    assert_eq!(b["fromEnv"], json!(true), "覆盖标志必须是布尔");
+
+    // PathApplication（文件关联）：**这里刻意锁的是 `default`**。
+    // 字段名是 `is_default`，但字段级 `#[serde(rename = "default")]` 让它线格式是 `default`
+    // ——按名字猜会得到相反的结论（我第一次就猜错了）。
+    let app = piggy_lib::open_in_app::paths::PathApplication {
+        id: "/Applications/Typora.app".into(),
+        name: "Typora.app".into(),
+        is_default: true,
+        icon: None,
+    };
+    let a = serde_json::to_value(&app).unwrap();
+    assert_eq!(
+        a["default"],
+        json!(true),
+        "PathApplication 的默认项线格式变了（前端读 a.default）：{a}"
+    );
+    assert!(a.get("isDefault").is_none(), "PathApplication 不该发 isDefault：{a}");
+}

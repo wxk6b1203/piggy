@@ -144,6 +144,8 @@ export async function loadPathApplications(
       .map((a) => ({
         id: a.id,
         name: typeof a.name === 'string' && a.name ? a.name : a.id,
+        // 线格式是 `default`：Rust 侧字段叫 is_default，但带 `#[serde(rename = "default")]`
+        // （paths.rs）——字段名与线格式不一致是**故意的**，别按名字猜。
         default: a.default === true,
         icon: typeof a.icon === 'string' && a.icon ? a.icon : null,
       }));
