@@ -16,10 +16,20 @@ import { CodeBlock, splitFences } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
+import { DisclosureRow } from '@/features/common/DisclosureRow';
+import { ToolRow } from './ToolRow';
+import { firstLine } from './toolRowModel';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 import { formatExactTokens } from '@/lib/tokenFormat';
 
-export function MessageView({ view }: { view: MessageView }) {
+export function MessageView({
+  view,
+  call,
+}: {
+  view: MessageView;
+  /** 该行的工具调用参数（`toolCalls[toolCallId]`，见 stores/messages.ts） */
+  call?: { name: string; args?: Record<string, unknown> } | undefined;
+}) {
   const m = view.message as AgentMessage & { content?: unknown };
   const role = view.role;
   if (role === 'user') {
@@ -53,19 +63,20 @@ export function MessageView({ view }: { view: MessageView }) {
     );
   }
   if (role === 'toolResult') {
-    const rm = m as { toolName?: string; content?: ContentBlock[]; isError?: boolean };
+    const rm = m as { toolName?: string; toolCallId?: string; content?: ContentBlock[]; isError?: boolean };
     const text = textOf(rm.content);
-    // 工具结果走**同一个代码卡片**（04 §5.2）：diff 认出来按 diff 上色 + 增删行底色，
-    // 跑命令类工具按 shell 上色，其余纯文本 —— 但三者都拿到折叠、行数、复制、超高展开。
-    // 旧实现是一个裸 `<pre max-height:240px>`：没有高亮、没有折叠、第 N 行之后够不到。
-    const { lang } = inferToolLang(rm.toolName, text);
+    /* 工具结果 = **一行窄行**（`运行命令 · pnpm test`），展开才是那块代码卡片。
+       用户 2026-09-23："多工具消息时主工作区空间利用率非常低，能不能跟 dsh 一样做窄折叠"——
+       实测：6 行 read 结果此前占 258px、3 行 bash 占 201px，而 DSH 的一行是 24px（docs/12 §3.3、
+       DSH `ToolRow`/`DisclosureRow`）。摘要取自调用参数（store 的 `toolCalls` 索引）。 */
     return (
-      <div className={`pg-message pg-toolresult${rm.isError ? ' pg-error' : ''}`}>
-        <div className="pg-role">
-          <Icon name={rm.isError ? 'error' : 'check'} size={12} /> {rm.toolName ?? 'tool'}
-        </div>
-        {text ? <CodeBlock code={text} lang={lang} title={rm.toolName ?? 'tool'} collapsible /> : null}
-      </div>
+      <ToolRow
+        toolName={rm.toolName}
+        toolCallId={rm.toolCallId}
+        args={call?.args}
+        isError={rm.isError === true}
+        text={text}
+      />
     );
   }
   if (role === 'bashExecution') {
@@ -141,6 +152,37 @@ export function MessageView({ view }: { view: MessageView }) {
     );
   }
   return null;
+}
+
+/** 思考行的窄行包装：受控展开 + 首行摘要（DSH `message.think`）。 */
+function ThinkingRow({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const summary = text ? firstLine(text) : '';
+  return (
+    <div className="pg-thinkrow" data-thinking-row data-open={open || undefined}>
+      <DisclosureRow
+        icon={<Icon name="lightbulb" size={14} />}
+        title="思考"
+        open={open}
+        expandable={text !== ''}
+        onToggle={() => setOpen((v) => !v)}
+        rowClassName="pg-thinkrow-head"
+        bodyProps={{ 'data-thinking-body': '1' }}
+        collapsedContent={
+          summary ? (
+            <>
+              <span className="pg-trow-sep" aria-hidden="true" />
+              <span className="pg-trow-summary" title={summary}>
+                {summary}
+              </span>
+            </>
+          ) : null
+        }
+      >
+        <div className="pg-thinking-body">{text}</div>
+      </DisclosureRow>
+    </div>
+  );
 }
 
 /**
@@ -226,12 +268,10 @@ function Block({ block }: { block: ContentBlock }) {
       );
     }
     case 'thinking':
-      return (
-        <details className="pg-thinking">
-          <summary>思考</summary>
-          <div className="pg-thinking-body">{b.thinking}</div>
-        </details>
-      );
+      // 思考行也是**窄行**（DSH `DisclosureRow` + `message.think`）：标题「思考」+ 首行摘要，
+      // 展开看全文。旧版是 `<details><summary>思考</summary>`——几何与工具行不齐，
+      // 而且摘要不显示"想了什么"，一行 24px 的信息量被浪费掉了。
+      return <ThinkingRow text={b.thinking ?? ''} />;
     case 'toolCall':
       // DSH `AssistantMarkdown` 分派：tool-call **不在正文层渲染**——它归「工具行」
       // （对话里由 toolResult 行表达，全量明细在轨迹视图）。docs/12 §3.3。

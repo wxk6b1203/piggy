@@ -721,6 +721,23 @@ Piggy 不重复实现）；**只有认得的才拦**（用户真的可能发一�
 没有 start 也自洽）+ 门禁 `compactionProbe`（真 DOM：轨迹行可展开、展开有正文、
 实时三事件只多一行、失败/中断文案）。
 
+### 3.0g `features/chat/toolRowModel.ts` + `stores/messages.ts` 的工具调用索引
+
+工具结果在转录里是**一行 24px 的窄行**（`读取 · src/module1.ts`、`运行命令 · pnpm test`），
+展开才是那块代码卡片（04 §5.2）。这带来一个**跨行的数据依赖**：
+`toolResult` 消息只有 `toolCallId` / `toolName` / `content` / `isError`，
+**调用参数在上一条助手消息的 `toolCall` 块里**（params 决定摘要显示什么）。
+
+做法：`stores/messages.ts` 的 `register()` —— 所有行的唯一入口（hydrate / prependPage /
+appendPage / 实时 `message_end` 都经过它）—— 在注册助手消息时顺手把
+`toolCallId → { name, args }` 写进 `tab.toolCalls`。放在渲染层每次重算也能work，但
+（a）每次渲染都是 O(已载入行数)、（b）分页/换窗的路径容易漏。
+
+`toolRowModel.ts` 是纯函数：工具名 → 变体（7 种）→ 中文标题 → 摘要键，
+逐条对齐 DSH `ui-tool/.../models/tool-call-model.ts`；参数键按 pi 的 schema
+（`bash.command`、`read.path`、`grep.pattern`、`ls.path`…）。取不到参数时退到结果首行，
+并把来源标进 DOM（`data-summary-source="result"`）——**宁可显示"结果首行"，也不编一个命令**。
+
 ### 3.1 `lib/ipc.ts`
 
 - `invoke` 包装：统一错误形态（Rust 侧 `Result<T, AppError>` → TS discriminated union）；

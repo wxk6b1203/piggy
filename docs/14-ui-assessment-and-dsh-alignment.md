@@ -290,6 +290,7 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 | 轨迹 | 7 种芯片、**无角色过滤器**、只有搜索 | 过滤按钮 + 自定义芯片 | ✅ 已重写对齐 |
 | 轨迹里的**压缩细节** | 选中 `compacted` 记录 → 详情面板「概述」页给状态/时长 + 摘要全文（`TrajectoryTable.tsx:3255-3296`）；cell 的 `text` 是摘要预览、`outputDetail` 是全文（`layout.ts:333-362`）。对话侧的 `CompactionItem` 用「已压缩 {items} 条历史记录（约 {tokens} tokens）」+ Markdown 摘要，摘要不在当前窗口时**置灰并说"压缩摘要不可用"** | 轨迹只有一行「上下文压缩」（**点不开**）；对话行只有摘要 + 此前 token | ⚠️ **有意增强**：Piggy 没有 DSH 那种详情面板，改为**行内展开**，并把 pi 条目里 DSH 没有的字段一并显示（保留边界 `firstKeptEntryId`、涉及文件 `details`、摘要调用 `usage`、`fromHook`）。DSH 的 `items`（被折叠的历史条数）pi 不记录，所以那一句改成「此前 N tok」——**不编数字**（03 §3.0f） |
 | 右栏 | 文档/代码预览面板 | 统计 KV 列表 | ✅ 默认文件树 + DSH 式 38px 文档预览 |
+| 对话里的**工具行** | 一行 24px：`DisclosureRow`（16px 前导框 + 标题 13/24）+ 2×2 圆点 + 摘要 `flex:1` 省略号，点开才是卡片（`ui-tool/.../ToolRow.module.css`、`ui-primitives/.../DisclosureRow.module.css`） | 每个工具结果是**整块卡片**（6 行 `read` = 258px、3 行 `bash` = 201px，另带 16px 上下外边距） | ✅ 已对齐（04 §5.2）。两处**有意差异**：① 折叠正文用 `hidden="until-found"` 留在 DOM 里（Ctrl+F 可搜），DSH 在分组层用 `useSearchableHidden` 达到同一目的；② DSH 的完成回合整段"过程"还能再折成一行（`TurnProcessNodeView`，33px「已完成工作 / 用时 X」），Piggy **没做**这一层（见 docs/15 §4 待决策） |
 | 「本轮文件改动」 | 已是 `ChangedFiles` **卡片**（C1） | 不存在 | ⬜ 待做 |
 
 ## 5. 改造原则（已执行）

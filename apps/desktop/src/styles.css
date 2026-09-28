@@ -272,6 +272,65 @@ body {
 }
 .pg-thinking summary, .pg-live-thinking summary { cursor: pointer; user-select: none; }
 .pg-thinking-body { white-space: pre-wrap; margin-top: 4px; }
+
+/* ── 窄行折叠（DisclosureRow）：转录里"默认折起来的一行"共用 ──────────────────
+   几何照抄 DSH `ui-primitives/src/DisclosureRow.module.css`：
+     · 行高 24px；前导框 16×16（字形 14）右外边距 6px；标题 13px/24px、`flex:none`
+     · 折叠时前导框显示**图标**，hover/聚焦换成**下箭头**（两个叠着切 opacity）
+     · 展开时前导框恒为**上箭头**
+   ⚠️ 数字别在这里"差不多"——用户报的"空间利用率低"就是这类差值攒出来的
+   （实测旧版一个工具结果占 258px，DSH 的一行是 24px）。 */
+.pg-drow { display: flex; flex-direction: column; width: 100%; min-width: 0; }
+.pg-drow-head {
+  position: relative; display: flex; align-items: center; height: 24px; min-width: 0;
+}
+.pg-drow-head[data-expandable] { cursor: pointer; }
+.pg-drow-leading {
+  position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-right: 6px; color: var(--pg-fg-dim);
+}
+.pg-drow-leading svg { width: 14px; height: 14px; }
+.pg-drow-icon { display: inline-flex; opacity: 1; transition: opacity 100ms ease; }
+.pg-drow-chevron {
+  position: absolute; inset: 0; margin: auto; display: inline-flex;
+  align-items: center; justify-content: center; opacity: 0; transition: opacity 100ms ease;
+}
+.pg-drow-head:hover .pg-drow-icon,
+.pg-drow-head:focus-visible .pg-drow-icon { opacity: 0; }
+.pg-drow-head:hover .pg-drow-chevron,
+.pg-drow-head:focus-visible .pg-drow-chevron,
+.pg-drow-chevron[data-disclosure-chevron='focus'] { opacity: 1; }
+.pg-drow-head:focus-visible { outline: none; }
+.pg-drow-head:focus-visible .pg-drow-title { text-decoration: underline; }
+.pg-drow-title {
+  flex: none; font-size: var(--pg-fs-13); line-height: 24px; color: var(--pg-fg-secondary);
+}
+.pg-drow-head:hover .pg-drow-title { color: var(--pg-fg); }
+/* 折叠区：留在 DOM 里但不可见（`hidden="until-found"`）——Ctrl+F 能搜到、复制拿得到 */
+.pg-drow [hidden] { display: none; }
+
+/* 标题与摘要之间的 2×2 圆点（DSH `.sep`：width/height 2px、r1、margin 0 8px） */
+.pg-trow-sep {
+  flex: none; width: 2px; height: 2px; border-radius: 1px; margin: 0 8px;
+  background: var(--pg-fg-caption);
+}
+.pg-trow-summary {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--pg-fs-13); line-height: 24px; color: var(--pg-fg-dim);
+}
+.pg-drow-head:hover .pg-trow-summary { color: var(--pg-fg-secondary); }
+
+/* 工具行：**没有卡片外壳、没有行间距**——连续的工具调用就该像一份清单 */
+.pg-trow { margin: 0; }
+.pg-trow[data-state='error'] .pg-drow-title,
+.pg-trow[data-state='error'] .pg-trow-summary { color: var(--pg-error); }
+.pg-trow[data-state='error'] .pg-trow-sep { background: var(--pg-error); }
+/* 展开后的正文：与窄行之间留 4px，卡片本身照旧 */
+.pg-trow [data-tool-body] { padding: 4px 0 2px; }
+/* 思考行：同样一行 24px，展开看全文 */
+.pg-thinkrow { margin: 0; }
+.pg-thinkrow .pg-drow-title { color: var(--pg-fg-dim); }
+.pg-thinkrow [data-thinking-body] { padding: 2px 0 6px; }
 /* 压缩行（会话文件里的 `compaction` 条目，docs/03 §2.19）：与"思考"同一套左侧竖线，
    但整行居中偏左、颜色更弱——它是历史里的一个书签，不是一条消息。 */
 .pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; margin: var(--pg-sp-3) 0; }

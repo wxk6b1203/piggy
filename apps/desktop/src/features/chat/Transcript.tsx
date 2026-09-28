@@ -477,6 +477,11 @@ function Row({ tabId, id }: { tabId: string; id: string }) {
     useMessages,
     (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined,
   );
+  /* 工具行的窄摘要要的是**调用参数**（`运行命令 · pnpm test`），而参数在上一条助手消息里
+     —— store 在 `register()` 时做过一次 join（docs/03 §3.1 的 `toolCalls` 索引）。
+     这里按 `toolCallId` 取出来交给 `MessageView`；拿不到就是 undefined，行会退到结果首行。 */
+  const callId = view?.role === 'toolResult' ? (view.message as { toolCallId?: string }).toolCallId : undefined;
+  const call = useStore(useMessages, (s) => (callId ? s.tabs[tabId]?.toolCalls[callId] : undefined));
   if (!view) return null;
-  return <MessageView view={view} />;
+  return <MessageView view={view} call={call} />;
 }

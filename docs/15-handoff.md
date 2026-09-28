@@ -12,7 +12,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **508/508**：apps/desktop **441**（47 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 40 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
+| `vitest` | **524/524**：apps/desktop **457**（48 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 56 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
 | `cargo test` | **308 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
@@ -20,6 +20,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
 | `ui:startup` 压缩细节（本轮新增） | **压缩行必须看得见细节**：对话行（分页从会话文件读出来那行）断言此前 token / 保留边界 `firstKeptEntryId` / 涉及文件计数 / 摘要调用用量 / 可展开摘要，并断言分页行里**没有** `systemMessage`；轨迹行断言「已压缩」行**可展开**、点开后有保留边界与摘要全文；实时路径断言 `start`+`entry_appended`+`compaction_end(result)` **只多一行**且带 `estimatedTokensAfter`；失败态断言写「压缩失败：…」+ `data-failed`、中断态断言不再留「正在压缩…」。红检实测：把轨迹行改回不可展开 + 对话行去掉两行细节 → 门禁逐条点名（含「点不开 —— 用户报的就是这条」） |
+| `ui:startup` 工具窄行（本轮新增） | **空间利用率**变成可断言的真几何：行高 ≤26（实测 24）、连续三行 ≤76（实测 72）、标题/摘要逐条核对（`读取 · src/module1.ts`、`运行命令 · pnpm test -- --grep boundary-1`，且 `data-summary-source=args`）、折叠时正文**仍在 DOM 里**且 `display:none`、点开出现代码卡片（182px）再点收起。红检实测：把工具行改回默认展开 / 摘要不读参数 / 折叠时卸载正文 / 去掉 `toolCalls` 索引 → 单测与门禁逐条点名 |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
@@ -820,6 +821,36 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     做法：`compaction_start` 建占位行 + 记 id，后两个事件按 id 复用同一行；
     失败/中断各自改口，并把"为什么没有摘要与计数"写进展开正文。
 
+86. **"空间利用率低"是可以用像素量出来的，量完再改。**
+    用户说"多工具消息时主工作区空间利用率非常低"。先写一个一次性测量脚本
+    （mock + 真布局，量 `.pg-vrow` 的高度构成），拿到事实：**一个 6 行 `read` 结果 258px、
+    3 行 `bash` 201px、每行还有 16px×2 外边距**，而 DSH 的一行是 24px —— 差 10 倍。
+    改完用同一个脚本复量（24px / 连续三行 72px），并把数字写进门禁断言。
+    **没有这一步就会变成"我觉得有点挤"**，改多改少全凭手感。
+
+87. **学 DSH 的"窄行"，要连它的数字一起学。**
+    `DisclosureRow.module.css`：行高 24、前导框 16（字形 14）、标题 13px/24px `flex:none`；
+    `ToolRow.module.css`：圆点 2×2 `margin: 0 8px`、摘要 `flex:1` + 单行省略号；
+    折叠时前导框显示图标、**hover/聚焦才换成箭头**。这些不是审美偏好，是设计稿定死的；
+    "差不多 26px 也行"会把用户已经指出的问题原样留下。
+
+88. **跨行的数据要先问"它在哪一行里"。**
+    窄行摘要要显示命令/路径，而这些**参数不在结果行里** —— 在**上一条助手消息**的
+    `toolCall` 块里（`toolResult` 只有 `toolCallId/toolName/content/isError`）。
+    做法是在 store 的 `register()`（所有行的唯一入口）顺手建 `toolCallId → {name, args}` 索引；
+    放在渲染层每次重算会 O(行数)，而且分页/换窗那几条路径最容易漏。
+    索引断了就退到结果首行，并把来源标进 DOM（`data-summary-source`）——**别编数据**。
+
+89. **"折叠"和"不渲染"是两件事，别用卸载去实现折叠。**
+    窄行的正文用 `hidden="until-found"` + `beforematch` 留在 DOM 里：Ctrl+F 能搜到、
+    读屏与复制拿得到（规矩 21）。附带好处：折叠时 `IntersectionObserver` 见不到它，
+    shiki 不会白跑。门禁直接断言折叠态下正文**仍在 DOM 里**且 `display:none`。
+
+90. **改了行的几何，所有"量几何"的门禁都要跟着改。**
+    工具行一折叠，代码块探针量到的 `clientHeight` 全是 0 → "没有溢出/没有显示更多/静默失败"
+    集体假红。修法是**先点开再量**（顺带把"点得开"也验了）；而且点击必须等 React 落地
+    （`hydrate` 同步写 store，DOM 不是同步更新的——第一版点了空集，一段断言全红）。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -831,6 +862,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 预览滚动条的**窄窗口行为** | DSH 在转录容器 < 900px 时直接**隐藏**滚动条（`@container`）。Piggy 没做这条：转录因为侧栏 + 右栏通常只有 530–700px，照搬会让功能在多数窗口下“看起来是坏的”。现在由用户的开关决定，代价是窄窗口下两侧各 44px 留白会挤压正文。要改成自适应得先定“多窄算窄”，而 Piggy 的转录宽度与 DSH 不是一个量级 |
 | 预览滚动条只在 **Chrome** 里量过 | 刻度几何、跟随、预览框、居中都在 Playwright/Chromium 下量的（门禁）。WebKit（Tauri 在 macOS 用的引擎）与 Windows/Linux **未跑过**——`mask-image` 渐隐在 WebKit 的差异未验证 |
 | **Windows 上的 pi 发现：本轮修了，但只在我这边做了纯函数验证** | `exec_names` / `first_pi_in` / `well_known_candidates` 都是纯函数，5 条测试在 macOS 上跑（覆盖 `PATHEXT`、shell 垫片、PE 筛子、两套兜底目录）。但**本机无法给 Windows 交叉编译**（`rustup target add x86_64-pc-windows-msvc` 在配置的镜像上 404），所以“在 Windows 上真的能找到 pi.cmd 并跑起来”要靠用户那台机器确认。下一次 Windows debug run 应该看到实际的 pi 版本，而不是 os error 193 |
+| **对话要不要做「回合过程」折叠（DSH `TurnProcessNodeView`）** | DSH 在**完成**的回合里把整段"过程"（思考 + 工具行 + 中间消息）再折成**一行 33px**（`33px + font-delta`、下边框 `.5px`、标题「已完成工作 / 用时 X」/「已停止」/「处理失败」，`turnProcessAlwaysOpen` 让**进行中/中断/失败**的回合保持展开；`ChatGroupSeat` 把折叠态按回合存进 store，`hidden="until-found"` 保持可搜、`beforematch` 自动展开）。Piggy 目前只做到**行级**折叠（工具 24px、思考 24px），**没有**回合级的这一层 —— 中间那些"我先读一下…"助手消息仍然一行一行占着。要做的话得先定：折叠态存哪（per-tab per-turn）、`/compact` 边界与轮次分组怎么交互、以及"用户刚发的那一轮永远展开"这条纪律怎么保证。**没做，等用户点头** |
 | **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |

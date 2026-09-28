@@ -50,6 +50,16 @@ export interface TabMessages {
   streaming: boolean;
   queue: { steering: string[]; followUp: string[] };
   toolRuns: Record<string, { toolName: string; running: boolean; isError?: boolean }>;
+  /**
+   * 工具调用索引：`toolCallId → { name, args }`。
+   *
+   * 为什么需要它：工具**结果**行只带 `toolCallId` / `toolName`，**参数在上一条助手消息里**
+   * （`content: [{type:'toolCall', id, name, arguments}]`）。DSH 的窄行是
+   * `运行命令 · pnpm test` —— 摘要取自**调用参数**（`tool-call-model.ts` 的 `SUMMARY_KEYS`），
+   * 所以必须在某一层把两者 join 起来。放在 store（`register()` 是**所有**行的唯一入口：
+   * hydrate / 分页 / 实时 commit 都经过它）比在渲染层每次重算省事，也不会漏路径。
+   */
+  toolCalls: Record<string, { name: string; args?: Record<string, unknown> }>;
   banner: string | null;
   hydrated: boolean;
   /* ── 分页（docs/03 §2.19）：打开会话只载入尾部一页，往上的历史按需再读 ── */
@@ -84,6 +94,7 @@ const emptyTab = (): TabMessages => ({
   streaming: false,
   queue: { steering: [], followUp: [] },
   toolRuns: {},
+  toolCalls: {},
   banner: null,
   hydrated: false,
   pageCursor: null,
@@ -148,9 +159,26 @@ export function contentText(m: AgentMessage): string {
  * 抽出来是为了让"追加"（新消息）与"预置"（更早的一页）走**同一套**去重键与行构造，
  * 两边各写一遍就会分叉（历史上分页最典型的 bug 就是首尾重复一行）。
  */
+/** 助手消息里的 `toolCall` 块 → `toolCalls` 索引（工具行摘要要用调用参数，见类型注释）。 */
+function indexToolCalls(tab: TabMessages, m: AgentMessage): void {
+  const content = (m as { content?: unknown }).content;
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    const b = block as { type?: string; id?: string; name?: string; arguments?: unknown };
+    if (b?.type !== 'toolCall' || !b.id) continue;
+    const args =
+      b.arguments && typeof b.arguments === 'object' && !Array.isArray(b.arguments)
+        ? (b.arguments as Record<string, unknown>)
+        : undefined;
+    tab.toolCalls[b.id] = { name: b.name ?? '', args };
+  }
+}
+
 function register(tab: TabMessages, m: AgentMessage, offset: number | null = null): string | null {
   const role = (m as { role?: string }).role;
   if (!role || role === 'system') return null;
+  // 索引先做：即使这条消息因为去重被丢掉（例如重载同一页），调用参数也已经在表里
+  if (role === 'assistant') indexToolCalls(tab, m);
   const key = tsKey(m);
   if (tab.keys.has(key)) return null;
   const id = nextId(role);

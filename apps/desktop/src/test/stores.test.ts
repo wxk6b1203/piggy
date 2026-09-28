@@ -112,3 +112,72 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
     expect(useMessages.getState().tabs[TAB]).toBeUndefined();
   });
 });
+
+/**
+ * 工具调用索引（`toolCalls`）：工具**结果**行只带 `toolCallId` / `toolName`，
+ * 参数在**上一条助手消息**的 `toolCall` 块里。DSH 那种窄行摘要（`运行命令 · pnpm test`）
+ * 需要这个 join，所以 `register()`（所有行的唯一入口）顺手建索引。
+ *
+ * 三条路径都要覆盖：hydrate（重开会话）、分页行（往上翻）、实时 commit（边跑边看）。
+ */
+describe('messagesStore：工具调用索引（窄行摘要要用调用参数）', () => {
+  beforeEach(resetStore);
+
+  it('hydrate：助手消息里的 toolCall 块进索引（含 arguments）', () => {
+    useMessages.getState().hydrate(TAB, [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pnpm test' } },
+          { type: 'toolCall', id: 'c2', name: 'read', arguments: { path: 'src/a.ts' } },
+        ],
+      },
+    ] as never);
+    const idx = useMessages.getState().tabs[TAB]!.toolCalls;
+    expect(idx['c1']).toEqual({ name: 'bash', args: { command: 'pnpm test' } });
+    expect(idx['c2']!.args).toEqual({ path: 'src/a.ts' });
+  });
+
+  it('分页行：prependPage / appendPage 里的助手行同样进索引', () => {
+    const s = useMessages.getState();
+    const assistantRow = {
+      role: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'p1', name: 'edit', arguments: { path: 'a.ts' } }] },
+      offset: 100,
+    };
+    s.prependPage(TAB, [assistantRow] as never[], { cursor: 100, hasMore: true });
+    s.appendPage(TAB, [
+      {
+        role: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'p2', name: 'grep', arguments: { pattern: 'x' } }] },
+        offset: 200,
+      },
+    ] as never[], { end: 201, hasNewer: false });
+    const idx = useMessages.getState().tabs[TAB]!.toolCalls;
+    expect(idx['p1']!.name).toBe('edit');
+    expect(idx['p2']!.name).toBe('grep');
+  });
+
+  it('实时 commit：message_end(assistant) 立刻可查（窄行不必等重载）', () => {
+    useMessages.getState().ensure(TAB);
+    useMessages.getState().applyCommit(TAB, {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'live1', name: 'bash', arguments: { command: 'ls' } }],
+        timestamp: 1,
+      },
+    } as never);
+    expect(useMessages.getState().tabs[TAB]!.toolCalls['live1']!.args).toEqual({ command: 'ls' });
+  });
+
+  it('参数不是对象（流式半截 JSON）时不塞垃圾进索引', () => {
+    useMessages.getState().hydrate(TAB, [
+      {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'bad', name: 'bash', arguments: '{"command":"pn' }],
+      },
+    ] as never);
+    expect(useMessages.getState().tabs[TAB]!.toolCalls['bad']).toEqual({ name: 'bash', args: undefined });
+  });
+});

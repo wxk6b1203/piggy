@@ -228,6 +228,14 @@ const fleet = await page.evaluate(async () => {
       { role: 'toolResult', toolCallId: 'probe-mid', toolName: 'read', content: [{ type: 'text', text: mid }] },
       { role: 'toolResult', toolCallId: 'probe-long', toolName: 'read', content: [{ type: 'text', text: long }] },
     ]);
+    // ⚠️ 工具行现在是**默认折叠的窄行**（24px，正文 `hidden="until-found"`），
+    // 折叠时 `clientHeight === 0` —— 直接量卡片会得到"没有溢出/没有显示更多"的假结论。
+    // 所以先把工具行全部点开，再量真实几何（顺带把"点得开"这件事也验了）。
+    // 等 React 落地再点：hydrate 是同步写 store，DOM 不是同步更新的（实测第一版漏了这一步，
+    // 点了个空集，随后一整段代码块断言集体假红）。
+    await new Promise((r) => setTimeout(r, 400));
+    for (const head of document.querySelectorAll('[data-tool-row] [data-disclosure-row]')) head.click();
+    await new Promise((r) => setTimeout(r, 200));
     // 等 shiki wasm + 语言 chunk（首次要下载 oniguruma + 语法）
     await new Promise((r) => setTimeout(r, 3500));
 
@@ -302,6 +310,82 @@ const fleet = await page.evaluate(async () => {
     };
   })();
 
+  /* 工具窄行（用户 2026-09-23："多工具消息时主工作区空间利用率非常低，能不能跟 dsh 一样
+     用窄窄的可展开的折叠"）。这里量的是**真几何**：行高、连续多行的总高、折叠时正文是否
+     仍在 DOM 里、点开是否真的出现代码卡片。jsdom 里 clientHeight 恒为 0，这些只有真布局能量。 */
+  const compact = await (async () => {
+    const rows = [];
+    for (let turn = 1; turn <= 3; turn += 1) {
+      rows.push({ role: 'user', content: [{ type: 'text', text: `第 ${turn} 轮：看一下模块 ${turn} 的边界条件并跑测试。` }] });
+      rows.push({
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: `先确认模块 ${turn} 的入口与测试覆盖，再看边界条件。` },
+          { type: 'toolCall', id: `k${turn}-0`, name: 'read', arguments: { path: `src/module${turn}.ts` } },
+          { type: 'toolCall', id: `k${turn}-1`, name: 'bash', arguments: { command: `pnpm test -- --grep boundary-${turn}` } },
+          { type: 'toolCall', id: `k${turn}-2`, name: 'grep', arguments: { pattern: `boundary${turn}\\(` } },
+        ],
+      });
+      rows.push({ role: 'toolResult', toolName: 'read', toolCallId: `k${turn}-0`, content: [{ type: 'text', text: `export function boundary${turn}() {}\n`.repeat(6) }] });
+      rows.push({ role: 'toolResult', toolName: 'bash', toolCallId: `k${turn}-1`, content: [{ type: 'text', text: `PASS 12 tests\n`.repeat(3) }] });
+      rows.push({ role: 'toolResult', toolName: 'grep', toolCallId: `k${turn}-2`, content: [{ type: 'text', text: `src/module${turn}.ts:12:export function boundary${turn}(` }] });
+      rows.push({ role: 'assistant', content: [{ type: 'text', text: `第 ${turn} 轮完成：12 条测试全绿。` }] });
+    }
+    stores.useMessages.getState().hydrate(tabId, rows);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const heads = [...document.querySelectorAll('[data-tool-row] [data-disclosure-row]')];
+    const toolRows = [...document.querySelectorAll('[data-tool-row]')];
+    const h = (el) => (el ? Math.round(el.getBoundingClientRect().height) : null);
+    const first = toolRows[0];
+    const firstBody = first?.querySelector('[data-tool-body]');
+    const bashRow = toolRows.find((r) => r.getAttribute('data-tool') === 'bash');
+    const thinkHead = document.querySelector('[data-thinking-row] [data-disclosure-row]');
+    const three = toolRows.slice(0, 3);
+    const threeTop = three[0]?.getBoundingClientRect().top ?? 0;
+    const threeBottom = three.at(-1)?.getBoundingClientRect().bottom ?? 0;
+    const scrollHeightAll = Math.round(
+      (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`) ?? document.querySelector('.pg-transcript'))
+        .scrollHeight,
+    );
+
+    // 折叠时正文**在 DOM 里但不可见**（Ctrl+F / 复制拿得到）
+    const collapsed = {
+      hiddenAttr: firstBody?.getAttribute('hidden') ?? null,
+      display: firstBody ? getComputedStyle(firstBody).display : null,
+      textLen: (firstBody?.textContent ?? '').length,
+      hasCard: !!firstBody?.querySelector('.pg-codeblock'),
+    };
+    // 点开第一行：正文可见 + 卡片真出现；再点回去
+    heads[0]?.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const expanded = {
+      hiddenAttr: first?.querySelector('[data-tool-body]')?.hasAttribute('hidden') ?? null,
+      aria: heads[0]?.getAttribute('aria-expanded') ?? null,
+      cardH: h(first?.querySelector('.pg-codeblock')),
+      rowH: h(first),
+    };
+    heads[0]?.click();
+    await new Promise((r) => setTimeout(r, 150));
+    const reCollapsed = first?.querySelector('[data-tool-body]')?.getAttribute('hidden') ?? null;
+
+    return {
+      count: toolRows.length,
+      headH: h(heads[0]),
+      firstTitle: first?.querySelector('.pg-drow-title')?.textContent ?? null,
+      firstSummary: first?.querySelector('.pg-trow-summary')?.textContent ?? null,
+      summarySource: first?.querySelector('.pg-trow-summary')?.getAttribute('data-summary-source') ?? null,
+      bashSummary: bashRow?.querySelector('.pg-trow-summary')?.textContent ?? null,
+      thinkHeadH: h(thinkHead),
+      threeRowSpan: Math.round(threeBottom - threeTop),
+      collapsed,
+      expanded,
+      reCollapsed,
+      scrollHeightAll,
+      hasCardInDom: toolRows.some((r) => r.querySelector('.pg-codeblock')),
+    };
+  })();
+
   return {
     tabId,
     aLaneBlocks,
@@ -310,6 +394,7 @@ const fleet = await page.evaluate(async () => {
     bRoles,
     slash,
     code,
+    compact,
     bridged: stores.useFleet.getState().bridge.installed,
     synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
   };
@@ -2370,6 +2455,61 @@ else {
   if (!cb.collapsedHidden) bad.push('代码块：60 行的块没有默认折叠 ★');
   if (cb.silentFail) bad.push(`代码块：有 ${cb.silentFail} 张卡"声称有语言、没高亮、也不吭声"（静默失败又回来了）★`);
 }
+/* 工具窄行：把"空间利用率"变成可断言的真几何。
+   用户报的是"多工具消息时主工作区空间利用率非常低" —— 修之前实测一个 6 行 read 结果占 258px、
+   3 行 bash 占 201px，DSH 的一行是 24px。这里钉住：行高 24、连续三行 ≤ 76、折叠时正文在 DOM
+   里但不可见、点开出现代码卡片。任何一条退化（例如又把卡片整块铺开）都会红。 */
+const cp2 = fleet.compact ?? {};
+if (cp2.headH == null) {
+  bad.push('工具窄行：一行都没渲染出来（hydrate 之后找不到 [data-tool-row]）★');
+} else {
+  if (cp2.headH > 26) {
+    bad.push(`工具窄行：行高 ${cp2.headH}px（DSH 是 24px）—— 又变回"一块卡片"了 ★`);
+  }
+  if (cp2.count < 9) bad.push(`工具窄行：只渲染了 ${cp2.count} 行（夹具是 9 个工具调用）★`);
+  if (cp2.thinkHeadH == null || cp2.thinkHeadH > 26) {
+    bad.push(`工具窄行：思考行高 ${cp2.thinkHeadH}px（应为 24px 的窄行）★`);
+  }
+  if (cp2.threeRowSpan > 76) {
+    bad.push(`工具窄行：连续三行占了 ${cp2.threeRowSpan}px（应 ≤76）★`);
+  }
+  if (cp2.firstTitle !== '读取') {
+    bad.push(`工具窄行：第一行标题是 ${JSON.stringify(cp2.firstTitle)}，应为「读取」（pi 的 read）★`);
+  }
+  if (cp2.summarySource !== 'args') {
+    bad.push(`工具窄行：摘要不是取自调用参数（source=${String(cp2.summarySource)}）—— toolCalls 索引断了？★`);
+  }
+  if (cp2.firstSummary !== 'src/module1.ts') {
+    bad.push(`工具窄行：第一行摘要 ${JSON.stringify(cp2.firstSummary)}，应为 read 的 path 参数 ★`);
+  }
+  if (!/pnpm test -- --grep boundary-1/.test(cp2.bashSummary ?? '')) {
+    bad.push(`工具窄行：bash 行的摘要没显示命令（读到 ${JSON.stringify(cp2.bashSummary)}）★`);
+  }
+  if (!cp2.collapsed?.hasCard || cp2.collapsed.textLen < 10) {
+    bad.push('工具窄行：折叠时正文**不在 DOM 里**（折叠 ≠ 不渲染是本仓纪律）★');
+  }
+  if (cp2.collapsed?.hiddenAttr !== 'until-found' || cp2.collapsed?.display !== 'none') {
+    bad.push(
+      `工具窄行：折叠时正文没有藏住（hidden=${String(cp2.collapsed?.hiddenAttr)} display=${String(cp2.collapsed?.display)}）★`,
+    );
+  }
+  if (cp2.expanded?.hiddenAttr !== false || cp2.expanded?.aria !== 'true') {
+    bad.push(
+      `工具窄行：点开后正文没显示（hidden=${String(cp2.expanded?.hiddenAttr)} aria=${String(cp2.expanded?.aria)}）★`,
+    );
+  }
+  if (!(cp2.expanded?.cardH > 40)) {
+    bad.push(`工具窄行：点开后没出现代码卡片（cardH=${String(cp2.expanded?.cardH)}）★`);
+  }
+  if (cp2.expanded?.rowH <= cp2.headH) {
+    bad.push(`工具窄行：展开后行高没变大（${String(cp2.expanded?.rowH)} ≤ ${String(cp2.headH)}）★`);
+  }
+  if (cp2.reCollapsed !== 'until-found') {
+    bad.push(`工具窄行：再点一次没有收回去（hidden=${String(cp2.reCollapsed)}）★`);
+  }
+  if (!cp2.hasCardInDom) bad.push('工具窄行：一个代码卡片都不在 DOM 里（内容被吞了）★');
+}
+
 if (!preview.markdown?.mounted) bad.push('预览：markdown 文件连 Monaco 都没挂上（core chunk 没加载？）★');
 else {
   if (preview.markdown.lang !== 'markdown') {

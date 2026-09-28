@@ -617,9 +617,41 @@ pi:frame:{tabId}（≤60Hz）
   限高长在 `pre` 上，量外层恒得到"没超高"，按钮永远不出现（第一版就这么写错了）；
 - 病态超长（`> MAX_RENDER_LINES (4000)`）**显式截断并说清截了多少** + "仍要全部显示"。
 
-**工具结果走同一张卡**：`MessageView` 的 `toolResult` / `bashExecution` 经
-`inferToolLang()` 按内容认 diff、按 toolName 认 shell，其余纯文本 —— 但三者都拿到
-折叠 / 行数 / 复制 / 超高展开。已知缺口：pi 的 toolResult **不含路径**
+**工具结果是"窄行 + 展开"**（2026-09-23 用户："多消息以及多工具消息的情况下，主工作区
+空间利用率非常低，能不能跟 dsh 一样，用窄窄的可展开的折叠？"）：
+
+```text
+▸ 读取     · src/module1.ts                    ← 折叠：24px 一行
+▸ 运行命令 · pnpm test -- --grep boundary-1
+▸ 搜索     · boundary1\(
+   展开 ↓ 上面那条的完整结果（还是这块代码卡片：高亮 / 行数 / 复制 / 超高展开）
+```
+
+- 几何逐条照抄 DSH：`ui-primitives/src/DisclosureRow.module.css` 的 **24px 行高 /
+  16px 前导框（字形 14）/ 标题 13px/24px `flex:none`**，`ui-tool/.../ToolRow.module.css`
+  的 **2×2 圆点 `margin: 0 8px` + 摘要 `flex:1` 单行省略号**；折叠时前导框显示**图标**、
+  hover/聚焦换成**下箭头**（`DisclosureRow` 的 `.iconIdle` / `.chevronHover`）；
+- 标题与摘要的表在 `features/chat/toolRowModel.ts`，逐条对应 DSH
+  `ui-tool/.../models/tool-call-model.ts` 的 `TOOL_VARIANTS` / `VARIANT_TITLE_KEYS` /
+  `SUMMARY_KEYS`（中文标题取自 `ui-conversation/.../locales.ts:290-296`）；
+  参数键按 **pi 的 schema** 写（`bash.command` / `read.path` / `grep.pattern`…）；
+- **摘要要的是调用参数，而参数在上一条助手消息里**（toolResult 只有
+  `toolCallId/toolName/content/isError`）→ `stores/messages.ts` 的 `register()` 顺手建
+  `toolCalls` 索引（`toolCallId → {name, args}`，三条路径都会经过它：hydrate / 分页 / 实时）。
+  索引断掉时**退到结果首行**并标 `data-summary-source="result"`——绝不编一个命令出来；
+- 失败行取**结果首行**并标红（DSH 的 `errorSummary`）；
+- **折叠 ≠ 不渲染**：正文用 `hidden="until-found"` + `beforematch` 留在 DOM 里，
+  Ctrl+F 能搜到、读屏与复制拿得到（本仓纪律，规矩 21）。DSH 是在**分组**层做这件事
+  （`useSearchableHidden`），Piggy 没有分组层，就把它下沉到行——这是**有意差异**，
+  也意味着折叠时 shiki 不会白跑（`IntersectionObserver` 见不到隐藏元素）。
+
+实测（真浏览器，同一段 3 轮 / 9 个工具的会话）：单行 **24px**、连续三行 **72px**；
+改之前一个 6 行 `read` 结果占 **258px**、3 行 `bash` 占 **201px**（每块还带 16px 上下外边距）。
+门禁 `ui:startup` 的 `compact` 段把这些数字钉住（行高 ≤26、三行 ≤76、折叠时正文仍在 DOM
+里且 `display:none`、点开出现代码卡片、再点收起）。
+
+**什么**是这块卡片：`inferToolLang()` 按内容认 diff、按 toolName 认 shell，其余纯文本 ——
+三者都拿到折叠 / 行数 / 复制 / 超高展开。已知缺口：pi 的 toolResult **不含路径**
 （真机取样只有 `toolCallId/toolName/content/details/isError`），所以 `read`/`write` 的结果
 没法按文件扩展名选语言，只能保持纯文本（不瞎猜颜色）。
 
