@@ -1271,6 +1271,56 @@ const titleSettings = await page.evaluate(async () => {
   };
 });
 
+/* 「标题模型 / 思考强度 / 手动输入」这一行的**几何**：三个窗口宽度各量一次（docs/04 §2.4）。
+ *
+ * 只有真浏览器量得出来：jsdom 里 getBoundingClientRect 全是 0，而"第二个下拉被挤到
+ * 下一行、第一行右边留一大片空白"恰恰是纯几何问题（用户截图里的形状）。
+ * 1180 是用户当时那个窗口的宽度——**它就是这次的回归点**，所以单独量一遍。 */
+const titleRowLayout = {};
+for (const width of [1280, 1180, 900]) {
+  await page.setViewportSize({ width, height: 860 });
+  await page.waitForTimeout(500);
+  titleRowLayout[width] = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.pg-settings-row')].find((r) =>
+      r.querySelector('[data-title-model-select], input.pg-title-modelinput'),
+    );
+    const info = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        cy: Math.round(r.y + r.height / 2),
+        right: Math.round(r.right),
+      };
+    };
+    const btn = [...(row?.querySelectorAll('button') ?? [])].find((b) =>
+      ['手动输入', '从列表里选'].includes((b.textContent ?? '').trim()),
+    );
+    const items = {
+      model: info(document.querySelector('[data-title-model-select]')),
+      thinking: info(document.querySelector('[data-title-thinking-select]')),
+      btn: info(btn),
+    };
+    // 换行的判据：中线相差 > 20px。**不能**直接比 top——按钮比下拉矮，
+    // 同一行的两者 top 天然差几个像素（第一版就是这么误判的）。
+    const cys = Object.values(items).filter(Boolean).map((b) => b.cy).sort((a, b) => a - b);
+    let lines = 1;
+    for (let i = 1; i < cys.length; i += 1) if (cys[i] - cys[i - 1] > 20) lines += 1;
+    const editor = document.querySelector('.pg-settings-editor');
+    return {
+      editorW: Math.round(editor?.getBoundingClientRect().width ?? 0),
+      editorRight: Math.round(editor?.getBoundingClientRect().right ?? 0),
+      items,
+      lines,
+      rowOverflow: row ? Math.round(row.scrollWidth - row.clientWidth) : -1,
+      docOverflow: Math.round(document.documentElement.scrollWidth - window.innerWidth),
+    };
+  });
+}
+await page.setViewportSize({ width: 1280, height: 860 });
+await page.waitForTimeout(300);
+
 /* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
  * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
  * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
@@ -1813,6 +1863,57 @@ else {
   }
   if ((ts.base ?? {}).thinking) {
     bad.push(`标题设置：核对开始时配置里就有思考档（${ts.base.thinking}），这条核对失去意义 ★`);
+  }
+}
+
+/* 「标题模型」那一行的宽度与换行（docs/04 §2.4） */
+{
+  const L = titleRowLayout ?? {};
+  const at = (w) => L[w] ?? {};
+  // ① 正常窗口（门禁默认 1280）：必须在一行里，且不许横向溢出
+  const wide = at(1280);
+  if (!wide.items?.model || !wide.items?.thinking) {
+    bad.push('标题设置：量不到模型/思考两个下拉（选择器变了？）★');
+  } else {
+    if (wide.lines !== 1) {
+      bad.push(`标题设置：1280 宽窗口下这一行占 ${wide.lines} 行（应当一行放下）★`);
+    }
+    if ((wide.items.model?.w ?? 0) > 280 || (wide.items.thinking?.w ?? 0) > 160) {
+      bad.push(
+        `标题设置：两个下拉又变宽了（模型 ${wide.items.model?.w} / 思考 ${wide.items.thinking?.w}，上限 280/160）★`,
+      );
+    }
+    if (wide.rowOverflow > 0 || wide.docOverflow > 0) {
+      bad.push(`标题设置：1280 下横向溢出（行 ${wide.rowOverflow} / 文档 ${wide.docOverflow}）★`);
+    }
+  }
+  // ② 1180 = 用户报这个问题时的窗口宽度：这里必须是**一行**
+  const user = at(1180);
+  if (user.lines !== 1) {
+    bad.push(
+      `标题设置：1180 宽窗口（用户当时的窗口）下这一行占 ${user.lines} 行——第二个下拉被挤下去了 ★`,
+    );
+  }
+  const maxRight = Math.max(
+    user.items?.model?.right ?? 0,
+    user.items?.thinking?.right ?? 0,
+    user.items?.btn?.right ?? 0,
+  );
+  if (maxRight > (user.editorRight ?? 0)) {
+    bad.push(`标题设置：1180 下控件越过了内容区右缘（${maxRight} > ${user.editorRight}）★`);
+  }
+  // ③ 窄窗口（900）：允许换行，但**不许溢出、不许压扁**
+  const narrow = at(900);
+  if (narrow.rowOverflow > 0 || narrow.docOverflow > 0) {
+    bad.push(`标题设置：900 宽窗口下横向溢出（行 ${narrow.rowOverflow} / 文档 ${narrow.docOverflow}）★`);
+  }
+  if ((narrow.items?.thinking?.w ?? 0) < 100 || (narrow.items?.model?.w ?? 0) < 100) {
+    bad.push(
+      `标题设置：900 下下拉被压得太窄（模型 ${narrow.items?.model?.w} / 思考 ${narrow.items?.thinking?.w}）★`,
+    );
+  }
+  if ((narrow.items?.btn?.h ?? 0) > 40) {
+    bad.push(`标题设置：900 下「手动输入」按钮被挤成多行（高 ${narrow.items?.btn?.h}）★`);
   }
 }
 

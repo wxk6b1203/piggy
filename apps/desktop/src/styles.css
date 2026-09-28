@@ -1327,6 +1327,26 @@ body {
 .pg-help-row { color: var(--pg-fg); }
 .pg-linkish { background: none; border: none; text-align: left; width: 100%; cursor: pointer; text-decoration: underline; }
 .pg-settings-label { font-size: 12.5px; font-weight: 600; }
+/* 标签不参与压缩、也不折行：`flex: 0 1 auto` 的默认值会在窄窗口里先把
+   "标题模型" 挤成两行，而缩一个 4 字标签换不来多少空间（该缩的是右边的控件）。 */
+.pg-settings-row > .pg-settings-label { flex: none; white-space: nowrap; }
+/* 「会话标题」那一行的两个下拉（docs/04 §2.4）。
+ *
+ * 宽度必须是**弹性**的，不能写死：固定 320 + 168，再加上标签与「手动输入」≈647px，
+ * 而 1180 宽的窗口里设置页内容区只有 531px —— 第二个下拉会被挤到下一行，
+ * 第一行右边留一大片空白（用户截图里就是这个形状）。
+ * 现在：宽窗口长到 max，窄窗口一路缩到 min，缩到 min 还放不下才整体换行。
+ * `width: 100%` 只是给非 flex 场景兜底——在 flex 容器里 `flex-basis` 说了算。 */
+.pg-title-model,
+.pg-title-thinking,
+.pg-title-modelinput {
+  width: 100%;
+}
+.pg-title-model,
+.pg-title-modelinput { flex: 1 1 180px; min-width: 168px; max-width: 260px; }
+.pg-title-thinking { flex: 0 1 140px; min-width: 116px; max-width: 150px; }
+/* 「手动输入 / 从列表里选」是个链接按钮：不许被压扁（压扁后文字会竖排） */
+.pg-title-manual { flex: none; }
 /* 「运行」页：来源/权限档位按钮组 + 当前生效二进制 */
 .pg-runtime-modes { display: flex; gap: var(--pg-sp-3); flex-wrap: wrap; }
 .pg-runtime-current {

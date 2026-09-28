@@ -271,7 +271,7 @@ export function GeneralSection() {
         <span className="pg-settings-label">标题模型</span>
         {manualModel ? (
           <Input
-            style={{ maxWidth: 300 }}
+            className="pg-title-modelinput"
             placeholder="provider/modelId"
             value={titleCfg.model}
             onChange={(e) => setTitleCfg((c) => ({ ...c, model: e.target.value }))}
@@ -280,7 +280,7 @@ export function GeneralSection() {
           />
         ) : (
           <Select
-            style={{ width: 320 }}
+            className="pg-title-model"
             showSearch
             allowClear
             loading={modelsLoading}
@@ -299,7 +299,7 @@ export function GeneralSection() {
           />
         )}
         <Select
-          style={{ width: 168 }}
+          className="pg-title-thinking"
           allowClear
           data-title-thinking-select
           value={titleCfg.thinking || undefined}
@@ -314,7 +314,12 @@ export function GeneralSection() {
           options={thinkingOptions()}
         />
         {modelsLoaded && (
-          <Button type="link" size="small" onClick={() => setManualModelOverride(!manualModel)}>
+          <Button
+            className="pg-title-manual"
+            type="link"
+            size="small"
+            onClick={() => setManualModelOverride(!manualModel)}
+          >
             {manualModel ? '从列表里选' : '手动输入'}
           </Button>
         )}
