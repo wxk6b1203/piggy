@@ -101,10 +101,31 @@ export function Transcript({ tabId }: { tabId: string }) {
     return () => liveFor(tabId).unmount();
   }, [tabId, streaming]);
 
+  /**
+   * 我们上一次**程序化**设置的 scrollTop（DSH `ScrollFollow.sampledTop` 同义）。
+   *
+   * 为什么要记：贴底这个动作本身会产生一次 scroll 事件，而它**不是读者在滚**。
+   * 只用几何判断"离底多远"会在流式下判错——内容在两帧之间长高，
+   * 等 scroll 事件被处理时 `scrollHeight` 已经变了，于是"自己贴的底"被当成
+   * "读者滚上去了"，跟随意图当场丢掉、视图停在半空。
+   * 实测（真浏览器 + mock 流式）：一开口说话，当前刻度就从第 60 轮掉到 58 轮、
+   * 之后再也不跟。所以判定必须带"这个位置是不是我们自己设的"。
+   */
+  const pinnedTopRef = useRef<number | null>(null);
+
   /** 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。 */
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    pinnedTopRef.current = el.scrollTop;
+  }, []);
+
+  /** 读者动作（点刻度跳转 / 换窗）：忘掉"程序化位置"，下一次滚动算读者滚的。 */
+  const handOverToReader = useCallback(() => {
+    pinnedTopRef.current = null;
+    followingRef.current = false;
+    setFollowingState(false);
   }, []);
 
   // 换标签 = 换会话：跟随意图回到初始值（DSH 打开会话没有"上次读到哪"时直接贴底）
@@ -139,12 +160,12 @@ export function Transcript({ tabId }: { tabId: string }) {
     const inner = innerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      if (followingRef.current && !hasNewerRef.current) el.scrollTop = el.scrollHeight;
+      if (followingRef.current && !hasNewerRef.current) pinToBottom();
     });
     if (inner) ro.observe(inner);
     if (liveRef.current) ro.observe(liveRef.current);
     return () => ro.disconnect();
-  }, [tabId, hydrated, streaming]);
+  }, [tabId, hydrated, streaming, pinToBottom]);
 
   /** ResizeObserver 回调里要读最新的换窗状态（不重挂观察者）。 */
   const hasNewerRef = useRef(hasNewer);
@@ -168,9 +189,18 @@ export function Transcript({ tabId }: { tabId: string }) {
   const recomputeActive = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）
+    // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）。
+    // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
     const metrics = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
-    setFollowing(nextFollowing(followingRef.current, metrics, true));
+    const pinned = pinnedTopRef.current;
+    const movedByReader = pinned === null || Math.abs(el.scrollTop - pinned) > 0.5;
+    setFollowing(nextFollowing(followingRef.current, metrics, movedByReader));
+    // ⚠️ "当前是哪一轮"用**跟随意图**而不是瞬时几何：流式时内容在两帧之间长高，
+    //    等这次 scroll 事件被处理时 `scrollHeight` 已经变了，`isAtTail` 会瞬间为假 ——
+    //    于是当前轮次在"最新那轮"与"阅读线那轮"之间逐帧来回翻，梯子上的亮条疯狂闪动
+    //    （实测：跟随意图一直是 true，但 active 在 58 ↔ 61 之间跳）。
+    //    只要还在跟随尾部，"当前"就是最新那一轮，与几像素的瞬时差无关。
+    const atTailForTurn = followingRef.current || isAtTail(metrics);
     const items = virtualizer.getVirtualItems();
     if (items.length === 0) return;
     // 阅读线：视口顶部往下 1/4（贴顶太灵敏，正中又会在一轮很长时乱跳）
@@ -180,7 +210,7 @@ export function Transcript({ tabId }: { tabId: string }) {
       if (vi.start <= line) readingRow = vi.index;
       else break;
     }
-    setActiveTurn(activeTurnOf(railItems, readingRow, isAtTail(metrics)));
+    setActiveTurn(activeTurnOf(railItems, readingRow, atTailForTurn));
   }, [setFollowing, virtualizer, railItems]);
 
   useEffect(() => {
@@ -200,8 +230,7 @@ export function Transcript({ tabId }: { tabId: string }) {
    */
   const jumpToTurn = useCallback(
     async (item: RailItem) => {
-      followingRef.current = false;
-      setFollowingState(false);
+      handOverToReader();
       if (item.loaded && item.rowIndex !== null) {
         virtualizer.scrollToIndex(item.rowIndex, { align: 'start' });
         return;
@@ -226,7 +255,7 @@ export function Transcript({ tabId }: { tabId: string }) {
         setJumping(null);
       }
     },
-    [tabId, virtualizer],
+    [handOverToReader, tabId, virtualizer],
   );
 
   /** 回到最新：重新装载尾部那一页（换窗的反向操作），并恢复贴底跟随。 */

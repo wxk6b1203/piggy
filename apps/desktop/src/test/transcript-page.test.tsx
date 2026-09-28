@@ -61,10 +61,26 @@ const page = (from: number, to: number, hasMore: boolean, hasNewer = false) => (
   branchy: false,
 });
 
-/** 给滚动容器装上假几何：内容 2000 / 视口 400。 */
+/**
+ * 给滚动容器装上假几何：内容 2000 / 视口 400。
+ *
+ * ⚠️ `scrollTop` 必须**像真浏览器那样钳制**到 `scrollHeight - clientHeight`：
+ * 不钳制的话"贴底之后内容又长高、而这次 scroll 事件用的是旧位置"这一幕根本造不出来
+ * （`scrollTop = scrollHeight` 会得到一个越界值，距离反而永远是 0）——
+ * 第一版就是这样，红检时两条用例在"退回只看几何"的实现下**照样绿**，
+ * 等于没测到用户报的那个闪动。
+ */
 function fakeGeometry(el: HTMLElement, scrollHeight = 2000, clientHeight = 400) {
+  let top = 0;
   Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true });
   Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true });
+  Object.defineProperty(el, 'scrollTop', {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => {
+      top = Math.max(0, Math.min(v, scrollHeight - clientHeight));
+    },
+  });
 }
 
 function scroller(): HTMLDivElement {
@@ -135,7 +151,8 @@ describe('打开会话贴在结尾', () => {
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
-    expect(el.scrollTop).toBe(el.scrollHeight);
+    // 真浏览器会把 scrollTop 钳到可滚高度（= scrollHeight - clientHeight）
+    expect(el.scrollTop).toBe(1600);
   });
 });
 
@@ -233,7 +250,7 @@ describe('回到底部', () => {
       btn.click();
       await new Promise((r) => setTimeout(r, 10));
     });
-    expect(el.scrollTop).toBe(el.scrollHeight);
+    expect(el.scrollTop).toBe(1600); // 贴到可滚高度的底（真浏览器同样钳制）
     expect(q('[data-to-bottom]')).toBeNull();
   });
 
@@ -308,5 +325,70 @@ describe('跳到未载入的那一轮：换窗（不把中间那段读进来）'
     const call = invokeMock.mock.calls.filter((c) => c[0] === 'session_page').at(-1);
     expect(call![1]).toMatchObject({ path: FILE }); // 不带 before = 尾部那一页
     expect((call![1] as Record<string, unknown>).before).toBeUndefined();
+  });
+});
+
+describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）', () => {
+  /** 灌 n 个回合，并让梯子可用（刻度要看当前轮次）。 */
+  function seedTurns(n: number) {
+    const rows = Array.from({ length: n * 2 }, (_, i) => ({
+      ...row(i, i % 2 === 0 ? 'user' : 'assistant'),
+      offset: i,
+    }));
+    useMessages.getState().hydratePage(TAB, rows as never[], {
+      cursor: 0,
+      hasMore: false,
+    });
+    useMessages.getState().setOutline(
+      TAB,
+      Array.from({ length: n }, (_, k) => ({
+        turn: k + 1,
+        start: k * 2,
+        end: k * 2 + 1,
+        prompt: `第 ${k + 1} 轮的问题`,
+        response: `第 ${k + 1} 轮的回答`,
+      })),
+    );
+    useAppConfig.setState({ railPlacement: 'right', loaded: true });
+  }
+
+  it('内容在贴底之后长高：这次 scroll 事件不算"读者滚的"，跟随与当前轮次都不许变', async () => {
+    // 40 轮：屏幕上的阅读线只覆盖到第 10 轮附近 —— 这样"最新那轮"与"阅读线那轮"
+    // 是两个不同的答案，才能区分"用跟随意图判定"和"用瞬时几何判定"
+    seedTurns(40);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '组件应当已经贴到底').toBe(1600);
+    // 还在跟随时，当前轮次是最后那一轮
+    expect(q('[data-rail-mark].is-active')?.getAttribute('data-rail-mark')).toBe('40');
+
+    // 模拟流式：内容先长高 400px，随后那次 scroll 事件才被处理（位置仍是我们设的 1600）
+    fakeGeometry(el, 2400, 400);
+    await scrollTo(el, 1600);
+
+    // 此刻距底 400px —— 只看几何会判成"读者滚上去了"（修复前就是这样：实测当前刻度 60 → 58，
+    // 而且这一帧的判断会随着内容长高反复翻转，梯子上的亮条就逐帧闪）
+    expect(q('[data-to-bottom]'), '跟随被自己贴的底弄丢了').toBeNull();
+    expect(q('[data-rail-mark].is-active')?.getAttribute('data-rail-mark')).toBe('40');
+  });
+
+  it('读者真的往上滚：跟随交还，当前轮次跟着阅读线走', async () => {
+    seedTurns(4);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop).toBe(1600);
+
+    await scrollTo(el, 100); // 位置变了 = 读者滚的
+    expect(q('[data-to-bottom]')).toBeTruthy();
   });
 });

@@ -1872,6 +1872,54 @@ const paging = await page.evaluate(async () => {
   await sleep(300);
   const afterToBottom = { ...geom(), toBottom: !!tr.querySelector('[data-to-bottom]') };
 
+  /* ── 流式稳定性：用户报的"疯狂闪动"就是这个 ──
+     贴在结尾时内容每帧都在长高，而"这一帧离底多远"是拿旧 scrollTop 与新 scrollHeight 比的
+     —— 只看几何会把"自己贴的底"读成"读者滚上去了"，于是当前刻度在最新那轮与阅读线那轮之间
+     逐帧来回翻（实测 58 ↔ 61），梯子上的亮条就闪。这里按帧采样，把三条都钉住。 */
+  const streams = [];
+  let streaming = true;
+  const sampler = (async () => {
+    while (streaming) {
+      const live = tr.querySelector('.pg-live');
+      streams.push({
+        active: wrap.querySelector('[data-rail-mark].is-active')?.getAttribute('data-rail-mark') ?? '-',
+        bottom: tr.querySelector('[data-to-bottom]') ? 1 : 0,
+        railTop: Math.round(railScroll?.scrollTop ?? -1),
+        gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+        liveLen: live ? (live.textContent ?? '').length : -1,
+      });
+      await sleep(33);
+    }
+  })();
+  globalThis.__piggyMock.mockInvoke('pi_prompt', { tabId, message: '门禁：流式稳定性' });
+  await sleep(4200);
+  streaming = false;
+  await sampler;
+  const flipsOf = (f) => {
+    let n = 0;
+    for (let i = 1; i < streams.length; i += 1) if (f(streams[i]) !== f(streams[i - 1])) n += 1;
+    return n;
+  };
+  const liveLens = streams.map((x) => x.liveLen).filter((n) => n >= 0);
+  // 跟随时"当前刻度只许前进"：倒退一次就说明判定被瞬时几何带跑了（亮条闪）
+  let activeRegressions = 0;
+  for (let i = 1; i < streams.length; i += 1) {
+    const a = Number(streams[i - 1].active);
+    const b = Number(streams[i].active);
+    if (Number.isFinite(a) && Number.isFinite(b) && b < a) activeRegressions += 1;
+  }
+  const streamCheck = {
+    samples: streams.length,
+    activeFlips: flipsOf((x) => x.active),
+    activeRegressions,
+    activeTrail: streams.map((x) => x.active).filter((v, i, a) => i === 0 || a[i - 1] !== v),
+    bottomEver: streams.some((x) => x.bottom === 1),
+    railTopFlips: flipsOf((x) => x.railTop),
+    gapMax: Math.max(...streams.map((x) => x.gap)),
+    liveMonotonic: liveLens.every((n, i) => i === 0 || n >= liveLens[i - 1]),
+    liveLen: liveLens.length ? [Math.min(...liveLens), Math.max(...liveLens)] : null,
+  };
+
   return {
     tabId,
     onOpen,
@@ -1884,6 +1932,7 @@ const paging = await page.evaluate(async () => {
     jump,
     backToLatest,
     afterToBottom,
+    streamCheck,
   };
 });
 
@@ -2759,6 +2808,28 @@ if (paging.afterToBottom.gap > 25 || paging.afterToBottom.toBottom) {
   bad.push(
     `分页：「回到底部」没回到位（距底 ${paging.afterToBottom.gap}px，按钮还在=${paging.afterToBottom.toBottom}）★`,
   );
+}
+
+/* 流式稳定性：贴底跟随时不许闪（当前刻度最多因"新一轮到达"变一次、跟随不许丢、
+   梯子自己不许动、实时文本长度只增不减） */
+const sc = paging.streamCheck;
+if (sc.samples < 40) bad.push(`分页：流式采样只有 ${sc.samples} 次，这一段核对是空转 ★`);
+if (sc.activeFlips > 1) {
+  bad.push(
+    `分页：流式中当前刻度翻了 ${sc.activeFlips} 次（${sc.activeTrail.join(' → ')}）` +
+      '—— "打开即贴底"的判定用了瞬时几何，亮条会逐帧闪 ★',
+  );
+}
+if (sc.activeRegressions > 0) {
+  bad.push(`分页：流式中当前刻度倒退了 ${sc.activeRegressions} 次 —— 贴底跟随时只许前进 ★`);
+}
+if (sc.bottomEver) bad.push('分页：流式中"回到底部"冒出来过 —— 跟随被自己贴的底弄丢了 ★');
+if (sc.railTopFlips > 1) {
+  bad.push(`分页：流式中梯子自己滚了 ${sc.railTopFlips} 次（应当只在新增一轮时动一次）★`);
+}
+if (sc.gapMax > 25) bad.push(`分页：流式中离底最多 ${sc.gapMax}px —— 没贴住 ★`);
+if (!sc.liveMonotonic) {
+  bad.push(`分页：流式文本长度不是单调增长（${sc.liveLen?.join(' → ')}）—— 实时块被反复重置 ★`);
 }
 
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
