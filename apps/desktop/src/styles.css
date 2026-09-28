@@ -535,6 +535,10 @@ body {
   height: 28px; padding: 0 var(--pg-sp-4) 0 var(--pg-sp-7);
 }
 .pg-group-more:hover { color: var(--pg-fg); }
+.pg-group-danger {
+  color: var(--pg-error);
+}
+.pg-group-danger:hover { color: var(--pg-error); text-decoration: underline; }
 .pg-sidebar-label {
   display: flex; align-items: center; gap: var(--pg-sp-3);
   padding: var(--pg-sp-5) var(--pg-sp-5) var(--pg-sp-1);

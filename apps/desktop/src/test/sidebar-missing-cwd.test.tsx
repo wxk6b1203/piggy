@@ -111,4 +111,47 @@ describe('侧栏：已删除项目的会话汇总成一个收起的组', () => {
     // 展开后有一句说明（"打开可能失败"而不是静默）
     expect(domContainer().textContent).toContain('目录已不存在');
   });
+
+  it('展开后能一次性全部移入回收站（走和单条删除同一条 IPC）', async () => {
+    seed();
+    mountDom(<SessionsSidebar />);
+    await act(async () => {});
+
+    // 先展开
+    const head = domContainer().querySelector<HTMLElement>('.pg-group-missing .pg-group-head')!;
+    await act(async () => {
+      head.click();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const bulk = domContainer().querySelector<HTMLElement>('[data-delete-missing]')!;
+    expect(bulk.textContent).toContain('3'); // 组里 3 个
+    await act(async () => {
+      bulk.click();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // 确认弹窗（antd Modal.confirm）→ 点"全部删除"
+    const okBtn = [...document.querySelectorAll<HTMLElement>('.ant-modal-confirm-btns button')].find(
+      (b) => (b.textContent ?? '').includes('全部删除'),
+    );
+    expect(okBtn, '确认弹窗里要有「全部删除」').toBeTruthy();
+    await act(async () => {
+      okBtn!.click();
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    const deleted = invokeMock.mock.calls.filter((c) => c[0] === 'session_delete');
+    expect(deleted).toHaveLength(3);
+    expect(deleted.map((c) => (c[1] as { path: string }).path).sort()).toEqual([
+      '/private/tmp/case-1/junk1.jsonl',
+      '/private/tmp/case-2/junk2.jsonl',
+      '/private/tmp/case-3/junk3.jsonl',
+    ]);
+    // 删完这一组就没了（removeLocal 会移掉整个空组）
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(domContainer().querySelector('.pg-group-missing')).toBeNull();
+  });
 });

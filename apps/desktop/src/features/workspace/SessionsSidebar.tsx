@@ -185,6 +185,40 @@ export function SessionsSidebar() {
     });
   };
 
+  /** 汇总组专用：把"目录已不存在"的会话一次性移入回收站。
+   *
+   * 走的是**和单条删除完全同一条路**（`session_delete` → 系统回收站），
+   * 不是一个"直接 rm"的快捷方式——那样就绕过了回收站，用户后悔时找不回来。
+   * 逐条发、逐条 removeLocal：中途失败也能保住已经删掉的那部分状态，
+   * 最后把失败条数一起报出来（不吞错）。 */
+  const doDeleteMissingAll = (items: SessionMeta[]) => {
+    confirm({
+      title: `删除 ${items.length} 个已删除项目的会话`,
+      content: `这些会话的项目目录都已经不存在了。${items.length} 个会话文件将移入系统回收站（可以从回收站恢复）。`,
+      okText: '全部删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        let ok = 0;
+        const failed: string[] = [];
+        for (const m of items) {
+          try {
+            await cmd('session_delete', { path: m.path });
+            removeLocal(m.path);
+            ok += 1;
+          } catch (e) {
+            failed.push(`${sessionTitle(m)}: ${String(e)}`);
+          }
+        }
+        if (failed.length === 0) {
+          toast.success(`已移入回收站：${ok} 个`);
+        } else {
+          toast.error(`已删除 ${ok} 个，失败 ${failed.length} 个：${failed.slice(0, 2).join('；')}`);
+        }
+      },
+    });
+  };
+
   const doExport = async (m: SessionMeta) => {
     try {
       // 导出**已打开**的会话必须复用那个 tab：
@@ -352,7 +386,18 @@ export function SessionsSidebar() {
                 )}
               </div>
               {g.missingRoot && !collapsed && (
-                <div className="pg-group-hint">目录已不存在，打开可能失败；会话文件仍在会话目录里</div>
+                <>
+                  <div className="pg-group-hint">
+                    目录已不存在，打开可能失败；会话文件仍在会话目录里（{g.sessions.length} 个）
+                  </div>
+                  <button
+                    className="pg-group-more pg-group-danger"
+                    data-delete-missing
+                    onClick={() => doDeleteMissingAll(g.sessions)}
+                  >
+                    全部移到回收站（{g.sessions.length} 个）
+                  </button>
+                </>
               )}
               {!collapsed &&
                 g.visible.map((m) => {
