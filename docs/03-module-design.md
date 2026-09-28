@@ -337,6 +337,16 @@ stderr 最后一行。
 
 模型选择（`pick_model`，纯函数）：设置覆盖 > 会话最后一次 `model_change` > 都不给
 （让 pi 用默认）。**成对生效**——只给一半会退化成错配组合，宁可都不传。
+
+"成对"这条不是洁癖，是实测出来的：用本地假服务器分别试过四种组合——
+
+| 传了什么 | pi 的反应 |
+|---|---|
+| `--provider fake --model think-model`（对） | 正常，请求打到 `think-model` |
+| `--provider nope --model think-model`（provider 错） | **退出码 1**：`Error: Unknown provider "nope". Use --list-models to see available providers/models.`（这句话会被 Piggy 原样显示） |
+| `--provider fake --model no-such-model`（模型名错） | 照发，`model` 字段就是那个不存在的名字，由提供商报错 |
+| `--provider nope`（**只给 provider、不给 model**） | ⚠️ **不报错**：悄悄用默认模型把活干完（这就是"成对生效"要挡掉的那一种） |
+
 预览界面显示的"会用哪个模型"用的是**真正会被调用的那个**（`modelUsed` + `modelSource`
 = override / session / default / invalid）；覆盖写成半截时 `modelSource = "invalid"`
 并带上 `modelError`——生成时它会直接失败，预览**不能**说成"用默认"。
