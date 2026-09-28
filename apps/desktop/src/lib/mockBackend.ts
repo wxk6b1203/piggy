@@ -725,7 +725,20 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const total = mockTranscript.length;
     const before = typeof a.before === 'number' ? Math.min(a.before, total) : total;
     const limit = typeof a.limit === 'number' && a.limit > 0 ? Math.min(a.limit, 500) : 50;
-    const start = Math.max(0, before - limit);
+    // 与 Rust `collect_back` 同一条收页规则：**行数下限 + 轮数下限**，并有行数上限。
+    // 只按行数会在工具密集的会话里一页只装一轮（用户实测 30 轮 / 1028 步 → 打开只看得到一轮，
+    // 刻度梯 28/30 条是"未载入"）。mock 不跟上的话，门禁量到的分页行为和真机就是两回事。
+    const MIN_TURNS = 5;
+    const MAX_ROWS = 300;
+    let start = Math.max(0, before - limit);
+    let rows = 0;
+    let users = 0;
+    for (let i = before - 1; i >= 0; i -= 1) {
+      rows += 1;
+      if (mockTranscript[i]?.role === 'user') users += 1;
+      start = i;
+      if ((rows >= limit && users >= MIN_TURNS) || rows >= MAX_ROWS) break;
+    }
     return {
       rows: mockTranscript
         .slice(start, before)

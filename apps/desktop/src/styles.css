@@ -133,13 +133,16 @@ body {
 .pg-rail-mark.is-preview::before { transform: translateY(-50%) scaleX(0.9); background: var(--pg-fg-caption); }
 /* 当前这一轮：满宽 + 最亮（用户说的"亮色的条子代表当前位置"） */
 .pg-rail-mark.is-active::before { transform: translateY(-50%) scaleX(1); background: var(--pg-fg); }
-/* 未载入的历史（分页）：梯子顶端一段虚线，点它翻页（docs/03 §2.19） */
+/* 未载入的历史（分页）：**短一点、暗一点**的实心刻度，点它翻页过去（docs/03 §2.19）。
+   这里刻意**不用虚线**（DSH 的 markUnloaded 是虚线）：用户实测 30 轮 / 1028 步的会话里，
+   一页只覆盖一两轮，整条梯子大半是虚线，看起来像"坏了/缺了一半"——他要的是"一眼就是
+   整段会话的地图"。所以形状与普通刻度同族，只靠更短更暗 + 悬停提示"还没载入"来表达。 */
 .pg-rail-unloaded { background: none; border: none; padding: 0; cursor: pointer; }
 .pg-rail-unloaded::before {
-  height: 2px; background: none; border-top: 2px dashed var(--pg-border-l4);
-  transform: translateY(-50%) scaleX(0.6);
+  background: var(--pg-border-l3);
+  transform: translateY(-50%) scaleX(0.45);
 }
-.pg-rail-unloaded:hover::before { border-top-color: var(--pg-fg-caption); transform: translateY(-50%) scaleX(1); }
+.pg-rail-unloaded:hover::before { background: var(--pg-fg-caption); transform: translateY(-50%) scaleX(0.9); }
 .pg-rail-mark:focus-visible { outline: none; }
 .pg-rail-mark:focus-visible::before {
   transform: translateY(-50%) scaleX(1); background: var(--pg-brand);

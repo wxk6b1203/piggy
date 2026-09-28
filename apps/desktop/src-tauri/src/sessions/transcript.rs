@@ -45,10 +45,21 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-/// 默认每页条目数。50 行按 DSH 的估算行高（~88px）远超一屏，够贴底渲染。
+/// 每页**至少**多少行。50 行按 DSH 的估算行高（~88px）远超一屏，够贴底渲染。
 pub const DEFAULT_LIMIT: usize = 50;
 /// 每页最多允许请求多少条（挡住前端传入的离谱值）。
 pub const MAX_LIMIT: usize = 500;
+/// 每页至少要覆盖几轮（用户消息）。
+///
+/// **为什么按轮兜底**（2026-09-23 用户实测）：他那场会话是 30 轮 / 1028 步
+/// （平均一轮 34 行），"一页 50 行"于是只装了 1 轮多 —— 界面上表现为
+/// "打开会话只看得到一轮"，刻度梯上 28/30 条是"未载入"。
+/// 用户读的是**轮**，不是行数，所以页的粒度也得按轮兜底。
+pub const MIN_TURNS: usize = 5;
+/// 一页最多读多少行（一轮可能有几百行，光按轮兜底会把页撑爆）。
+pub const MAX_ROWS: usize = 300;
+/// 一页最多读多少字节（真正的载荷闸门：真机上有的一行就有 3.35 MB）。
+pub const MAX_BYTES: u64 = 1024 * 1024;
 /// 反向扫描的分块大小：64 KiB。按块读而不是按行读，
 /// 超长行（真机最大 3.35 MB）会跨很多块，靠 `prev_line` 的累积自动拼回来。
 const CHUNK: usize = 64 * 1024;
@@ -197,8 +208,16 @@ fn collect_back(file: &mut File, end: u64, limit: usize) -> std::io::Result<Fast
     // 反向扫描时"上一条（更靠后）条目的 parentId"——它应当等于接下来读到的那条的 id
     let mut expected_id: Option<String> = None;
     let mut first = true;
+    let mut turns = 0usize; // 已收集到的用户消息数（= 轮数）
 
-    while rows_rev.len() < limit && pos > 0 {
+    // 收页的停止条件（按顺序判）：够了 / 到文件头 / 触到行的上限 / 触到字节的上限。
+    // "够了" = 行数到 `limit` **且**轮数到 `MIN_TURNS`：只按行数会在工具密集的会话里
+    // 一页只装一轮（用户实测 30 轮 / 1028 步），只按轮数又可能被一轮几百行撑爆。
+    while pos > 0
+        && (rows_rev.len() < limit || turns < MIN_TURNS)
+        && rows_rev.len() < MAX_ROWS
+        && end.saturating_sub(pos) < MAX_BYTES
+    {
         let Some((line_start, bytes)) = prev_line(file, pos)? else {
             break;
         };
@@ -225,12 +244,17 @@ fn collect_back(file: &mut File, end: u64, limit: usize) -> std::io::Result<Fast
         first = false;
         expected_id = parent;
         if let Some(row) = row_of(&entry, line_start) {
+            // 注意：压缩行也会出现在这里，但只有 user 行算一轮
+            if row.role == "user" {
+                turns += 1;
+            }
             rows_rev.push(row);
         }
     }
 
     rows_rev.reverse();
-    let has_more = rows_rev.len() >= limit && pos > 0;
+    // 停下来的原因是"够了/触到上限"还是"到文件头"——只有后者才没有更早的了
+    let has_more = pos > 0;
     let empty = rows_rev.is_empty();
     Ok(FastPage {
         rows: rows_rev,
@@ -634,13 +658,9 @@ mod tests {
             page.rows.iter().map(|r| r.role.as_str()).collect::<Vec<_>>(),
             vec!["user", "assistant", "toolResult"]
         );
-        // 这一页**装满了**，而前面还有字节（header / model_change / system）→ 乐观地说"还有"。
-        // 宁可多给一次"点了没反应"的机会，也不能漏掉真实存在的历史。
-        assert!(page.has_more);
-        // 真去翻那一页：没有可显示的行，于是 has_more 转 false，按钮自己消失（不会无限点下去）
-        let older = read_page(&path, Some(page.start_offset), 3).unwrap();
-        assert!(older.rows.is_empty());
-        assert!(!older.has_more);
+        // 这一页只有 1 轮（< MIN_TURNS），于是继续往前读到文件头：
+        // 前面那些条目一条都不进转录，has_more 因此**精确**为 false（不再"乐观地说还有"）。
+        assert!(!page.has_more);
     }
 
     #[test]
@@ -780,15 +800,17 @@ mod tests {
         }
         let (_d, path) = write_session(&lines);
         let o = outline(&path).unwrap();
+        // 请求 3 行，但页会按轮兜底到 MIN_TURNS：最后 5 轮（u16..a20）= 10 行
         let page = read_page(&path, None, 3).unwrap();
         assert_eq!(o.turns.len(), 20);
-        assert_eq!(page.rows.len(), 3);
-        // 20 轮 = 40 行；尾页 3 行 = [第 19 轮的回答, 第 20 轮的提问, 第 20 轮的回答]，
-        // 于是"第一条落在窗口里的轮"是第 20 轮（下标 19）—— 前 19 轮就是未载入那一段。
+        assert_eq!(page.rows.len(), MIN_TURNS * 2);
+        assert_eq!(text_row(page.rows.first().unwrap()), "问题 16");
+        // 于是"第一条落在窗口里的轮"是第 16 轮（下标 15）—— 前 15 轮就是未载入那一段。
+        // 这正是"预览全部（20 轮）、只载入一部分（5 轮）"。
         let page_start = page.start_offset;
         let loaded_from = o.turns.iter().position(|t| t.start >= page_start).unwrap();
-        assert_eq!(loaded_from, 19, "轮廓要能算出哪些轮还没载入");
-        assert_eq!(o.turns[loaded_from].turn, 20);
+        assert_eq!(loaded_from, 15, "轮廓要能算出哪些轮还没载入");
+        assert_eq!(o.turns[loaded_from].turn, 16);
     }
 
     #[test]
@@ -804,7 +826,7 @@ mod tests {
     fn tail_page_has_no_newer_but_a_repage_window_does() {
         let mut lines = vec![header()];
         let mut parent = "null".to_string();
-        for i in 1..=6 {
+        for i in 1..=12 {
             let uid = format!("u{i}");
             lines.push(msg(&uid, &format!("\"{parent}\""), "user", &format!("问题 {i}")));
             let aid = format!("a{i}");
@@ -813,17 +835,89 @@ mod tests {
         }
         let (_d, path) = write_session(&lines);
 
+        // 尾页：12 轮里取最后 5 轮（MIN_TURNS）= 10 行，前面还有 7 轮
         let tail = read_page(&path, None, 4).unwrap();
         assert!(!tail.has_newer, "尾部那一页后面没有更新的内容");
         assert!(tail.has_more);
 
-        // 换窗（跳转）：以第 2 轮的口答边界为右界取一页 —— 前面还有、后面也还有。
-        // 页大小取 2：第 2 轮之前只有 3 行可显示（u1 / a1 / u2），取满 2 行才说明"前面还有"。
+        // 换窗（跳转）：以第 6 轮的口答边界为右界取一页 —— 前面还有、后面也还有。
+        // （第 2 轮太靠前了：按轮兜底会一路读到文件头，has_more 自然为 false。）
         let o = outline(&path).unwrap();
-        let mid = read_page(&path, Some(o.turns[1].end), 2).unwrap();
-        assert!(mid.has_more, "第 2 轮之前还有内容");
-        assert!(mid.has_newer, "第 2 轮之后还有内容 —— 界面要能回到最新");
-        assert_eq!(text_row(mid.rows.last().unwrap()), "问题 2");
+        let mid = read_page(&path, Some(o.turns[5].end), 2).unwrap();
+        assert!(mid.has_more, "第 6 轮之前还有内容");
+        assert!(mid.has_newer, "第 6 轮之后还有内容 —— 界面要能回到最新");
+        assert_eq!(text_row(mid.rows.last().unwrap()), "问题 6");
+    }
+
+    #[test]
+    fn a_page_covers_at_least_min_turns_even_for_tool_heavy_sessions() {
+        // 用户实测的形状：一轮 = 1 条 user + 1 条 assistant + 12 条 toolResult（14 行）。
+        // ⚠️ toolResult 必须**串成一条链**（父节点是上一条），全挂同一个父节点就成了分支，
+        //    会被链检查识别出来走慢路径（第一版夹具就是这么写错的，量到 24 行还以为是分页坏了）。
+        let mut lines = vec![header()];
+        let mut parent = "null".to_string();
+        for i in 1..=8 {
+            let uid = format!("u{i}");
+            lines.push(msg(&uid, &format!("\"{parent}\""), "user", &format!("问题 {i}")));
+            let aid = format!("a{i}");
+            lines.push(msg(&aid, &format!("\"{uid}\""), "assistant", &format!("回答 {i}")));
+            parent = aid.clone();
+            for k in 0..12 {
+                let tid = format!("t{i}_{k}");
+                lines.push(format!(
+                    r#"{{"type":"message","id":"{tid}","parentId":"{parent}","message":{{"role":"toolResult","toolName":"read","content":[{{"type":"text","text":"输出 {i}-{k}"}}]}}}}"#
+                ));
+                parent = tid;
+            }
+        }
+        let (_d, path) = write_session(&lines);
+
+        // 只按 50 行取会得到 3 轮多（3×14=42 行 -> 第 4 轮半）—— 那正是"打开只看得到一轮多"的来源
+        let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
+        let users = page.rows.iter().filter(|r| r.role == "user").count();
+        assert!(users >= MIN_TURNS, "工具密集的会话里，一页必须够 {MIN_TURNS} 轮，实际 {users}");
+        assert!(page.rows.len() <= MAX_ROWS);
+        assert!(page.has_more, "8 轮里只取了后几轮，前面还有");
+        // 一轮 14 行：5 轮 = 70 行（> 行数下限 50，所以是"按轮兜底"撑到这里的）
+        assert_eq!(page.rows.len(), 14 * MIN_TURNS);
+        assert_eq!(text_row(page.rows.first().unwrap()), "问题 4");
+    }
+
+    #[test]
+    fn a_page_stops_at_the_row_cap_when_one_turn_is_enormous() {
+        // 一轮 400 行：按轮兜底会撑爆，必须被 MAX_ROWS 截住
+        let mut lines = vec![header(), msg("u1", "null", "user", "唯一的提问")];
+        let mut parent = "u1".to_string();
+        for k in 0..400 {
+            let tid = format!("t{k}");
+            lines.push(format!(
+                r#"{{"type":"message","id":"{tid}","parentId":"{parent}","message":{{"role":"toolResult","toolName":"read","content":[{{"type":"text","text":"输出 {k}"}}]}}}}"#
+            ));
+            parent = tid;
+        }
+        let (_d, path) = write_session(&lines);
+        let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(page.rows.len(), MAX_ROWS, "要被行数上限截住");
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn a_page_stops_at_the_byte_cap() {
+        // 每行 ~200 KB：字节闸门（1 MiB）必须先于行数/轮数生效
+        let big = "x".repeat(200 * 1024);
+        let mut lines = vec![header(), msg("u1", "null", "user", "提问")];
+        let mut parent = "u1".to_string();
+        for k in 0..40 {
+            let tid = format!("t{k}");
+            lines.push(format!(
+                r#"{{"type":"message","id":"{tid}","parentId":"{parent}","message":{{"role":"toolResult","toolName":"read","content":[{{"type":"text","text":"{big}"}}]}}}}"#
+            ));
+            parent = tid;
+        }
+        let (_d, path) = write_session(&lines);
+        let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
+        assert!(page.rows.len() < 20, "一页读进来的字节要受闸门约束，实际 {} 行", page.rows.len());
+        assert!(page.has_more);
     }
 
     #[test]
