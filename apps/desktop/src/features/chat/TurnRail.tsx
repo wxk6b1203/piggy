@@ -46,15 +46,13 @@ export interface TurnRailProps {
   /** 当前阅读到的轮次（null = 还没算出来） */
   activeTurn: number | null;
   placement: 'left' | 'right';
-  /** 跳到某一轮（给的是转录里的行下标） */
-  onJump: (rowIndex: number) => void;
-  /** 上面还有没载入的历史（分页，docs/03 §2.19） */
-  hasMore?: boolean;
-  /** 点"未载入"那一端 → 加载更早一页（DSH 未加载刻度的同义行为） */
-  onLoadOlder?: () => void;
+  /** 跳到某一轮：已载入的滚过去，未载入的先把历史翻页进来（docs/04 §2.6） */
+  onJump: (item: RailItem) => void;
+  /** 正在为哪一轮翻页（忙碌标记） */
+  pendingTurn?: number | null;
 }
 
-export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoadOlder }: TurnRailProps) {
+export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: TurnRailProps) {
   const railRef = useRef<HTMLDivElement>(null);
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   /** 指针停在梯子上时，别把它从用户手底下滚走（DSH 同一条纪律）。 */
@@ -92,15 +90,28 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
     [items, activeTurn],
   );
 
-  // 让当前刻度待在梯子中部（指针不在梯子上时才动它）。
-  // 用一个 ref 记住"上一次是因为什么滚的"，避免与用户的滚动打架。
+  /**
+   * 跟随当前刻度：**只在它跑出可视带时，最小幅度地把它拉回来**。
+   *
+   * 为什么不是"居中"（DSH 的口径）：DSH 的刻度间距与文档长度成比例，梯子通常装得下；
+   * 而 Piggy 用固定 10px 间距（有意的差异，见文件头），一场 100 轮的会话梯子有 1000px，
+   * 塞进 420px 的带子里必然要内部滚动。居中意味着每走十几轮就整体跳 ~200px ——
+   * 用户报的"预览滚动条在疯狂跳动"就是这个（实测：跳一轮时梯子从 592 → 311 → 521）。
+   * 最小幅度跟随把每次调整压到 10~50px，且只在贴边时发生。
+   */
   useLayoutEffect(() => {
     const el = railRef.current;
     if (!el || activeIndex < 0 || pointerInside.current || maxScroll <= 0) return;
     const center = RAIL_INSET_PX + activeIndex * TURN_SPACING_PX + TURN_SPACING_PX / 2;
-    const target = Math.max(0, Math.min(maxScroll, center - el.clientHeight / 2));
-    // 已经落在可视带里就不动——每次滚动都居中会让梯子一直在抖
-    if (center - el.scrollTop >= FADE_PX && center - el.scrollTop <= el.clientHeight - FADE_PX) return;
+    const viewTop = el.scrollTop;
+    const viewBottom = viewTop + el.clientHeight;
+    // 已经落在可视带内（留 FADE_PX 余量）就不动它
+    if (center >= viewTop + FADE_PX && center <= viewBottom - FADE_PX) return;
+    const target = Math.max(
+      0,
+      Math.min(maxScroll, center < viewTop ? center - FADE_PX : center - el.clientHeight + FADE_PX),
+    );
+    if (Math.abs(target - viewTop) < 1) return;
     el.scrollTop = target;
     setScrollTop(target);
   }, [activeIndex, maxScroll]);
@@ -110,8 +121,9 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
     if (el) setScrollTop(el.scrollTop);
   }, []);
 
-  // 刻度不足 2 条时梯子没有形状——但"上面还有未载入的历史"时仍要露出那一端
-  if (items.length < 2 && !hasMore) return null;
+  // 刻度不足 2 条时梯子没有形状
+  if (items.length < 2) return null;
+  const unloadedCount = items.filter((i) => !i.loaded).length;
 
   const preview = previewTurn === null ? undefined : items.find((it) => it.turn === previewTurn);
   const previewIndex = preview ? items.indexOf(preview) : -1;
@@ -124,6 +136,7 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
       data-turn-rail
       data-rail-placement={placement}
       data-rail-count={items.length}
+      data-rail-unloaded-count={unloadedCount}
       style={{ height }}
       // 进/出整条梯子（DSH 把这一对挂在 nav 上）。
       // ⚠️ 少了 onPointerLeave，鼠标移开后预览框会**一直挂着**——刻度只有 10px 高，
@@ -142,19 +155,6 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
         onScroll={onRailScroll}
       >
         <div style={{ height: total, position: 'relative' }}>
-          {/* 未载入的历史：梯子最顶端一段虚线刻度（DSH 的 unloaded anchor 同义）。
-              点它就再翻一页——比"刻度从有到无"更能说明"上面还有"。 */}
-          {hasMore && (
-            <button
-              type="button"
-              className="pg-rail-mark pg-rail-unloaded"
-              data-rail-unloaded
-              aria-label="上面还有更早的历史，点击加载更早"
-              title="上面还有更早的历史（点这里加载更早）"
-              style={{ position: 'absolute', top: 0, height: RAIL_INSET_PX, left: 0, right: 0 }}
-              onClick={onLoadOlder}
-            />
-          )}
           {virtualizer.getVirtualItems().map((vi) => {
             const item = items[vi.index];
             if (!item) return null;
@@ -162,6 +162,9 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
             const hovered = item.turn === previewTurn;
             const cls = [
               'pg-rail-mark',
+              // 未载入的刻度画成虚线（DSH 的 `markUnloaded`）：点它先把历史翻页进来
+              item.loaded ? '' : 'pg-rail-unloaded',
+              pendingTurn === item.turn ? 'is-busy' : '',
               active ? 'is-active' : '',
               hovered && !active ? 'is-preview' : '',
             ]
@@ -173,8 +176,15 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
                 type="button"
                 data-index={vi.index}
                 data-rail-mark={item.turn}
+                data-rail-unloaded={item.loaded ? undefined : true}
+                data-rail-busy={pendingTurn === item.turn ? true : undefined}
                 className={cls}
-                aria-label={`跳到第 ${item.turn} 轮`}
+                aria-label={
+                  item.loaded
+                    ? `跳到第 ${item.turn} 轮`
+                    : `第 ${item.turn} 轮还没载入，点击加载并跳过去`
+                }
+                title={item.loaded ? undefined : '还没载入（点击加载并跳过去）'}
                 aria-current={active ? 'true' : undefined}
                 aria-describedby={hovered ? previewId : undefined}
                 style={{
@@ -187,7 +197,7 @@ export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoad
                 onPointerEnter={() => setPreviewTurn(item.turn)}
                 onFocus={() => setPreviewTurn(item.turn)}
                 onBlur={() => setPreviewTurn(null)}
-                onClick={() => onJump(item.rowIndex)}
+                onClick={() => onJump(item)}
               />
             );
           })}

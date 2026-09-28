@@ -709,6 +709,20 @@ pub async fn session_delete(path: String) -> Result<(), String> {
     list::trash_session(&path)
 }
 
+/// 整段会话的**轮次轮廓**（docs/03 §2.19）：刻度梯要"预览全部、载入部分"。
+///
+/// 单独一条命令而不是塞进 `session_page`：轮廓是"一次扫描、整个会话"，
+/// 页码是"按需一页"——两者的生命周期不同（轮廓只在打开/复活时取一次）。
+#[tauri::command]
+pub async fn session_outline(path: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let o = crate::sessions::transcript::outline(std::path::Path::new(&path))?;
+        Ok::<Value, String>(o.to_json())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 会话转录**分页**读（docs/03 §2.19）。
 ///
 /// 不起 worker、不依赖 pi 进程：直接读会话 JSONL 的尾部一页。这样打开长会话

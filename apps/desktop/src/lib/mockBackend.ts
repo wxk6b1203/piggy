@@ -727,11 +727,40 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const limit = typeof a.limit === 'number' && a.limit > 0 ? Math.min(a.limit, 500) : 50;
     const start = Math.max(0, before - limit);
     return {
-      rows: mockTranscript.slice(start, before),
+      rows: mockTranscript
+        .slice(start, before)
+        .map((row, i) => ({ ...row, offset: start + i })),
       startOffset: start,
       hasMore: start > 0,
+      hasNewer: before < total,
       branchy: false,
     };
+  },
+  /**
+   * 轮次轮廓（docs/03 §2.19）：整段 mock 转录的全部轮次。
+   * 真机是 Rust 扫会话文件；mock 用行下标当偏移（对前端不透明），
+   * 规则与真机一致：**每个 user 行开启新的一轮**，其后的 assistant 文本归这一轮。
+   */
+  session_outline: () => {
+    const turns: Array<{ turn: number; start: number; end: number; prompt: string; response: string }> = [];
+    const text = (m: unknown): string => {
+      const c = (m as { content?: unknown })?.content;
+      if (typeof c === 'string') return c;
+      if (!Array.isArray(c)) return '';
+      return c
+        .map((b) => ((b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : ''))
+        .join('\n');
+    };
+    mockTranscript.forEach((row, i) => {
+      const msg = row.message as { role?: string; content?: unknown };
+      if (row.role === 'user') {
+        turns.push({ turn: turns.length + 1, start: i, end: i + 1, prompt: text(msg), response: '' });
+      } else if (row.role === 'assistant') {
+        const last = turns.at(-1);
+        if (last && !last.response && text(msg).trim()) last.response = text(msg);
+      }
+    });
+    return { turns, totalBytes: mockTranscript.length };
   },
   pi_get_session_stats: () => ({
     tokens: { input: 12_000, output: 3_400, total: 15_400, cacheRead: 9_000 },

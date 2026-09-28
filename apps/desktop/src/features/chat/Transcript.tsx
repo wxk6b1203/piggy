@@ -24,16 +24,37 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { liveFor } from '@/lib/live';
-import { loadOlder } from '@/lib/transcriptPage';
+import { loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
+import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
+import { useTabs } from '@/stores/tabs';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
-import { activeTurnOf, buildRailItems } from './turnRailItems';
+import {
+  activeTurnOf,
+  findRowIndexByOffset,
+  mergeRailItems,
+  type RailItem,
+  type RailSourceRow,
+} from './turnRailItems';
 import { TurnRail } from './TurnRail';
 import { isAtTail, nextFollowing, scrollTopAfterPrepend } from './transcriptScroll';
 
 const LIVE_ID = '__live__';
+
+/** 从 store 的一个 tab 里取出刻度需要的行原料（跳转落位时重新读一次）。 */
+function railRowsOf(tab: { ids: string[]; byId: Record<string, { role: string; message: unknown; offset: number | null }> } | undefined): RailSourceRow[] {
+  if (!tab) return [];
+  return tab.ids.map((id) => {
+    const row = tab.byId[id];
+    return {
+      role: row?.role ?? '',
+      content: (row?.message as { content?: unknown })?.content,
+      offset: row?.offset ?? null,
+    };
+  });
+}
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -45,8 +66,12 @@ export function Transcript({ tabId }: { tabId: string }) {
   const byId = useTabMsg(tabId, (t) => t.byId);
   const hasMore = useTabMsg(tabId, (t) => t.hasMore);
   const loadingOlder = useTabMsg(tabId, (t) => t.loadingOlder);
+  const outline = useTabMsg(tabId, (t) => t.outline);
+  const pageCursor = useTabMsg(tabId, (t) => t.pageCursor);
+  const hasNewer = useTabMsg(tabId, (t) => t.hasNewer);
   const hydrated = useTabMsg(tabId, (t) => t.hydrated);
-  const rowIds = streaming ? [...ids, LIVE_ID] : ids;
+  // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置
+  const rowIds = streaming && !hasNewer ? [...ids, LIVE_ID] : ids;
   const railPlacement = useAppConfig((s) => s.railPlacement);
 
   /**
@@ -88,12 +113,20 @@ export function Transcript({ tabId }: { tabId: string }) {
     setFollowingState(true);
   }, [tabId]);
 
+  // 换窗（跳到很久以前）：窗口不在尾部，跟随意图必须关掉
+  useEffect(() => {
+    if (!hasNewer) return;
+    followingRef.current = false;
+    setFollowingState(false);
+  }, [hasNewer]);
+
   // 第一页灌进来（hydrated 由 false 变 true）→ 贴底
   useEffect(() => {
     if (!hydrated) return;
+    if (hasNewer) return; // 换窗状态：窗口不在尾部，贴底是错的
     if (!followingRef.current) return;
     requestAnimationFrame(pinToBottom);
-  }, [hydrated, pinToBottom]);
+  }, [hydrated, hasNewer, pinToBottom]);
 
   // 内容增长（新消息 / 流式实时块长高 / 行被测量）→ 只要还在跟随就继续贴底。
   // 光靠 lastId 那个 effect 不够：虚拟化器**量出行高**同样会把底部顶走
@@ -106,24 +139,29 @@ export function Transcript({ tabId }: { tabId: string }) {
     const inner = innerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      if (followingRef.current) el.scrollTop = el.scrollHeight;
+      if (followingRef.current && !hasNewerRef.current) el.scrollTop = el.scrollHeight;
     });
     if (inner) ro.observe(inner);
     if (liveRef.current) ro.observe(liveRef.current);
     return () => ro.disconnect();
   }, [tabId, hydrated, streaming]);
 
-  // ── 预览滚动条：刻度来自 store 里**已载入**的消息 ──
-  const railItems = useMemo(
-    () =>
-      buildRailItems(
-        ids.map((id) => {
-          const row = byId[id];
-          return { role: row?.role ?? '', content: (row?.message as { content?: unknown })?.content };
-        }),
-      ),
-    [ids, byId],
+  /** ResizeObserver 回调里要读最新的换窗状态（不重挂观察者）。 */
+  const hasNewerRef = useRef(hasNewer);
+  hasNewerRef.current = hasNewer;
+
+  // ── 预览滚动条：**整段会话**的轮次（轮廓）+ 已载入的行 ──
+  //   轮廓来自会话文件的一次扫描（不需要把内容读进来），已载入的轮次再用真实行覆盖。
+  //   于是"预览全部、展示部分"同时成立（用户 2026-09-23 反馈；DSH `mergeTurnRailItems` 同构）。
+  const railRows = useMemo<RailSourceRow[]>(
+    () => railRowsOf(useMessages.getState().tabs[tabId]),
+    // ids/byId 变了就要重算（`railRowsOf` 直接读 store，所以这里显式列依赖）
+    [tabId, ids, byId],
   );
+  const railItems = useMemo(() => mergeRailItems(outline, railRows), [outline, railRows]);
+
+  /** 正在为"跳到未载入的那一轮"翻页：梯子上那一格显示忙碌。 */
+  const [jumping, setJumping] = useState<number | null>(null);
 
   /** 阅读线所在行 → 当前轮次。滚动/新增消息时重算。 */
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
@@ -153,15 +191,51 @@ export function Transcript({ tabId }: { tabId: string }) {
     return () => el.removeEventListener('scroll', recomputeActive);
   }, [recomputeActive]);
 
-  /** 点刻度：把那一轮滚到视口顶部（跳转的语义是"带我去那儿"）。 */
-  const jumpToRow = useCallback(
-    (rowIndex: number) => {
+  /**
+   * 跳到某一轮：已载入的直接滚过去；**没载入的换窗过去**（只读目标那一页）。
+   *
+   * DSH `navigateToTurn` 的两个分支同构（loaded → scrollToTurn；unloaded → 先取历史再落位），
+   * 区别在"取历史"的口径：这里用**换窗**（丢掉旧窗口）而不是往上累加，
+   * 否则跳到第 1 轮就等于把整段会话读进内存——分页就白做了。
+   */
+  const jumpToTurn = useCallback(
+    async (item: RailItem) => {
       followingRef.current = false;
       setFollowingState(false);
-      virtualizer.scrollToIndex(rowIndex, { align: 'start' });
+      if (item.loaded && item.rowIndex !== null) {
+        virtualizer.scrollToIndex(item.rowIndex, { align: 'start' });
+        return;
+      }
+      const anchorEnd = item.anchorEnd;
+      if (anchorEnd === null) return;
+      setJumping(item.turn);
+      try {
+        const ok = await loadWindowAt(tabId, anchorEnd);
+        if (!ok) return;
+        // 换窗后整段内容都换了：直接落到目标行（不做"高度差补偿"——那是给"往上加页"用的）
+        const rowIndex = findRowIndexByOffset(
+          railRowsOf(useMessages.getState().tabs[tabId]),
+          item.anchorStart ?? -1,
+        );
+        if (rowIndex === null) {
+          toast.info('这一轮没找到（会话文件可能已改变）');
+          return;
+        }
+        requestAnimationFrame(() => virtualizer.scrollToIndex(rowIndex, { align: 'start' }));
+      } finally {
+        setJumping(null);
+      }
     },
-    [virtualizer],
+    [tabId, virtualizer],
   );
+
+  /** 回到最新：重新装载尾部那一页（换窗的反向操作），并恢复贴底跟随。 */
+  const returnToLatest = useCallback(async () => {
+    const file = useTabs.getState().tabs[tabId]?.sessionFile ?? null;
+    setFollowing(true);
+    await loadTail(tabId, file);
+    requestAnimationFrame(pinToBottom);
+  }, [pinToBottom, setFollowing, tabId]);
 
   /** 回到底部（DSH `chat.toBottom`）：贴底并重新接管跟随。 */
   const returnToBottom = useCallback(() => {
@@ -239,7 +313,20 @@ export function Transcript({ tabId }: { tabId: string }) {
           })}
         </div>
       </div>
-      {!following && ids.length > 0 && (
+      {hasNewer ? (
+        // 换窗状态（在看几轮之前的历史）：给一条回得去的路，位置与「回到底部」同一处
+        <button
+          type="button"
+          className="pg-to-bottom pg-to-latest"
+          aria-label="回到最新"
+          title="回到最新（重新装载会话尾部）"
+          data-to-latest
+          onClick={() => void returnToLatest()}
+        >
+          <Icon name="chevron-down" size={16} />
+          <span>回到最新</span>
+        </button>
+      ) : !following && ids.length > 0 ? (
         <button
           type="button"
           className="pg-to-bottom"
@@ -250,15 +337,14 @@ export function Transcript({ tabId }: { tabId: string }) {
         >
           <Icon name="chevron-down" size={16} />
         </button>
-      )}
+      ) : null}
       {railPlacement !== 'off' && (
         <TurnRail
           items={railItems}
           activeTurn={activeTurn}
           placement={railPlacement}
-          onJump={jumpToRow}
-          hasMore={hasMore}
-          onLoadOlder={() => void loadEarlier()}
+          onJump={(item) => void jumpToTurn(item)}
+          pendingTurn={jumping}
         />
       )}
     </div>

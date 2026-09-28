@@ -17,13 +17,22 @@ import { toast } from '@/lib/feedback';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
 import type { AgentMessage } from '@piggy/pi-protocol';
+import type { OutlineTurn } from '@/features/chat/turnRailItems';
 
 /** Rust `session_page` 的返回形状（`sessions/transcript.rs` 的 `Page::to_json`）。 */
 export interface PageResponse {
-  rows: Array<{ role: string; message: AgentMessage }>;
+  rows: Array<{ role: string; message: AgentMessage; offset: number }>;
   startOffset: number;
   hasMore: boolean;
+  /** 本页不是文件尾部（换窗之后为 true） */
+  hasNewer: boolean;
   branchy: boolean;
+}
+
+/** Rust `session_outline` 的返回形状（整段会话的轮次轮廓，刻度梯用）。 */
+export interface OutlineResponse {
+  turns: OutlineTurn[];
+  totalBytes: number;
 }
 
 /** 退回一次性 hydrate：pi 进程内存里的当前上下文。 */
@@ -45,15 +54,69 @@ export async function loadTail(tabId: string, sessionFile: string | null | undef
   }
   try {
     const page = await cmd<PageResponse>('session_page', { path: sessionFile });
-    useMessages.getState().hydratePage(
-      tabId,
-      page.rows.map((r) => r.message) as never[],
-      { cursor: page.startOffset, hasMore: page.hasMore },
-    );
+    useMessages.getState().hydratePage(tabId, page.rows as never[], {
+      cursor: page.startOffset,
+      hasMore: page.hasMore,
+      hasNewer: page.hasNewer,
+    });
+    // 轮廓与页码是两件事（整段会话的"形状" vs 一页内容），并行取、不互相等。
+    // 轮廓失败不影响转录：刻度退化成"只画已载入的那部分"。
+    void loadOutline(tabId, sessionFile);
   } catch (e) {
     // 读不出来就说清楚（控制台留证据），界面退回老路径，绝不静默留白
     console.warn('[piggy] 会话分页读失败，退回 get_messages：', e);
     await hydrateFromPi(tabId);
+  }
+}
+
+/**
+ * 取**整段会话**的轮次轮廓（刻度梯要"预览全部、载入部分"，docs/03 §2.19）。
+ *
+ * 失败时把轮廓清空（不是保留旧值）：宁可让刻度只画已载入的那段，
+ * 也不要拿一份对不上的旧轮廓去糊界面。
+ *
+ * @param tabId - 标签 id
+ * @param sessionFile - 会话文件路径
+ */
+export async function loadOutline(tabId: string, sessionFile: string | null | undefined): Promise<void> {
+  if (!sessionFile) {
+    useMessages.getState().setOutline(tabId, null);
+    return;
+  }
+  try {
+    const r = await cmd<OutlineResponse>('session_outline', { path: sessionFile });
+    useMessages.getState().setOutline(tabId, r.turns ?? []);
+  } catch (e) {
+    console.warn('[piggy] 轮次轮廓读取失败，刻度只画已载入的部分：', e);
+    useMessages.getState().setOutline(tabId, null);
+  }
+}
+
+/**
+ * **换窗**：把已载入窗口换成"以 `before` 为右界的一页"（DSH 的 repage 同义）。
+ *
+ * 用于"跳到很久以前的某一轮"：只读目标那一页，中间那段**不读**——
+ * 否则一次跳转就等于把整段历史读进来（用户 2026-09-23 问的正是这个）。
+ * 换窗之后 `hasNewer=true`，界面给「回到最新」，点了重新装载尾部那一页。
+ *
+ * @param tabId - 标签 id
+ * @param before - 右边界（不含）：目标轮用户消息的结束偏移
+ * @returns 是否换窗成功
+ */
+export async function loadWindowAt(tabId: string, before: number): Promise<boolean> {
+  const file = useTabs.getState().tabs[tabId]?.sessionFile;
+  if (!file) return false;
+  try {
+    const page = await cmd<PageResponse>('session_page', { path: file, before });
+    useMessages.getState().hydratePage(tabId, page.rows as never[], {
+      cursor: page.startOffset,
+      hasMore: page.hasMore,
+      hasNewer: page.hasNewer,
+    });
+    return true;
+  } catch (e) {
+    toast.error(`跳到那一轮失败：${e}`);
+    return false;
   }
 }
 
@@ -76,12 +139,10 @@ export async function loadOlder(tabId: string): Promise<number> {
       path: file,
       before: tab.pageCursor,
     });
-    return useMessages
-      .getState()
-      .prependPage(tabId, page.rows.map((r) => r.message) as never[], {
-        cursor: page.startOffset,
-        hasMore: page.hasMore,
-      });
+    return useMessages.getState().prependPage(tabId, page.rows as never[], {
+      cursor: page.startOffset,
+      hasMore: page.hasMore,
+    });
   } catch (e) {
     useMessages.getState().setLoadingOlder(tabId, false);
     toast.error(`加载更早的历史失败：${e}`);

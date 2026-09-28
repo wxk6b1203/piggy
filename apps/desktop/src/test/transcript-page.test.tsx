@@ -52,11 +52,12 @@ const row = (i: number, role = 'user') => ({
   message: { role, content: [{ type: 'text', text: `第 ${i} 行` }], timestamp: 1000 + i },
 });
 
-/** 一页的返回。 */
-const page = (from: number, to: number, hasMore: boolean) => ({
-  rows: Array.from({ length: to - from }, (_, k) => row(from + k)),
+/** 一页的返回（行带偏移：刻度梯靠它把轮廓与已载入的行对上）。 */
+const page = (from: number, to: number, hasMore: boolean, hasNewer = false) => ({
+  rows: Array.from({ length: to - from }, (_, k) => ({ ...row(from + k), offset: from + k })),
   startOffset: from,
   hasMore,
+  hasNewer,
   branchy: false,
 });
 
@@ -81,10 +82,22 @@ async function scrollTo(el: HTMLElement, top: number) {
   });
 }
 
-function seed(rows: number, meta: { cursor: number | null; hasMore: boolean } = { cursor: 0, hasMore: false }) {
+function seed(
+  rows: number,
+  meta: { cursor: number | null; hasMore: boolean; hasNewer?: boolean } = { cursor: 0, hasMore: false },
+) {
   useMessages.getState().hydratePage(
     TAB,
     Array.from({ length: rows }, (_, i) => row(i).message) as never[],
+    meta,
+  );
+}
+
+/** 灌一页带偏移的行（刻度梯要用偏移把轮廓和行对上）。 */
+function seedOffsets(rows: number, from: number, meta: { cursor: number | null; hasMore: boolean; hasNewer?: boolean }) {
+  useMessages.getState().hydratePage(
+    TAB,
+    Array.from({ length: rows }, (_, k) => ({ ...row(from + k), offset: from + k })) as never[],
     meta,
   );
 }
@@ -234,5 +247,66 @@ describe('回到底部', () => {
     expect(q('[data-to-bottom]')).toBeNull();
     await scrollTo(el, 1500); // 距底 100px
     expect(q('[data-to-bottom]')).toBeTruthy();
+  });
+});
+
+describe('跳到未载入的那一轮：换窗（不把中间那段读进来）', () => {
+  const OUTLINE = [
+    { turn: 1, start: 10, end: 20, prompt: '第一轮的问题', response: '第一轮的回答' },
+    { turn: 2, start: 30, end: 40, prompt: '第二轮的问题', response: '第二轮的回答' },
+    { turn: 3, start: 50, end: 60, prompt: '第三轮的问题', response: '第三轮的回答' },
+    { turn: 4, start: 70, end: 80, prompt: '第四轮的问题', response: '第四轮的回答' },
+  ];
+
+  it('点未载入的刻度：只取目标那一页（用 anchorEnd 当右界），旧窗口被换掉', async () => {
+    // 当前窗口 = 最后两行（第 4 轮），轮廓说第 1~3 轮没载入
+    seedOffsets(2, 70, { cursor: 70, hasMore: true });
+    useMessages.getState().setOutline(TAB, OUTLINE);
+    useAppConfig.setState({ railPlacement: 'right', loaded: true });
+    invokeMock.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+      if (name === 'session_page') {
+        // 换窗：右界必须是第 1 轮的 anchorEnd（20），且**只请求一页**
+        expect(args.before).toBe(20);
+        return page(18, 20, false, true); // 一页两行（换窗只取这一页）
+      }
+      if (name === 'session_outline') return { turns: OUTLINE, totalBytes: 100 };
+      return {};
+    });
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+
+    const first = q<HTMLElement>('[data-rail-mark="1"]')!;
+    expect(first.hasAttribute('data-rail-unloaded')).toBe(true);
+    await act(async () => {
+      first.click();
+      await new Promise((r) => setTimeout(r, 60));
+    });
+
+    const tab = useMessages.getState().tabs[TAB]!;
+    // 只发了**一次** session_page（换窗），行数 = 那一页（2 行），不是"把中间全累加进来"
+    const calls = invokeMock.mock.calls.filter((c) => c[0] === 'session_page');
+    expect(calls).toHaveLength(1);
+    expect(tab.ids).toHaveLength(2);
+    expect(tab.hasNewer).toBe(true);
+    expect(tab.pageCursor).toBe(18);
+  });
+
+  it('换窗状态下给「回到最新」，点了重新装载尾部一页', async () => {
+    seedOffsets(2, 70, { cursor: 70, hasMore: true, hasNewer: true });
+    useMessages.getState().setOutline(TAB, OUTLINE);
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+
+    const latest = q<HTMLButtonElement>('[data-to-latest]')!;
+    expect(latest).toBeTruthy();
+    expect(q('[data-to-bottom]'), '换窗时不该同时出现「回到底部」').toBeNull();
+
+    await act(async () => {
+      latest.click();
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    const call = invokeMock.mock.calls.filter((c) => c[0] === 'session_page').at(-1);
+    expect(call![1]).toMatchObject({ path: FILE }); // 不带 before = 尾部那一页
+    expect((call![1] as Record<string, unknown>).before).toBeUndefined();
   });
 });

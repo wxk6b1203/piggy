@@ -46,6 +46,8 @@ import { resolve } from 'node:path';
 import {
   activeTurnOf,
   buildRailItems,
+  findRowIndexByOffset,
+  mergeRailItems,
   condense,
   messageText,
   type RailSourceRow,
@@ -279,14 +281,43 @@ describe('刻度梯组件（TurnRail）', () => {
     expect(q('[data-rail-preview]')).toBeTruthy();
   });
 
-  it('点击跳到那一轮（给的是转录行下标，不是轮次号）', async () => {
+  it('点击跳到那一轮（回调拿到整条刻度：已载入的带行下标、未载入的带锚点）', async () => {
     mountDom(<TurnRail {...props} />);
     await flush();
     await act(async () => {
       q<HTMLElement>('[data-rail-mark="3"]')!.click();
       await new Promise((r) => setTimeout(r, 20));
     });
-    expect(props.onJump).toHaveBeenCalledWith(4);
+    // 已载入的刻度：行下标是"用户消息那一行"（第 3 轮 → 第 5 行，0 起 = 4）
+    expect(props.onJump).toHaveBeenCalledWith(expect.objectContaining({ turn: 3, rowIndex: 4, loaded: true }));
+  });
+
+  it('未载入的刻度画成虚线，点击把锚点交给上层去翻页', async () => {
+    const items = [
+      ...buildRailItems(rows(turn(1), turn(2))),
+      {
+        turn: 3,
+        rowIndex: null,
+        anchorStart: 4096,
+        anchorEnd: 4200,
+        prompt: '还没载入的那一轮',
+        response: '',
+        loaded: false,
+      },
+    ];
+    mountDom(<TurnRail {...props} items={items} />);
+    await flush();
+    const unloaded = q<HTMLElement>('[data-rail-unloaded]')!;
+    expect(unloaded).toBeTruthy();
+    expect(unloaded.getAttribute('data-rail-mark')).toBe('3');
+    expect(unloaded.getAttribute('aria-label')).toContain('还没载入');
+    await act(async () => {
+      unloaded.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(props.onJump).toHaveBeenCalledWith(
+      expect.objectContaining({ turn: 3, rowIndex: null, anchorStart: 4096, loaded: false }),
+    );
   });
 
   it('左右两档都用同一个组件，差别只在 placement 属性（CSS 负责镜像）', async () => {
@@ -311,5 +342,81 @@ describe('刻度梯组件（TurnRail）', () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(q('[data-rail-preview]')).toBeNull();
+  });
+});
+
+describe('轮廓 + 已载入的行 → 刻度（"预览全部、展示部分"）', () => {
+  /** 轮廓：4 轮，锚点是文件偏移 */
+  const OUTLINE = [
+    { turn: 1, start: 100, end: 200, prompt: '第一轮的问题', response: '第一轮的回答' },
+    { turn: 2, start: 200, end: 300, prompt: '第二轮的问题', response: '第二轮的回答' },
+    { turn: 3, start: 300, end: 400, prompt: '第三轮的问题', response: '第三轮的回答' },
+    { turn: 4, start: 400, end: 500, prompt: '第四轮的问题', response: '第四轮的回答' },
+  ];
+  /** 转录里只载入了最后两行（第 4 轮），带文件偏移 */
+  const rowsTail = [
+    { role: 'user', content: '第四轮的问题', offset: 400 },
+    { role: 'assistant', content: '第四轮的回答', offset: null },
+  ];
+
+  it('轮廓给全部轮次，已载入的那些带上行下标（其余是未载入锚点）', () => {
+    const items = mergeRailItems(OUTLINE, rowsTail);
+    expect(items.map((i) => i.turn)).toEqual([1, 2, 3, 4]);
+    expect(items.map((i) => i.loaded)).toEqual([false, false, false, true]);
+    // 未载入的三条带锚点（跳转要 `before = anchorEnd`），已载入的那条带行下标
+    expect(items[0]).toMatchObject({ rowIndex: null, anchorStart: 100, anchorEnd: 200 });
+    expect(items[3]).toMatchObject({ rowIndex: 0, anchorStart: null, anchorEnd: null });
+    // 预览文字来自轮廓，所以没载入的轮次也能预览
+    expect(items[0]!.prompt).toBe('第一轮的问题');
+    expect(items[0]!.response).toBe('第一轮的回答');
+  });
+
+  it('实时新增的轮次接在最后，编号从轮廓末尾继续', () => {
+    const rows = [
+      { role: 'user', content: '第四轮的问题', offset: 400 },
+      { role: 'assistant', content: '第四轮的回答', offset: null },
+      { role: 'user', content: '刚问的第五轮', offset: null },
+      { role: 'assistant', content: '刚答的第五轮', offset: null },
+    ];
+    const items = mergeRailItems(OUTLINE, rows);
+    expect(items.map((i) => i.turn)).toEqual([1, 2, 3, 4, 5]);
+    expect(items[4]).toMatchObject({ turn: 5, loaded: true, rowIndex: 2 });
+    expect(items[4]!.prompt).toBe('刚问的第五轮');
+  });
+
+  it('没有轮廓 / 行不带偏移（退回 get_messages）→ 老实只画已载入的', () => {
+    expect(mergeRailItems(null, rowsTail).map((i) => i.loaded)).toEqual([true]);
+    // 兜底路径的行没有偏移，轮廓对不上任何一行：不能把整条梯子画成虚线
+    const noOffsets = [
+      { role: 'user', content: '第四轮的问题' },
+      { role: 'assistant', content: '第四轮的回答' },
+    ];
+    const items = mergeRailItems(OUTLINE, noOffsets);
+    expect(items.map((i) => i.loaded)).toEqual([true]);
+    expect(items[0]!.turn).toBe(1);
+  });
+
+  it('未载入的刻度不参与"当前轮次"判定（阅读线只看已载入的行）', () => {
+    const items = mergeRailItems(OUTLINE, rowsTail);
+    expect(activeTurnOf(items, 0, false)).toBe(4);
+    expect(activeTurnOf(items, 0, true)).toBe(4);
+    // 换窗到中间（窗口下面还有未载入的更新轮次）时，"到底了"指的是**窗口**的底，
+    // 不能取整个列表的最后一条刻度（那是没载入的第 6 轮）
+    const windowed = mergeRailItems(
+      [...OUTLINE, { turn: 5, start: 500, end: 600, prompt: '五', response: '' }, { turn: 6, start: 600, end: 700, prompt: '六', response: '' }],
+      [
+        { role: 'user', content: '第二轮的问题', offset: 200 },
+        { role: 'assistant', content: '第二轮的回答', offset: null },
+      ],
+    );
+    expect(activeTurnOf(windowed, 0, true)).toBe(2);
+    // 没有任何已载入的行时退回第一条刻度（不至于没有高亮）
+    const allUnloaded = mergeRailItems(OUTLINE, []);
+    expect(activeTurnOf(allUnloaded, 0, false)).toBe(1);
+  });
+
+  it('findRowIndexByOffset：换窗之后按锚点找到目标行', () => {
+    expect(findRowIndexByOffset(rowsTail, 400)).toBe(0);
+    expect(findRowIndexByOffset(rowsTail, 999)).toBeNull();
   });
 });

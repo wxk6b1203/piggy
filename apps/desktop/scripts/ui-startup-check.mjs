@@ -1806,14 +1806,19 @@ const paging = await page.evaluate(async () => {
   };
 
   const onOpen = { ...geom(), loaded: loaded(), last: lastText() };
+  const rail = wrap.querySelector('[data-turn-rail]');
+  const railScroll = wrap.querySelector('.pg-rail-scroll');
   const hasOlderButton = !!tr.querySelector('[data-load-older]');
-  const railUnloadedOnOpen = !!wrap.querySelector('[data-rail-unloaded]');
-  const markCount = wrap.querySelectorAll('[data-rail-mark]').length;
+  // 刻度梯的覆盖面看的是**条目总数**（`data-rail-count`），不是 DOM 里的刻度数：
+  // 梯子内部也是虚拟化的，DOM 里只有当前可视那一段（实测 49/100）。
+  const railCount = Number(rail?.getAttribute('data-rail-count') ?? 0);
+  const railUnloaded = Number(rail?.getAttribute('data-rail-unloaded-count') ?? 0);
+  const outlineTurns = stores.useMessages.getState().tabs[tabId]?.outline?.length ?? 0;
 
   // 往上滚：离开底部 → 「回到底部」必须出现
   tr.scrollTop = 0;
   await sleep(250);
-  const afterScrollUp = { ...geom(), toBottom: !!tr.ownerDocument.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`) };
+  const afterScrollUp = { ...geom(), toBottom: !!tr.querySelector('[data-to-bottom]') };
   const beforePage = anchor();
 
   // 点「加载更早」：内容必须变多，而**阅读位置不许跳**
@@ -1829,19 +1834,55 @@ const paging = await page.evaluate(async () => {
     sameRow: anchorAfter.text === beforePage.text,
   };
 
-  // 回到底部
-  document.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`)?.click();
-  await sleep(400);
-  const afterToBottom = { ...geom(), toBottom: !!document.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`) };
+  // ── 跳到**未载入**的第 1 轮：换窗（repage），只取那一页，绝不把中间那段读进来 ──
+  // 先把梯子滚到顶，才能点到最后（最早）那条刻度。选最后一条 = 第 1 轮：
+  // 它离当前窗口最远，"会不会把整段读进来"在这里最容易露馅。
+  if (railScroll) railScroll.scrollTop = 0;
+  await sleep(200);
+  const marks = [...wrap.querySelectorAll('[data-rail-mark]')];
+  const firstTurn = marks.find((m) => m.getAttribute('data-rail-mark') === '1') ?? marks[0];
+  const loadedBeforeJump = loaded();
+  const scrollHeightBeforeJump = Math.round(tr.scrollHeight);
+  firstTurn?.click();
+  await sleep(1800);
+  const tabAfterJump = stores.useMessages.getState().tabs[tabId];
+  const jump = {
+    turn: firstTurn?.getAttribute('data-rail-mark') ?? null,
+    loadedBefore: loadedBeforeJump,
+    loadedAfter: (tabAfterJump?.ids ?? []).length,
+    scrollHeightBefore: scrollHeightBeforeJump,
+    scrollHeightAfter: Math.round(tr.scrollHeight),
+    hasNewer: tabAfterJump?.hasNewer === true,
+    toLatest: !!wrap.querySelector('[data-to-latest]'),
+    showsFirstTurn: (tr.textContent ?? '').includes('第 1 轮的问题'),
+  };
+  // 回到最新：必须把窗口换回尾部
+  wrap.querySelector('[data-to-latest]')?.click();
+  await sleep(1200);
+  const tabBack = stores.useMessages.getState().tabs[tabId];
+  const backToLatest = {
+    hasNewer: tabBack?.hasNewer === true,
+    loaded: (tabBack?.ids ?? []).length,
+    last: lastText(),
+    gap: geom().gap,
+  };
+
+  // 回到底部（若还显示着）
+  tr.querySelector('[data-to-bottom]')?.click();
+  await sleep(300);
+  const afterToBottom = { ...geom(), toBottom: !!tr.querySelector('[data-to-bottom]') };
 
   return {
     tabId,
     onOpen,
     hasOlderButton,
-    railUnloadedOnOpen,
-    markCount,
+    railCount,
+    railUnloaded,
+    outlineTurns,
     afterScrollUp,
     afterPage,
+    jump,
+    backToLatest,
     afterToBottom,
   };
 });
@@ -2668,8 +2709,16 @@ if (paging.onOpen.loaded > 60) {
   bad.push(`分页：首屏载入了 ${paging.onOpen.loaded} 行 —— 没有按页装载 ★`);
 }
 if (!paging.hasOlderButton) bad.push('分页：首屏没有「加载更早」（hasMore 没传到位）★');
-if (!paging.railUnloadedOnOpen) bad.push('分页：刻度梯顶端没有"未载入"那一段 ★');
-if (!paging.afterScrollUp.toBottom) bad.push('分页：往上滚之后没有出现「回到底部」★');
+// 刻度梯覆盖**整段会话**（轮廓），而内容只载入一页 —— 用户要的"预览全部、展示部分"
+if (paging.outlineTurns < 90) {
+  bad.push(`分页：轮次轮廓只给了 ${paging.outlineTurns} 轮（mock 是 100 轮）—— session_outline 没到位 ★`);
+}
+if (paging.railCount < 90) {
+  bad.push(`分页：刻度梯只有 ${paging.railCount} 条 —— 又变成"只预览已载入的那段"了 ★`);
+}
+if (paging.railUnloaded < 40) {
+  bad.push(`分页：未载入的刻度只有 ${paging.railUnloaded} 条（应当有大半没载入）★`);
+}
 if (paging.afterPage.loaded <= paging.onOpen.loaded) {
   bad.push(`分页：「加载更早」之后行数没变（${paging.onOpen.loaded} → ${paging.afterPage.loaded}）★`);
 }
@@ -2679,6 +2728,32 @@ if (!paging.afterPage.sameRow) {
   );
 } else if (paging.afterPage.drift > 8) {
   bad.push(`分页：翻页后同一行漂了 ${paging.afterPage.drift}px —— 高度差没有补回 scrollTop ★`);
+}
+// 跳到最远的那一轮：**换窗**，不是把中间整段累加进来（用户问的"会不会其实全载入了"）
+if (paging.jump.turn !== '1') bad.push(`分页：没点到第 1 轮那条刻度（点到 ${paging.jump.turn}）★`);
+if (!paging.jump.showsFirstTurn) {
+  bad.push('分页：跳到第 1 轮之后，第 1 轮的内容没进转录 ★');
+}
+if (paging.jump.loadedAfter > 60) {
+  bad.push(
+    `分页：跳到第 1 轮载入了 ${paging.jump.loadedAfter} 行（>1 页）—— 又把中间整段读进来了，分页白做 ★`,
+  );
+}
+if (paging.jump.scrollHeightAfter >= paging.jump.scrollHeightBefore * 0.8) {
+  bad.push(
+    `分页：换窗后内容高度 ${paging.jump.scrollHeightAfter}px 与换窗前 ${paging.jump.scrollHeightBefore}px 同量级` +
+      '—— 像是"累加"而不是"换窗" ★',
+  );
+}
+if (!paging.jump.hasNewer || !paging.jump.toLatest) {
+  bad.push('分页：换窗后没有「回到最新」（hasNewer 没传到位）★');
+}
+if (paging.backToLatest.hasNewer) bad.push('分页：点了「回到最新」还是换窗状态 ★');
+if (!paging.backToLatest.last.includes('第 100 轮')) {
+  bad.push(`分页：回到最新之后最后一行不是第 100 轮（读到 "${paging.backToLatest.last}"）★`);
+}
+if (paging.backToLatest.gap > 25) {
+  bad.push(`分页：回到最新之后没贴在结尾（距底 ${paging.backToLatest.gap}px）★`);
 }
 if (paging.afterToBottom.gap > 25 || paging.afterToBottom.toBottom) {
   bad.push(

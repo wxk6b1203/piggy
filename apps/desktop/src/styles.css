@@ -85,6 +85,12 @@ body {
   box-shadow: 0 4px 16px rgb(0 0 0 / 35%); cursor: pointer; z-index: 6;
 }
 .pg-to-bottom:hover { background: var(--pg-hover-solid); }
+/* 换窗状态下的「回到最新」：比圆钮宽，带文字（它是个状态出口，不是一个箭头） */
+.pg-to-latest {
+  width: auto; height: 30px; padding: 0 var(--pg-sp-5); gap: var(--pg-sp-2);
+  display: inline-flex; align-items: center; font-size: var(--pg-fs-12);
+  color: var(--pg-fg-secondary);
+}
 /* 刻度梯：DSH 的几何（宽 28、贴边 12、竖直居中于可视带、内部可滚）
    —— 只有 28px 宽，落在上面的 44px 留白里，不压正文。 */
 .pg-rail {

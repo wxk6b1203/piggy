@@ -28,6 +28,28 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
     expect(tab.byId[tab.ids[2]!]!.role).toBe('toolResult');
   });
 
+  it('换窗期间（hasNewer）不把新消息塞进窗口；回到尾部后照常追加', () => {
+    const s = useMessages.getState();
+    s.hydratePage(
+      TAB,
+      [{ role: 'user', message: { role: 'user', content: '很久以前那一轮', timestamp: 1 }, offset: 500 }] as never[],
+      { cursor: 500, hasMore: true, hasNewer: true },
+    );
+    const live = { type: 'message_end', message: { role: 'assistant', content: '刚说完的一句', timestamp: 99 } };
+    s.applyCommit(TAB, live as never);
+    // 窗口在看几轮之前的历史：把新消息追加进来会插在**错误的上下文**里
+    expect(useMessages.getState().tabs[TAB]!.ids).toHaveLength(1);
+
+    // 回到最新（尾部那一页，hasNewer=false）之后，实时消息照旧追加
+    s.hydratePage(
+      TAB,
+      [{ role: 'user', message: { role: 'user', content: '最新那一轮', timestamp: 2 }, offset: 900 }] as never[],
+      { cursor: 900, hasMore: true, hasNewer: false },
+    );
+    s.applyCommit(TAB, live as never);
+    expect(useMessages.getState().tabs[TAB]!.ids).toHaveLength(2);
+  });
+
   it('system 消息跳过；重复 message_end（同 role+timestamp）去重', () => {
     const s = useMessages.getState();
     s.ensure(TAB);

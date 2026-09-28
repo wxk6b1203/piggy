@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import type { AgentMessage } from '@piggy/pi-protocol';
+import type { OutlineTurn } from '@/features/chat/turnRailItems';
 
 // keys 去重集合用 Set 存放（05 §4.4），immer 需启用 MapSet 插件
 enableMapSet();
@@ -14,6 +15,31 @@ export interface MessageView {
   id: string;
   role: string;
   message: AgentMessage;
+  /**
+   * 这一行在会话文件里的起始字节偏移。
+   * 分页读来的行带偏移（刻度梯靠它把"轮次轮廓"和"已载入的行"对上）；
+   * 实时 `pi:commit` 追加的行没有 → `null`。
+   */
+  offset: number | null;
+}
+
+/**
+ * 一页里的一行（`session_page` 的返回形状）。
+ * 也接受裸消息（老测试与 `get_messages` 兜底路径）——见 {@link rowMessage}。
+ */
+export type PageRow = AgentMessage | { role?: string; message: AgentMessage; offset?: number | null };
+
+/** 从 `PageRow` 里取出真正的消息对象。 */
+function rowMessage(row: PageRow): AgentMessage {
+  const inner = (row as { message?: unknown }).message;
+  if (inner && typeof inner === 'object') return inner as AgentMessage;
+  return row as AgentMessage;
+}
+
+/** 从 `PageRow` 里取出偏移（裸消息 → `null`）。 */
+function rowOffset(row: PageRow): number | null {
+  const off = (row as { offset?: unknown }).offset;
+  return typeof off === 'number' ? off : null;
 }
 
 export interface TabMessages {
@@ -33,6 +59,18 @@ export interface TabMessages {
   hasMore: boolean;
   /** 「加载更早」正在进行 */
   loadingOlder: boolean;
+  /**
+   * 已载入窗口**下面**还有更新的内容（换窗之后为 true，回到最新后为 false）。
+   * 换窗（跳到很久以前的那一轮）时旧窗口被丢掉，所以中间那段不在内存里 ——
+   * 这正是"跳一次不会把整段历史读进来"的关键（docs/03 §2.19）。
+   */
+  hasNewer: boolean;
+  /**
+   * 整段会话的轮次轮廓（`session_outline`，docs/03 §2.19）：
+   * 刻度梯据此画出**全部**轮次，已载入的那些再被真实行覆盖。
+   * `null` = 没有轮廓（没有会话文件 / 读不出来）→ 刻度只画已载入的部分。
+   */
+  outline: OutlineTurn[] | null;
 }
 
 const emptyTab = (): TabMessages => ({
@@ -47,12 +85,16 @@ const emptyTab = (): TabMessages => ({
   pageCursor: null,
   hasMore: false,
   loadingOlder: false,
+  hasNewer: false,
+  outline: null,
 });
 
 /** 一页的元信息（与 Rust `transcript::Page` 的 `startOffset` / `hasMore` 对齐）。 */
 export interface PageMeta {
   cursor: number | null;
   hasMore: boolean;
+  /** 换窗时为 true（后面还有更新的内容，界面给「回到最新」）。缺省沿用当前值。 */
+  hasNewer?: boolean;
 }
 
 interface MessagesState {
@@ -60,10 +102,12 @@ interface MessagesState {
   ensure(tabId: string): TabMessages;
   hydrate(tabId: string, messages: AgentMessage[]): void;
   /** 打开会话的第一页（**重置**该 tab 的消息） */
-  hydratePage(tabId: string, messages: AgentMessage[], meta: PageMeta): void;
+  hydratePage(tabId: string, rows: PageRow[], meta: PageMeta): void;
   /** 更早的一页接到最前面；返回真正新增的行数（调用方据此修正滚动位置） */
-  prependPage(tabId: string, messages: AgentMessage[], meta: PageMeta): number;
+  prependPage(tabId: string, rows: PageRow[], meta: PageMeta): number;
   setLoadingOlder(tabId: string, loading: boolean): void;
+  /** 整段会话的轮次轮廓（刻度梯用；`null` = 没有） */
+  setOutline(tabId: string, turns: OutlineTurn[] | null): void;
   applyCommit(tabId: string, ev: { type: string } & Record<string, unknown>): void;
   remove(tabId: string): void;
 }
@@ -93,19 +137,27 @@ export function contentText(m: AgentMessage): string {
  * 抽出来是为了让"追加"（新消息）与"预置"（更早的一页）走**同一套**去重键与行构造，
  * 两边各写一遍就会分叉（历史上分页最典型的 bug 就是首尾重复一行）。
  */
-function register(tab: TabMessages, m: AgentMessage): string | null {
+function register(tab: TabMessages, m: AgentMessage, offset: number | null = null): string | null {
   const role = (m as { role?: string }).role;
   if (!role || role === 'system') return null;
   const key = tsKey(m);
   if (tab.keys.has(key)) return null;
   const id = nextId(role);
-  tab.byId[id] = { id, role, message: m };
+  tab.byId[id] = { id, role, message: m, offset };
   tab.keys.add(key);
   return id;
 }
 
 function pushMessage(tab: TabMessages, m: AgentMessage): boolean {
   const id = register(tab, m);
+  if (!id) return false;
+  tab.ids.push(id);
+  return true;
+}
+
+/** 追加一页里的一行（带文件偏移，刻度梯要用）。 */
+function pushRow(tab: TabMessages, row: PageRow): boolean {
+  const id = register(tab, rowMessage(row), rowOffset(row));
   if (!id) return false;
   tab.ids.push(id);
   return true;
@@ -134,36 +186,39 @@ export const useMessages = create<MessagesState>()(
           pushMessage(tab, m);
         }
         tab.hydrated = true;
-        // 一次性 hydrate（无文件游标的兜底路径）没有"更早"可翻
+        // 一次性 hydrate（无文件游标的兜底路径）没有"更早"可翻，也没有"更新"可言
         tab.pageCursor = null;
         tab.hasMore = false;
+        tab.hasNewer = false;
         tab.loadingOlder = false;
+        tab.outline = null;
       });
     },
 
-    hydratePage(tabId, messages, meta) {
+    hydratePage(tabId, rows, meta) {
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
         tab.byId = {};
         tab.ids = [];
         tab.keys = new Set();
-        for (const m of messages) {
-          pushMessage(tab, m);
+        for (const row of rows) {
+          pushRow(tab, row);
         }
         tab.hydrated = true;
         tab.pageCursor = meta.cursor;
         tab.hasMore = meta.hasMore;
+        tab.hasNewer = meta.hasNewer ?? false;
         tab.loadingOlder = false;
       });
     },
 
-    prependPage(tabId, messages, meta) {
+    prependPage(tabId, rows, meta) {
       let added = 0;
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
         const front: string[] = [];
-        for (const m of messages) {
-          const id = register(tab, m);
+        for (const row of rows) {
+          const id = register(tab, rowMessage(row), rowOffset(row));
           if (!id) continue;
           front.push(id);
           added += 1;
@@ -171,6 +226,7 @@ export const useMessages = create<MessagesState>()(
         if (front.length > 0) tab.ids = [...front, ...tab.ids];
         tab.pageCursor = meta.cursor;
         tab.hasMore = meta.hasMore;
+        // hasNewer 不变：往上加页不影响"下面还有更新的"
         tab.loadingOlder = false;
       });
       return added;
@@ -180,6 +236,13 @@ export const useMessages = create<MessagesState>()(
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
         tab.loadingOlder = loading;
+      });
+    },
+
+    setOutline(tabId, turns) {
+      set((s) => {
+        const tab = (s.tabs[tabId] ??= emptyTab());
+        tab.outline = turns;
       });
     },
 
@@ -196,6 +259,9 @@ export const useMessages = create<MessagesState>()(
             break;
           }
           case 'message_end': {
+            // 换窗期间（`hasNewer`）窗口不在尾部：把新消息塞进来会插在**错误的上下文**里
+            // （用户正在看几轮之前的历史）。回到最新时整页重载，那时自然带上。
+            if (tab.hasNewer) break;
             const m = (e as unknown as { message: AgentMessage }).message;
             pushMessage(tab, m);
             break;
