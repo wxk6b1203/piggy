@@ -455,15 +455,37 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     （`closest('.ant-modal-wrap')` 的 `display !== 'none'`）。
     与规矩 33（`.ant-modal-content` 是 v5 类名）同源：**antd 的 DOM 约定要按当前版本实测**。
 
+
+45. **“两侧一起加留白”这类布局约束，只能靠真浏览器量——而且必须写成断言。**
+    预览滚动条要放在正文一侧，但又不能把正文挤偏（用户明确要求“除了滚动条之外主体
+    还是居中的”）。做法是**两侧同时**加 `--pg-rail-clearance`（44px），刻度梯落在
+    留白里。这条约束在 jsdom 里完全不存在（`getBoundingClientRect` 全是 0），
+    所以门禁里量的是 `|正文列中心 − 转录容器中心|`，右置与左置各一次。
+    反证（改成只给滚动条那一侧加 padding）当场报 **“左侧档下正文列偏了 22px”** ——
+    22px 就是“看得出来但说不清哪里怪”的那种偏差。
+    另外两条同源断言：刻度梯与正文列**不重叠**、刻度梯竖直居中于可视带。
+
+46. **“亮度跟着滚动走”必须真的滚一下才算验过。**
+    滚动条的当前刻度（用户说的“亮色的条子”）是滚动事件的产物。单测里可以断言
+    `activeTurn` prop 变了之后哪条刻度带 `is-active`，但那**证明不了**它跟着滚动走——
+    第一版把 `setActiveTurn(activeTurnOf(...))` 写死成第 1 轮时，13 条单测全绿
+    （它们只是把 prop 传进去），是门禁里“滚 718px 后当前刻度没变”抓出来的。
+    教训与规矩 20 同源：**prop 对 ≠ 行为对**，跨事件链路的那一半得在真环境里驱动。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
 | **系统菜单在 Windows/Linux 上未验证** | macOS 已实测（`tests/menu_smoke.rs` 锁结构：App 子菜单第一项是「关于」、第二项是我们的条目、Edit 子菜单仍是 7 项）。Windows/Linux 走 `append_to_help`（`Menu::default` 本机只在 macOS 自动安装，我们显式装），但**没有真机跑过**——那两平台会因此多出一条菜单栏。真机确认前不要声称可用 |
+| 会话**没有“加载更早”分页** | DSH 的长会话会用分页折叠早期历史（刻度上有“未加载”锚点，点了先翻页）。Piggy 目前**一次性把整段会话读进 store** 并全部虚拟化渲染，所以预览滚动条天然覆盖整段历史，但也意味着几千轮的会话会在打开时一次性拉全部 entries（渲染是虚拟化的，代价在 IPC 与内存）。要做分页的话，`RailItem` 要加 `anchor: loaded / unloaded`，跳未加载的刻度先翻页 |
+| 预览滚动条的**窄窗口行为** | DSH 在转录容器 < 900px 时直接**隐藏**滚动条（`@container`）。Piggy 没做这条：转录因为侧栏 + 右栏通常只有 530–700px，照搬会让功能在多数窗口下“看起来是坏的”。现在由用户的开关决定，代价是窄窗口下两侧各 44px 留白会挤压正文。要改成自适应得先定“多窄算窄”，而 Piggy 的转录宽度与 DSH 不是一个量级 |
+| 预览滚动条只在 **Chrome** 里量过 | 刻度几何、跟随、预览框、居中都在 Playwright/Chromium 下量的（门禁）。WebKit（Tauri 在 macOS 用的引擎）与 Windows/Linux **未跑过**——`mask-image` 渐隐在 WebKit 的差异未验证 |
 | **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
+| **CI 的 `cargo fmt --check` 一直是红的** | docs/08 §2 写着「格式化：prettier + rustfmt（**CI 校验**）」，`.github/workflows/ci.yml` 也真的跑 `cargo fmt --check`；但仓库里**没有 `rustfmt.toml`**，而现有 Rust 代码是按 ~120 列写的（`cargo fmt --check` 实测 **390 处差异**）。也就是说那一格从来没绿过。两条路：①加 `rustfmt.toml`（`max_width = 120`）再跑一次全仓格式化（会是一个巨大的无关 diff）；②把 docs/08 那句改成实际执行者。**本轮没动它**——不在这个功能的范围内，但它是"文档说有、实际没有"的又一处 |
+| **CI 的 `cargo clippy -- -D warnings` 曾经也是红的** | 2026-09-25 核对：本轮之前 lib 有 **2 条** error（`lib.rs` 的 `match` 单分支 + `perf_config_save` 参数过多）。前者本轮顺手修成 `if let`；后者是 **IPC 界面决定的**（前端送扁平对象，每个字段一个开关），已显式 `#[allow(clippy::too_many_arguments)]` 并注明"合并成结构体 = 线格式变更"。现在这一格**通过**了 |
 | **`pnpm lint` 是空转** | docs/08 §4 与 docs/10 §2.2 都写着某些红线"lint 强制"，但 `apps/desktop/package.json` **没有 `lint` 脚本**，`pnpm -r --if-present lint` 一个文件都扫不到。手工 `npx eslint .` 现存 **189 error / 35 warning**（含 `no-undef` 打在 `src-tauri/resources/*.js` 这类构建产物上）。二选一：①接上 lint 并清存量（要先把构建产物加进 ignores）；②把文档里的"lint 强制"改成实际执行者（本轮预览语言表那条红线就是这么办的——由 `src/test/preview-lang.test.ts` 承担） |
 | `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
 | ~~左侧"常驻视图轨"~~ **已决定不做**（2026-09-24） | docs/04 §1.2 曾规划一条常驻的 44px L 轨（VS Code 活动栏语义）。查 DSH 源码：`ui-layout/.../AppFrame.tsx:183-186` 写明 *neither platform keeps an icon rail* —— 折叠后的重开控件走标题栏（macOS `shell.leading` 座位 / Windows caption 行）。而且左栏只有一个视图（会话列表），轨上没有可切的东西。**计划已从 docs/04 删除**；左侧只有折叠态那条 56px 轨（`SidebarRail`），右侧那条 40px 常驻轨（`RightBar`）保留（它本身也是对 DSH 的偏离 —— DSH 右栏用 dockview tab 条，若哪天要百分百对齐，该动的是这条） |

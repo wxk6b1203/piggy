@@ -1,6 +1,7 @@
 import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
 import { useEffect } from 'react';
 import { useUi } from '@/stores/ui';
+import { useAppConfig } from '@/stores/appConfig';
 import { watchSessionsChanged } from '@/stores/sessions';
 import { useFleet } from '@/stores/fleet';
 import { on } from '@/lib/ipc';
@@ -10,6 +11,8 @@ import { AboutDialog } from '@/features/dialogs/AboutDialog';
 
 // 会话目录 watcher 全局订阅（一次）
 void watchSessionsChanged();
+// 界面要用的应用配置（预览滚动条位置等）：启动读一次，之后由设置页推新值
+void useAppConfig.getState().load();
 // Fleet（A 层）快照全局订阅（一次，docs/06 §5）
 void on('fleet:changed', (payload: { runs?: never[] }) => {
   useFleet.getState().applySnapshot(payload as never);

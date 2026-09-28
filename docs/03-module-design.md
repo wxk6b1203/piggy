@@ -436,6 +436,17 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 - `invoke` 包装：统一错误形态（Rust 侧 `Result<T, AppError>` → TS discriminated union）；
 - `listen` 包装：按通道订阅、组件卸载自动清理、`pi:frame:*` 支持 tab 级多播。
 
+### 3.1b `features/chat/turnRailItems.ts` + `TurnRail.tsx` — 预览滚动条（docs/04 §2.6）
+
+`buildRailItems`（纯函数）把转录的行切成**回合**：每个 user 行开启新的一轮，
+其后到下一个 user 行之间的 assistant 文本都归这一轮；开头不是 user 的行
+（恢复出来的半截会话）不造刻度。`activeTurnOf` 算"阅读线在哪一轮"。
+组件侧用与转录同一个虚拟化库只渲染可视刻度（几千轮也不会重排）。
+
+配置 `transcript_rail`（`off`/`left`/`right`，默认右）存在 `PerfConfig` 里，
+前端由 `stores/appConfig.ts` 持有——转录要读它，而设置页改完必须让**已打开**的会话
+立刻跟着变（这是它进 store 的唯一理由）。
+
 ### 3.2 `stores/`（zustand）
 
 | store | 内容 | 更新源 |

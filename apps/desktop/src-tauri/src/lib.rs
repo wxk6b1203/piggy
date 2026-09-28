@@ -211,12 +211,11 @@ pub fn run() {
                         Some(p) => eprintln!("[piggy] 子代理桥接扩展: {}", p.display()),
                         None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
                     }
-                    match &reg.subagent_policy {
-                        Some(p) => eprintln!(
+                    if let Some(p) = &reg.subagent_policy {
+                        eprintln!(
                             "[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}",
                             p.display()
-                        ),
-                        None => {}
+                        );
                     }
                 } else {
                     // resource_dir 拿不到时也必须初始化守卫与档位：

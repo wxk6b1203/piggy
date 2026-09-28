@@ -37,6 +37,40 @@ pub fn layout_save(v: &serde_json::Value) -> Result<(), String> {
 ///
 /// 注意：`perf_config_save` 会整体重写这个文件，所以**凡是进 config.json 的字段都必须在这里**，
 /// 否则会被静默抹掉。
+/// 会话预览滚动条（TurnRail）放哪边（docs/04 §2.6）。
+///
+/// 三态而不是 bool：用户要的是"左/右/关"。
+/// `#[serde(other)]` 把**认不出的值**收回默认档——config.json 是能手改的，
+/// 一个拼错的值不该让整份配置反序列化失败（那会把所有设置一起重置，见 title_thinking 的注释）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RailPlacement {
+    Off,
+    Left,
+    /// 默认右侧：与 DSH 的轮次导航条同侧（docs/12 §3）。
+    #[default]
+    #[serde(other)]
+    Right,
+}
+
+impl RailPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "off" => Ok(Self::Off),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            other => Err(format!("未知的预览滚动条位置 {other:?}（可选：off / left / right）")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PerfConfig {
     /// 并发 worker 上限（05 §4.2，默认 8）
@@ -86,6 +120,9 @@ pub struct PerfConfig {
     /// 存字符串、由 `clamp()` 单独丢掉这一个字段，坏影响的半径就只有它自己。
     #[serde(default)]
     pub title_thinking: Option<String>,
+    /// 会话预览滚动条放哪边（docs/04 §2.6）：`off` / `left` / `right`（默认）。
+    #[serde(default)]
+    pub transcript_rail: RailPlacement,
 }
 
 fn default_title_max_chars() -> u32 {
@@ -126,6 +163,7 @@ impl Default for PerfConfig {
             title_source: crate::sessions::title::TitleStrategy::default(),
             title_model: None,
             title_thinking: None,
+            transcript_rail: RailPlacement::default(),
         }
     }
 }
@@ -181,4 +219,41 @@ pub fn perf_config_save(cfg: &PerfConfig) -> Result<(), String> {
     let body = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, config_path()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 预览滚动条的三态：默认右、能解析、**认不出的值收回默认**（而不是整份配置失败）。
+    #[test]
+    fn rail_placement_parses_and_falls_back() {
+        assert_eq!(RailPlacement::default(), RailPlacement::Right);
+        assert_eq!(RailPlacement::parse("off").unwrap(), RailPlacement::Off);
+        assert_eq!(RailPlacement::parse(" left ").unwrap(), RailPlacement::Left);
+        assert_eq!(RailPlacement::parse("right").unwrap(), RailPlacement::Right);
+        assert!(RailPlacement::parse("nope").is_err(), "写配置时要吵");
+
+        // config.json 里的怪值：整份配置仍要能读出来（只把这一项收回默认）
+        let cfg: PerfConfig = serde_json::from_str(r#"{"max_workers":4,"transcript_rail":"wat"}"#).unwrap();
+        assert_eq!(cfg.transcript_rail, RailPlacement::Right);
+        assert_eq!(cfg.max_workers, 4, "一个坏字段不该把别的设置一起重置");
+        let cfg: PerfConfig = serde_json::from_str(r#"{"transcript_rail":"left"}"#).unwrap();
+        assert_eq!(cfg.transcript_rail, RailPlacement::Left);
+    }
+
+    /// 序列化出来的名字就是界面与 mock 用的那三个字面量。
+    #[test]
+    fn rail_placement_serializes_as_kebab_strings() {
+        let v = serde_json::to_value(PerfConfig::default()).unwrap();
+        assert_eq!(v["transcript_rail"], "right");
+        for (p, s) in [
+            (RailPlacement::Off, "off"),
+            (RailPlacement::Left, "left"),
+            (RailPlacement::Right, "right"),
+        ] {
+            assert_eq!(serde_json::to_value(p).unwrap(), s);
+            assert_eq!(p.as_str(), s);
+        }
+    }
 }

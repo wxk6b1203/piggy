@@ -1377,6 +1377,170 @@ const aboutProbe = await page.evaluate(async () => {
   return out;
 });
 
+/* 会话预览滚动条（docs/04 §2.6、docs/12 §3）。
+ *
+ * 这一段的每一条都**必须**在真布局里量：
+ *   (a) 刻度是 20×2 的小线、靠 `scaleX` 表达状态 —— jsdom 里 transform 与颜色都量不出来；
+ *   (b) "亮的那条跟着滚动走"要真的滚一下才成立；
+ *   (c) **主体仍然居中**：两侧各加 44px 留白之后，正文列的中心必须仍在转录容器中心
+ *       （差几个像素就会被看出来，而这类偏差在单测里完全不存在）；
+ *   (d) 预览框不能被视口切掉、也不能盖住正文列。 */
+const turnRail = { steps: {} };
+{
+  // 打开一个会话（列表第一行），等转录与滚动条就绪
+  await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const row = document.querySelector('.pg-session-row');
+    row?.click();
+    await sleep(1200);
+  });
+
+  const readRail = () =>
+    page.evaluate(() => {
+      const wrap = document.querySelector('.pg-transcript-wrap');
+      const rail = document.querySelector('[data-turn-rail]');
+      const marks = [...document.querySelectorAll('[data-rail-mark]')];
+      const active = marks.find((m) => m.classList.contains('is-active')) ?? null;
+      const tick = (el) => {
+        const before = el ? getComputedStyle(el, '::before') : null;
+        return before
+          ? {
+              w: before.width,
+              h: before.height,
+              transform: before.transform,
+              background: before.backgroundColor,
+            }
+          : null;
+      };
+      const col = document.querySelector('.pg-transcript > *');
+      const transcript = document.querySelector('.pg-transcript');
+      const r = (el) => (el ? el.getBoundingClientRect() : null);
+      const wrapBox = r(wrap);
+      const railBox = r(rail);
+      const colBox = r(col);
+      const trBox = r(transcript);
+      return {
+        side: wrap?.getAttribute('data-rail-side') ?? null,
+        hasRail: !!rail,
+        railBox: railBox ? { x: Math.round(railBox.x), w: Math.round(railBox.width), h: Math.round(railBox.height), cy: Math.round(railBox.y + railBox.height / 2) } : null,
+        transcriptBox: trBox ? { x: Math.round(trBox.x), w: Math.round(trBox.width), cy: Math.round(trBox.y + trBox.height / 2) } : null,
+        colBox: colBox ? { x: Math.round(colBox.x), w: Math.round(colBox.width), cx: Math.round(colBox.x + colBox.width / 2) } : null,
+        markCount: marks.length,
+        markBox: marks[0] ? { h: Math.round(marks[0].getBoundingClientRect().height) } : null,
+        activeCount: marks.filter((m) => m.classList.contains('is-active')).length,
+        activeTurn: active?.getAttribute('data-rail-mark') ?? null,
+        tickRest: tick(marks.find((m) => !m.classList.contains('is-active')) ?? null),
+        tickActive: tick(active),
+        scrollTop: transcript ? Math.round(transcript.scrollTop) : -1,
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        wrapBox: wrapBox ? { x: Math.round(wrapBox.x), w: Math.round(wrapBox.width) } : null,
+      };
+    });
+
+  turnRail.steps.right = await readRail();
+
+  // 悬停一条**靠下**的刻度：预览框必须出现、且内容对得上
+  turnRail.steps.hover = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const marks = [...document.querySelectorAll('[data-rail-mark]')];
+    const target = marks[Math.min(3, marks.length - 1)];
+    if (!target) return { ok: false, why: '没有刻度' };
+    target.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    await sleep(300);
+    const box = document.querySelector('[data-rail-preview]');
+    const r = box?.getBoundingClientRect();
+    return {
+      ok: true,
+      turn: target.getAttribute('data-rail-mark'),
+      prompt: (document.querySelector('[data-rail-preview-prompt]')?.textContent ?? '').trim(),
+      response: (document.querySelector('[data-rail-preview-response]')?.textContent ?? '').trim(),
+      box: r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom) } : null,
+      insideViewport: r ? r.x >= 0 && r.right <= window.innerWidth && r.y >= 0 && r.bottom <= window.innerHeight : false,
+    };
+  });
+
+  // 滚一下：亮的那条要跟着换（这是"当前位置"的全部意义）
+  turnRail.steps.scrolled = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const transcript = document.querySelector('.pg-transcript');
+    const before = document.querySelector('[data-rail-mark].is-active')?.getAttribute('data-rail-mark') ?? null;
+    if (transcript) {
+      transcript.scrollTop = Math.round(transcript.scrollHeight * 0.45);
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }));
+    }
+    await sleep(500);
+    return {
+      before,
+      after: document.querySelector('[data-rail-mark].is-active')?.getAttribute('data-rail-mark') ?? null,
+      scrollTop: transcript ? Math.round(transcript.scrollTop) : -1,
+    };
+  });
+
+  // 点一条刻度：转录要真的滚过去
+  turnRail.steps.jumped = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const transcript = document.querySelector('.pg-transcript');
+    const marks = [...document.querySelectorAll('[data-rail-mark]')];
+    const first = marks[0];
+    const before = transcript ? Math.round(transcript.scrollTop) : -1;
+    first?.click();
+    await sleep(700);
+    return { before, after: transcript ? Math.round(transcript.scrollTop) : -1 };
+  });
+
+  // 切到左侧：滚动条换边，**正文仍然居中**
+  turnRail.steps.left = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await globalThis.__piggyEditor.openSettingsTab();
+    await sleep(600);
+    const nav = [...document.querySelectorAll('.pg-settings-navitem')].find((x) => (x.textContent ?? '').trim() === '通用设置');
+    nav?.click();
+    await sleep(800);
+    document.querySelector('[data-rail-option="left"]')?.click();
+    await sleep(500);
+    // 回到会话面板：走 dockview 的 API 而不是合成 click
+    // （dockview 的标签监听的是 pointerdown 序列，`.click()` 唤不醒它）
+    const panel = globalThis.__piggyDock?.panels?.find((p) => p.params?.kind === 'session');
+    panel?.api?.setActive?.();
+    await sleep(900);
+    const wrap = document.querySelector('.pg-transcript-wrap');
+    const rail = document.querySelector('[data-turn-rail]');
+    const col = document.querySelector('.pg-transcript > *');
+    const transcript = document.querySelector('.pg-transcript');
+    const r = (el) => (el ? el.getBoundingClientRect() : null);
+    const railBox = r(rail);
+    const colBox = r(col);
+    const trBox = r(transcript);
+    return {
+      side: wrap?.getAttribute('data-rail-side') ?? null,
+      railX: railBox ? Math.round(railBox.x) : null,
+      railLeftOfTranscript: railBox && trBox ? railBox.x < trBox.x + trBox.width / 2 : null,
+      colCx: colBox ? Math.round(colBox.x + colBox.width / 2) : null,
+      trCx: trBox ? Math.round(trBox.x + trBox.width / 2) : null,
+    };
+  });
+
+  // 切回右侧收摊（别把状态留给后面的段落）
+  turnRail.steps.restored = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await globalThis.__piggyEditor.openSettingsTab();
+    await sleep(600);
+    const nav = [...document.querySelectorAll('.pg-settings-navitem')].find((x) => (x.textContent ?? '').trim() === '通用设置');
+    nav?.click();
+    await sleep(700);
+    document.querySelector('[data-rail-option="right"]')?.click();
+    await sleep(400);
+    const panel = globalThis.__piggyDock?.panels?.find((p) => p.params?.kind === 'session');
+    panel?.api?.setActive?.();
+    await sleep(700);
+    const side = document.querySelector('.pg-transcript-wrap')?.getAttribute('data-rail-side') ?? null;
+    // 收摊：把设置面板激活回去（本段之前是设置页在前台，别把状态改掉留给后面的段落）
+    await globalThis.__piggyEditor.openSettingsTab();
+    await sleep(400);
+    return { side };
+  });
+}
+
 /* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
  * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
  * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
@@ -1384,6 +1548,11 @@ const aboutProbe = await page.evaluate(async () => {
 const plugins = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  // 自己保证设置页在前台：段与段之间不该依赖"上一段停在哪个标签"
+  if (!document.querySelector('.pg-settings-navitem')) {
+    await globalThis.__piggyEditor.openSettingsTab();
+    await sleep(700);
+  }
   const nav = (label) => {
     const b = qa('.pg-settings-navitem').find((x) => (x.textContent ?? '').trim() === label);
     if (!b) throw new Error(`找不到设置节：${label}`);
@@ -1876,6 +2045,107 @@ else {
       bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
     }
     if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+}
+
+/* 会话预览滚动条（docs/04 §2.6）：真布局下的刻度、跟随、预览与居中 */
+{
+  const st = turnRail?.steps ?? {};
+  const right = st.right ?? {};
+  if (!right.hasRail) {
+    bad.push('预览滚动条：打开会话后没有画出刻度梯（开关默认是右侧）★');
+  } else {
+    if (right.side !== 'right') bad.push(`预览滚动条：默认应当在右侧，实际 data-rail-side=${right.side} ★`);
+    if ((right.markCount ?? 0) < 2) {
+      bad.push(`预览滚动条：只有 ${right.markCount} 条刻度（mock 会话有 8 轮）★`);
+    }
+    // 刻度本体的几何：20×2 的小线（DSH 的取值）
+    const rest = right.tickRest ?? {};
+    if (rest.w !== '20px' || rest.h !== '2px') {
+      bad.push(`预览滚动条：刻度是 ${rest.w}×${rest.h}，应为 20px×2px ★`);
+    }
+    // 静息被 scaleX(0.6) 压短、当前那条是满宽 —— 用户说的"亮色的条子代表当前位置"
+    if (!String(rest.transform ?? '').includes('0.6')) {
+      bad.push(`预览滚动条：静息刻度没有压到 scaleX(0.6)（transform=${rest.transform}）★`);
+    }
+    const act = right.tickActive ?? {};
+    if (!String(act.transform ?? '').includes('matrix(1, 0, 0, 1') && !String(act.transform ?? '').includes('1, 0, 0, 1')) {
+      bad.push(`预览滚动条：当前刻度的 transform 不是满宽（${act.transform}）★`);
+    }
+    if (act.background === rest.background) {
+      bad.push(`预览滚动条：当前刻度与静息刻度同色（${act.background}）——"亮的那条"看不出来 ★`);
+    }
+    if ((right.activeCount ?? 0) !== 1) {
+      bad.push(`预览滚动条：当前刻度应当**恰好一条**，实际 ${right.activeCount} 条 ★`);
+    }
+    // 刻度梯落在两侧留白里：不能压到正文列
+    if (right.railBox && right.colBox) {
+      const railRight = right.railBox.x + right.railBox.w;
+      const colRight = right.colBox.x + right.colBox.w;
+      if (railRight > right.transcriptBox.x + right.transcriptBox.w) {
+        bad.push('预览滚动条：超出转录容器右缘 ★');
+      }
+      if (right.railBox.x < colRight && railRight > right.colBox.x) {
+        bad.push(`预览滚动条：与正文列重叠（rail ${JSON.stringify(right.railBox)} vs col ${JSON.stringify(right.colBox)}）★`);
+      }
+    }
+    // **主体仍然居中**：正文列中心 ≈ 转录容器中心
+    if (right.colBox && right.transcriptBox) {
+      const drift = Math.abs(right.colBox.cx - right.transcriptBox.cx);
+      if (drift > 12) {
+        bad.push(`预览滚动条：打开后正文列偏了 ${drift}px（应仍居中于转录容器）★`);
+      }
+    }
+    if (right.railBox && right.transcriptBox) {
+      const railCy = right.railBox.cy;
+      if (Math.abs(railCy - right.transcriptBox.cy) > 4) {
+        bad.push(`预览滚动条：刻度梯没有竖直居中于可视带（rail cy=${railCy}, transcript cy=${right.transcriptBox.cy}）★`);
+      }
+    }
+  }
+
+  const hv = st.hover ?? {};
+  if (!hv.ok) bad.push(`预览滚动条：悬停探针没跑起来（${hv.why ?? '?'}）★`);
+  else {
+    if (!hv.box) bad.push('预览滚动条：悬停没有弹出预览框 ★');
+    else {
+      if (!hv.insideViewport) {
+        bad.push(`预览滚动条：预览框被视口切掉（${JSON.stringify(hv.box)}）★`);
+      }
+      if (!hv.prompt) bad.push('预览滚动条：预览框没有标题（应当是用户那条消息）★');
+      if (!/第 \d+ 轮/.test(hv.prompt)) {
+        bad.push(`预览滚动条：预览框标题不是用户消息（"${hv.prompt}"）★`);
+      }
+      if (!hv.response) bad.push('预览滚动条：预览框没有回答摘要 ★');
+      if (hv.response && !hv.response.includes('回答')) {
+        bad.push(`预览滚动条：预览框正文不是回答摘要（"${hv.response}"）★`);
+      }
+    }
+  }
+
+  const sc = st.scrolled ?? {};
+  if (sc.before === null || sc.before === undefined) {
+    bad.push('预览滚动条：滚动前没有任何刻度被标为当前 ★');
+  } else if (sc.before === sc.after) {
+    bad.push(`预览滚动条：滚了 ${sc.scrollTop}px 但当前刻度没变（一直是第 ${sc.before} 轮）——没有跟随滚动 ★`);
+  }
+
+  const jp = st.jumped ?? {};
+  if (!(jp.after < jp.before)) {
+    bad.push(`预览滚动条：点了第一条刻度但转录没往上跳（${jp.before} → ${jp.after}）★`);
+  }
+
+  const left = st.left ?? {};
+  if (left.side !== 'left') {
+    bad.push(`预览滚动条：切到左侧后 data-rail-side=${left.side} ★`);
+  } else if (!left.railLeftOfTranscript) {
+    bad.push('预览滚动条：切到左侧后刻度梯仍在右半边 ★');
+  }
+  if (left.colCx !== null && left.trCx !== null && Math.abs(left.colCx - left.trCx) > 12) {
+    bad.push(`预览滚动条：左侧档下正文列偏了 ${Math.abs(left.colCx - left.trCx)}px ★`);
+  }
+  if (st.restored?.side !== 'right') {
+    bad.push(`预览滚动条：收摊时没切回右侧（${st.restored?.side}）★`);
   }
 }
 

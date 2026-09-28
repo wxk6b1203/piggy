@@ -348,6 +348,14 @@ pub async fn perf_config_load() -> Result<Value, String> {
     serde_json::to_value(cfg).map_err(|e| e.to_string())
 }
 
+/// 保存 Piggy 自己的运行设置（读-改-写）。
+///
+/// `allow(too_many_arguments)`：**参数个数是 IPC 界面决定的**——前端送的是一个扁平对象
+/// （`{maxWorkers, idleTimeoutMin, piSource, …, transcriptRail}`），每个字段对应一个开关。
+/// 合并成一个 patch 结构体当然更"优雅"，但那是**线格式变更**：前端、mock、契约测试
+/// 都要跟着改，而收益只是少一个 lint。这里显式放行并留痕，好过为了让 lint 闭嘴
+/// 去动一个"存错就静默丢设置"的路径。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn perf_config_save(
     app: AppHandle,
@@ -365,6 +373,8 @@ pub async fn perf_config_save(
     title_source: Option<String>,
     title_model: Option<String>,
     title_thinking: Option<String>,
+    // 会话预览滚动条位置（off / left / right）。不传 = 保持既有值。
+    transcript_rail: Option<String>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -397,6 +407,10 @@ pub async fn perf_config_save(
                 crate::sessions::title::THINKING_LEVELS.join(" / ")
             ));
         }
+    }
+
+    if let Some(r) = transcript_rail.as_deref() {
+        cfg.transcript_rail = crate::config::app::RailPlacement::parse(r)?;
     }
 
     // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）

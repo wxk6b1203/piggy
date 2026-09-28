@@ -15,6 +15,7 @@ import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { loadTitleModels, type ModelOption } from '@/lib/sessionTitle';
 import { thinkingOptions } from '@/lib/thinking';
+import { useAppConfig, type RailPlacement } from '@/stores/appConfig';
 
 interface PiSourceOption {
   id: 'system' | 'bundled' | 'custom';
@@ -59,6 +60,9 @@ export function GeneralSection() {
   // "pi 没列出来的模型"就再也填不进去了（以前这里是自由输入框）。
   // null = 用户还没表态（由"列表有没有拉到"决定，见下面的 manualModel）
   const [manualModelOverride, setManualModelOverride] = useState<boolean | null>(null);
+  // 会话预览滚动条（docs/04 §2.6）：三态开关，改完立刻推给所有已打开的会话
+  const railPlacement = useAppConfig((s) => s.railPlacement);
+  const setRailPlacement = useAppConfig((s) => s.setRailPlacement);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
@@ -122,6 +126,8 @@ export function GeneralSection() {
     perf?: typeof perf;
     delegation?: boolean;
     title?: { maxChars: number; source: string; model: string; thinking: string };
+    /** 预览滚动条位置（off / left / right） */
+    rail?: RailPlacement;
   }) => {
     if (busy) return;
     setBusy(true);
@@ -137,6 +143,7 @@ export function GeneralSection() {
         titleSource: patch.title?.source ?? titleCfg.source,
         titleModel: patch.title?.model ?? titleCfg.model,
         titleThinking: patch.title?.thinking ?? titleCfg.thinking,
+        transcriptRail: patch.rail ?? railPlacement,
       });
       // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
       if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
@@ -452,6 +459,39 @@ export function GeneralSection() {
           onChange={(e) => setPerf((p) => ({ ...p, idle_timeout_min: Number(e.target.value) || 0 }))}
           onBlur={() => void save({ perf })}
         />
+      </div>
+
+      {/* 会话预览滚动条（docs/04 §2.6）：左/右/关三态。
+          打开时会在**两侧同时**留白，这样正文列仍然居中（用户的要求）。 */}
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">会话预览滚动条</span>
+        <div className="pg-runtime-modes" data-rail-setting>
+          {(
+            [
+              ['off', '关闭'],
+              ['left', '左侧'],
+              ['right', '右侧'],
+            ] as [RailPlacement, string][]
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`pg-btn${railPlacement === id ? ' pg-btn-primary' : ''}`}
+              disabled={busy}
+              data-rail-option={id}
+              onClick={() => {
+                setRailPlacement(id);
+                void save({ rail: id });
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="pg-fg-dim">
+          主会话区一侧的刻度梯：一条刻度 = 一轮对话，亮的那条是当前读到的位置。
+          悬停看这一轮的问与答，点击跳过去。
+        </span>
       </div>
 
       <div className="pg-settings-row">

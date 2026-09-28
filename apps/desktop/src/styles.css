@@ -44,7 +44,97 @@ body {
   display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden;
   background: var(--pg-bg-app);
 }
-.pg-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: var(--pg-sp-5) var(--pg-sp-6) var(--pg-sp-5); }
+/* 预览滚动条（docs/04 §2.6）。外壳是滚动容器的**兄弟**：滚动条自己不能跟着内容滚走。
+   `data-rail-side` 决定两侧额外的留白——**两边一起加**，正文列才仍然居中
+   （用户要求：除了滚动条之外主体还是居中的）。 */
+.pg-transcript-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pg-transcript-wrap[data-rail-side='left'],
+.pg-transcript-wrap[data-rail-side='right'] {
+  --pg-rail-clearance: 44px;
+}
+.pg-transcript-wrap[data-rail-side='off'] { --pg-rail-clearance: 0px; }
+.pg-transcript {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: var(--pg-sp-5) calc(var(--pg-sp-6) + var(--pg-rail-clearance)) var(--pg-sp-5);
+}
+/* 刻度梯：DSH 的几何（宽 28、贴边 12、竖直居中于可视带、内部可滚）
+   —— 只有 28px 宽，落在上面的 44px 留白里，不压正文。 */
+.pg-rail {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 28px; z-index: 5;
+}
+.pg-rail-right { right: 12px; }
+.pg-rail-left { left: 12px; }
+.pg-rail-scroll {
+  height: 100%; max-height: inherit; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: none; position: relative;
+}
+.pg-rail-scroll::-webkit-scrollbar { display: none; }
+/* 还能滚的那一端渐隐（滚到底就没有这道提示了） */
+.pg-rail-scroll.is-fade-top {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+}
+.pg-rail-scroll.is-fade-bottom {
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+.pg-rail-scroll.is-fade-top.is-fade-bottom {
+  mask-image: linear-gradient(
+    to bottom, transparent 0, #000 24px,
+    #000 calc(100% - 24px), transparent 100%
+  );
+}
+/* 刻度本体：按钮撑满 10px 行高（点击/悬停热区），视觉是那条 20×2 的线 */
+.pg-rail-mark {
+  position: absolute; left: 0; right: 0; padding: 0; border: 0;
+  background: transparent; cursor: pointer;
+}
+.pg-rail-mark::before {
+  position: absolute; top: 50%; width: 20px; height: 2px; border-radius: 2px;
+  background: var(--pg-border-l4); content: '';
+  transform: translateY(-50%) scaleX(0.6);
+  transition: transform 140ms ease, background-color 140ms ease;
+}
+.pg-rail-right .pg-rail-mark::before { right: 0; transform-origin: right center; }
+.pg-rail-left .pg-rail-mark::before { left: 0; transform-origin: left center; }
+.pg-rail-mark.is-preview::before { transform: translateY(-50%) scaleX(0.9); background: var(--pg-fg-caption); }
+/* 当前这一轮：满宽 + 最亮（用户说的"亮色的条子代表当前位置"） */
+.pg-rail-mark.is-active::before { transform: translateY(-50%) scaleX(1); background: var(--pg-fg); }
+.pg-rail-mark:focus-visible { outline: none; }
+.pg-rail-mark:focus-visible::before {
+  transform: translateY(-50%) scaleX(1); background: var(--pg-brand);
+}
+.pg-rail-mark:focus-visible::after {
+  position: absolute; inset: 0; border-radius: 8px;
+  outline: 1px solid var(--pg-brand); outline-offset: 1px; content: '';
+}
+/* 预览框：外侧弹出（右置往左弹、左置往右弹），固定 300×100，正文行数封顶 */
+.pg-rail-preview {
+  position: absolute; width: min(300px, 34vw); max-height: 100px; overflow: hidden;
+  box-sizing: border-box; padding: 10px 12px; border-radius: 10px;
+  background: var(--pg-bg-layer-2); border: 1px solid var(--pg-border-l2);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 40%);
+  pointer-events: none; animation: pg-rail-preview-in 120ms ease-out;
+}
+.pg-rail-right .pg-rail-preview { right: calc(100% + 10px); }
+.pg-rail-left .pg-rail-preview { left: calc(100% + 10px); }
+.pg-rail-preview-prompt,
+.pg-rail-preview-response {
+  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
+}
+.pg-rail-preview-prompt {
+  color: var(--pg-fg); font-size: var(--pg-fs-13, 13px); font-weight: 600;
+  -webkit-line-clamp: 1;
+}
+.pg-rail-preview-response {
+  margin-top: 4px; color: var(--pg-fg-dim); font-size: var(--pg-fs-12, 12px);
+  -webkit-line-clamp: 3;
+}
+@keyframes pg-rail-preview-in {
+  from { opacity: 0; } to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pg-rail-mark::before, .pg-rail-preview { transition: none; animation: none; }
+}
 /* 内容轴：DSH clamp(680px, col*0.64, 920px)——用百分比近似同一观感 */
 .pg-transcript > * { max-width: 920px; margin-left: auto; margin-right: auto; }
 .pg-message { margin: var(--pg-sp-6) 0; }

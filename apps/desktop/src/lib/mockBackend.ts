@@ -214,6 +214,23 @@ const messages = [
     isError: false,
     timestamp: now() - 58_000,
   },
+  /* 预览滚动条（docs/04 §2.6）的核对需要**多轮**会话：刻度梯至少要两条刻度才画，
+     而且要够长才能滚起来。补的这几轮内容是刻意的"问在标题、答在正文"，
+     门禁据此核对预览框的标题取自用户消息、正文取自回答。 */
+  ...Array.from({ length: 7 }, (_, i) => [
+    {
+      role: 'user',
+      content: `第 ${i + 2} 轮：模块 ${i + 1} 的边界条件是怎么处理的？`,
+      timestamp: now() - (50_000 - i * 6_000),
+    },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: `第 ${i + 2} 轮的回答：模块 ${i + 1} 的边界是空数组与重复 id，两处都补了测试。` },
+      ],
+      timestamp: now() - (49_000 - i * 6_000),
+    },
+  ]).flat(),
 ];
 
 /**
@@ -287,6 +304,8 @@ export const mockTitleCfg = {
   source: 'both' as string,
   model: '' as string,
   thinking: '' as string,
+  /** 预览滚动条位置（与 Rust `PerfConfig.transcript_rail` 同义，默认右） */
+  rail: 'right' as string,
 };
 /**
  * `title_model_options` 的假数据（= `pi --list-models` 的解析结果）。
@@ -572,6 +591,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     title_source: mockTitleCfg.source,
     title_model: mockTitleCfg.model || null,
     title_thinking: mockTitleCfg.thinking || null,
+    transcript_rail: mockTitleCfg.rail,
   }),
   perf_config_save: (a) => {
     appCfg.max_workers = Number(a.maxWorkers ?? appCfg.max_workers);
@@ -588,6 +608,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (a.titleSource !== undefined) mockTitleCfg.source = String(a.titleSource);
     if (a.titleModel !== undefined) mockTitleCfg.model = String(a.titleModel ?? '');
     if (a.titleThinking !== undefined) mockTitleCfg.thinking = String(a.titleThinking ?? '');
+    if (a.transcriptRail !== undefined) mockTitleCfg.rail = String(a.transcriptRail);
     return null;
   },
   tab_sleep: () => null,
@@ -1156,6 +1177,31 @@ pub fn main() {
       },
       { type: 'context_edit', id: 'e4', timestamp: new Date(now() - 47_000).toISOString(), targetId: 'e1', replacement: null },
       { type: 'compaction', id: 'e5', timestamp: new Date(now() - 46_000).toISOString() },
+      /* 预览滚动条（docs/04 §2.6）的核对需要**多轮**会话：刻度梯至少要两条刻度才画。
+         这里补 7 轮（用户 + 回答），既有内容可预览，也够长到能滚起来。 */
+      ...Array.from({ length: 7 }, (_, i) => {
+        const base = 40_000 - i * 4_000;
+        return [
+          {
+            type: 'message',
+            id: `rail-u${i}`,
+            timestamp: new Date(now() - base).toISOString(),
+            message: {
+              role: 'user',
+              content: [{ type: 'text', text: `第 ${i + 2} 轮：帮我看一下模块 ${i + 1} 的边界条件` }],
+            },
+          },
+          {
+            type: 'message',
+            id: `rail-a${i}`,
+            timestamp: new Date(now() - base + 1_000).toISOString(),
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: `第 ${i + 2} 轮的回答：模块 ${i + 1} 的边界条件是空数组与重复 id，两处都补了测试。` }],
+            },
+          },
+        ];
+      }).flat(),
     ],
     leafId: 'e5',
   }),
