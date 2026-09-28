@@ -1857,10 +1857,27 @@ const paging = await page.evaluate(async () => {
     showsFirstTurn: (tr.textContent ?? '').includes('第 1 轮的问题'),
   };
   // 换窗刚落地时的状态（下面 ② 会在 Node 侧用**真滚轮**往下推）
+  /** 按钮几何：**带文字**的按钮不能被圆钮盒子裁掉（否则看起来像"没这个按钮"）。 */
+  const buttonGeom = (sel) => {
+    const el = wrap.querySelector(sel);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const text = (el.textContent ?? '').trim();
+    return {
+      text,
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      // 文字比盒子还宽 = 溢出（`scrollWidth` 在按钮上是内容宽度）
+      clipped: el.scrollWidth > Math.ceil(r.width) + 1,
+      minText: text.length * 12, // 中文字号 12px：四个字至少 48px 宽
+    };
+  };
   const afterJump = {
     loaded: loaded(),
     hasNewer: stores.useMessages.getState().tabs[tabId]?.hasNewer === true,
     loadNewerBtn: !!wrap.querySelector('[data-load-newer]'),
+    toLatestBtn: buttonGeom('[data-to-latest]'),
+    loadNewerGeom: buttonGeom('[data-load-newer]'),
     scrollHeight: Math.round(tr.scrollHeight),
     clientHeight: Math.round(tr.clientHeight),
   };
@@ -2930,6 +2947,24 @@ if (paging.jump.loadedAfter > 60) {
 }
 if (!paging.afterJump.hasNewer) bad.push('分页：换窗之后 hasNewer 不是 true（往下没有可续的）★');
 if (!paging.afterJump.loadNewerBtn) bad.push('分页：换窗之后没有「继续往下」按钮 ★');
+// 带文字的按钮必须装得下自己的文字（第一版 `.pg-to-newer` 漏了宽度 → 34px 圆钮里塞四个字，
+// 文字溢出到圆外，看起来像"这个按钮没显示"）
+for (const [name, g] of [
+  ['继续往下', paging.afterJump.loadNewerGeom],
+  ['回到最新', paging.afterJump.toLatestBtn],
+]) {
+  if (!g) {
+    bad.push(`分页：换窗之后没有「${name}」按钮 ★`);
+    continue;
+  }
+  if (g.clipped || g.w < g.minText) {
+    bad.push(
+      `分页：「${name}」的文字被盒子裁掉（盒宽 ${g.w}px，文字至少需要约 ${g.minText}px，` +
+        `scrollWidth 溢出=${g.clipped}）—— 看起来像按钮没显示 ★`,
+    );
+  }
+  if (g.h < 24 || g.h > 40) bad.push(`分页：「${name}」高度 ${g.h}px 不在 24~40 区间 ★`);
+}
 if (pagingTail.backToLatest.hasNewer) bad.push('分页：点了「回到最新」还是换窗状态 ★');
 if (!pagingTail.backToLatest.last.includes('第 100 轮')) {
   bad.push(`分页：回到最新之后最后一行不是第 100 轮（读到 "${pagingTail.backToLatest.last}"）★`);
