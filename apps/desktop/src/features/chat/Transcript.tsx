@@ -21,7 +21,7 @@
  * （纯函数 `scrollTopAfterPrepend`，几何口径有单测）。
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { liveFor } from '@/lib/live';
 import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
@@ -123,10 +123,22 @@ export function Transcript({ tabId }: { tabId: string }) {
    */
   const pinnedHeightRef = useRef<number | null>(null);
 
-  /** 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。 */
+  /**
+   * 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。
+   *
+   * **幂等**：已经贴着底（差 ≤1px）就只刷新记录、不写 `scrollTop`。
+   * 写了也不会怎样，但"内容变 → 写位置 → 布局变 → 内容变"这种没必要的写
+   * 正是历史上那两次 ResizeObserver 自循环的燃料，能省则省。
+   */
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
+    if (gap <= 1) {
+      pinnedTopRef.current = el.scrollTop;
+      pinnedHeightRef.current = el.scrollHeight;
+      return;
+    }
     el.scrollTop = el.scrollHeight;
     pinnedTopRef.current = el.scrollTop;
     pinnedHeightRef.current = el.scrollHeight;
@@ -160,42 +172,28 @@ export function Transcript({ tabId }: { tabId: string }) {
     requestAnimationFrame(pinToBottom);
   }, [hydrated, hasNewer, pinToBottom]);
 
-  // 内容增长（新消息 / 流式实时块长高 / 行被测量）→ 只要还在跟随就继续贴底。
-  // 光靠 lastId 那个 effect 不够：虚拟化器**量出行高**同样会把底部顶走
-  // （行高从估算的 88px 变成实测值，总高变了，读者就被留在半空）。
-  // ⚠️ 必须盯**内容层本身**（innerRef），不能盯 `el.firstElementChild`：
-  //   分页时第一个子元素是「加载更早」那颗按钮，它的高度永远不变，
-  //   于是"行高量完再贴一次底"这条永远不会触发 —— 浏览器门禁实测到 198px 的缝。
-  useEffect(() => {
-    const el = scrollRef.current;
-    const inner = innerRef.current;
-    if (!el) return;
-    /**
-     * 内容变高 → 贴底。两条纪律缺一不可：
-     *  ① **幂等**：已经贴着底就什么都不做。否则"贴底 → 虚拟化器渲染新行 → 行高被测量 →
-     *     内容高度又变 → 观察者再触发 → 再贴底"会自成一个循环，
-     *     浏览器报 `ResizeObserver loop completed with undelivered notifications`；
-     *  ② **每帧最多一次**（rAF 合并）：一帧里连来几批通知也只贴一次。
-     */
-    let scheduled = false;
-    const pinIfNeeded = () => {
-      scheduled = false;
-      if (!followingRef.current || hasNewerRef.current) return;
-      const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
-      if (gap <= 1) return; // 已经在底部：不做任何事，循环到此为止
-      pinToBottom();
-    };
-    const ro = new ResizeObserver(() => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(pinIfNeeded);
-    });
-    if (inner) ro.observe(inner);
-    if (liveRef.current) ro.observe(liveRef.current);
-    return () => ro.disconnect();
-  }, [tabId, hydrated, streaming, pinToBottom]);
+  /**
+   * 内容变高 → 只要还在跟随就贴底。
+   *
+   * 判据是**虚拟化器报的总高**（`getTotalSize()`）：行被测量、消息到达、实时块长高
+   * 都会让它变，而它变化时 React 必然重渲染 —— 于是这里在**布局阶段**（绘制前）贴底，
+   * 不需要 ResizeObserver。
+   *
+   * 为什么不用 ResizeObserver（用户 2026-09-23 第五轮还在偶发报错）：
+   *   · 实时块的成长**引擎自己就在贴底**（`lib/live.ts` 的 `follow()`：离底 <120px 就贴），
+   *     再叠一个 60Hz 的观察者纯属重复，还制造"回调 → 布局变 → 回调"的级联，
+   *     浏览器就报 `ResizeObserver loop completed with undelivered notifications`；
+   *   · 观察者回调里改布局（滚动）本来就是这条报错的经典成因，能不碰就不碰。
+   *
+   * 仍然**幂等**：已经贴着底（差 ≤1px）就什么都不做，避免与测量互相触发。
+   */
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    if (!followingRef.current || hasNewerRef.current) return;
+    pinToBottom(); // 幂等在 pinToBottom 里
+  }, [totalSize, ids.length, streaming, pinToBottom]);
 
-  /** ResizeObserver 回调里要读最新的换窗状态（不重挂观察者）。 */
+  /** 贴底/续页这些"回调里读"的地方要拿最新的换窗状态（不重挂任何东西）。 */
   const hasNewerRef = useRef(hasNewer);
   hasNewerRef.current = hasNewer;
 
@@ -321,6 +319,21 @@ export function Transcript({ tabId }: { tabId: string }) {
     [handOverToReader, tabId, virtualizer],
   );
 
+  /**
+   * 点「继续往下」：追加下一页，并把**新内容的第一行**滚到视口顶部。
+   *
+   * 为什么必须滚（用户 2026-09-23 第五轮："按了继续往下结果停留在原地"）：
+   * 向下续页是把内容**追加在下面**，追加本身不会移动视口 —— 不滚的话用户看到的就是
+   * "点了没反应"。滚到新内容开头 = "接着往下读"，也正好接在刚才那一屏之后。
+   * 滚轮触发的自动续页**不滚**（用户自己在滚，替他滚会打架）。
+   */
+  const continueDown = useCallback(async () => {
+    const firstNew = useMessages.getState().tabs[tabId]?.ids.length ?? 0;
+    const added = await loadNewer(tabId);
+    if (added === 0) return;
+    requestAnimationFrame(() => virtualizer.scrollToIndex(firstNew, { align: 'start' }));
+  }, [tabId, virtualizer]);
+
   /** 回到最新：重新装载尾部那一页（换窗的反向操作），并恢复贴底跟随。 */
   const returnToLatest = useCallback(async () => {
     const file = useTabs.getState().tabs[tabId]?.sessionFile ?? null;
@@ -353,7 +366,7 @@ export function Transcript({ tabId }: { tabId: string }) {
 
   const lastId = ids.at(-1);
   useEffect(() => {
-    // 新消息到达：还在跟随就贴底（内容高度变化由上面的 ResizeObserver 兜住）
+    // 新消息到达：还在跟随就贴底（行高变化由上面那个"总高变化"的布局 effect 兜住）
     if (!followingRef.current || !lastId) return;
     requestAnimationFrame(pinToBottom);
   }, [lastId, pinToBottom]);
@@ -428,7 +441,7 @@ export function Transcript({ tabId }: { tabId: string }) {
             title="继续往下读（也可以直接往下滚）"
             data-load-newer
             disabled={loadingNewer}
-            onClick={() => void loadNewer(tabId)}
+            onClick={() => void continueDown()}
           >
             <Icon name="arrow-down" size={16} />
             <span>{loadingNewer ? '载入中…' : '继续往下'}</span>

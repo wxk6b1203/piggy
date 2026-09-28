@@ -497,6 +497,20 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 `agent_dir()` / `sessions_root()`，断言默认目录仍是绝对路径（红检时它如实打印出
 `probe sessions=.pi/agent/sessions`，就是用户看到的那一幕）。
 
+### 2.18b `features/common/ErrorBoundary.tsx` — 全局错误日志要分清三类事件
+
+`window.onerror` 会收到三种形状完全不同的事件，第一版把它们混成一句：
+
+```text
+资源加载失败: ? ResizeObserver loop completed with undelivered notifications.
+```
+
+（用户 2026-09-23 贴的日志就是这种）—— 明明不是资源加载，却被打成"资源加载失败"，
+排查时白绕一圈。现在按形状分流：有 `e.error` → 运行时异常（带栈）；
+`e.target` 是元素 → 真的是资源加载失败（带 tagName 与 src/href）；
+两者都没有 → 浏览器**合成事件**（ResizeObserver 循环警告、跨域脚本错误等）原样打出，
+并对 `ResizeObserver loop` 附一句"查观察的元素是否由自己的输出决定大小"。
+
 ### 2.19 `sessions/transcript.rs` — 转录分页读（打开不再吞整段历史）
 
 **它为什么存在**：打开会话原先调 `get_messages`（pi 进程内存里的当前上下文）一次性 hydrate

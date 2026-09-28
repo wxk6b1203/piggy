@@ -2000,7 +2000,75 @@ const pagingTail = await page.evaluate(async () => {
   return { backToLatest, afterToBottom, streamCheck };
 });
 
-/* ── ③ 向下续页：真滚轮往下推（自动续页只认滚轮；程序化滚动不许触发，否则会级联读完整段）──
+/* ── ③ 点「继续往下」必须**把新内容带进视野**（只在下方追加 = 用户眼里"点了没反应"）── */
+const buttonContinue = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const wrap = document.querySelector('[data-tab-id]');
+  const tr = wrap?.querySelector('.pg-transcript');
+  const railScroll = wrap?.querySelector('.pg-rail-scroll');
+  const stores = globalThis.__piggyStores;
+  const tabId = stores.useTabs.getState().activeTabId;
+  // 先跳远一点，回到"换窗"状态。挑**未载入**的刻度而不是写死第 1 轮：
+  // 前面的段落可能已经把第 1 轮读进来了（那时点它只是滚动，不会换窗）。
+  if (railScroll) railScroll.scrollTop = 0;
+  await sleep(250);
+  const pickUnloadedMark = () =>
+    [...(wrap?.querySelectorAll('[data-rail-mark]') ?? [])].find((m) =>
+      m.hasAttribute('data-rail-unloaded'),
+    );
+  pickUnloadedMark()?.click();
+  const t0 = Date.now();
+  while (Date.now() - t0 < 4000) {
+    if (stores.useMessages.getState().tabs[tabId]?.hasNewer === true) break;
+    await sleep(60);
+  }
+  const beforeTop = Math.round(tr.scrollTop);
+  const beforeLoaded = (stores.useMessages.getState().tabs[tabId]?.ids ?? []).length;
+  const beforeText = (tr.textContent ?? '').slice(0, 40);
+  wrap.querySelector('[data-load-newer]')?.click();
+  await sleep(1400);
+  const afterTop = Math.round(tr.scrollTop);
+  const afterLoaded = (stores.useMessages.getState().tabs[tabId]?.ids ?? []).length;
+  // 视口顶部那一行是不是"新进来的内容"（第 1 轮之后的内容）
+  const topRow = [...tr.querySelectorAll('.pg-vrow')].find(
+    (r) => r.getBoundingClientRect().top >= tr.getBoundingClientRect().top - 1,
+  );
+  return {
+    beforeTop,
+    afterTop,
+    moved: Math.abs(afterTop - beforeTop),
+    beforeLoaded,
+    afterLoaded,
+    added: afterLoaded - beforeLoaded,
+    topText: (topRow?.textContent ?? '').slice(0, 24),
+    beforeText,
+    hasNewer: stores.useMessages.getState().tabs[tabId]?.hasNewer === true,
+    btn: !!wrap.querySelector('[data-load-newer]'),
+  };
+});
+
+if (buttonContinue.added <= 0) {
+  bad.push(
+    `分页：点「继续往下」没有载入新内容（点之前 hasNewer=${buttonContinue.hasNewer}，` +
+      `按钮在=${buttonContinue.btn}）★`,
+  );
+}
+// "接着往下读"的可观察证据：视口动了，而且**顶端那一行换成了新进来的内容**。
+// （不按固定像素判：新内容第一行离窗口起点的行数取决于页大小，mock 与真机不同。）
+if (buttonContinue.moved < 100) {
+  bad.push(
+    `分页：点「继续往下」之后视口只动了 ${buttonContinue.moved}px（scrollTop ${buttonContinue.beforeTop} → ${buttonContinue.afterTop}）` +
+      '—— 只在下面追加、不把新内容带进视野，用户看到的是"点了没反应" ★',
+  );
+}
+if (buttonContinue.topText === buttonContinue.beforeText) {
+  bad.push(
+    `分页：点「继续往下」之后视口顶端还是原来那一行（"${buttonContinue.topText}"）—— 没滚到新内容 ★`,
+  );
+}
+
+
+/* ── ④ 向下续页：真滚轮往下推（自动续页只认滚轮；程序化滚动不许触发，否则会级联读完整段）──
    先重新跳到很远以前那一轮（此刻窗口是尾部那 50 行，不含第 1 轮 → 点它会**换窗**）。 */
 const downPages = [];
 {
@@ -2012,9 +2080,10 @@ const downPages = [];
     const tabId = stores.useTabs.getState().activeTabId;
     if (railScroll) railScroll.scrollTop = 0;
     await sleep(250);
-    [...(wrap?.querySelectorAll('[data-rail-mark]') ?? [])]
-      .find((m) => m.getAttribute('data-rail-mark') === '1')
-      ?.click();
+    const unloaded = [...(wrap?.querySelectorAll('[data-rail-mark]') ?? [])].find((m) =>
+      m.hasAttribute('data-rail-unloaded'),
+    );
+    (unloaded ?? [...(wrap?.querySelectorAll('[data-rail-mark]') ?? [])][0])?.click();
     const t0 = Date.now();
     while (Date.now() - t0 < 4000) {
       if (stores.useMessages.getState().tabs[tabId]?.hasNewer === true) break;
@@ -2024,7 +2093,7 @@ const downPages = [];
     return { hasNewer: tab?.hasNewer === true, loaded: (tab?.ids ?? []).length };
   });
   if (!jumped.hasNewer) bad.push('分页：滚轮那一段之前没能换窗到远处（hasNewer 未变 true）★');
-  downPages.push({ loaded: jumped.loaded, hasNewer: jumped.hasNewer, last: '', toLatest: true });
+  downPages.start = { loaded: jumped.loaded, hasNewer: jumped.hasNewer };
 
   const center = await page.evaluate(() => {
     const r = document.querySelector('.pg-transcript')?.getBoundingClientRect();
@@ -2057,15 +2126,17 @@ const downPages = [];
   }
 }
 const scrolledDown = {
+  /** 滚轮阶段开始时的行数（换窗刚落地）—— 单调性只看滚轮阶段自己 */
+  startLoaded: downPages.start?.loaded ?? 0,
+  trail: downPages.map((p) => p.loaded),
   steps: downPages.length,
-  loadedFrom: paging.jump.loadedAfter,
+  loadedFrom: downPages.start?.loaded ?? 0,
   loadedTo: downPages.at(-1)?.loaded ?? 0,
   endedAtTail: downPages.at(-1)?.hasNewer === false,
   lastText: downPages.at(-1)?.last ?? '',
   monotonic: downPages.every((p, i) => i === 0 || p.loaded >= downPages[i - 1].loaded),
   toLatestGone: downPages.at(-1)?.toLatest === false,
 };
-
 
 await browser.close();
 console.log(
@@ -2928,7 +2999,9 @@ if (!paging.jump.hasNewer || !paging.jump.toLatest) {
   bad.push('分页：换窗后没有「回到最新」（hasNewer 没传到位）★');
 }
 // 向下续页：换窗之后往下滚要能一路读到尾部（改前是"滚到底就撞墙，只能点按钮"）
-if (!scrolledDown.monotonic) bad.push('分页：向下续页时已载入行数不是单调增长 ★');
+if (!scrolledDown.monotonic) {
+  bad.push(`分页：向下续页时已载入行数不是单调增长（${scrolledDown.trail.join(' → ')}）★`);
+}
 if (!scrolledDown.endedAtTail) {
   bad.push(`分页：滚轮往下推了 ${scrolledDown.steps} 次还没读到会话尾部 —— 向下续页没生效 ★`);
 }

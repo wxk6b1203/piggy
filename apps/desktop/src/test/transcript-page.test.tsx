@@ -14,7 +14,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act } from 'react';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, scrollToIndex } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  scrollToIndex: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
@@ -31,7 +34,7 @@ vi.mock('@tanstack/react-virtual', () => ({
         index, key: index, start: index * estimateSize(index), size: estimateSize(index),
       })),
     measureElement: () => {},
-    scrollToIndex: vi.fn(),
+    scrollToIndex,
   }),
 }));
 
@@ -157,6 +160,7 @@ function seedOffsets(
 
 beforeEach(() => {
   invokeMock.mockReset();
+  scrollToIndex.mockReset();
   invokeMock.mockImplementation(async (name: string) => {
     if (name === 'session_page') return page(0, 0, false);
     return {};
@@ -430,45 +434,41 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
   });
 });
 
-describe('贴底是幂等的（否则 ResizeObserver 会自循环）', () => {
-  it('已经贴着底时，内容变高的通知不再改 scrollTop', async () => {
+describe('贴底是幂等的（否则会与测量互相触发）', () => {
+  it('已经贴着底时不再写 scrollTop；内容真的长高了才贴', async () => {
     seed(12);
-    const spy = captureResizeObservers();
-    try {
-      mountDom(<Transcript tabId={TAB} />);
-      const el = scroller();
-      fakeGeometry(el, 2000, 400);
-      await flush();
-      await act(async () => {
-        await new Promise((r) => requestAnimationFrame(() => r(null)));
-      });
-      // 组件贴底：pinnedTopRef = 1600
-      expect(el.scrollTop).toBe(1600);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '组件应当已经贴到底').toBe(1600);
 
-      const sets = (el as unknown as { __sets: () => number }).__sets;
-      const reset = (el as unknown as { __resetSets: () => void }).__resetSets;
-      reset();
-      // 内容继续长高（流式），通知照样来：已经在底部 → 一次都不该再写 scrollTop
-      for (const cb of spy.callbacks) cb();
+    const sets = (el as unknown as { __sets: () => number }).__sets;
+    const reset = (el as unknown as { __resetSets: () => void }).__resetSets;
+    const append = async (text: string, ts: number) => {
       await act(async () => {
+        useMessages.getState().applyCommit(TAB, {
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text }], timestamp: ts },
+        } as never);
         await new Promise((r) => setTimeout(r, 20));
       });
-      expect(sets(), '已经贴底还去写 scrollTop —— 会与虚拟化器的测量互相触发').toBe(0);
+    };
 
-      // 真的出现缝隙（内容长高后没贴住）→ 这次必须贴
-      reset();
-      Object.defineProperty(el, 'scrollHeight', { value: 2400, configurable: true });
-      for (const cb of spy.callbacks) cb();
-      await act(async () => {
-        // 贴底是 rAF 合并的：等两帧再断言
-        await new Promise((r) => requestAnimationFrame(() => r(null)));
-        await new Promise((r) => setTimeout(r, 20));
-      });
-      expect(sets(), '内容长高后没贴住').toBeGreaterThan(0);
-      expect(el.scrollTop).toBe(2000);
-    } finally {
-      spy.restore();
-    }
+    // 重渲染（新消息到达）但内容没长高：已经在底部 → 一次都不该写 scrollTop
+    reset();
+    await append('又一句', 9001);
+    expect(sets(), '已经贴底还去写 scrollTop —— 会与虚拟化器的测量互相触发').toBe(0);
+
+    // 真的长高了（流式）：这次必须贴
+    reset();
+    Object.defineProperty(el, 'scrollHeight', { value: 2400, configurable: true });
+    await append('再一句', 9002);
+    expect(sets(), '内容长高后没贴住').toBeGreaterThan(0);
+    expect(el.scrollTop).toBe(2000);
   });
 });
 
@@ -505,6 +505,11 @@ describe('向下续页（换窗之后往下滚不再撞墙）', () => {
       newer.click();
       await new Promise((r) => setTimeout(r, 60));
     });
+
+    // ⚠️ 光追加是不够的：视口不动的话用户看到的是"点了没反应"（真机反馈）。
+    // 新内容的第一行必须是**原来的行数**（= 追加的第一行），并且要滚过去。
+    expect(scrollToIndex).toHaveBeenCalled();
+    expect(scrollToIndex.mock.calls.at(-1)![0]).toBe(2);
 
     const tab = useMessages.getState().tabs[TAB]!;
     // 原来 2 行 + 这一页 20 行 = 22 行（**接在后面**，不是换窗）

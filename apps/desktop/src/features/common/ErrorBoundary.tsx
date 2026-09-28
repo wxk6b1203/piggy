@@ -70,10 +70,24 @@ export class ErrorBoundary extends Component<Props, State> {
 /** 安装全局兜底：未捕获异常与未处理的 Promise 拒绝。 */
 export function installGlobalErrorReporting(): void {
   window.addEventListener('error', (e) => {
-    // 资源加载失败（img/script）也会走这里，e.error 为 null
-    const detail = e.error
-      ? `${e.error.message}\n${e.error.stack ?? ''}`
-      : `资源加载失败: ${(e.target as HTMLElement | null)?.tagName ?? '?'} ${e.message}`;
+    // 三类事件的形状不一样，日志别混成一句（第一版把所有没有 `e.error` 的都写成
+    // "资源加载失败: ?"，于是 ResizeObserver 的那条循环警告看起来像"资源加载失败"，
+    // 排查时白绕了一圈 —— 用户 2026-09-23 贴的日志就是这种）。
+    let detail: string;
+    if (e.error) {
+      detail = `${e.error.message}\n${e.error.stack ?? ''}`;
+    } else if (e.target instanceof HTMLElement || e.target instanceof SVGElement) {
+      // 真正的资源加载失败：target 是 img/script/link 元素
+      const el = e.target as HTMLElement;
+      detail = `资源加载失败: ${el.tagName.toLowerCase()} ${el.getAttribute('src') ?? el.getAttribute('href') ?? ''}`;
+    } else {
+      // 没有 error、也没有元素：浏览器报的**合成事件**（ResizeObserver 循环警告、
+      // 跨域脚本错误等）。原样打出来，并给循环警告一句"谁是嫌疑"。
+      const hint = /ResizeObserver loop/.test(e.message)
+        ? '（某个 ResizeObserver 回调里改了布局：查"观察的元素是否由自己的输出决定大小"）'
+        : '';
+      detail = `[合成事件] ${e.message}${hint}`;
+    }
     reportToHost('error', `[window.error] ${detail}`);
   });
   window.addEventListener('unhandledrejection', (e) => {
