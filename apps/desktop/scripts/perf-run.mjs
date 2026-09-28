@@ -47,8 +47,12 @@ async function withPage(fn) {
   });
   const page = await browser.newPage();
   await page.goto(URL, { waitUntil: 'networkidle' });
-  // 等 app boot 完成（mock 环境：命令注册表挂全局）
-  await page.waitForFunction('window.__piggyCommands && window.__piggyCommands.size() > 0');
+  /* 等 app boot 完成（mock 环境：命令注册表挂全局）。
+     ⚠️ 判据是 `registrySize()`：这里原来写的是 `size()`，而 `__piggyCommands` 早就是
+     **模块命名空间**（导出 `allCommands/registrySize/…`）—— 探针一升级就永久抛
+     `window.__piggyCommands.size is not a function`，perf-lite 从此跑不起来。
+     改判据时请跟着 `src/lib/commands.ts` 的导出走。 */
+  await page.waitForFunction('window.__piggyCommands && window.__piggyCommands.registrySize() > 0');
   await page.waitForTimeout(800); // dockview onReady + 恢复
   try {
     return await fn(page);

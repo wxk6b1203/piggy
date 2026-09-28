@@ -21,11 +21,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium
       - name: 全场景 S1–S6 + 预算断言
-        run: node scripts/perf/run.mjs
+        run: node apps/desktop/scripts/perf-run.mjs
       - name: 上传场景数据（趋势入库源）
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: perf-results-${{ github.run_id }}
-          path: perf-results/
+          path: apps/desktop/perf-results/
           retention-days: 30

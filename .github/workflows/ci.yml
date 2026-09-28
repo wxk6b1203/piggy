@@ -50,12 +50,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium
       - name: S1/S3 缩短版 + 预算断言
-        run: node scripts/perf/run.mjs --lite
+        run: node apps/desktop/scripts/perf-run.mjs --lite
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: perf-lite-results
-          path: perf-results/
+          path: apps/desktop/perf-results/
           retention-days: 7
 
   contract:
