@@ -1459,6 +1459,37 @@ const turnRail = { steps: {} };
     };
   });
 
+  // 真鼠标（不是合成事件）：移到刻度上要出预览框，**移开要消失**。
+  // 这条是用户报的那个 bug 的回归守卫：刻度只有 10px 高，鼠标移开时几乎不会落在
+  // 另一条刻度上，所以"离开整条梯子"必须由 onPointerLeave 清掉。
+  {
+    const box = await page.evaluate(() => {
+      const marks = [...document.querySelectorAll('[data-rail-mark]')];
+      const el = marks[Math.min(2, marks.length - 1)];
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    });
+    if (box) {
+      await page.mouse.move(box.x, box.y);
+      await page.waitForTimeout(350);
+      turnRail.steps.hoverReal = await page.evaluate(() => ({
+        present: !!document.querySelector('[data-rail-preview]'),
+        prompt: (document.querySelector('[data-rail-preview-prompt]')?.textContent ?? '').trim(),
+      }));
+      // 移到正文中间（离开刻度梯）—— 注意这里在 **Node 侧**，没有 window
+      const vp = page.viewportSize() ?? { width: 1280, height: 860 };
+      await page.mouse.move(Math.round(vp.width / 2), 420);
+      await page.waitForTimeout(350);
+      turnRail.steps.leaveReal = await page.evaluate(() => ({
+        present: !!document.querySelector('[data-rail-preview]'),
+      }));
+    } else {
+      turnRail.steps.hoverReal = { present: false, prompt: '' };
+      turnRail.steps.leaveReal = { present: false };
+    }
+  }
+
   // 滚一下：亮的那条要跟着换（这是"当前位置"的全部意义）
   turnRail.steps.scrolled = await page.evaluate(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2121,6 +2152,16 @@ else {
         bad.push(`预览滚动条：预览框正文不是回答摘要（"${hv.response}"）★`);
       }
     }
+  }
+
+  const hr = st.hoverReal ?? {};
+  if (!hr.present) {
+    bad.push('预览滚动条：真鼠标移到刻度上没出预览框 ★');
+  } else if (!hr.prompt) {
+    bad.push('预览滚动条：真鼠标悬停的预览框没有标题 ★');
+  }
+  if ((st.leaveReal ?? {}).present) {
+    bad.push('预览滚动条：**鼠标离开刻度梯后预览框还在**（用户报的那个 bug）★');
   }
 
   const sc = st.scrolled ?? {};

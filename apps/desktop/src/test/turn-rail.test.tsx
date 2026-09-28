@@ -185,6 +185,32 @@ describe('刻度梯组件（TurnRail）', () => {
     expect(mark.getAttribute('aria-describedby')).toBe(box.getAttribute('id'));
   });
 
+  it('**指针离开刻度梯**时预览框要消失（鼠标移开还挂着就是 bug）', async () => {
+    mountDom(<TurnRail {...props} />);
+    await flush();
+    const rail = q<HTMLElement>('[data-turn-rail]')!;
+    const mark = q<HTMLElement>('[data-rail-mark="2"]')!;
+    await act(async () => {
+      mark.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(q('[data-rail-preview]'), '悬停没出预览，后面的核对就没意义').toBeTruthy();
+    // 指针离开整条刻度梯（React 的 onPointerLeave 由 pointerout + relatedTarget 判定）
+    await act(async () => {
+      rail.dispatchEvent(
+        new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body }),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(q('[data-rail-preview]'), '指针离开刻度梯后预览框没有消失').toBeNull();
+    // 移开之后再移回来仍然能出（不是"一次性"的）
+    await act(async () => {
+      mark.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(q('[data-rail-preview]')).toBeTruthy();
+  });
+
   it('点击跳到那一轮（给的是转录行下标，不是轮次号）', async () => {
     mountDom(<TurnRail {...props} />);
     await flush();

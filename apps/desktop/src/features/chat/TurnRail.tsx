@@ -120,6 +120,16 @@ export function TurnRail({ items, activeTurn, placement, onJump }: TurnRailProps
       data-rail-placement={placement}
       data-rail-count={items.length}
       style={{ height }}
+      // 进/出整条梯子（DSH 把这一对挂在 nav 上）。
+      // ⚠️ 少了 onPointerLeave，鼠标移开后预览框会**一直挂着**——刻度只有 10px 高，
+      //    离开时几乎不会落在另一条刻度上，所以永远不会被覆盖掉。
+      onPointerEnter={() => {
+        pointerInside.current = true;
+      }}
+      onPointerLeave={() => {
+        pointerInside.current = false;
+        setPreviewTurn(null);
+      }}
     >
       <div
         ref={railRef}

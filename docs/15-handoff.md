@@ -472,6 +472,22 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     （它们只是把 prop 传进去），是门禁里“滚 718px 后当前刻度没变”抓出来的。
     教训与规矩 20 同源：**prop 对 ≠ 行为对**，跨事件链路的那一半得在真环境里驱动。
 
+
+47. **“悬停显示”必须成对实现：那条自己的 `pointerenter` 只负责“显示这一条”，
+    整块的 `pointerleave` 才负责“消失”。**
+    预览滚动条第一版照着 DSH 给每条刻度挂了 `onPointerEnter`，却漏了把
+    `onPointerEnter/onPointerLeave` 挂在**整条梯子**上——用户报的 bug 就是
+    “鼠标移开后预览框不消失”。两个细节让它格外容易漏：
+    ① 刻度只有 10px 高、彼此相邻，指针从一条移到另一条会重设预览，
+       **“移出整块”是唯一会清空的路径**，所以漏了就永远不会消失；
+    ② 我当时还写了一个 `pointerInside` ref（DSH 用它避免把梯子从指针底下滚走），
+       但因为它只在 `pointerleave` 里被置回 false，**那段逻辑其实一直是死的**——
+       漏掉成对实现时，顺带废掉的是另一条不显眼的行为。
+    单测也漏了：我写了 hover 进、focus/blur 出，**唯独没写指针移出**。
+    补法：单测里派发 `pointerout`（带 `relatedTarget`，React 的 `onPointerLeave`
+    是由它推出来的，原生 `pointerleave` 不进处理函数），门禁里用**真鼠标**
+    `page.mouse.move` 移进去再移开——后者才是用户那条路径。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
