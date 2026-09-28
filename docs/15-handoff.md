@@ -422,10 +422,25 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     这类几何只有真浏览器量得出来（规矩 32），所以三个宽度（1280 / 1180 / 900）
     各锁了一条门禁断言，反证时把它们退回固定宽度，报的正是用户看到的那句话。
 
+42. **许可这类"事实散在多个文件里"的东西，要靠测试锁，不能靠人记得。**
+    加 GPL-3.0 时同一个事实出现在四处：`LICENSE`（原文）、5 个 manifest 的 `license` 字段、
+    README「授权」一节、`THIRD_PARTY_NOTICES.md`。它们的失效方式**全是静默的**：
+    新加一个 workspace 包忘了写 `license`（`pnpm -r` 照样跑，只是那个包"保留所有权利"）；
+    重排 `bundle.resources` 时把 `pi-LICENSE.txt` 顺手删掉（**打包完全成功**，
+    只是安装包少了一张纸，而 MIT 的义务恰好就是那张纸）。
+    所以 `src/test/license.test.ts` 逐个键断言（11 条），三条反证都确认变红。
+    附带两条经验：
+    · **GPL 原文一个字都不能改**（原文写着 *changing it is not allowed*），所以落地前先
+      逐字节对拍上游——本机随手找的副本就有一份是**被 FSF 更新过版权行**的
+      （wget 的 `COPYING` 写 `2007, 2023`，gnu.org 是 `2007`），拿错就等于改了原文；
+    · `or later` **不在 GPLv3 原文里**（原文只写 v3），它必须由**项目自己的声明**表达
+      —— README 的 notice 段 + `license` 字段写 `GPL-3.0-or-later`，两者缺一不可。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
+| **GPL §5(d) 的「Appropriate Legal Notices」还没有界面** | GPLv3 对**有交互界面**的作品要求显示版权声明 + 无担保声明 + 如何查看许可（§0 定义、§5(d) 义务）。现在这三样只存在于仓库文件里，应用内**没有任何入口**（侧栏那颗 `Piggy v0.1.0` 是纯文本，点不动；设置页也没有「关于」）。分发安装包之前应当补一个：点版本号 → 弹「关于」，含 `Copyright (C) 2026 wxk6b1203`、无担保那句、LICENSE 全文入口（可复用 `resources/pi-LICENSE.txt` 的做法把 LICENSE 也打进包）。本轮只做了文件层（LICENSE / manifest / README / THIRD_PARTY_NOTICES + 一致性测试），界面这一层**没做** |
 | **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |

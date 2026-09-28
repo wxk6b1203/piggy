@@ -2,6 +2,7 @@
   "name": "piggy",
   "private": true,
   "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
   "packageManager": "pnpm@11.24.0",
   "scripts": {
     "dev": "pnpm --filter @piggy/desktop dev",

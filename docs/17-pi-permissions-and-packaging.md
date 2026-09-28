@@ -183,6 +183,22 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 现在脚本按真实命名下载、校验（显式 `PI_SHA256` → release 的 `SHA256SUMS` → 警告）、
 并把**整包**解到 `resources/pi/`；`tauri.full.conf.json` 用 `resources/pi/**/*` 收全部子目录。
 
+### 2.7 许可：full SKU 是在**再分发 pi**
+
+捆绑 pi 不是"用了一个依赖"，而是**把别人的作品放进自己的安装包分发**。pi 是 MIT
+（`Copyright (c) 2025 Mario Zechner`），MIT 的义务是"版权声明与许可声明随所有副本一起给"，
+所以：
+
+- `src-tauri/resources/pi-LICENSE.txt` 是 pi 许可原文的副本（正文逐字节一致，
+  sha256 `0457f5bc…`），登记在**两个** SKU 的 `bundle.resources` 里；
+- **不要指望 pi 的 release 资产自带许可**：`installAssets()` 只保证"二进制之外的文件按原
+  结构拷过来"，而包里有没有 `LICENSE` 是上游的打包细节、随时会变——义务在分发方这边；
+- Piggy 自己是 GPL-3.0-or-later（`LICENSE` + 各 manifest 的 `license` 字段 + README）。
+  MIT 与 GPLv3 兼容，但**署名不能省**，且分发安装包时须一并提供 Piggy 的完整源码。
+
+这几条一致性由 `apps/desktop/src/test/license.test.ts` 锁住（漏一个 `license` 字段、
+把那张纸从资源清单里删掉、或者"顺手润色" LICENSE 都会被它拦下）。
+
 ---
 
 ## 3. 本轮修掉的缺陷（都带证据）

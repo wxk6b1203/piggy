@@ -5,6 +5,7 @@
       "resources/piggy-guard.js",
       "resources/piggy-bridge.js",
       "resources/piggy-subagent-policy.md",
+      "resources/pi-LICENSE.txt",
       "resources/pi/**/*"
     ]
   }

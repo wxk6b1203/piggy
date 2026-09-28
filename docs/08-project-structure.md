@@ -37,9 +37,17 @@ piggy/
 ├─ pnpm-workspace.yaml
 ├─ package.json                   # workspace root：scripts · devDeps（lint/test 工具）
 ├─ tsconfig.base.json
+├─ LICENSE                        # GPLv3 原文（逐字节取自 gnu.org，未改动）
+├─ THIRD_PARTY_NOTICES.md         # 第三方资产的来源与署名义务（新增资产必须登记）
 ├─ .github/workflows/             # ci.yml · nightly-perf.yml · release.yml
 └─ README.md
 ```
+
+许可的**事实源**是三处，一致性由 `src/test/license.test.ts` 锁住：`LICENSE`（GPLv3 原文）、
+每个 `package.json` / `Cargo.toml` 的 `license: GPL-3.0-or-later`、README「授权」一节
+（`or later` 只能由项目自己的声明表达——GPLv3 原文本身不含这句话）。
+第三方署名义务见 `THIRD_PARTY_NOTICES.md`；**full SKU 随包分发 pi**，其 MIT 声明副本
+（`src-tauri/resources/pi-LICENSE.txt`）登记在两个 SKU 的 `bundle.resources` 里。
 
 为什么 monorepo：piggy-bridge 与主应用**共享私有协议语义**（`PIGGY:1:` 载荷、命令集），同仓演进、原子 PR；pi-protocol 与 Rust 类型对拍需要同一 fixture 集，跨仓无法维持。
 

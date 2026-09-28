@@ -3,6 +3,7 @@ name = "piggy-desktop"
 version = "0.1.0"
 description = "Piggy — pi 的图形驾驶舱（Tauri 2 壳）"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "piggy_lib"

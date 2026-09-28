@@ -1,6 +1,7 @@
 {
   "name": "piggy-bridge",
   "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
   "private": true,
   "description": "Piggy 官方桥接扩展：把 pi-subagents 的会话内子代理接入 Piggy Fleet 面板（docs/06 §4）",
   "type": "module",

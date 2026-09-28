@@ -2,6 +2,56 @@
 
 Piggy 复用了若干上游资产。本文件记录来源、版本与许可义务；**新增可复用资产时必须在此登记**。
 
+Piggy 自身的许可是 **GPL-3.0-or-later**（见 [LICENSE](LICENSE) 与 README「授权」一节）。
+下列第三方许可（MIT / CC-BY-4.0）都与 GPLv3 兼容，但**署名与许可声明必须保留**——
+这正是本文件存在的理由。
+
+---
+
+## pi（`@earendil-works/pi`，Piggy 驱动的编码代理）
+
+- **用途**：Piggy 是 pi 的图形外壳——会话进程、RPC、扩展、会话文件格式全部由 pi 提供
+- **来源**：<https://github.com/earendil-works/pi>
+- **取用方式**：
+  - **lite SKU**：不使用捆绑 pi，运行期用用户机器上装的 pi（不涉及再分发）；
+  - **full SKU**：`apps/desktop/scripts/fetch-pi-standalone.mjs` 从 pi 的 GitHub Release
+    下载对应平台的完整分发包，解包到 `src-tauri/resources/pi/`，由 `tauri.full.conf.json`
+    的 `bundle.resources` **随安装包一起分发**（版本见该脚本的 `--version`，当前 0.87.1）。
+- **许可**：MIT，`Copyright (c) 2025 Mario Zechner`
+
+### 署名（MIT 履行）
+
+pi 的许可全文以 `apps/desktop/src-tauri/resources/pi-LICENSE.txt` **随安装包分发**
+（两个 SKU 的 `bundle.resources` 都已登记该文件）。该文件的第一段是 Piggy 自己加的说明，
+**正文与上游 `LICENSE` 逐字节一致**（sha256 `0457f5bc…`；改上游版本时要同步重取）。
+
+> 为什么不能指望 pi 的 release 资产里自带许可：`installAssets()` 只保证"二进制之外的
+> 文件按原结构拷过来"，而 release 包里有没有 `LICENSE` 属于上游的打包细节、随时可能变。
+> MIT 的义务在**分发方**（Piggy）身上，所以这份副本由 Piggy 自己携带。
+
+`packages/piggy-bridge/` 是 Piggy 自己写的 pi 扩展（构建期引用 pi 的类型声明），不是上游代码。
+
+---
+
+## DeepSeek Harness（DSH，设计参照）
+
+- **用途**：Piggy 的 UI/交互**以 DSH 为参照**（docs/11/12/14 是逐条对照的规格与实测记录）
+- **来源**：`deepseek-harness`（`@deepseek-ai/dsh*`），本地检出 `/Users/wxk/Documents/Project/deepseek-harness`
+- **取用方式**（**按现状登记，不是"抄了一堆代码"**）：
+  1. **设计 token 数值**：`apps/desktop/src/styles/tokens.css` 的取值由
+     `apps/desktop/scripts/extract-dsh-tokens.mjs` 从 DSH 的
+     `packages/client/ui-theme/src/styles/*.css` 提取（变量名改成 `--pg-*`，逐行注释标出对应的
+     DSH 令牌名）；
+  2. **措辞/规格对齐**：会话标题生成的提示词逐句对齐 DSH
+     `session-title-llm/src/index.ts` 的措辞（`sessions/title.rs::build_prompt` 里注明）；
+     RPC 语义、几何常量、命令命名等接口事实散见 docs/11、12、14；
+  3. 界面结构（面板划分、选择器位置等）是**照着重画**，不是拷贝实现。
+- **许可**：MIT，`Copyright (c) 2026 DeepSeek`
+
+> 说明：DSH 的 `package.json` 带 `"private": true`（那是"不发布到 npm"的意思，与许可无关）。
+> 只要保留了版权与许可声明，MIT 允许这样复用；**若日后直接搬运 DSH 的源码文件**
+> （而不只是数值/措辞/接口事实），必须把该文件的 MIT 声明一并带过来。
+
 ---
 
 ## @vscode/codicons
@@ -95,4 +145,13 @@ copies or substantial portions of the Software.
 
 ## 待登记
 
-- 其他（VS Code 设计尺寸 ramp `baseSizes.ts`、变量白名单等，见 docs/13 §7）。
+**已核实不需要登记**（2026-09-25 复核）：
+
+- **VS Code 设计尺寸 ramp**（`src/vs/platform/theme/common/sizes/baseSizes.ts` +
+  `sizeUtils.ts`，docs/13 §7 曾列为 copy-with-attribution）：**没有引入**。
+  全仓没有 `--vscode-*` 尺寸变量，`tokens.css` 的数值全部来自 DSH（见上）。
+  docs/13 里的 986 colors / 54 sizes 是**读取**该文件统计出的事实，不是拷贝代码。
+  若日后真的把这套 ramp 抄进来，须在此补 **MIT · Microsoft** 的署名。
+- **变量白名单**（`build/lib/stylelint/vscode-known-variables.json`）：同上，只用于统计。
+- VS Code 的 9 个第三方主题（Monokai / Solarized 等）：未引入（引入需补
+  `Copyright (c) 2015 Colorsublime.com`）。
