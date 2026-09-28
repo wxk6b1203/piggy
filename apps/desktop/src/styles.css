@@ -59,7 +59,7 @@ body {
 }
 /* 分页（docs/03 §2.19）：「加载更早」贴在内容流顶端（DSH `.older` 同位置/同尺寸），
    只有往上滚才看得到；加载中变成「载入历史…」并禁用。
-   r14 与底色/字色照 docs/12 §3.8 抄的 DSH 数值（`.older button`）。 */
+   r14 与底色/字色照 docs/12 §3.11 抄的 DSH 数值（`ChatView.module.css` 的 `.older button`）。 */
 .pg-transcript-older { display: flex; justify-content: center; margin-bottom: var(--pg-sp-3); }
 .pg-transcript-older button {
   padding: 4px 12px; border: none; border-radius: 14px;
@@ -71,7 +71,7 @@ body {
 .pg-transcript-hint { color: var(--pg-fg-dim); font-size: var(--pg-fs-13); padding: var(--pg-sp-2) 0; }
 /* 「回到底部」（DSH `chat.toBottom`：34×34 圆形浮起按钮，滚离底部才出现）。
    不跟内容滚：挂在滚动容器的兄弟层（否则会被一起滚走）。
-   位置照 DSH 的 `.toBottomSlot` 口径——**对齐正文列右边缘**（max 里两项：
+   位置照 DSH `.toBottomSlot` 的口径（docs/12 §3.11）——**对齐正文列右边缘**（max 里两项：
    窗口够宽时贴正文列，窄时退回内边距），不是贴窗口右边。 */
 .pg-to-bottom {
   position: absolute; bottom: 16px;
