@@ -24,7 +24,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { liveFor } from '@/lib/live';
-import { loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
+import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
 import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
@@ -39,7 +39,7 @@ import {
   type RailSourceRow,
 } from './turnRailItems';
 import { TurnRail } from './TurnRail';
-import { isAtTail, nextFollowing, scrollTopAfterPrepend } from './transcriptScroll';
+import { isAtTail, nextFollowingFromSample, scrollTopAfterPrepend } from './transcriptScroll';
 
 const LIVE_ID = '__live__';
 
@@ -69,6 +69,7 @@ export function Transcript({ tabId }: { tabId: string }) {
   const outline = useTabMsg(tabId, (t) => t.outline);
   const pageCursor = useTabMsg(tabId, (t) => t.pageCursor);
   const hasNewer = useTabMsg(tabId, (t) => t.hasNewer);
+  const loadingNewer = useTabMsg(tabId, (t) => t.loadingNewer);
   const hydrated = useTabMsg(tabId, (t) => t.hydrated);
   // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置
   const rowIds = streaming && !hasNewer ? [...ids, LIVE_ID] : ids;
@@ -113,12 +114,22 @@ export function Transcript({ tabId }: { tabId: string }) {
    */
   const pinnedTopRef = useRef<number | null>(null);
 
+  /**
+   * 上次**贴底那一刻**的 scrollHeight。
+   *
+   * 判据是"现在比贴底时更高吗"——比"比上次采样更高吗"稳：采样可能发生在
+   * 布局还没完成时（首帧 scrollHeight 为 0），那样第一次真实滚动会被误判成"内容长高"，
+   * 于是读者往上滚也不交还控制权（测试里当场就红）。
+   */
+  const pinnedHeightRef = useRef<number | null>(null);
+
   /** 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。 */
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
     pinnedTopRef.current = el.scrollTop;
+    pinnedHeightRef.current = el.scrollHeight;
   }, []);
 
   /** 读者动作（点刻度跳转 / 换窗）：忘掉"程序化位置"，下一次滚动算读者滚的。 */
@@ -201,6 +212,29 @@ export function Transcript({ tabId }: { tabId: string }) {
   /** 正在为"跳到未载入的那一轮"翻页：梯子上那一格显示忙碌。 */
   const [jumping, setJumping] = useState<number | null>(null);
 
+  /**
+   * 换窗之后"继续往下读"：**只由滚轮意图触发**。
+   *
+   * 为什么不用"滚动事件 + 离底距离"自动续页（第一版就是那样，实测两次踩坑）：
+   * ① 贴底/换窗/内容长高都会产生 scroll 事件，于是"续页 → 内容变 → 再触发 → 再续页"
+   *    会一路把 `hasNewer` 走到 false —— 等于把整段会话读进来（门禁实测：跳一轮之后
+   *    自动读到 200/200 行），正好是用户担心的"其实全载入了"；
+   * ② 隐藏的面板 `clientHeight` 为 0，距离恒为 0，同样会级联。
+   * 滚轮是"我要往下看"最干净的信号：一次手势最多续一页，程序化滚动不会触发它。
+   * 滚轮之外还有右下角那颗「继续往下」按钮兜底（拖滚动条、键盘翻页的用户走它）。
+   */
+  const maybeLoadNewer = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.clientHeight <= 0) return; // 隐藏/未布局：不可能有真实滚动意图
+    const tab = useMessages.getState().tabs[tabId];
+    if (!tab?.hasNewer || tab.loadingNewer) return;
+    const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
+    const canScroll = el.scrollHeight > el.clientHeight + 1;
+    // 滚到底了，或者窗口内容还不够滚（滚轮推不动）—— 两种都是"我要更多"
+    if (gap <= 240 || !canScroll) void loadNewer(tabId);
+  }, [tabId]);
+
   /** 阅读线所在行 → 当前轮次。滚动/新增消息时重算。 */
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
   const recomputeActive = useCallback(() => {
@@ -209,9 +243,16 @@ export function Transcript({ tabId }: { tabId: string }) {
     // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）。
     // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
     const metrics = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
-    const pinned = pinnedTopRef.current;
-    const movedByReader = pinned === null || Math.abs(el.scrollTop - pinned) > 0.5;
-    setFollowing(nextFollowing(followingRef.current, metrics, movedByReader));
+    // 跟随意图：判据是"这段距离是谁造成的"（内容长高/换页 ≠ 读者滚动），见
+    // `nextFollowingFromSample` 的说明 —— 只看"位置对不对得上"会被滚动锚定骗到。
+    setFollowing(
+      nextFollowingFromSample({
+        metrics,
+        pinnedTop: pinnedTopRef.current,
+        lastScrollHeight: pinnedHeightRef.current,
+        following: followingRef.current,
+      }),
+    );
     // ⚠️ "当前是哪一轮"用**跟随意图**而不是瞬时几何：流式时内容在两帧之间长高，
     //    等这次 scroll 事件被处理时 `scrollHeight` 已经变了，`isAtTail` 会瞬间为假 ——
     //    于是当前轮次在"最新那轮"与"阅读线那轮"之间逐帧来回翻，梯子上的亮条疯狂闪动
@@ -228,15 +269,20 @@ export function Transcript({ tabId }: { tabId: string }) {
       else break;
     }
     setActiveTurn(activeTurnOf(railItems, readingRow, atTailForTurn));
-  }, [setFollowing, virtualizer, railItems]);
+  }, [maybeLoadNewer, setFollowing, virtualizer, railItems]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     recomputeActive();
     el.addEventListener('scroll', recomputeActive, { passive: true });
-    return () => el.removeEventListener('scroll', recomputeActive);
-  }, [recomputeActive]);
+    // 向下续页只认滚轮（见 `maybeLoadNewer` 的说明）
+    el.addEventListener('wheel', maybeLoadNewer, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', recomputeActive);
+      el.removeEventListener('wheel', maybeLoadNewer);
+    };
+  }, [maybeLoadNewer, recomputeActive]);
 
   /**
    * 跳到某一轮：已载入的直接滚过去；**没载入的换窗过去**（只读目标那一页）。
@@ -360,18 +406,34 @@ export function Transcript({ tabId }: { tabId: string }) {
         </div>
       </div>
       {hasNewer ? (
-        // 换窗状态（在看几轮之前的历史）：给一条回得去的路，位置与「回到底部」同一处
-        <button
-          type="button"
-          className="pg-to-bottom pg-to-latest"
-          aria-label="回到最新"
-          title="回到最新（重新装载会话尾部）"
-          data-to-latest
-          onClick={() => void returnToLatest()}
-        >
-          <Icon name="chevron-down" size={16} />
-          <span>回到最新</span>
-        </button>
+        // 换窗状态（在看几轮之前的历史）：**往下滚能继续读**，这里再给一条直达尾部的路。
+        // 两个按钮的分工：`继续往下` = 逐页读完（读到尾部 hasNewer 自动转 false）；
+        // `回到最新` = 一跳到尾部。位置与「回到底部」同一处（右下角）。
+        <div className="pg-bottom-actions">
+          <button
+            type="button"
+            className="pg-to-bottom pg-to-latest"
+            aria-label="回到最新"
+            title="回到最新（重新装载会话尾部）"
+            data-to-latest
+            onClick={() => void returnToLatest()}
+          >
+            <Icon name="chevron-down" size={16} />
+            <span>回到最新</span>
+          </button>
+          <button
+            type="button"
+            className="pg-to-bottom pg-to-newer"
+            aria-label="继续往下"
+            title="继续往下读（也可以直接往下滚）"
+            data-load-newer
+            disabled={loadingNewer}
+            onClick={() => void loadNewer(tabId)}
+          >
+            <Icon name="arrow-down" size={16} />
+            <span>{loadingNewer ? '载入中…' : '继续往下'}</span>
+          </button>
+        </div>
       ) : !following && ids.length > 0 ? (
         <button
           type="button"

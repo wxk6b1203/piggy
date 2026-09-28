@@ -23,6 +23,8 @@ import type { OutlineTurn } from '@/features/chat/turnRailItems';
 export interface PageResponse {
   rows: Array<{ role: string; message: AgentMessage; offset: number }>;
   startOffset: number;
+  /** 本页读完位置：向下续页的游标（`after`） */
+  endOffset: number;
   hasMore: boolean;
   /** 本页不是文件尾部（换窗之后为 true） */
   hasNewer: boolean;
@@ -58,6 +60,7 @@ export async function loadTail(tabId: string, sessionFile: string | null | undef
       cursor: page.startOffset,
       hasMore: page.hasMore,
       hasNewer: page.hasNewer,
+      end: page.endOffset,
     });
     // 轮廓与页码是两件事（整段会话的"形状" vs 一页内容），并行取、不互相等。
     // 轮廓失败不影响转录：刻度退化成"只画已载入的那部分"。
@@ -112,11 +115,43 @@ export async function loadWindowAt(tabId: string, before: number): Promise<boole
       cursor: page.startOffset,
       hasMore: page.hasMore,
       hasNewer: page.hasNewer,
+      end: page.endOffset,
     });
     return true;
   } catch (e) {
     toast.error(`跳到那一轮失败：${e}`);
     return false;
+  }
+}
+
+/**
+ * **向下续页**：换窗之后窗口下面还有更新的内容时，把下一段读进来接到后面。
+ *
+ * 为什么需要它（用户 2026-09-23 第四轮）：换窗之后只有"加载更早"这一个方向，
+ * 往下滚到底就撞墙，只能点「回到最新」跳回去。现在往下滚能一路续到会话尾部，
+ * 续到尾部之后 `hasNewer=false`，实时消息也恢复追加（见 stores/messages.ts 的守卫）。
+ *
+ * @param tabId - 标签 id
+ * @returns 真正新增的行数（0 = 没有更新的了，或正在加载）
+ */
+export async function loadNewer(tabId: string): Promise<number> {
+  const store = useMessages.getState();
+  const tab = store.tabs[tabId];
+  if (!tab || !tab.hasNewer || tab.loadingNewer || tab.windowEnd == null) return 0;
+  const file = useTabs.getState().tabs[tabId]?.sessionFile;
+  if (!file) return 0;
+
+  store.setLoadingNewer(tabId, true);
+  try {
+    const page = await cmd<PageResponse>('session_page', { path: file, after: tab.windowEnd });
+    return useMessages.getState().appendPage(tabId, page.rows as never[], {
+      end: page.endOffset,
+      hasNewer: page.hasNewer,
+    });
+  } catch (e) {
+    useMessages.getState().setLoadingNewer(tabId, false);
+    toast.error(`加载更新的内容失败：${e}`);
+    return 0;
   }
 }
 

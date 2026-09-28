@@ -85,6 +85,13 @@ body {
   box-shadow: 0 4px 16px rgb(0 0 0 / 35%); cursor: pointer; z-index: 6;
 }
 .pg-to-bottom:hover { background: var(--pg-hover-solid); }
+/* 右下角动作组：换窗状态下并排两颗（继续往下 / 回到最新） */
+.pg-bottom-actions {
+  position: absolute; bottom: 16px;
+  right: max(calc(var(--pg-sp-6) + var(--pg-rail-clearance)), calc((100% - 920px) / 2));
+  display: flex; gap: var(--pg-sp-3); z-index: 6;
+}
+.pg-bottom-actions .pg-to-bottom { position: static; }
 /* 换窗状态下的「回到最新」：比圆钮宽，带文字（它是个状态出口，不是一个箭头） */
 .pg-to-latest {
   width: auto; height: 30px; padding: 0 var(--pg-sp-5); gap: var(--pg-sp-2);

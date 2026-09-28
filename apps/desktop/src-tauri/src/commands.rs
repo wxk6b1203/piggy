@@ -732,14 +732,16 @@ pub async fn session_outline(path: String) -> Result<Value, String> {
 pub async fn session_page(
     path: String,
     before: Option<u64>,
+    after: Option<u64>,
     limit: Option<usize>,
 ) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
-        let page = crate::sessions::transcript::read_page(
-            std::path::Path::new(&path),
-            before,
-            limit.unwrap_or(crate::sessions::transcript::DEFAULT_LIMIT),
-        )?;
+        let limit = limit.unwrap_or(crate::sessions::transcript::DEFAULT_LIMIT);
+        // `after` 优先：它是"向下续页"（换窗之后往下滚），`before` 是"往上翻/换窗"
+        let page = match after {
+            Some(a) => crate::sessions::transcript::read_after(std::path::Path::new(&path), a, limit)?,
+            None => crate::sessions::transcript::read_page(std::path::Path::new(&path), before, limit)?,
+        };
         Ok::<Value, String>(page.to_json())
     })
     .await

@@ -56,6 +56,7 @@ const row = (i: number, role = 'user') => ({
 const page = (from: number, to: number, hasMore: boolean, hasNewer = false) => ({
   rows: Array.from({ length: to - from }, (_, k) => ({ ...row(from + k), offset: from + k })),
   startOffset: from,
+  endOffset: to,
   hasMore,
   hasNewer,
   branchy: false,
@@ -142,7 +143,11 @@ function seed(
 }
 
 /** 灌一页带偏移的行（刻度梯要用偏移把轮廓和行对上）。 */
-function seedOffsets(rows: number, from: number, meta: { cursor: number | null; hasMore: boolean; hasNewer?: boolean }) {
+function seedOffsets(
+  rows: number,
+  from: number,
+  meta: { cursor: number | null; hasMore: boolean; hasNewer?: boolean; end?: number | null },
+) {
   useMessages.getState().hydratePage(
     TAB,
     Array.from({ length: rows }, (_, k) => ({ ...row(from + k), offset: from + k })) as never[],
@@ -464,5 +469,106 @@ describe('贴底是幂等的（否则 ResizeObserver 会自循环）', () => {
     } finally {
       spy.restore();
     }
+  });
+});
+
+describe('向下续页（换窗之后往下滚不再撞墙）', () => {
+  const OUTLINE = [
+    { turn: 1, start: 10, end: 30, prompt: '第一轮', response: '' },
+    { turn: 2, start: 30, end: 50, prompt: '第二轮', response: '' },
+    { turn: 3, start: 50, end: 70, prompt: '第三轮', response: '' },
+    { turn: 4, start: 70, end: 90, prompt: '第四轮', response: '' },
+  ];
+
+  it('滚到窗口底部附近：用 endOffset 取下一页并**接在后面**（不换窗）', async () => {
+    // 窗口 = 前两轮，下面还有更新的（hasNewer）
+    seedOffsets(2, 10, { cursor: 10, hasMore: true, hasNewer: true, end: 30 });
+    useMessages.getState().setOutline(TAB, OUTLINE);
+    invokeMock.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+      if (name === 'session_page') {
+        expect(args.after).toBe(30); // 向下续页的游标
+        expect(args.before).toBeUndefined();
+        return { ...page(30, 50, true, false), endOffset: 90 };
+      }
+      if (name === 'session_outline') return { turns: OUTLINE, totalBytes: 100 };
+      return {};
+    });
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+
+    // 换窗状态下同时给「继续往下」与「回到最新」
+    const newer = q<HTMLButtonElement>('[data-load-newer]')!;
+    expect(newer).toBeTruthy();
+    expect(q('[data-to-latest]')).toBeTruthy();
+
+    await act(async () => {
+      newer.click();
+      await new Promise((r) => setTimeout(r, 60));
+    });
+
+    const tab = useMessages.getState().tabs[TAB]!;
+    // 原来 2 行 + 这一页 20 行 = 22 行（**接在后面**，不是换窗）
+    expect(tab.ids).toHaveLength(22);
+    expect(tab.hasNewer, '续到尾部之后 hasNewer 要转 false').toBe(false);
+    expect(tab.windowEnd).toBe(90);
+  });
+
+  it('滚轮往下推：窗口底部附近自动续页；离得远时不动', async () => {
+    seedOffsets(2, 10, { cursor: 10, hasMore: true, hasNewer: true, end: 30 });
+    useMessages.getState().setOutline(TAB, OUTLINE);
+    invokeMock.mockImplementation(async (name: string) => {
+      if (name === 'session_page') return { ...page(30, 50, true, false), endOffset: 90 };
+      if (name === 'session_outline') return { turns: OUTLINE, totalBytes: 100 };
+      return {};
+    });
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+    const el = scroller();
+    fakeGeometry(el, 1200, 400); // 内容 1200，视口 400
+
+    /** 滚轮手势（组件只认 wheel：程序化滚动不许触发续页，否则会级联读完整段）。 */
+    const wheel = async () => {
+      await act(async () => {
+        el.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true }));
+        await new Promise((r) => setTimeout(r, 40));
+      });
+    };
+
+    // 距底 100px（< 240 的触发线）→ 一次滚轮续一页
+    await scrollTo(el, 700);
+    await wheel();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'session_page')).toHaveLength(1);
+    expect(useMessages.getState().tabs[TAB]!.ids).toHaveLength(22);
+
+    // 距底很远（> 240）→ 滚轮也不续（用户还没滚到底）
+    useMessages.getState().hydratePage(TAB, [{ ...row(10), offset: 10 }] as never[], {
+      cursor: 10,
+      hasMore: true,
+      hasNewer: true,
+      end: 30,
+    });
+    await scrollTo(el, 100);
+    await wheel();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'session_page')).toHaveLength(1);
+  });
+
+  it('程序化滚动**不许**触发续页（否则会级联把整段读进来）', async () => {
+    seedOffsets(2, 10, { cursor: 10, hasMore: true, hasNewer: true, end: 30 });
+    useMessages.getState().setOutline(TAB, OUTLINE);
+    invokeMock.mockImplementation(async (name: string) => {
+      if (name === 'session_page') return { ...page(30, 50, true, false), endOffset: 90 };
+      if (name === 'session_outline') return { turns: OUTLINE, totalBytes: 100 };
+      return {};
+    });
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+    const el = scroller();
+    fakeGeometry(el, 1200, 400);
+    // 反复"贴到底部"（程序化）：一次都不该续页
+    for (let i = 0; i < 5; i += 1) await scrollTo(el, 800);
+    expect(
+      invokeMock.mock.calls.filter((c) => c[0] === 'session_page'),
+      '程序化滚动触发了续页 —— 会自我级联',
+    ).toHaveLength(0);
   });
 });

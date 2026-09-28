@@ -723,6 +723,29 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
    */
   session_page: (a) => {
     const total = mockTranscript.length;
+    // 向下续页：`after` 优先（与 Rust `session_page` 同序）
+    if (typeof a.after === 'number') {
+      const from = Math.max(0, Math.min(a.after, total));
+      const limit2 = typeof a.limit === 'number' && a.limit > 0 ? Math.min(a.limit, 500) : 50;
+      let end = from;
+      let rows2 = 0;
+      let users2 = 0;
+      for (let i = from; i < total; i += 1) {
+        rows2 += 1;
+        if (mockTranscript[i]?.role === 'user') users2 += 1;
+        end = i + 1;
+        // 与 Rust 一致：行数下限 + 轮数下限，**在轮边界收尾**（最后一条不是 user 行）
+        if ((rows2 >= limit2 && users2 >= 5 && mockTranscript[i]?.role !== 'user') || rows2 >= 300) break;
+      }
+      return {
+        rows: mockTranscript.slice(from, end).map((row, i) => ({ ...row, offset: from + i })),
+        startOffset: from,
+        endOffset: end,
+        hasMore: from > 0,
+        hasNewer: end < total,
+        branchy: false,
+      };
+    }
     const before = typeof a.before === 'number' ? Math.min(a.before, total) : total;
     const limit = typeof a.limit === 'number' && a.limit > 0 ? Math.min(a.limit, 500) : 50;
     // 与 Rust `collect_back` 同一条收页规则：**行数下限 + 轮数下限**，并有行数上限。
@@ -744,6 +767,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         .slice(start, before)
         .map((row, i) => ({ ...row, offset: start + i })),
       startOffset: start,
+      endOffset: before,
       hasMore: start > 0,
       hasNewer: before < total,
       branchy: false,
@@ -772,6 +796,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         const last = turns.at(-1);
         if (last && !last.response && text(msg).trim()) last.response = text(msg);
       }
+    });
+    // `end` = 这一轮内容的结束（= 下一轮用户行的起点，最后一轮 = 文件尾），
+    // 与 Rust `outline` 的收尾规则一致：跳转落在"这一轮回答读完"的位置
+    turns.forEach((t, i) => {
+      t.end = turns[i + 1]?.start ?? mockTranscript.length;
     });
     return { turns, totalBytes: mockTranscript.length };
   },

@@ -1856,9 +1856,69 @@ const paging = await page.evaluate(async () => {
     toLatest: !!wrap.querySelector('[data-to-latest]'),
     showsFirstTurn: (tr.textContent ?? '').includes('第 1 轮的问题'),
   };
-  // 回到最新：必须把窗口换回尾部
+  // 换窗刚落地时的状态（下面 ② 会在 Node 侧用**真滚轮**往下推）
+  const afterJump = {
+    loaded: loaded(),
+    hasNewer: stores.useMessages.getState().tabs[tabId]?.hasNewer === true,
+    loadNewerBtn: !!wrap.querySelector('[data-load-newer]'),
+    scrollHeight: Math.round(tr.scrollHeight),
+    clientHeight: Math.round(tr.clientHeight),
+  };
+
+  return {
+    tabId,
+    onOpen,
+    hasOlderButton,
+    railCount,
+    railUnloaded,
+    outlineTurns,
+    afterScrollUp,
+    afterPage,
+    jump,
+    afterJump,
+  };
+});
+
+
+/* ── ③ 回到最新 / 回到底部 / 流式稳定性（读完之后回到尾部再量）── */
+const pagingTail = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const wrap = document.querySelector('[data-tab-id]');
+  const tr = wrap.querySelector('.pg-transcript');
+  const stores = globalThis.__piggyStores;
+  const tabId = stores.useTabs.getState().activeTabId;
+  const railScroll = wrap.querySelector('.pg-rail-scroll');
+  const geom = () => ({
+    scrollTop: Math.round(tr.scrollTop),
+    scrollHeight: Math.round(tr.scrollHeight),
+    clientHeight: Math.round(tr.clientHeight),
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+  });
+  const lastText = () => {
+    const rows = [...tr.querySelectorAll('.pg-vrow')];
+    return (rows.at(-1)?.textContent ?? '').slice(0, 30);
+  };
+  /** 轮询到条件成立（比死等 sleep 稳：分页是异步的，慢一帧就会量错状态）。 */
+  const waitFor = async (fn, ms = 5000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (fn()) return true;
+      await sleep(60);
+    }
+    return false;
+  };
+  const hasNewer = () => stores.useMessages.getState().tabs[tabId]?.hasNewer === true;
+
+  // 再跳一次远的（滚轮已经读到尾部，「回到最新」这时不在），然后点「回到最新」
+  if (railScroll) railScroll.scrollTop = 0;
+  await sleep(250);
+  [...wrap.querySelectorAll('[data-rail-mark]')]
+    .find((m) => m.getAttribute('data-rail-mark') === '1')
+    ?.click();
+  await waitFor(hasNewer, 4000);
   wrap.querySelector('[data-to-latest]')?.click();
-  await sleep(1200);
+  await waitFor(() => !hasNewer(), 5000);
+  await sleep(300);
   const tabBack = stores.useMessages.getState().tabs[tabId];
   const backToLatest = {
     hasNewer: tabBack?.hasNewer === true,
@@ -1920,21 +1980,74 @@ const paging = await page.evaluate(async () => {
     liveLen: liveLens.length ? [Math.min(...liveLens), Math.max(...liveLens)] : null,
   };
 
-  return {
-    tabId,
-    onOpen,
-    hasOlderButton,
-    railCount,
-    railUnloaded,
-    outlineTurns,
-    afterScrollUp,
-    afterPage,
-    jump,
-    backToLatest,
-    afterToBottom,
-    streamCheck,
-  };
+  return { backToLatest, afterToBottom, streamCheck };
 });
+
+/* ── ③ 向下续页：真滚轮往下推（自动续页只认滚轮；程序化滚动不许触发，否则会级联读完整段）──
+   先重新跳到很远以前那一轮（此刻窗口是尾部那 50 行，不含第 1 轮 → 点它会**换窗**）。 */
+const downPages = [];
+{
+  const jumped = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const wrap = document.querySelector('[data-tab-id]');
+    const railScroll = wrap?.querySelector('.pg-rail-scroll');
+    const stores = globalThis.__piggyStores;
+    const tabId = stores.useTabs.getState().activeTabId;
+    if (railScroll) railScroll.scrollTop = 0;
+    await sleep(250);
+    [...(wrap?.querySelectorAll('[data-rail-mark]') ?? [])]
+      .find((m) => m.getAttribute('data-rail-mark') === '1')
+      ?.click();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 4000) {
+      if (stores.useMessages.getState().tabs[tabId]?.hasNewer === true) break;
+      await sleep(60);
+    }
+    const tab = stores.useMessages.getState().tabs[tabId];
+    return { hasNewer: tab?.hasNewer === true, loaded: (tab?.ids ?? []).length };
+  });
+  if (!jumped.hasNewer) bad.push('分页：滚轮那一段之前没能换窗到远处（hasNewer 未变 true）★');
+  downPages.push({ loaded: jumped.loaded, hasNewer: jumped.hasNewer, last: '', toLatest: true });
+
+  const center = await page.evaluate(() => {
+    const r = document.querySelector('.pg-transcript')?.getBoundingClientRect();
+    return r ? { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } : null;
+  });
+  if (!center) {
+    bad.push('分页：找不到转录区，向下续页那段是空转 ★');
+  } else {
+    await page.mouse.move(center.x, center.y);
+    for (let i = 0; i < 14; i += 1) {
+      await page.mouse.wheel(0, 3000);
+      await page.waitForTimeout(450);
+      const st = await page.evaluate(() => {
+        const wrap = document.querySelector('[data-tab-id]');
+        const tr = wrap?.querySelector('.pg-transcript');
+        const stores = globalThis.__piggyStores;
+        const tabId = stores.useTabs.getState().activeTabId;
+        const tab = stores.useMessages.getState().tabs[tabId];
+        const rows = [...(tr?.querySelectorAll('.pg-vrow') ?? [])];
+        return {
+          loaded: (tab?.ids ?? []).length,
+          hasNewer: tab?.hasNewer === true,
+          last: (rows.at(-1)?.textContent ?? '').slice(0, 24),
+          toLatest: !!wrap?.querySelector('[data-to-latest]'),
+        };
+      });
+      downPages.push(st);
+      if (!st.hasNewer) break;
+    }
+  }
+}
+const scrolledDown = {
+  steps: downPages.length,
+  loadedFrom: paging.jump.loadedAfter,
+  loadedTo: downPages.at(-1)?.loaded ?? 0,
+  endedAtTail: downPages.at(-1)?.hasNewer === false,
+  lastText: downPages.at(-1)?.last ?? '',
+  monotonic: downPages.every((p, i) => i === 0 || p.loaded >= downPages[i - 1].loaded),
+  toLatestGone: downPages.at(-1)?.toLatest === false,
+};
 
 
 await browser.close();
@@ -2797,22 +2910,42 @@ if (paging.jump.scrollHeightAfter >= paging.jump.scrollHeightBefore * 0.8) {
 if (!paging.jump.hasNewer || !paging.jump.toLatest) {
   bad.push('分页：换窗后没有「回到最新」（hasNewer 没传到位）★');
 }
-if (paging.backToLatest.hasNewer) bad.push('分页：点了「回到最新」还是换窗状态 ★');
-if (!paging.backToLatest.last.includes('第 100 轮')) {
-  bad.push(`分页：回到最新之后最后一行不是第 100 轮（读到 "${paging.backToLatest.last}"）★`);
+// 向下续页：换窗之后往下滚要能一路读到尾部（改前是"滚到底就撞墙，只能点按钮"）
+if (!scrolledDown.monotonic) bad.push('分页：向下续页时已载入行数不是单调增长 ★');
+if (!scrolledDown.endedAtTail) {
+  bad.push(`分页：滚轮往下推了 ${scrolledDown.steps} 次还没读到会话尾部 —— 向下续页没生效 ★`);
 }
-if (paging.backToLatest.gap > 25) {
-  bad.push(`分页：回到最新之后没贴在结尾（距底 ${paging.backToLatest.gap}px）★`);
+if (scrolledDown.loadedTo <= scrolledDown.loadedFrom) {
+  bad.push(`分页：往下滚之后行数没变（${scrolledDown.loadedFrom} → ${scrolledDown.loadedTo}）★`);
 }
-if (paging.afterToBottom.gap > 25 || paging.afterToBottom.toBottom) {
+if (!scrolledDown.lastText.includes('第 100 轮')) {
+  bad.push(`分页：往下滚到底之后最后一行不是第 100 轮（读到 "${scrolledDown.lastText}"）★`);
+}
+if (!scrolledDown.toLatestGone) {
+  bad.push('分页：读到尾部之后「回到最新」还在（hasNewer 没转 false）★');
+}
+// 换窗刚落地时不许"自己往下续"：那会级联把整段读进来（用户担心的正是这个）
+if (paging.jump.loadedAfter > 60) {
+  bad.push(`分页：换窗落地时就载入了 ${paging.jump.loadedAfter} 行 —— 续页被程序化滚动触发了 ★`);
+}
+if (!paging.afterJump.hasNewer) bad.push('分页：换窗之后 hasNewer 不是 true（往下没有可续的）★');
+if (!paging.afterJump.loadNewerBtn) bad.push('分页：换窗之后没有「继续往下」按钮 ★');
+if (pagingTail.backToLatest.hasNewer) bad.push('分页：点了「回到最新」还是换窗状态 ★');
+if (!pagingTail.backToLatest.last.includes('第 100 轮')) {
+  bad.push(`分页：回到最新之后最后一行不是第 100 轮（读到 "${pagingTail.backToLatest.last}"）★`);
+}
+if (pagingTail.backToLatest.gap > 25) {
+  bad.push(`分页：回到最新之后没贴在结尾（距底 ${pagingTail.backToLatest.gap}px）★`);
+}
+if (pagingTail.afterToBottom.gap > 25 || pagingTail.afterToBottom.toBottom) {
   bad.push(
-    `分页：「回到底部」没回到位（距底 ${paging.afterToBottom.gap}px，按钮还在=${paging.afterToBottom.toBottom}）★`,
+    `分页：「回到底部」没回到位（距底 ${pagingTail.afterToBottom.gap}px，按钮还在=${pagingTail.afterToBottom.toBottom}）★`,
   );
 }
 
 /* 流式稳定性：贴底跟随时不许闪（当前刻度最多因"新一轮到达"变一次、跟随不许丢、
    梯子自己不许动、实时文本长度只增不减） */
-const sc = paging.streamCheck;
+const sc = pagingTail.streamCheck;
 if (sc.samples < 40) bad.push(`分页：流式采样只有 ${sc.samples} 次，这一段核对是空转 ★`);
 if (sc.activeFlips > 1) {
   bad.push(

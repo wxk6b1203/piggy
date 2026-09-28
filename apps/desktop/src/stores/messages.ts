@@ -59,6 +59,10 @@ export interface TabMessages {
   hasMore: boolean;
   /** 「加载更早」正在进行 */
   loadingOlder: boolean;
+  /** 已载入窗口的**读完位置**（向下续页的游标；`null` = 没有） */
+  windowEnd: number | null;
+  /** 「继续往下」正在进行 */
+  loadingNewer: boolean;
   /**
    * 已载入窗口**下面**还有更新的内容（换窗之后为 true，回到最新后为 false）。
    * 换窗（跳到很久以前的那一轮）时旧窗口被丢掉，所以中间那段不在内存里 ——
@@ -85,6 +89,8 @@ const emptyTab = (): TabMessages => ({
   pageCursor: null,
   hasMore: false,
   loadingOlder: false,
+  windowEnd: null,
+  loadingNewer: false,
   hasNewer: false,
   outline: null,
 });
@@ -95,6 +101,8 @@ export interface PageMeta {
   hasMore: boolean;
   /** 换窗时为 true（后面还有更新的内容，界面给「回到最新」）。缺省沿用当前值。 */
   hasNewer?: boolean;
+  /** 本页读完位置（向下续页游标）。缺省沿用当前值。 */
+  end?: number | null;
 }
 
 interface MessagesState {
@@ -106,6 +114,9 @@ interface MessagesState {
   /** 更早的一页接到最前面；返回真正新增的行数（调用方据此修正滚动位置） */
   prependPage(tabId: string, rows: PageRow[], meta: PageMeta): number;
   setLoadingOlder(tabId: string, loading: boolean): void;
+  setLoadingNewer(tabId: string, loading: boolean): void;
+  /** 向下续页：更**新**的一页接到最后面；返回真正新增的行数 */
+  appendPage(tabId: string, rows: PageRow[], meta: { end: number; hasNewer: boolean }): number;
   /** 整段会话的轮次轮廓（刻度梯用；`null` = 没有） */
   setOutline(tabId: string, turns: OutlineTurn[] | null): void;
   applyCommit(tabId: string, ev: { type: string } & Record<string, unknown>): void;
@@ -190,7 +201,9 @@ export const useMessages = create<MessagesState>()(
         tab.pageCursor = null;
         tab.hasMore = false;
         tab.hasNewer = false;
+        tab.windowEnd = null;
         tab.loadingOlder = false;
+        tab.loadingNewer = false;
         tab.outline = null;
       });
     },
@@ -208,7 +221,9 @@ export const useMessages = create<MessagesState>()(
         tab.pageCursor = meta.cursor;
         tab.hasMore = meta.hasMore;
         tab.hasNewer = meta.hasNewer ?? false;
+        tab.windowEnd = meta.end ?? null;
         tab.loadingOlder = false;
+        tab.loadingNewer = false;
       });
     },
 
@@ -237,6 +252,28 @@ export const useMessages = create<MessagesState>()(
         const tab = (s.tabs[tabId] ??= emptyTab());
         tab.loadingOlder = loading;
       });
+    },
+
+    setLoadingNewer(tabId, loading) {
+      set((s) => {
+        const tab = (s.tabs[tabId] ??= emptyTab());
+        tab.loadingNewer = loading;
+      });
+    },
+
+    appendPage(tabId, rows, meta) {
+      let added = 0;
+      set((s) => {
+        const tab = (s.tabs[tabId] ??= emptyTab());
+        for (const row of rows) {
+          if (pushRow(tab, row)) added += 1;
+        }
+        tab.windowEnd = meta.end;
+        tab.hasNewer = meta.hasNewer;
+        tab.loadingNewer = false;
+        // hasMore（上面还有没有）不变：往下加页不影响窗口起点
+      });
+      return added;
     },
 
     setOutline(tabId, turns) {

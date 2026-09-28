@@ -10,6 +10,7 @@ import {
   distanceFromBottom,
   isAtTail,
   nextFollowing,
+  nextFollowingFromSample,
   scrollTopAfterPrepend,
 } from '@/features/chat/transcriptScroll';
 
@@ -66,5 +67,61 @@ describe('加载更早不跳', () => {
 
   it('高度反而缩小（行高重测/内容被回收）不把视图往上拽', () => {
     expect(scrollTopAfterPrepend({ scrollTop: 300, scrollHeight: 1000 }, 800)).toBe(300);
+  });
+});
+
+describe('跟随意图（问"这段距离是谁造成的"）', () => {
+  const base = { pinnedTop: 1600, lastScrollHeight: 2000, following: true };
+
+  it('就在底部 → 跟随', () => {
+    expect(nextFollowingFromSample({ ...base, metrics: geo(1600) })).toBe(true);
+    expect(nextFollowingFromSample({ ...base, metrics: geo(1590) })).toBe(true); // 距底 10
+  });
+
+  it('内容长高把底推走 → 继续跟随（不是读者滚的）', () => {
+    // 内容从 2000 长到 2400，位置还停在 1600（浏览器滚动锚定也可能这么干）
+    expect(
+      nextFollowingFromSample({ ...base, metrics: geo(1600, 2400), lastScrollHeight: 2000 }),
+    ).toBe(true);
+    // 门禁实测的那一幕：刚 loadTail 换完页就流式，位置没动、内容变高 → 不许停止跟随
+    expect(
+      nextFollowingFromSample({ ...base, metrics: geo(1600, 3400), lastScrollHeight: 2400 }),
+    ).toBe(true);
+    // 更狠的一种：内容长高的同时浏览器的**滚动锚定**把位置往上挪了（对不上我们钉的值）
+    // —— 距离是"内容造成的"，仍然不许停止跟随（只看位置就会在这里丢掉跟随）
+    expect(
+      nextFollowingFromSample({ ...base, metrics: geo(1200, 3400), lastScrollHeight: 2000 }),
+    ).toBe(true);
+  });
+
+  it('读者真的往上滚（位置变小、内容没长）→ 交还控制权', () => {
+    expect(
+      nextFollowingFromSample({ ...base, metrics: geo(900, 2000), lastScrollHeight: 2000 }),
+    ).toBe(false);
+  });
+
+  it('没在跟随时，只有滚回底部才恢复', () => {
+    expect(
+      nextFollowingFromSample({
+        ...base,
+        following: false,
+        metrics: geo(900, 2000),
+        lastScrollHeight: 2000,
+      }),
+    ).toBe(false);
+    expect(
+      nextFollowingFromSample({
+        ...base,
+        following: false,
+        metrics: geo(1600, 2000),
+        lastScrollHeight: 2000,
+      }),
+    ).toBe(true);
+  });
+
+  it('位置没往上走（等于或大于钉住的位置）→ 不算离开底部', () => {
+    expect(
+      nextFollowingFromSample({ ...base, metrics: geo(1700, 2000), lastScrollHeight: 2000 }),
+    ).toBe(true);
   });
 });

@@ -81,6 +81,8 @@ pub struct Page {
     pub rows: Vec<Row>,
     /// 本页第一行的字节偏移；把它当 `before` 传回来就是"再往前一页"
     pub start_offset: u64,
+    /// 本页**读完位置**的字节偏移；把它当 `after` 传回来就是"再往下一页"（向下续页）
+    pub end_offset: u64,
     /// 前面是否还有条目
     pub has_more: bool,
     /// 后面是否还有更新的条目（本页不是文件尾部 → 界面要能"回到最新"）
@@ -99,6 +101,7 @@ impl Page {
                 .map(|r| json!({"role": r.role, "message": r.message, "offset": r.offset}))
                 .collect::<Vec<_>>(),
             "startOffset": self.start_offset,
+            "endOffset": self.end_offset,
             "hasMore": self.has_more,
             "hasNewer": self.has_newer,
             "branchy": self.branchy,
@@ -179,6 +182,7 @@ pub fn read_page(path: &Path, before: Option<u64>, limit: usize) -> Result<Page,
         return Ok(Page {
             rows: fast.rows,
             start_offset: fast.start_offset,
+            end_offset: end,
             has_more: fast.has_more,
             has_newer,
             branchy: false,
@@ -187,6 +191,7 @@ pub fn read_page(path: &Path, before: Option<u64>, limit: usize) -> Result<Page,
     // 窗口里出现分支：快路径的"文件序 = 分支序"前提不成立了，退回整文件追叶子。
     let mut page = branch_window(&mut file, end, limit)?;
     page.has_newer = has_newer;
+    page.end_offset = end;
     Ok(page)
 }
 
@@ -300,9 +305,135 @@ fn prev_line(file: &mut File, end: u64) -> std::io::Result<Option<(u64, Vec<u8>)
 
 /* ────────────────────── 慢路径：整文件追活动分支 ────────────────────── */
 
-/// 有分支时的兜底：整文件扫一遍，从最后一个条目沿 parentId 追到根，
-/// 在这条链上取 `before` 之前的一页。
-fn branch_window(file: &mut File, end: u64, limit: usize) -> Result<Page, String> {
+/// **向下续页**：从 `after`（含）开始顺序读一页。
+///
+/// 为什么需要它（用户 2026-09-23 第四轮）：换窗（跳到很久以前的某一轮）之后，窗口下面还有
+/// 更新的内容，而当时只有"加载更早"这一个方向 —— 往下滚到底就撞墙，只能点「回到最新」跳回去。
+/// DSH 的分页是双向的（`repageHead` + 尾部区），这里补齐向下的那一半。
+///
+/// `after` 用上一页的 `end_offset`（**读完位置**），所以相邻两页既不重也不漏。
+///
+/// @param path - 会话 JSONL 文件
+/// @param after - 起始字节偏移（含）；`0` = 从文件头开始
+/// @param limit - 行数下限（另有一个轮数下限，见 [`MIN_TURNS`]）
+/// @returns 一页转录（`rows` 按时间正序）
+pub fn read_after(path: &Path, after: u64, limit: usize) -> Result<Page, String> {
+    let mut file = File::open(path).map_err(|e| format!("{} 读取失败: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("{} 读取失败: {e}", path.display()))?
+        .len();
+    let start_at = after.min(len);
+    file.seek(SeekFrom::Start(start_at))
+        .map_err(|e| format!("读取失败: {e}"))?;
+
+    let limit = limit.clamp(1, MAX_LIMIT);
+    let mut reader = std::io::BufReader::with_capacity(CHUNK, file);
+    let mut rows: Vec<Row> = Vec::new();
+    let mut turns = 0usize;
+    let mut pos = start_at;
+    let mut end_offset = start_at;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chain_broken = false;
+    // 向下读的链检查：**这一条的 parentId 应当等于上一条的 id**。
+    // 方向与 `collect_back` 相反（那边是从新往旧走：上一条的 parentId == 这一条的 id），
+    // 写反了会把每一行都判成"断链"、整页退回慢路径（第一版就是这么错的）。
+    let mut prev_id: Option<String> = None;
+    let mut first = true;
+
+    let mut last_was_user = false;
+    loop {
+        // 收尾必须在**轮边界**上：最后收进来的若是一条 user 行，说明这一轮的回答还没读到，
+        // 在此收页会让读者往下滚时看到"一个问题没有回答"（下一页才有）。
+        if rows.len() >= limit && turns >= MIN_TURNS && !last_was_user {
+            break;
+        }
+        if rows.len() >= MAX_ROWS || end_offset.saturating_sub(start_at) >= MAX_BYTES {
+            break;
+        }
+        buf.clear();
+        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut buf)
+            .map_err(|e| format!("读取失败: {e}"))?;
+        if n == 0 {
+            break; // 文件尾
+        }
+        let line_start = pos;
+        pos += n as u64;
+        end_offset = pos;
+
+        let raw = trim_ascii(&buf);
+        if raw.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(raw);
+        let Ok(entry) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) == Some("session") {
+            continue;
+        }
+        let parent = entry.get("parentId").and_then(Value::as_str).map(str::to_string);
+        if !first && prev_id.as_deref() != parent.as_deref() {
+            chain_broken = true;
+            break;
+        }
+        first = false;
+        prev_id = entry.get("id").and_then(Value::as_str).map(str::to_string);
+        if let Some(row) = row_of(&entry, line_start) {
+            last_was_user = row.role == "user";
+            if last_was_user {
+                turns += 1;
+            }
+            rows.push(row);
+        } else {
+            last_was_user = false;
+        }
+    }
+
+    if chain_broken {
+        // 向下读也会跨分支：退回整文件追活动分支，再取 `after` 之后的那一段。
+        // `file` 已经被 BufReader 接管，用 `get_mut()` 借回来（它会 seek，读位置无所谓）。
+        let visible = branch_visible(reader.get_mut())?
+            .into_iter()
+            .filter(|(offset, _)| *offset >= start_at);
+        let mut picked: Vec<Row> = Vec::new();
+        let mut picked_turns = 0usize;
+        let mut picked_end = start_at;
+        for (offset, row) in visible {
+            if picked.len() >= MAX_ROWS {
+                break;
+            }
+            if picked.len() >= limit && picked_turns >= MIN_TURNS {
+                break;
+            }
+            if row.role == "user" {
+                picked_turns += 1;
+            }
+            picked_end = offset + 1;
+            picked.push(row);
+        }
+        return Ok(Page {
+            rows: picked,
+            start_offset: start_at,
+            end_offset: picked_end,
+            has_more: start_at > 0,
+            has_newer: picked_end < len,
+            branchy: true,
+        });
+    }
+
+    Ok(Page {
+        rows,
+        start_offset: start_at,
+        end_offset,
+        has_more: start_at > 0,
+        has_newer: end_offset < len,
+        branchy: false,
+    })
+}
+
+/// 整文件扫描 + 沿 parentId 追活动分支 → 按文件序返回可显示的行（含偏移）。
+fn branch_visible(file: &mut File) -> Result<Vec<(u64, Row)>, String> {
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     file.read_to_end(&mut raw).map_err(|e| e.to_string())?;
@@ -347,21 +478,28 @@ fn branch_window(file: &mut File, end: u64, limit: usize) -> Result<Page, String
     }
     chain.reverse(); // 根 → 叶子
 
-    let visible: Vec<usize> = chain
+    Ok(chain
         .into_iter()
-        .filter(|i| entries[*i].0 < end)
-        .filter(|i| row_of(&entries[*i].1, entries[*i].0).is_some())
+        .filter_map(|i| row_of(&entries[i].1, entries[i].0).map(|row| (entries[i].0, row)))
+        .collect())
+}
+
+
+/// 有分支时的兜底：整文件扫一遍，从最后一个条目沿 parentId 追到根，
+/// 在这条链上取 `before` 之前的一页。
+fn branch_window(file: &mut File, end: u64, limit: usize) -> Result<Page, String> {
+    let visible: Vec<(u64, Row)> = branch_visible(file)?
+        .into_iter()
+        .filter(|(offset, _)| *offset < end)
         .collect();
     let take = visible.len().saturating_sub(limit);
     let window = &visible[take..];
-    let rows: Vec<Row> = window
-        .iter()
-        .filter_map(|i| row_of(&entries[*i].1, entries[*i].0))
-        .collect();
-    let start_offset = window.first().map(|i| entries[*i].0).unwrap_or(end);
+    let rows: Vec<Row> = window.iter().map(|(_, r)| r.clone()).collect();
+    let start_offset = window.first().map(|(o, _)| *o).unwrap_or(end);
     Ok(Page {
         has_more: take > 0,
         has_newer: false, // 由 read_page 按右边界填（这里无从判断）
+        end_offset: end,
         rows,
         start_offset,
         branchy: true,
@@ -451,6 +589,13 @@ pub fn outline(path: &Path) -> Result<Outline, String> {
             }
             _ => {}
         }
+    }
+    // 把每轮的 `end` 从"用户那一行的结束"改成"**这一轮的结束**"（= 下一轮用户行的起点，
+    // 最后一轮 = 文件尾）。跳转用它当右界，于是落地那一页正好以这一轮的**回答**收尾，
+    // 而不是停在"刚问完、还没回答"的地方（第一版就是停在那儿，往下续页得先把回答读回来）。
+    for i in 0..turns.len() {
+        let next_start = turns.get(i + 1).map(|t| t.start).unwrap_or(total_bytes);
+        turns[i].end = next_start;
     }
     Ok(Outline { turns, total_bytes })
 }
@@ -753,11 +898,15 @@ mod tests {
         assert_eq!(first.turn, 1);
         assert_eq!(first.prompt, "问题 1");
         assert_eq!(first.response, "回答 1");
-        // 锚点必须**精确落在用户那条消息上**：`before = end` 取到的页要以它结尾
+        // 锚点（`end`）= 这一轮内容的结束 = 下一轮用户行的起点：
+        // `before = end` 取到的页要以**这一轮的回答**收尾（不是停在"刚问完"）
         let page = read_page(&path, Some(first.end), 1).unwrap();
-        assert_eq!(page.rows.len(), 1);
-        assert_eq!(page.rows[0].role, "user");
-        assert_eq!(text_row(&page.rows[0]), "问题 1");
+        // 这一轮的内容 = 问题 + 回答 + 工具输出；锚点右边就是第 2 轮的提问
+        assert_eq!(text_row(page.rows.last().unwrap()), "工具输出 1");
+        assert_ne!(text_row(page.rows.last().unwrap()), "问题 2", "别把下一轮的提问读进来");
+        // 往上一页的游标语义不变：`before = start` 之前就是上一轮的结束
+        let older = read_page(&path, Some(first.start), 1).unwrap();
+        assert!(older.rows.is_empty(), "第 1 轮之前什么都没有");
         // 轮的顺序与偏移都升序
         assert!(o.turns.windows(2).all(|w| w[0].start < w[1].start && w[0].turn + 1 == w[1].turn));
     }
@@ -846,7 +995,7 @@ mod tests {
         let mid = read_page(&path, Some(o.turns[5].end), 2).unwrap();
         assert!(mid.has_more, "第 6 轮之前还有内容");
         assert!(mid.has_newer, "第 6 轮之后还有内容 —— 界面要能回到最新");
-        assert_eq!(text_row(mid.rows.last().unwrap()), "问题 6");
+        assert_eq!(text_row(mid.rows.last().unwrap()), "回答 6", "换窗那一页以这一轮的回答收尾");
     }
 
     #[test]
@@ -918,6 +1067,114 @@ mod tests {
         let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
         assert!(page.rows.len() < 20, "一页读进来的字节要受闸门约束，实际 {} 行", page.rows.len());
         assert!(page.has_more);
+    }
+
+    #[test]
+    fn forward_paging_continues_exactly_where_the_window_ended() {
+        // 12 轮聊天：尾页（后 5 轮）→ 往下续页应当把剩下的补齐，且不重不漏
+        let mut lines = vec![header()];
+        let mut parent = "null".to_string();
+        for i in 1..=12 {
+            let uid = format!("u{i:02}");
+            lines.push(msg(&uid, &format!("\"{parent}\""), "user", &format!("问题 {i}")));
+            let aid = format!("a{i:02}");
+            lines.push(msg(&aid, &format!("\"{uid}\""), "assistant", &format!("回答 {i}")));
+            parent = aid;
+        }
+        let (_d, path) = write_session(&lines);
+
+        // 从文件头向下读：一条不落
+        let first = read_after(&path, 0, 4).unwrap();
+        assert_eq!(text_row(first.rows.first().unwrap()), "问题 1");
+        // 4 行下限 + 5 轮下限，且在**轮边界**收尾：5 轮 = 10 行（u5 + a5 都要在）
+        assert_eq!(first.rows.len(), 10);
+        assert_eq!(text_row(first.rows.last().unwrap()), "回答 5");
+        assert!(first.has_newer, "12 轮里只取了 5 轮，后面还有");
+        assert!(!first.has_more, "从文件头开始，前面没有内容");
+
+        // 尾部窗口 + 向下续页：拼起来正好等于整段（既不重也不漏）
+        let tail = read_page(&path, None, 4).unwrap();
+        assert!(tail.has_more, "尾部窗口前面还有");
+        let after = read_after(&path, tail.end_offset, 4).unwrap();
+        assert!(
+            after.rows.is_empty(),
+            "尾部窗口的 end_offset 就是文件尾，再往下应当什么都没有，实际 {} 行",
+            after.rows.len()
+        );
+        assert!(!after.has_newer);
+        assert!(after.has_more, "窗口起点之前仍然有内容（has_more 说的是这条）");
+
+        // 中段窗口（换窗到第 3 轮）：往上、往下都能续
+        let o = outline(&path).unwrap();
+        let mid = read_page(&path, Some(o.turns[2].end), 4).unwrap();
+        assert_eq!(text_row(mid.rows.last().unwrap()), "回答 3", "换窗那一页以这一轮的回答收尾");
+        let down = read_after(&path, mid.end_offset, 4).unwrap();
+        assert_eq!(text_row(down.rows.first().unwrap()), "问题 4", "向下续页要正好接上");
+        // 从第 4 轮起，读到 5 轮边界：第 4~8 轮 = 10 行
+        assert_eq!(down.rows.len(), 10);
+        assert_eq!(text_row(down.rows.last().unwrap()), "回答 8");
+        assert!(down.has_more, "向下这一页自己不算窗口起点，但窗口起点之前仍有内容");
+    }
+
+    #[test]
+    fn forward_paging_respects_the_byte_cap() {
+        let big = "x".repeat(200 * 1024);
+        let mut lines = vec![header(), msg("u1", "null", "user", "提问")];
+        let mut parent = "u1".to_string();
+        for k in 0..40 {
+            let tid = format!("t{k}");
+            lines.push(format!(
+                r#"{{"type":"message","id":"{tid}","parentId":"{parent}","message":{{"role":"toolResult","toolName":"read","content":[{{"type":"text","text":"{big}"}}]}}}}"#
+            ));
+            parent = tid;
+        }
+        let (_d, path) = write_session(&lines);
+        let page = read_after(&path, 0, DEFAULT_LIMIT).unwrap();
+        assert!(page.rows.len() < 20, "向下读也要受字节闸门约束，实际 {} 行", page.rows.len());
+        assert!(page.has_newer);
+    }
+
+    /// 命令接线：`session_page` 必须把 `after` 路由到 `read_after`。
+    /// （单测 `read_after` 自己是绿的，但"命令有没有接上"是另一个事实 —— 缺了它，
+    /// 界面点了「继续往下」也只会拿到"尾部/换窗"那一页。）
+    #[tokio::test]
+    async fn session_page_command_routes_after_to_forward_paging() {
+        let mut lines = vec![header()];
+        let mut parent = "null".to_string();
+        for i in 1..=12 {
+            let uid = format!("u{i:02}");
+            lines.push(msg(&uid, &format!("\"{parent}\""), "user", &format!("问题 {i}")));
+            let aid = format!("a{i:02}");
+            lines.push(msg(&aid, &format!("\"{uid}\""), "assistant", &format!("回答 {i}")));
+            parent = aid;
+        }
+        let (_d, path) = write_session(&lines);
+        let p = path.to_string_lossy().to_string();
+
+        // 向下续页：`after = 0` 从文件头读，页大小 4（12 轮里只取前 5 轮 → 后面还有）
+        let page = crate::commands::session_page(p.clone(), None, Some(0), Some(4))
+            .await
+            .unwrap();
+        assert_eq!(page["rows"][0]["message"]["content"][0]["text"], "问题 1");
+        assert!(page["hasNewer"].as_bool().unwrap());
+
+        // 尾部那一页：不带 after
+        let tail = crate::commands::session_page(p.clone(), None, None, Some(4))
+            .await
+            .unwrap();
+        assert_eq!(tail["hasNewer"], false);
+        assert!(tail["endOffset"].as_u64().unwrap() > 0);
+
+        // 换窗：带 before
+        let o = outline(&path).unwrap();
+        let mid = crate::commands::session_page(p, Some(o.turns[5].end), None, Some(4))
+            .await
+            .unwrap();
+        assert_eq!(
+            mid["rows"].as_array().unwrap().last().unwrap()["role"],
+            "assistant",
+            "换窗那一页要以这一轮的回答收尾"
+        );
     }
 
     #[test]

@@ -75,3 +75,42 @@ export function scrollTopAfterPrepend(
   const grew = Math.max(0, nextScrollHeight - before.scrollHeight);
   return before.scrollTop + grew;
 }
+
+/**
+ * 一次读者采样 → 跟随意图（比 {@link nextFollowing} 更硬的那条规则）。
+ *
+ * 为什么不能只看"位置是否等于我们钉的值"：**内容被整段换掉/长高时，浏览器会做
+ * 滚动锚定**，把 `scrollTop` 挪到一个我们没设过的值；此时"离底很远"并不是读者滚的，
+ * 但按"位置对不上就算读者"的规则会把跟随关掉（门禁实测：刚 `loadTail` 换完页就流式，
+ * 视图停在离底 163px 处、当前刻度倒退一次）。
+ *
+ * 所以判据换成**问"这段距离是谁造成的"**：
+ *   1. 就在底部 → 跟随；
+ *   2. 内容比上次采样更高（长高/换页）→ 是内容把底推走的，继续跟随；
+ *   3. 位置没往上走（`scrollTop >= 钉住的位置`）→ 不是"离开底部"；
+ *   4. 以上都不是 → 读者真的往上滚了，交还控制权。
+ *
+ * @param sample - 本次几何 + 上次钉住的位置 + **贴底那一刻**的 scrollHeight + 当前意图
+ * @param threshold - 容差
+ * @returns 新的跟随意图
+ */
+export function nextFollowingFromSample(
+  sample: {
+    metrics: ScrollMetrics;
+    pinnedTop: number | null;
+    lastScrollHeight: number | null;
+    following: boolean;
+  },
+  threshold: number = FOLLOW_THRESHOLD_PX,
+): boolean {
+  if (isAtTail(sample.metrics, threshold)) return true;
+  if (!sample.following) return false;
+  // 没有**可靠基线**（还没量到过高度：首帧、隐藏面板）时不要瞎归因：
+  // 直接按几何判 —— 不在底部就是不跟随。反过来说，绝不能用一条 0 高度的基线
+  // 把之后的真实采样都当成"内容长高"（那会让读者往上滚也不交还控制权）。
+  const { pinnedTop, lastScrollHeight } = sample;
+  if (pinnedTop === null || lastScrollHeight === null || lastScrollHeight <= 0) return false;
+  if (sample.metrics.scrollHeight > lastScrollHeight + 1) return true; // 内容长高把底推走
+  if (sample.metrics.scrollTop >= pinnedTop - 0.5) return true; // 没往上走
+  return false; // 读者真的往上滚了
+}
