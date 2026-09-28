@@ -683,8 +683,21 @@ fn row_of(entry: &Value, offset: u64) -> Option<Row> {
 
 /// 压缩条目 → 转录里的一行（DSH 对话里的「上下文已压缩」）。
 ///
-/// 形状按 `message` 统一（前端只认 `role` + `message`）：
-/// `{ role: "compaction", summary, tokensBefore, timestamp }`。
+/// 形状按 `message` 统一（前端只认 `role` + `message`）。用户 2026-09-23 反馈
+/// "上下文压缩的轨迹无法看到细节"，核实后确实**只转出了 3 个字段**，
+/// 而 pi 的 `CompactionEntry`（pi `docs/compaction.md` 的 "CompactionEntry Structure"）还有
+/// 四样能回答"这次压缩到底做了什么"的东西：
+///
+/// | 字段 | 含义 |
+/// |---|---|
+/// | `firstKeptEntryId` | 保留边界：**从哪一条起原样保留**，之前的都被摘要取代 |
+/// | `details` | 默认实现记录 `readFiles` / `modifiedFiles`（扩展可放任意 JSON） |
+/// | `usage` | 生成摘要那次 LLM 调用的用量与花费 |
+/// | `fromHook` | 摘要由扩展提供（而非 pi 自己生成） |
+///
+/// ⚠️ **绝不转 `systemMessage`**：那是压缩后的整份新系统提示词（真机一条 10 KB+），
+/// 一页里带上它等于把刚省下的载荷又还回去。用测试钉住（见
+/// `compaction_row_carries_details_but_never_the_system_message`）。
 fn compaction_row(entry: &Value, offset: u64) -> Row {
     Row {
         role: "compaction".to_string(),
@@ -693,6 +706,10 @@ fn compaction_row(entry: &Value, offset: u64) -> Row {
             "role": "compaction",
             "summary": entry.get("summary").cloned().unwrap_or(Value::String(String::new())),
             "tokensBefore": entry.get("tokensBefore").cloned().unwrap_or(Value::Null),
+            "firstKeptEntryId": entry.get("firstKeptEntryId").cloned().unwrap_or(Value::Null),
+            "details": entry.get("details").cloned().unwrap_or(Value::Null),
+            "usage": entry.get("usage").cloned().unwrap_or(Value::Null),
+            "fromHook": entry.get("fromHook").cloned().unwrap_or(Value::Bool(false)),
             "timestamp": entry.get("timestamp").cloned().unwrap_or(Value::Null),
         }),
     }
@@ -823,6 +840,37 @@ mod tests {
         assert_eq!(row.role, "compaction");
         assert_eq!(row.message["summary"], "前面聊了天气");
         assert_eq!(row.message["tokensBefore"], 12345);
+    }
+
+    /// 压缩行要带**细节**（用户 2026-09-23："上下文压缩的轨迹无法看到细节"），
+    /// 但绝不能带上 `systemMessage`——那是压缩后的整份新系统提示词。
+    /// 夹具按真机形状写（`2026-09-21T14-18-43-680Z_01a0c455…jsonl` 里那条压缩条目
+    /// 有 summary / firstKeptEntryId / tokensBefore / usage / details / fromHook / systemMessage）。
+    #[test]
+    fn compaction_row_carries_details_but_never_the_system_message() {
+        // 故意让 systemMessage 很大：漏转的话这一页的载荷会立刻膨胀
+        let huge_system = "系".repeat(20_000);
+        // 注意 `r###"…"###`：正文里有 `"## Goal`，`r#"` 与 `r##"` 都会被那个引号加井号提前结束
+        let entry = format!(
+            r###"{{"type":"compaction","id":"c9","parentId":"a","timestamp":"2026-09-22T16:59:27.763Z","summary":"## Goal\n构建 Piggy","firstKeptEntryId":"86e95bf3","tokensBefore":561660,"usage":{{"input":475045,"output":3494,"totalTokens":478539,"cost":{{"total":0.1234}}}},"details":{{"readFiles":["docs/03.md","docs/04.md"],"modifiedFiles":["apps/desktop/src/lib/tokenFormat.ts"]}},"fromHook":false,"systemMessage":{{"role":"system","content":"{huge_system}"}}}}"###
+        );
+        let lines = vec![header(), msg("a", "null", "user", "问题"), entry];
+        let (_d, path) = write_session(&lines);
+        let page = read_page(&path, None, 10).unwrap();
+        let row = &page.rows[1];
+        let m = &row.message;
+
+        assert_eq!(m["summary"], "## Goal\n构建 Piggy");
+        assert_eq!(m["tokensBefore"], 561_660);
+        assert_eq!(m["firstKeptEntryId"], "86e95bf3");
+        assert_eq!(m["usage"]["totalTokens"], 478_539);
+        assert_eq!(m["usage"]["cost"]["total"], 0.1234);
+        assert_eq!(m["details"]["readFiles"][0], "docs/03.md");
+        assert_eq!(m["details"]["modifiedFiles"][0], "apps/desktop/src/lib/tokenFormat.ts");
+        assert_eq!(m["fromHook"], false);
+        assert!(m.get("systemMessage").is_none(), "systemMessage 不许进转录行");
+        // 这一行的 JSON 里也不该出现那 2 万个字（漏转就会露出来）
+        assert!(!row.message.to_string().contains("系系系"));
     }
 
     #[test]

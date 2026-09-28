@@ -17,6 +17,7 @@ import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
+import { formatExactTokens } from '@/lib/tokenFormat';
 
 export function MessageView({ view }: { view: MessageView }) {
   const m = view.message as AgentMessage & { content?: unknown };
@@ -80,18 +81,56 @@ export function MessageView({ view }: { view: MessageView }) {
     );
   }
   // 压缩行（文件里的 `compaction` 条目，docs/03 §2.19）：DSH 的对话里也有这一行
-  // （`MessageItem` 的 compactionRow / 「上下文已压缩」）。摘要折起来——
+  // （`CompactionItem` / 「上下文已压缩」）。摘要折起来——
   // 它可能很长，但"这儿发生过压缩、当时多少 token"必须一眼看得见。
+  //
+  // 用户 2026-09-23："上下文压缩的轨迹无法看到细节"——核实后 Rust 侧只转出了
+  // summary / tokensBefore / timestamp 三个字段，pi 的 `CompactionEntry` 里的
+  // `firstKeptEntryId`（保留边界）/ `details`（读改过哪些文件）/ `usage`（摘要调用用量）
+  // / `fromHook` 全被丢掉了。现在都显示出来（Rust 侧同步转出，见 `sessions/transcript.rs`）。
   if (role === 'compaction') {
-    const cm = m as { summary?: string; tokensBefore?: number | null };
+    const cm = m as {
+      summary?: string;
+      tokensBefore?: number | null;
+      firstKeptEntryId?: string | null;
+      fromHook?: boolean | null;
+      usage?: { totalTokens?: number | null; cost?: { total?: number | null } | null } | null;
+      details?: { readFiles?: string[] | null; modifiedFiles?: string[] | null } | null;
+    };
+    const readFiles = cm.details?.readFiles ?? [];
+    const modifiedFiles = cm.details?.modifiedFiles ?? [];
+    const usageTokens = cm.usage?.totalTokens ?? null;
+    const cost = cm.usage?.cost?.total ?? null;
     return (
       <div className="pg-message pg-compaction" data-compaction-row>
         <div className="pg-role">
           <Icon name="archive" size={12} /> 上下文已压缩
           {cm.tokensBefore != null ? (
-            <span className="pg-compaction-tokens">（此前 {cm.tokensBefore.toLocaleString('en-US')} tok）</span>
+            <span className="pg-compaction-tokens">
+              （此前 {formatExactTokens(cm.tokensBefore)} tok）
+            </span>
           ) : null}
         </div>
+        {/* 这一行是"这次压缩做了什么"的账本：边界 / 文件 / 摘要调用用量。
+            全都来自条目本身，没有一项是推算出来的。 */}
+        {cm.firstKeptEntryId ? (
+          <div className="pg-compaction-meta" data-compaction-kept>
+            保留自 <code>{cm.firstKeptEntryId}</code> 起，之前的条目已被摘要取代
+          </div>
+        ) : null}
+        {readFiles.length || modifiedFiles.length ? (
+          <div className="pg-compaction-meta" data-compaction-files>
+            涉及文件：读 {readFiles.length} / 改 {modifiedFiles.length}
+            {modifiedFiles.length ? <span title={modifiedFiles.join('\n')}> · {modifiedFiles.slice(0, 3).join('、')}{modifiedFiles.length > 3 ? ' …' : ''}</span> : null}
+          </div>
+        ) : null}
+        {usageTokens != null || cm.fromHook ? (
+          <div className="pg-compaction-meta" data-compaction-usage>
+            {usageTokens != null ? `摘要调用 ${formatExactTokens(usageTokens)} tok` : ''}
+            {cost != null && cost > 0 ? ` · $${cost.toFixed(4)}` : ''}
+            {cm.fromHook ? `${usageTokens != null ? ' · ' : ''}摘要来自扩展` : ''}
+          </div>
+        ) : null}
         {cm.summary ? (
           <details className="pg-compaction-summary">
             <summary>压缩摘要</summary>

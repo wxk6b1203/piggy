@@ -1770,7 +1770,9 @@ const paging = await page.evaluate(async () => {
   const stores = globalThis.__piggyStores;
 
   // 100 轮 = 200 行 → 4 页（mock 每页 50 行，与 Rust DEFAULT_LIMIT 一致）
-  mock.mockSetTranscriptRows(mock.mockBuildTranscript(100));
+  // 第 90 轮之后插一条压缩行（尾页覆盖最后约 25 轮，所以它在首屏里）：
+  // 「对话里的压缩细节」这条核对不需要额外翻页就能量到
+  mock.mockSetTranscriptRows(mock.mockBuildTranscript(100, { compactionAfterTurn: 90 }));
   // 先关掉前面几段留下的会话标签：点同一行会话时 openSessionTab 只会**聚焦**已有面板，
   // 不会重新装载 —— 那样量到的还是上一段用旧 mock 数据灌出来的转录（实测：17 行、无 hasMore）。
   globalThis.__piggyEditor.closeAllTabs();
@@ -2156,6 +2158,128 @@ const numbersStats = await page.evaluate(() => {
 });
 const numbers = { meter: numbersMeter, stats: numbersStats };
 
+/* 压缩细节（用户 2026-09-23："上下文压缩的轨迹是无法看到细节的？"）。
+   两处都要能量到：
+   · 对话里的压缩行（分页从会话文件读出来的那一行）——它原本只带 summary/tokensBefore，
+     `firstKeptEntryId` / `details` / `usage` / `fromHook` 在 Rust 侧被丢掉了；
+   · 轨迹里的「已压缩」行——它原本**连点都点不开**（`detail`/`expandable` 都没设），
+     所以"看不到细节"是字面意义上的。
+   mock 的压缩条目按真机形状写（`MOCK_COMPACTION_ENTRY`），夹具没细节就测不出这个 bug。 */
+const compactionProbe = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const tabId = stores.useTabs.getState().activeTabId;
+  const tr = document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
+  if (!tr) return { error: '找不到转录区' };
+
+  // 压缩行在尾页里但不在首屏（虚拟化只渲染可视行）→ 往上滚几屏找它
+  let row = null;
+  for (let i = 0; i < 12 && !row; i += 1) {
+    row = tr.querySelector('[data-compaction-row]');
+    if (row) break;
+    tr.scrollTop = Math.max(0, tr.scrollTop - 600);
+    await sleep(220);
+  }
+  const chat = {
+    found: !!row,
+    tokens: row?.querySelector('.pg-compaction-tokens')?.textContent ?? null,
+    kept: row?.querySelector('[data-compaction-kept]')?.textContent ?? null,
+    files: row?.querySelector('[data-compaction-files]')?.textContent ?? null,
+    usage: row?.querySelector('[data-compaction-usage]')?.textContent ?? null,
+    summary: row?.querySelector('.pg-compaction-summary summary')?.textContent ?? null,
+  };
+  // 页里带回来的字段（= Rust `compaction_row` 的形状，mock 与它逐字段对齐）
+  const view = (stores.useMessages.getState().tabs[tabId]?.ids ?? [])
+    .map((id) => stores.useMessages.getState().tabs[tabId]?.byId?.[id])
+    .find((v) => v && v.role === 'compaction');
+  chat.message = view
+    ? {
+        tokensBefore: view.message?.tokensBefore ?? null,
+        firstKeptEntryId: view.message?.firstKeptEntryId ?? null,
+        readFiles: view.message?.details?.readFiles?.length ?? 0,
+        modifiedFiles: view.message?.details?.modifiedFiles?.length ?? 0,
+        usageTokens: view.message?.usage?.totalTokens ?? null,
+        fromHook: view.message?.fromHook ?? null,
+        spilledSystem: 'systemMessage' in (view.message ?? {}),
+      }
+    : null;
+  tr.scrollTop = tr.scrollHeight; // 还原：后面不再有依赖滚动位置的段落
+  await sleep(200);
+
+  // 切到「轨迹」页签
+  const tab = [...document.querySelectorAll('.pg-ws-tab')].find((b) => b.textContent.trim() === '轨迹');
+  if (!tab) return { error: '找不到轨迹页签', chat };
+  tab.click();
+  await sleep(900);
+
+  const readRow = (el) => ({
+    text: el?.querySelector('.pg-traj-ellipsis')?.textContent ?? el?.textContent?.slice(0, 80) ?? null,
+    expandable: !!el?.querySelector('.pg-traj-foldbtn'),
+    failed: el?.getAttribute('data-failed') ?? null,
+    running: !el?.querySelector('.pg-traj-foldbtn') && /…/.test(el?.textContent ?? ''),
+  });
+  const findCompact = () =>
+    [...document.querySelectorAll('.pg-traj-row')].find((r) => r.getAttribute('data-kind') === 'compacted') ?? null;
+
+  const before = document.querySelectorAll('.pg-traj-row[data-kind="compacted"]').length;
+  const loadedRow = findCompact();
+  const loaded = readRow(loadedRow);
+  // 点开：细节必须真的出现（正文里含计数、保留边界与摘要）
+  loadedRow?.querySelector('.pg-traj-foldbtn')?.click();
+  await sleep(200);
+  const detailEl = loadedRow?.parentElement?.querySelector('.pg-traj-detail-body') ?? null;
+  loaded.detail = (detailEl?.textContent ?? '').slice(0, 400);
+  loaded.detailShown = !!detailEl;
+
+  // 实时路径：start → entry_appended → end(result) 必须只留下一行，且带 estimatedTokensAfter
+  const store = stores.useTrajectory.getState();
+  store.appendCommit(tabId, { type: 'compaction_start', reason: 'manual' });
+  store.appendCommit(tabId, { type: 'entry_appended', entry: globalThis.__piggyMock.MOCK_COMPACTION_ENTRY });
+  store.appendCommit(tabId, {
+    type: 'compaction_end',
+    reason: 'manual',
+    aborted: false,
+    willRetry: false,
+    result: {
+      summary: globalThis.__piggyMock.MOCK_COMPACTION_SUMMARY,
+      firstKeptEntryId: 'e4',
+      tokensBefore: 561_660,
+      estimatedTokensAfter: 18_204,
+      usage: { totalTokens: 478_539, cost: { total: 0.1234 } },
+      details: { readFiles: ['a.ts'], modifiedFiles: ['b.ts'] },
+    },
+  });
+  await sleep(300);
+  const liveRows = [...document.querySelectorAll('.pg-traj-row[data-kind="compacted"]')];
+  const live = readRow(liveRows.at(-1) ?? null);
+
+  // 失败态：绝不许说成"完成"
+  store.appendCommit(tabId, { type: 'compaction_start', reason: 'threshold' });
+  store.appendCommit(tabId, { type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false, errorMessage: 'provider 返回 500' });
+  await sleep(250);
+  const failRows = [...document.querySelectorAll('.pg-traj-row[data-kind="compacted"]')];
+  const failed = readRow(failRows.at(-1) ?? null);
+
+  // 中断态：占位行必须改口，而不是留着"正在压缩…"
+  store.appendCommit(tabId, { type: 'compaction_start', reason: 'manual' });
+  store.appendCommit(tabId, { type: 'compaction_end', reason: 'manual', aborted: true, willRetry: false });
+  await sleep(250); // ⚠️ appendCommit 是同步写 store，React 渲染不是同步的：不等一帧会读到**上一行**
+  const abortedRows = [...document.querySelectorAll('.pg-traj-row[data-kind="compacted"]')];
+  const aborted = readRow(abortedRows.at(-1) ?? null);
+
+  return {
+    chat,
+    traj: {
+      before,
+      loaded,
+      live,
+      liveIsNewRow: liveRows.length === before + 1,
+      failed,
+      aborted,
+    },
+  };
+});
+
 const scrolledDown = {
   /** 滚轮阶段开始时的行数（换窗刚落地）—— 单调性只看滚轮阶段自己 */
   startLoaded: downPages.start?.loaded ?? 0,
@@ -2177,7 +2301,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
-      sessionTitle, menuProbe, cornerProbe, titleRun, numbers,
+      sessionTitle, menuProbe, cornerProbe, titleRun, numbers, compactionProbe,
     },
     null,
     1,
@@ -3154,6 +3278,77 @@ if (!numbers.meter.hasRailBtn) {
   }
   if (numbers.stats.width == null || numbers.stats.level == null) {
     bad.push('数字口径：右栏没有用量条（宽度/分档读不到）★');
+  }
+}
+
+/* 压缩细节：对话行 + 轨迹行 + 实时合并 + 失败态。
+   用户报的是"轨迹里看不到细节"，根因有三处（夹具没细节、Rust 只转 3 个字段、
+   轨迹行不可展开），所以这里逐条钉住，任何一处退化都会红。 */
+{
+  const cp = compactionProbe;
+  if (cp.error) bad.push(`压缩细节：${cp.error} ★`);
+  const chat = cp.chat ?? {};
+  if (!chat.found) {
+    bad.push('压缩细节：对话里找不到压缩行（mock 的尾页应当带一条）★');
+  } else {
+    // 对话行是"账本"（精确到个位，与右栏统计同一口径）；轨迹表格那一行才用 K 缩写
+    if (!/561,660/.test(chat.tokens ?? '')) {
+      bad.push(`压缩细节：对话行没显示压缩前 token（读到 ${JSON.stringify(chat.tokens)}）★`);
+    }
+    if (!/e4/.test(chat.kept ?? '')) {
+      bad.push(`压缩细节：对话行没显示保留边界（读到 ${JSON.stringify(chat.kept)}）★`);
+    }
+    if (!/读 2 \/ 改 1/.test(chat.files ?? '')) {
+      bad.push(`压缩细节：对话行没显示涉及文件（读到 ${JSON.stringify(chat.files)}）★`);
+    }
+    if (!/478,539/.test(chat.usage ?? '')) {
+      bad.push(`压缩细节：对话行没显示摘要调用用量（读到 ${JSON.stringify(chat.usage)}）★`);
+    }
+    if (!/压缩摘要/.test(chat.summary ?? '')) {
+      bad.push('压缩细节：对话行没有可展开的摘要 ★');
+    }
+  }
+  const msg = chat.message ?? {};
+  if (msg.firstKeptEntryId !== 'e4' || msg.readFiles !== 2 || msg.modifiedFiles !== 1) {
+    bad.push(`压缩细节：分页行里缺字段（${JSON.stringify(msg)}）—— Rust compaction_row 又只转 3 个字段了？★`);
+  }
+  if (msg.usageTokens !== 478_539 || msg.fromHook !== false) {
+    bad.push(`压缩细节：分页行里的 usage/fromHook 不对（${JSON.stringify(msg)}）★`);
+  }
+  if (msg.spilledSystem) {
+    bad.push('压缩细节：分页行里混进了 systemMessage（压缩后的整份系统提示词，绝不能进转录）★');
+  }
+
+  const traj = cp.traj ?? {};
+  if (!traj.loaded?.text) {
+    bad.push('压缩细节：轨迹里没有「已压缩」行（mock 的 pi_get_entries 带一条）★');
+  } else {
+    if (!traj.loaded.expandable) {
+      bad.push('压缩细节：轨迹里的压缩行**点不开**（没有 detail/expandable）—— 用户报的就是这条 ★');
+    }
+    if (!traj.loaded.detailShown || !/保留边界/.test(traj.loaded.detail ?? '')) {
+      bad.push(`压缩细节：点开后没有细节正文（读到 ${JSON.stringify((traj.loaded.detail ?? '').slice(0, 60))}）★`);
+    }
+    if (!/摘要/.test(traj.loaded.detail ?? '')) {
+      bad.push('压缩细节：展开的细节里没有摘要全文 ★');
+    }
+  }
+  if (!traj.liveIsNewRow) {
+    bad.push('压缩细节：实时压缩的 start/entry/end 三个事件没有合成**一行**（多推或漏推）★');
+  }
+  if (!/→ 约 18\.204K tok/.test(traj.live?.text ?? '')) {
+    bad.push(`压缩细节：实时那一行没带上 estimatedTokensAfter（读到 ${JSON.stringify(traj.live?.text)}）★`);
+  }
+  if (!/上下文压缩失败：provider 返回 500/.test(traj.failed?.text ?? '')) {
+    bad.push(`压缩细节：失败的压缩没说失败（读到 ${JSON.stringify(traj.failed?.text)}）—— 旧实现无条件写"完成" ★`);
+  }
+  if (traj.failed?.failed !== 'true') {
+    bad.push('压缩细节：失败的压缩行没有 data-failed 标记 ★');
+  }
+  if (!/被中断/.test(traj.aborted?.text ?? '')) {
+    bad.push(
+      `压缩细节：中断的压缩没说中断（读到 ${JSON.stringify(traj.aborted?.text)}）—— 占位行不许留着"正在压缩…" ★`,
+    );
   }
 }
 

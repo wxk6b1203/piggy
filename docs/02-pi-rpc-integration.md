@@ -114,11 +114,30 @@ Piggy 前端能力到 RPC 命令的完整映射（实现闭环校验：G2 的每
 | `tool_execution_start/update/end` | 工具卡片：args 摘要 → 累积输出（update 的 `partialResult` 是**累积量非增量**，直接替换显示）→ 终态 + isError |
 | `bash_execution_update(id, delta)` | 终端页签按 id 追加 |
 | `queue_update(steering, followUp)` | composer 上方队列 chips（可逐条撤回 = `clear_queue` 后重排队） |
-| `compaction_start/end(reason,...)` | 顶部横幅 + 进度；`reason: manual/threshold/overflow`；失败读 `errorMessage`；aborted 分支 |
+| `compaction_start(reason)` | 顶部横幅 + 进度；`reason: manual/threshold/overflow` |
+| `compaction_end(reason, result, aborted, willRetry, errorMessage?)` | `result` 的字段见下；**失败/中断时 pi 不落盘条目**，所以界面必须改口（不许说"完成"）；`willRetry` 时保留指示器 |
+| `entry_appended(entry)` | **durable 条目落盘的唯一通知**（`agent-session.js:487/680/2419`，rpc-mode 原样转发）。`entry.type === "compaction"` 时它就是压缩的权威形状——`summary` / `firstKeptEntryId` / `tokensBefore` / `usage` / `details` / `fromHook` 都在里面（轨迹行据此构造，见 03 §3.0f） |
 | `auto_retry_start/end` | toast 显示 attempt/maxAttempts/delayMs 倒计时，`abort_retry` 可取消 |
 | `summarization_retry_*` | 状态条轻提示 |
 | `extension_error` | 开发者日志 + 可选 toast |
 | `extension_ui_request` | 弹窗/通知路由（§8） |
+
+**压缩的载荷形状**（pi `dist/core/agent-session.d.ts:54-71` + `dist/core/compaction/compaction.d.ts:18-27`，
+落盘条目见 pi `docs/compaction.md` §CompactionEntry Structure）：
+
+```ts
+// compaction_end.result
+{ summary: string; firstKeptEntryId: string; tokensBefore: number;
+  estimatedTokensAfter?: number;            // ⚠️ 只在事件里，不落盘
+  usage?: Usage; details?: unknown }        // 默认实现：{ readFiles, modifiedFiles }
+// entry（会话文件 / get_entries 里的那条）
+{ type: "compaction"; id; parentId; timestamp; summary; firstKeptEntryId;
+  tokensBefore; usage?; fromHook?; details? }   // 另有 systemMessage（压缩后的整份系统提示词）
+```
+
+**`systemMessage` 永远不进转录**：它是压缩后的整份新系统提示词（真机一条 10 KB+），
+带上它等于把刚省下的载荷又还回去。Rust 侧 `compaction_row` 只转上表那些字段，
+并有测试钉住（03 §2.19）。
 
 ### 4.2 `message_update` 的组装规则（协议重点）
 

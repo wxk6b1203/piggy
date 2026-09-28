@@ -193,6 +193,31 @@ function snapshot() {
   };
 }
 
+/**
+ * mock 的压缩条目（真机形状）。
+ *
+ * 门禁与单测都用它核对"压缩细节能被看见"：摘要、压缩前 token、**保留边界**
+ * （`firstKeptEntryId`）、涉及文件（`details`）、摘要调用用量（`usage`）、`fromHook`。
+ * 换回 `{type:'compaction'}` 三个字段就等于关掉这条核对（红检方式写在 docs/15）。
+ */
+export const MOCK_COMPACTION_SUMMARY =
+  '## Goal\n构建 Piggy 的轨迹视图。\n\n## Progress\n- 分页与刻度梯已完成\n- 压缩行缺少细节（用户报）';
+export const MOCK_COMPACTION_ENTRY = {
+  type: 'compaction',
+  id: 'e5',
+  parentId: 'e3',
+  timestamp: new Date(now() - 46_000).toISOString(),
+  summary: MOCK_COMPACTION_SUMMARY,
+  firstKeptEntryId: 'e4',
+  tokensBefore: 561_660,
+  usage: { input: 475_045, output: 3_494, totalTokens: 478_539, cost: { total: 0.1234 } },
+  details: {
+    readFiles: ['docs/03-module-design.md', 'docs/04-frontend-design.md'],
+    modifiedFiles: ['apps/desktop/src/stores/trajectory.ts'],
+  },
+  fromHook: false,
+};
+
 const messages = [
   { role: 'user', content: '帮我看看这个项目的流式渲染管线', timestamp: now() - 60_000 },
   {
@@ -265,7 +290,28 @@ export function mockSetTranscriptRows(rows: Array<{ role: string; message: unkno
 }
 
 /** 造 n 轮（user + assistant）mock 转录；门禁与单测共用一套形状。 */
-export function mockBuildTranscript(turns: number): Array<{ role: string; message: unknown }> {
+/** 会话文件里压缩行的**投影形状**（与 Rust `transcript::compaction_row` 逐字段对齐）。 */
+export function mockCompactionRow(): { role: string; message: unknown } {
+  const e = MOCK_COMPACTION_ENTRY;
+  return {
+    role: 'compaction',
+    message: {
+      role: 'compaction',
+      summary: e.summary,
+      tokensBefore: e.tokensBefore,
+      firstKeptEntryId: e.firstKeptEntryId,
+      details: e.details,
+      usage: e.usage,
+      fromHook: e.fromHook,
+      timestamp: e.timestamp,
+    },
+  };
+}
+
+export function mockBuildTranscript(
+  turns: number,
+  opts: { compactionAfterTurn?: number } = {},
+): Array<{ role: string; message: unknown }> {
   const out: Array<{ role: string; message: unknown }> = [];
   for (let i = 1; i <= turns; i += 1) {
     out.push({
@@ -280,6 +326,12 @@ export function mockBuildTranscript(turns: number): Array<{ role: string; messag
         timestamp: 1_700_000_000_500 + i * 1000,
       },
     });
+    /* 压缩行：**默认灌进尾页覆盖的那一段**（尾页 = 50 行且 5 轮 ≈ 最后 25 轮），
+       这样"对话里的压缩细节"在门禁里不用额外翻页就能量到。
+       它是 role='compaction'，不占轮次（mock 的 outline 按 user 行分轮）。 */
+    if (opts.compactionAfterTurn !== undefined && i === opts.compactionAfterTurn) {
+      out.push(mockCompactionRow());
+    }
   }
   return out;
 }
@@ -1334,7 +1386,11 @@ pub fn main() {
         },
       },
       { type: 'context_edit', id: 'e4', timestamp: new Date(now() - 47_000).toISOString(), targetId: 'e1', replacement: null },
-      { type: 'compaction', id: 'e5', timestamp: new Date(now() - 46_000).toISOString() },
+      /* 压缩条目按**真机形状**写（pi `docs/compaction.md` §CompactionEntry Structure；
+         本机 `2026-09-21T14-18-43-680Z_01a0c455….jsonl` 里的那条就是这个形状）。
+         以前这里只有 `{type,id,timestamp}` 三个字段 —— 于是"压缩看不到细节"这个 bug
+         在门禁里根本复现不出来（夹具里压根没有细节可显示）。 */
+      MOCK_COMPACTION_ENTRY,
       /* 预览滚动条（docs/04 §2.6）的核对需要**多轮**会话：刻度梯至少要两条刻度才画。
          这里补 7 轮（用户 + 回答），既有内容可预览，也够长到能滚起来。 */
       ...Array.from({ length: 7 }, (_, i) => {

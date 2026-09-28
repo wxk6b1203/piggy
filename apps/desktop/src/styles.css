@@ -276,6 +276,16 @@ body {
    但整行居中偏左、颜色更弱——它是历史里的一个书签，不是一条消息。 */
 .pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; margin: var(--pg-sp-3) 0; }
 .pg-compaction-tokens { color: var(--pg-fg-caption); }
+/* 压缩行下面的"账本"（保留边界 / 涉及文件 / 摘要调用用量）：
+   12px 次要色，等宽数字对齐；这些是**事实**，不是提示语，所以不做成 chip。 */
+.pg-compaction-meta {
+  margin-top: 2px; color: var(--pg-fg-caption); font-size: var(--pg-fs-12);
+  font-variant-numeric: tabular-nums;
+}
+.pg-compaction-meta code {
+  padding: 0 4px; border-radius: var(--pg-r-md); background: var(--pg-inline-code);
+  font-family: var(--pg-mono); font-size: 11px;
+}
 .pg-compaction-summary { margin-top: var(--pg-sp-2); font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
 .pg-compaction-summary summary { cursor: pointer; user-select: none; }
 /* 工具结果的**裸** pre（未走代码卡片的兜底路径）。

@@ -15,7 +15,7 @@ const fixture = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(fixtures, name), 'utf8')) as Record<string, unknown>;
 
 function resetStore() {
-  useTrajectory.setState({ rows: {}, loaded: {} });
+  useTrajectory.setState({ rows: {}, loaded: {}, pendingCompaction: {} });
 }
 
 describe('trajectoryStore：system 上下文展示', () => {
@@ -127,5 +127,119 @@ describe('trajectoryStore：失败回合 + 实时/快照构造一致', () => {
     expect(snap.text).toBe(live.text);
     expect(snap.detail).toBe(live.detail);
     expect(snap.expandable).toBe(live.expandable);
+  });
+});
+
+/**
+ * 压缩行（用户 2026-09-23："上下文压缩的轨迹是无法看到细节的？"）。
+ *
+ * 夹具用真机形状（本机 `2026-09-21T14-18-43-680Z_01a0c455….jsonl` 里那条压缩条目 +
+ * pi `docs/compaction.md` §CompactionEntry Structure）。此前 `entryToRow` 只产出
+ * `{kind:'compaction', text:'上下文压缩'}` —— 没有 detail、没有 expandable，
+ * 所以轨迹里那一行**连点都点不开**。
+ */
+describe('trajectoryStore：压缩行的细节', () => {
+  beforeEach(resetStore);
+
+  const ENTRY = {
+    type: 'compaction',
+    id: 'c1',
+    parentId: 'a1',
+    timestamp: '2026-09-22T16:59:27.763Z',
+    summary: '## Goal\n构建 Piggy\n\n## Progress\n- 分页完成',
+    firstKeptEntryId: '86e95bf3',
+    tokensBefore: 561_660,
+    usage: { input: 475_045, output: 3_494, totalTokens: 478_539, cost: { total: 0.1234 } },
+    details: { readFiles: ['docs/03.md', 'docs/04.md'], modifiedFiles: ['src/a.ts'] },
+    fromHook: false,
+  };
+
+  it('load 快照：摘要行给计数，展开后有边界/文件/用量/摘要全文', async () => {
+    ipcMocks.cmd.mockResolvedValue({ entries: [ENTRY] });
+    await useTrajectory.getState().load(TAB);
+    const r = useTrajectory.getState().rows[TAB]![0]!;
+
+    expect(r.kind).toBe('compaction');
+    expect(r.text).toContain('上下文已压缩');
+    expect(r.text).toContain('561.660K'); // formatTokens：与状态行同一份口径
+    expect(r.expandable).toBe(true);
+    expect(r.detail).toContain('压缩前上下文：561,660 tok');
+    expect(r.detail).toContain('保留边界：从 86e95bf3 起');
+    expect(r.detail).toContain('摘要调用用量：478,539 tok · $0.1234');
+    expect(r.detail).toContain('涉及文件：读 2 / 改 1');
+    expect(r.detail).toContain('docs/03.md');
+    expect(r.detail).toContain('## Goal'); // 摘要全文
+  });
+
+  it('实时：start → entry_appended → end(result) 合成**一行**，且带上 estimatedTokensAfter', () => {
+    const st = () => useTrajectory.getState();
+    st().appendCommit(TAB, { type: 'compaction_start', reason: 'manual' } as never);
+    expect(st().rows[TAB]!.length).toBe(1);
+    expect(st().rows[TAB]![0]!.text).toContain('正在压缩上下文…');
+    expect(st().rows[TAB]![0]!.text).toContain('手动 /compact');
+
+    st().appendCommit(TAB, { type: 'entry_appended', entry: ENTRY } as never);
+    expect(st().rows[TAB]!.length).toBe(1); // 复用占位行，不新增
+    expect(st().rows[TAB]![0]!.detail).toContain('86e95bf3');
+
+    st().appendCommit(TAB, {
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: false,
+      willRetry: false,
+      result: { ...ENTRY, estimatedTokensAfter: 18_204 },
+    } as never);
+    const rows = st().rows[TAB]!;
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.running).toBe(false);
+    expect(rows[0]!.text).toContain('→ 约 18.204K tok');
+    expect(rows[0]!.detail).toContain('压缩后估计：18,204 tok');
+    expect(rows[0]!.detail).toContain('触发：手动 /compact');
+  });
+
+  it('失败不许说成"完成"（pi 失败时不落盘条目，旧实现写的是「上下文压缩完成」）', () => {
+    const st = () => useTrajectory.getState();
+    st().appendCommit(TAB, { type: 'compaction_start', reason: 'threshold' } as never);
+    st().appendCommit(TAB, {
+      type: 'compaction_end',
+      reason: 'threshold',
+      aborted: false,
+      willRetry: true,
+      errorMessage: 'provider 返回 500',
+    } as never);
+    const r = st().rows[TAB]![0]!;
+    expect(r.text).toContain('上下文压缩失败：provider 返回 500');
+    expect(r.text).not.toContain('完成');
+    expect(r.failed).toBe(true);
+    expect(r.detail).toContain('随后会自动重试');
+  });
+
+  it('中断（aborted）：改口成"被中断"，不留"正在压缩…"', () => {
+    const st = () => useTrajectory.getState();
+    st().appendCommit(TAB, { type: 'compaction_start', reason: 'manual' } as never);
+    st().appendCommit(TAB, {
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: true,
+      willRetry: false,
+    } as never);
+    const r = st().rows[TAB]![0]!;
+    expect(r.text).toContain('被中断');
+    expect(r.running).toBeFalsy();
+  });
+
+  it('没有 start 也自洽：单独的 entry_appended / compaction_end 各留一行，不丢信息', () => {
+    const st = () => useTrajectory.getState();
+    st().appendCommit(TAB, { type: 'entry_appended', entry: ENTRY } as never);
+    expect(st().rows[TAB]!.length).toBe(1);
+    st().appendCommit(TAB, {
+      type: 'compaction_end',
+      reason: 'threshold',
+      aborted: false,
+      willRetry: false,
+      result: { ...ENTRY, estimatedTokensAfter: 20_000 },
+    } as never);
+    expect(st().rows[TAB]!.length).toBe(2);
+    expect(st().rows[TAB]![1]!.detail).toContain('压缩后估计');
   });
 });

@@ -560,6 +560,15 @@ Chrome 的循环错误通知（csswg-drafts #6610：*Following spec logic result
 `custom` / `context_edit` / 模型变更只在轨迹视图里。**一页 = 一页看得见的行**：否则「加载更早」
 可能翻出一页全是渲染不出来的条目，用户点了却什么也没发生。
 
+**压缩行要带全细节，但绝不带 `systemMessage`**（2026-09-23 用户："上下文压缩的轨迹无法看到细节"）。
+`compaction_row` 转出 `summary` / `tokensBefore` / `firstKeptEntryId` / `details` / `usage` /
+`fromHook` / `timestamp` —— 前四个能回答"这次压缩做了什么"（保留边界、涉及文件、摘要调用用量、
+是否扩展提供），此前只转了 3 个，其余全被丢在半路。`systemMessage` 是压缩后的**整份新系统提示词**
+（真机一条 10 KB+），带上它等于把刚省下的载荷又还回去，测试
+（`compaction_row_carries_details_but_never_the_system_message`）用一条 2 万字的假系统提示词钉住它。
+数字口径：对话里的这一行是"账本"（精确到个位，`formatExactTokens`），轨迹表格那一行才用
+K 缩写（`formatTokens`），两者都出自 `lib/tokenFormat`（§3.0b）。
+
 **一页 = "50 行 且 5 轮"，最多 300 行 / 1 MiB**（2026-09-23 用户实测后改）。
 用户那场会话是 **30 轮 / 1028 步**（平均一轮 34 行），"一页 50 行"于是只装了 1 轮多：
 界面上是"打开会话只看得到一轮"，刻度梯上 28/30 条是"未载入"。
@@ -684,6 +693,33 @@ Piggy 不重复实现）；**只有认得的才拦**（用户真的可能发一�
 
 `resizeProbe.ts`（仅 DEV）包装全局 `ResizeObserver` 记创建点与最后回调来源，
 给 §2.18b 的循环警告当现场证人。
+
+### 3.0f `stores/trajectory.ts` — 压缩行的细节（三条路径共用同一个构造器）
+
+用户 2026-09-23："上下文压缩的轨迹是无法看到细节的？"。核实：`entryToRow` 对
+`type === "compaction"` 只产出 `{kind:'compaction', text:'上下文压缩'}` —— **没有 `detail`、
+没有 `expandable`**，而 `TrajectoryView` 的折叠分支条件是 `row.expandable && row.detail`，
+所以轨迹里那一行**连点都点不开**（字面意义上的"看不到细节"）。
+同时实时路径每个事件各推一行：一次压缩在轨迹里留下三行（「正在压缩…」/「上下文压缩完成」…），
+而中间那个**带着真实字段**的 `entry_appended` 根本没被读。
+
+现在三条路径（`load()` 的快照、`entry_appended`、`compaction_end.result`）**共用
+`compactionRow()` / `compactionDetail()`**，避免"实时与重载后长得不一样"：
+
+- 摘要行：`上下文已压缩 · 此前 561.660K tok · → 约 18.204K tok`（`estimatedTokensAfter` 只在事件里，
+  有就显示）；进行中：`正在压缩上下文…（超出阈值自动压缩）`；
+- 展开正文（**全部是条目里原样的事实，没有一项靠推算**）：触发原因 / 摘要来源（`fromHook`）/
+  压缩前后 token / `保留边界：从 <firstKeptEntryId> 起原样保留` / 摘要调用用量与花费 /
+  `details.readFiles` + `modifiedFiles` 计数与清单 / 摘要全文；
+- **一次压缩只留一行**：`compaction_start` 建占位行并记下 id（`pendingCompaction[tabId]`），
+  `entry_appended` 与 `compaction_end` 复用那一行（`findIndex` 命中就替换，保持列表位置）；
+- **失败与中断必须改口**：`errorMessage` → `上下文压缩失败：<msg>`（`failed: true`，表格标红）、
+  `aborted` → `上下文压缩在完成前被中断`，并说明"pi 失败时不落盘条目，所以没有摘要与计数"。
+  旧实现无条件写「上下文压缩完成」——**一次失败的压缩在轨迹里看起来像成功了**。
+
+守卫：`src/test/trajectory.test.ts` 五条（快照细节、实时三事件合成一行、失败不说完成、中断改口、
+没有 start 也自洽）+ 门禁 `compactionProbe`（真 DOM：轨迹行可展开、展开有正文、
+实时三事件只多一行、失败/中断文案）。
 
 ### 3.1 `lib/ipc.ts`
 

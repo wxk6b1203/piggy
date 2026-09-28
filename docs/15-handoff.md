@@ -12,13 +12,14 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **499/499**：apps/desktop **432**（46 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 31 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
-| `cargo test` | **307 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
+| `vitest` | **508/508**：apps/desktop **441**（47 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 40 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
+| `cargo test` | **308 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **11** 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
+| `ui:startup` 压缩细节（本轮新增） | **压缩行必须看得见细节**：对话行（分页从会话文件读出来那行）断言此前 token / 保留边界 `firstKeptEntryId` / 涉及文件计数 / 摘要调用用量 / 可展开摘要，并断言分页行里**没有** `systemMessage`；轨迹行断言「已压缩」行**可展开**、点开后有保留边界与摘要全文；实时路径断言 `start`+`entry_appended`+`compaction_end(result)` **只多一行**且带 `estimatedTokensAfter`；失败态断言写「压缩失败：…」+ `data-failed`、中断态断言不再留「正在压缩…」。红检实测：把轨迹行改回不可展开 + 对话行去掉两行细节 → 门禁逐条点名（含「点不开 —— 用户报的就是这条」） |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
@@ -793,6 +794,31 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     同一个数在三处露面（环标签、环 title、右栏），所以三处共用 `formatPercent`，
     并且**夹具要故意留尾巴**（`15400 / 75800 × 100`），否则断言是空转：
     改回整数就再也测不出这个 bug 了。
+
+82. **"看不到细节"先分清是"没有数据"还是"没往下传"。**
+    用户报"上下文压缩的轨迹无法看到细节"。核实：pi 的 `CompactionEntry` 里
+    `firstKeptEntryId` / `details` / `usage` / `fromHook` 全都有，**是我们的 Rust 投影只转了 3 个字段**
+    （`summary`/`tokensBefore`/`timestamp`）——数据一直在，被中间层丢了。
+    投影/映射函数每加一层就有一次"字段静默丢失"的机会，判据只能是对着**上游的类型定义**
+    （pi `docs/compaction.md` §CompactionEntry Structure）逐字段点一遍，而不是看界面像不像。
+
+83. **转换层要防"把刚省下的载荷还回去"。**
+    同一条目里还有个 `systemMessage`：压缩后的**整份新系统提示词**，真机一条 10 KB+。
+    补字段时最容易顺手 `entry.clone()` 全转——那样一页的载荷立刻膨胀。
+    所以投影函数**白名单式**逐字段列出，并用一条"塞 2 万字假系统提示词、断言它不出现"的测试钉住。
+
+84. **`expandable` 这种开关，要有一条"它真的能打开"的门禁。**
+    轨迹行的折叠分支条件是 `row.expandable && row.detail`，而构造器从来没设过这两个字段——
+    于是那一行**连点都点不开**，而且没有任何测试或门禁碰过轨迹页（新写的门禁段一跑就报
+    「轨迹里的压缩行点不开」）。教训：**"有折叠 UI" ≠ "有东西可折"**，
+    每条可折叠的行类型都该有一条"点开后有正文"的断言。
+
+85. **同一件事的多个事件，必须落在同一行上；失败态不许说成成功。**
+    一次压缩在实时流里是三个事件（`compaction_start` → `entry_appended` → `compaction_end`），
+    早先每个各推一行：轨迹里一次压缩留三行，最后一行永远写「上下文压缩完成」——
+    而 pi 在 `aborted` / `errorMessage` 时**根本不落盘条目**，一次失败的压缩看起来像成功了。
+    做法：`compaction_start` 建占位行 + 记 id，后两个事件按 id 复用同一行；
+    失败/中断各自改口，并把"为什么没有摘要与计数"写进展开正文。
 
 ## 4. 未完成 / 待决策
 
