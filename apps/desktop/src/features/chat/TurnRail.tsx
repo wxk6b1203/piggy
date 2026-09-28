@@ -48,9 +48,13 @@ export interface TurnRailProps {
   placement: 'left' | 'right';
   /** 跳到某一轮（给的是转录里的行下标） */
   onJump: (rowIndex: number) => void;
+  /** 上面还有没载入的历史（分页，docs/03 §2.19） */
+  hasMore?: boolean;
+  /** 点"未载入"那一端 → 加载更早一页（DSH 未加载刻度的同义行为） */
+  onLoadOlder?: () => void;
 }
 
-export function TurnRail({ items, activeTurn, placement, onJump }: TurnRailProps) {
+export function TurnRail({ items, activeTurn, placement, onJump, hasMore, onLoadOlder }: TurnRailProps) {
   const railRef = useRef<HTMLDivElement>(null);
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   /** 指针停在梯子上时，别把它从用户手底下滚走（DSH 同一条纪律）。 */
@@ -106,7 +110,8 @@ export function TurnRail({ items, activeTurn, placement, onJump }: TurnRailProps
     if (el) setScrollTop(el.scrollTop);
   }, []);
 
-  if (items.length < 2) return null;
+  // 刻度不足 2 条时梯子没有形状——但"上面还有未载入的历史"时仍要露出那一端
+  if (items.length < 2 && !hasMore) return null;
 
   const preview = previewTurn === null ? undefined : items.find((it) => it.turn === previewTurn);
   const previewIndex = preview ? items.indexOf(preview) : -1;
@@ -137,6 +142,19 @@ export function TurnRail({ items, activeTurn, placement, onJump }: TurnRailProps
         onScroll={onRailScroll}
       >
         <div style={{ height: total, position: 'relative' }}>
+          {/* 未载入的历史：梯子最顶端一段虚线刻度（DSH 的 unloaded anchor 同义）。
+              点它就再翻一页——比"刻度从有到无"更能说明"上面还有"。 */}
+          {hasMore && (
+            <button
+              type="button"
+              className="pg-rail-mark pg-rail-unloaded"
+              data-rail-unloaded
+              aria-label="上面还有更早的历史，点击加载更早"
+              title="上面还有更早的历史（点这里加载更早）"
+              style={{ position: 'absolute', top: 0, height: RAIL_INSET_PX, left: 0, right: 0 }}
+              onClick={onLoadOlder}
+            />
+          )}
           {virtualizer.getVirtualItems().map((vi) => {
             const item = items[vi.index];
             if (!item) return null;

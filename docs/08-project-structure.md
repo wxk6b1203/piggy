@@ -17,7 +17,7 @@ piggy/
 │     │  │  ├─ main.rs  lib.rs
 │     │  │  ├─ commands/          # IPC 薄层（pi_*.rs session_*.rs config_*.rs fleet_*.rs app_*.rs）
 │     │  │  ├─ pi/                # discovery process codec client protocol coalesce
-│     │  │  ├─ sessions/          # registry list tree
+│     │  │  ├─ sessions/          # registry list tree transcript（转录取页，03 §2.19）
 │     │  │  ├─ config/            # paths auth models settings app（03 §2.10/§2.18）
 │     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
 │     │  │  ├─ plugin/            # 插件盘点/安装升级/启停/路径登记（03 §2.15）
@@ -99,6 +99,8 @@ piggy/
 | 静态纪律 | 跨平台路径不许在 `join` 字面量里写分隔符（macOS 上测不出，只能扫源码） | `tests/path_separators.rs` |
 | 前端单测 | store reducer（commit 批量应用）、视图模型转换、键位解析、Windows 路径取末段 | vitest |
 | 组件/集成 | 转录虚拟化 + 实时块转正、Composer 流式态、palette 导航 | vitest + @testing-library/react（jsdom 下无 Tauri，mock `lib/ipc`） |
+| 真布局门禁 | 转录分页（打开即贴底 / 翻页不跳 / 回到底部）、刻度梯几何、斜杠列表真滚动、Monaco 高亮 | `ui:startup`（Playwright + Chrome，跑在 mock IPC 上） |
+| 真机探针 | 会话文件尾页读取的成本对照、真实会话形状、插件发现 | `cargo test -- --ignored`（需要本机真实环境） |
 | E2E | 关键旅程（00 §4 的 1/2/3） | tauri-driver（WebDriver）+ WebdriverIO；性能场景走 §6 |
 | 性能 | 05 §6 场景库 S1–S6 | nightly 工作流 + 预算断言 |
 

@@ -4,6 +4,9 @@
  *  - **没有角色芯片 / 头像 / badge**——身份只靠「右对齐气泡」vs「整宽正文」表达；
  *  - 用户 = `UserStyleBubble`（r22 / padding 10px 16px / 右对齐）；
  *  - 助手 = 整宽 markdown + 结尾操作行（`.actions { margin-top:16px; margin-left:-6px }`）。
+ *
+ * 另加压缩行（`compaction`）：分页从会话文件读时，压缩条目是历史里真实存在的一行
+ * （docs/03 §2.19），DSH 的对话里同样有「上下文已压缩」。
  */
 import { useMemo, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -72,6 +75,28 @@ export function MessageView({ view }: { view: MessageView }) {
         <div className="pg-cmd">$ {bm.command}</div>
         {bm.output ? (
           <CodeBlock code={bm.output} lang={inferToolLang('bash', bm.output).lang} title="bash" collapsible />
+        ) : null}
+      </div>
+    );
+  }
+  // 压缩行（文件里的 `compaction` 条目，docs/03 §2.19）：DSH 的对话里也有这一行
+  // （`MessageItem` 的 compactionRow / 「上下文已压缩」）。摘要折起来——
+  // 它可能很长，但"这儿发生过压缩、当时多少 token"必须一眼看得见。
+  if (role === 'compaction') {
+    const cm = m as { summary?: string; tokensBefore?: number | null };
+    return (
+      <div className="pg-message pg-compaction" data-compaction-row>
+        <div className="pg-role">
+          <Icon name="archive" size={12} /> 上下文已压缩
+          {cm.tokensBefore != null ? (
+            <span className="pg-compaction-tokens">（此前 {cm.tokensBefore.toLocaleString('en-US')} tok）</span>
+          ) : null}
+        </div>
+        {cm.summary ? (
+          <details className="pg-compaction-summary">
+            <summary>压缩摘要</summary>
+            <div className="pg-thinking-body">{cm.summary}</div>
+          </details>
         ) : null}
       </div>
     );

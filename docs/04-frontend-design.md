@@ -332,6 +332,7 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 ### 2.6 会话预览滚动条（`TurnRail`）
 
 主会话区一侧的**固定间距刻度梯**：一条刻度 = 一轮对话（用户提问 + 它的回答）。
+历史未载入时梯子顶端多一段**虚线刻度**（点它加载更早，§2.1.1）。
 参数与状态全部照抄 DSH `ui-chat/src/client/chat/TurnNavigator`（docs/12 §3）：
 
 | 状态 | 形状 | 颜色 |
@@ -385,11 +386,14 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
  │                               箭头 = 本机全部可用应用（真实图标，宿主抠出来的）。
  │                               宿主没解析出任何应用 / 会话没有 cwd → 渲染 null（不留死按钮）。
  │                               可用列表每页只读一次，上次选择跨重启记住（03 §2.11）
- ├─ <Transcript/>                自研：虚拟化容器
+ ├─ <Transcript/>                自研：虚拟化容器 + 分页 + 贴底跟随（§2.1.1）
+ │   ├─ 「加载更早」/「载入历史…」  分页按钮（hasMore 时才有，贴在内容流顶端）
  │   ├─ <TurnGroup/>             回合分组（虚拟行）
  │   │   └─ <MessageView/>       自研：按消息类型分发
  │   │       ├─ <TextBlock/>     <ThinkingBlock/> <ToolCard/> <ImageBlock/>…
+ │   │       ├─ 压缩行            文件里的 `compaction` 条目（DSH 的「上下文已压缩」）
  │   │       └─ <LiveBlock/>     仅活动消息拥有（瞬态通道挂载点）
+ │   ├─ 「回到底部」              离开底部才出现的 34px 圆形按钮（DSH `chat.toBottom`）
  │   └─ <CompactorBanner/> <RetryToast/> …（生命周期横幅）
  └─ <Composer/>                  自研 + antd Upload 粘贴/拖拽
 ```
@@ -400,6 +404,29 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 正文一行不上色"（docs/15 规矩 25 那类静默降级）。加语言 = 改 `monaco-langs.ts` 一处。
 
 **antd 边界铁律**（01 §3.4）：`Transcript` 子树（除横幅类一次性组件）、`TabStrip`、`ViewRail`、`StatusBar`、`CommandPalette` 禁止引入 antd 组件；代码评审以 lint 规则固化（`no-restricted-imports` 按目录白名单，08 §4）。
+### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
+
+三条反馈对应三处改动（实现细节见 03 §2.19 / §3.0d）：
+
+1. **"长上下文的时候，打开会话，都是在开头，有没有办法在结尾"** →
+   默认**跟随尾部**（DSH `ScrollFollow` 的初始 `followingTail`，容差 25px）：
+   第一页灌进来贴底，之后新内容继续贴底，直到**读者自己往上滚**才交还控制权。
+   程序化滚动不许把跟随关掉（`nextFollowing(prev, metrics, movedByReader)`）。
+   实测踩到的坑：贴底不能只做一次——虚拟化器**量出行高**会把底部顶走，
+   所以还要盯内容层（`ResizeObserver`）。⚠️ 当时盯的是 `el.firstElementChild`，
+   而分页后第一个子元素是「加载更早」那颗按钮（高度永远不变），于是"行高量完再贴一次底"
+   永不触发 —— 浏览器门禁量到 **198px 的缝**，改用 `innerRef` 指向内容层才归零。
+2. **"如果在结尾并且部份加载，支持向上滚动点加载更多，能否节省计算/存储"** →
+   **省客户端计算，不省存储**：会话文件是 pi 的 append-only JSONL，Piggy 只读不写，
+   磁盘占用一字节不变；省下的是打开时的 IPC 载荷（11.7 MB 的会话只传 269 KB）、
+   JSON 解析、store 内存与刻度梯重建。打开一页 = `session_page` 尾页（真机 50 行 5.1ms），
+   往上的历史由「加载更早」（DSH `chat.loadOlder`）按需再读，加载中显示「载入历史…」。
+   翻页**不许跳**：先量旧 `scrollTop`/`scrollHeight`，DOM 更新后按高度差补回去
+   （`scrollTopAfterPrepend`，纯函数有单测）。
+3. **刻度梯的"未载入"锚点**：还有历史时，梯子顶端出现一段虚线刻度（DSH 的 unloaded anchor 同义），
+   点它再翻一页——比"刻度从有到无"更能说明"上面还有"。刻度按**已载入**的行算，
+   所以轮次是从当前窗口起算的相对编号（`aria-label` 与预览标题会跟着走）。
+
 ## 3. 状态管理细则
 
 ### 3.1 结构态：messagesStore（normalized）
@@ -414,6 +441,8 @@ interface MessagesState {
 }
 ```
 
+- 分页字段（03 §2.19）：`pageCursor`（已载入第一行的字节偏移）、`hasMore`、`loadingOlder`；
+  `hydratePage` 换整页、`prependPage` 接到最前面并返回**新增行数**（调用方据此修正滚动位置）；
 - 更新**只**来自 `pi:commit`（message_end / tool_execution_end / turn_end…）——低频、权威；
 - `AgentMessageView` = pi 权威消息 + UI 派生字段（折叠态、高亮标记等）分离存储，避免污染协议对象。
 
@@ -462,7 +491,10 @@ pi:frame:{tabId}（≤60Hz）
 
 ### 4.5 长会话与考古
 
-- 转录默认仅呈现 messagesStore（当前上下文视图）；顶部显示"压缩于 #entryId"分界；
+- 转录**已经按页装载**（§2.1.1、03 §2.19）：打开只读会话文件的尾部一页，
+  往上的历史点「加载更早」再读；压缩在历史里是一行可见的"上下文已压缩"（带摘要与当时 token 数）；
+- 尚未做：**读到哪记到哪**（DSH 会把阅读位置存下来，重开会话回到原位；Piggy 目前一律贴底）、
+  以及"跳到很久以前的某一轮"（现在只能一页页往上翻）；
 - "考古模式"（右栏或抽屉）：`get_entries` 游标分页（每次 200 条，向上滚动加载），只读渲染；
 - 分支树（`get_tree`）用自绘 SVG 缩略图 + antd Tree 详情，点击分支节点提示"将切换活动分支（branch 导航）"——走 `switch_session`/fork 语义【契约验证 C11：RPC 的分支切换入口。rpc.md 只提供 fork/clone/switch；就地 branch 导航（TUI 的 `/tree`）若 RPC 未暴露，则用 fork 等价实现并在 UI 措辞区分】。
 
@@ -532,7 +564,14 @@ pi:frame:{tabId}（≤60Hz）
 ## 7. 输入区（Composer）
 
 - 多行自动增高（上限 12 行）；`Enter` 发送 / `Shift+Enter` 换行 / `Cmd+Enter` 流式中强制 steer（07 §3 冲突策略）；
-- 斜杠命令：`/` 触发自动补全（`get_commands` 数据 + 内建 GUI 命令混排，标注来源 extension/prompt/skill/local）。
+- 斜杠命令：`/` 触发自动补全（`get_commands` 数据 + 内建 GUI 命令混排，标注来源 extension/prompt/skill/内建）。
+  **内建命令表在 Piggy 侧**（`lib/slashCommands.ts`，03 §3.0c）：pi 的 `get_commands` **只返回扩展/prompt/skill**，
+  它自己那 24 条内建命令不在协议里，所以 `/compact` 这类必须由界面补上——
+  选中「内建」且不需要参数的命令**立即执行**（走 `pi_compact` 等已有路径），需要参数的插入 `/name ` 等用户补；
+  扩展/prompt/skill 命令仍然插入名字后**发给 pi 解析**（Piggy 不重复实现）。
+  提交（Enter / 发送按钮）时先按指令拦一道（`isKnownSlashCommand` → `dispatchSlashInput`），
+  **只有认得的才拦**——否则用户发一条以 `/` 开头的路径会被误吞；
+  流式中 Enter 依旧不发送普通消息，但**内建指令仍可用**（它是客户端调用，不是插进回合的消息）。
   **列表行为**（2026-09-23 按用户反馈修正）：匹配项**全部渲染进 DOM**，容器固定可见高度
   （`max-height: 260px`）并 `overflow-y: auto` —— 「看得见的条数」是 CSS 的事，**不能**在数据层
   用 `slice` 硬截断。旧实现 `.slice(0, 8)` + `overflow: hidden` + ↑↓ 被 `preventDefault` 掉却不做事，

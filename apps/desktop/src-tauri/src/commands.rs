@@ -709,6 +709,29 @@ pub async fn session_delete(path: String) -> Result<(), String> {
     list::trash_session(&path)
 }
 
+/// 会话转录**分页**读（docs/03 §2.19）。
+///
+/// 不起 worker、不依赖 pi 进程：直接读会话 JSONL 的尾部一页。这样打开长会话
+/// 不必等 pi 载入整段历史，也不必把 10 MB 的旧工具输出搬过 IPC。
+/// 语义与一致性论证见 `sessions/transcript.rs` 的模块头。
+#[tauri::command]
+pub async fn session_page(
+    path: String,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let page = crate::sessions::transcript::read_page(
+            std::path::Path::new(&path),
+            before,
+            limit.unwrap_or(crate::sessions::transcript::DEFAULT_LIMIT),
+        )?;
+        Ok::<Value, String>(page.to_json())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 关闭会话重命名：临时 worker → set_session_name → 关闭。
 /// 起一个只读临时 worker，只为调一次 `set_session_name`。
 ///

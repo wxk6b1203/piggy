@@ -1755,6 +1755,98 @@ const plugins = await page.evaluate(async () => {
 });
 
 
+/* ---------- 15. 转录分页：打开即贴底 / 翻页不跳 / 回到底部（docs/03 §2.19、docs/04 §2.1）
+   起因（2026-09-23 用户报）：① 长会话打开总停在**开头**；② 想"往上滚点加载更多"，还问
+   这样能不能省计算。这一段每一条都只有真布局能量：贴底是几何、翻页不跳是几何、
+   「回到底部」的出现条件是几何。jsdom 里 clientHeight 恒为 0，量不到任何一条。
+
+   ⚠️ 两条纪律（都是踩过的坑）：
+   · 灌 mock 数据必须走 `globalThis.__piggyMock`（**应用自己那一份**模块实例）——
+     另 `import('/src/lib/mockBackend.ts')` 会拿到另一个实例，灌进去的数据应用看不见；
+   · 会话必须点侧栏行打开（应用自己的路径），不要 import 一份 createTab/openSessionTab。 */
+const paging = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const mock = globalThis.__piggyMock;
+  const stores = globalThis.__piggyStores;
+
+  // 100 轮 = 200 行 → 4 页（mock 每页 50 行，与 Rust DEFAULT_LIMIT 一致）
+  mock.mockSetTranscriptRows(mock.mockBuildTranscript(100));
+  // 先关掉前面几段留下的会话标签：点同一行会话时 openSessionTab 只会**聚焦**已有面板，
+  // 不会重新装载 —— 那样量到的还是上一段用旧 mock 数据灌出来的转录（实测：17 行、无 hasMore）。
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(800);
+  document.querySelector('.pg-session-row')?.click();
+  await sleep(1800);
+
+  const tabId = stores.useTabs.getState().activeTabId;
+  const wrap = document.querySelector(`[data-tab-id="${tabId}"]`);
+  const tr = wrap?.querySelector('.pg-transcript') ?? null;
+  if (!tr) return { tabId, missing: true };
+
+  const geom = () => ({
+    scrollTop: Math.round(tr.scrollTop),
+    scrollHeight: Math.round(tr.scrollHeight),
+    clientHeight: Math.round(tr.clientHeight),
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+  });
+  const loaded = () => (stores.useMessages.getState().tabs[tabId]?.ids ?? []).length;
+  /** 阅读锚点：视口里第一条整行的文本 + 它距转录顶端的偏移。 */
+  const anchor = () => {
+    const top = tr.getBoundingClientRect().top;
+    const rows = [...tr.querySelectorAll('.pg-vrow')];
+    const first = rows.find((r) => r.getBoundingClientRect().top >= top - 1) ?? rows[0];
+    return {
+      text: (first?.textContent ?? '').slice(0, 24),
+      top: first ? Math.round(first.getBoundingClientRect().top - top) : -1,
+    };
+  };
+  const lastText = () => {
+    const rows = [...tr.querySelectorAll('.pg-vrow')];
+    return (rows.at(-1)?.textContent ?? '').slice(0, 30);
+  };
+
+  const onOpen = { ...geom(), loaded: loaded(), last: lastText() };
+  const hasOlderButton = !!tr.querySelector('[data-load-older]');
+  const railUnloadedOnOpen = !!wrap.querySelector('[data-rail-unloaded]');
+  const markCount = wrap.querySelectorAll('[data-rail-mark]').length;
+
+  // 往上滚：离开底部 → 「回到底部」必须出现
+  tr.scrollTop = 0;
+  await sleep(250);
+  const afterScrollUp = { ...geom(), toBottom: !!tr.ownerDocument.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`) };
+  const beforePage = anchor();
+
+  // 点「加载更早」：内容必须变多，而**阅读位置不许跳**
+  tr.querySelector('[data-load-older]')?.click();
+  await sleep(900);
+  const anchorAfter = anchor();
+  const afterPage = {
+    loaded: loaded(),
+    scrollHeight: Math.round(tr.scrollHeight),
+    anchorBefore: beforePage,
+    anchorAfter,
+    drift: Math.abs(anchorAfter.top - beforePage.top),
+    sameRow: anchorAfter.text === beforePage.text,
+  };
+
+  // 回到底部
+  document.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`)?.click();
+  await sleep(400);
+  const afterToBottom = { ...geom(), toBottom: !!document.querySelector(`[data-tab-id="${tabId}"] [data-to-bottom]`) };
+
+  return {
+    tabId,
+    onOpen,
+    hasOlderButton,
+    railUnloadedOnOpen,
+    markCount,
+    afterScrollUp,
+    afterPage,
+    afterToBottom,
+  };
+});
+
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -2558,6 +2650,39 @@ if (!contrib.clickAt) {
   bad.push(
     `预览：⌘F 唤不出查找框（全文档 ${contrib.findWidget.inDocument} 个、预览里 ${contrib.findWidget.inPreview} 个）` +
       '—— find 贡献没加载 ★',
+  );
+}
+
+if (!(paging.onOpen.scrollHeight > paging.onOpen.clientHeight * 1.5)) {
+  bad.push('分页：长会话没有撑出可滚高度，这一段核对是空转 ★');
+} else if (paging.onOpen.gap > 25) {
+  bad.push(
+    `分页：打开会话停在开头（距底 ${paging.onOpen.gap}px，scrollTop ${paging.onOpen.scrollTop}）` +
+      '—— "打开即贴底"没生效 ★',
+  );
+}
+if (!paging.onOpen.last.includes('第 100 轮')) {
+  bad.push(`分页：尾页最后一行不是最后一轮（读到 "${paging.onOpen.last}"）★`);
+}
+if (paging.onOpen.loaded > 60) {
+  bad.push(`分页：首屏载入了 ${paging.onOpen.loaded} 行 —— 没有按页装载 ★`);
+}
+if (!paging.hasOlderButton) bad.push('分页：首屏没有「加载更早」（hasMore 没传到位）★');
+if (!paging.railUnloadedOnOpen) bad.push('分页：刻度梯顶端没有"未载入"那一段 ★');
+if (!paging.afterScrollUp.toBottom) bad.push('分页：往上滚之后没有出现「回到底部」★');
+if (paging.afterPage.loaded <= paging.onOpen.loaded) {
+  bad.push(`分页：「加载更早」之后行数没变（${paging.onOpen.loaded} → ${paging.afterPage.loaded}）★`);
+}
+if (!paging.afterPage.sameRow) {
+  bad.push(
+    `分页：翻页把阅读位置换掉了（"${paging.afterPage.anchorBefore.text}" → "${paging.afterPage.anchorAfter.text}"）★`,
+  );
+} else if (paging.afterPage.drift > 8) {
+  bad.push(`分页：翻页后同一行漂了 ${paging.afterPage.drift}px —— 高度差没有补回 scrollTop ★`);
+}
+if (paging.afterToBottom.gap > 25 || paging.afterToBottom.toBottom) {
+  bad.push(
+    `分页：「回到底部」没回到位（距底 ${paging.afterToBottom.gap}px，按钮还在=${paging.afterToBottom.toBottom}）★`,
   );
 }
 

@@ -158,9 +158,33 @@ Piggy 的转录视图默认走 messages；"历史考古"视图与分支树走 en
 
 **新会话预落盘【M1 实测】**：pi 对 `--session <空文件>` 会立即写入 SessionHeader 并置 flushed（`_setSessionFile` 的空文件分支），此后所有条目直接追加。Piggy 新建会话（`tab_create` 无 session_path）据此先按 pi 命名约定预创建空文件再打开，空白会话从创建起即持久化、重启可见；预创建失败时回退懒落盘。终端 pi 自建的会话仍是懒落盘，扫描器保留对"已分配未落盘"的容忍。
 
+**转录的显示真相是文件，不是 `get_messages`【2026-09-23 改】**：打开会话时前端调
+`session_page`（Rust 直接读文件尾部一页，03 §2.19），不再用 `get_messages` 一次性搬整段上下文。
+理由有三条，都是实测的：
+
+1. **`get_messages` 给的是"当前上下文"**（`agent-session.ts:1303` = `agent.state.messages`）：
+   压缩过的会话里，压缩之前的历史已经被摘要取代——而文件里那些条目**还在**，
+   它们才是"这个会话发生过什么"。分页读文件顺带把压缩行、`bashExecution` 一起带回来；
+2. **代价**：真机 11.7 MB 的会话，`get_messages` 要等 pi 载入并把整段上下文序列化过 IPC，
+   而尾部一页只要读 269 KB（最后 50 行）；同一台机器上 Rust 侧量到 5.1 ms vs 93 ms；
+3. **顺序与去重**：文件是 append-only 的权威序列，用 `role:timestamp` 去重后，
+   实时 `pi:commit` 继续往里追加，两条来源不会打架。
+
+兜底：没有会话文件（尚未落盘）或文件读不出来 → 退回 `get_messages`，此时不显示「加载更早」。
+**磁盘一个字节都不省**——Piggy 只读会话文件，绝不改写 pi 的 JSONL。
+
 ### 6.2 列表扫描（零进程成本）
 
 `sessions/list.rs` 直接扫描目录：读每个文件**首行** SessionHeader（含 name/时间戳）+ stat（size/mtime）→ 会话侧栏数据。不 spawn 任何 pi 进程。带 debounce 的 fs watcher（notify crate）保持列表新鲜（pi CLI 在终端产生的会话也实时出现）。
+
+**pi 的内建斜杠命令不在 RPC 协议里【2026-09-23 核实】**：`get_commands` 只返回
+扩展命令（`extensionRunner.getRegisteredCommands()`）、prompt 模板与 skills
+（`rpc-mode.ts:682-712`）；pi 自己那 24 条内建命令（`core/slash-commands.ts` 的
+`BUILTIN_SLASH_COMMANDS`：`compact` / `new` / `model` / `thinking` / `name` / `export` /
+`copy` / `resume` / `tree` / `fork` / `clone` / `reload` / `quit` …）是**交互模式本地解析**的，
+协议里一个字都没有。所以界面必须自己补一张表（03 §3.0c）：能做的映射到已有 RPC
+（`compact` → `pi_compact`、`name` → `set_session_name`、`export` → `export_html`…），
+做不到的明确标"暂无入口"——**绝不能把 `/compact` 当普通消息发给模型**。
 
 ### 6.3 打开互斥
 

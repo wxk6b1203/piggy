@@ -247,6 +247,44 @@ const messages = [
 ];
 
 /**
+ * mock 的"会话文件内容"（转录分页用，docs/03 §2.19）。
+ *
+ * 真机上这是 pi 写的 JSONL，`session_page` 从**文件尾**按字节倒着读；
+ * mock 里只保留"一页 = 若干行"这一层语义（游标对前端是不透明的）。
+ * 浏览器门禁可以调 {@link mockSetTranscriptRows} 灌一段长会话，
+ * 用来核对"打开即贴底 / 加载更早不跳"这两条真几何行为。
+ */
+let mockTranscript: Array<{ role: string; message: unknown }> = messages.map((m) => ({
+  role: String((m as { role?: string }).role ?? ''),
+  message: m,
+}));
+
+/** 灌入 mock 转录（门禁用：长会话的滚动手感只有真布局能量）。 */
+export function mockSetTranscriptRows(rows: Array<{ role: string; message: unknown }>): void {
+  mockTranscript = rows;
+}
+
+/** 造 n 轮（user + assistant）mock 转录；门禁与单测共用一套形状。 */
+export function mockBuildTranscript(turns: number): Array<{ role: string; message: unknown }> {
+  const out: Array<{ role: string; message: unknown }> = [];
+  for (let i = 1; i <= turns; i += 1) {
+    out.push({
+      role: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: `第 ${i} 轮的问题` }], timestamp: 1_700_000_000_000 + i * 1000 },
+    });
+    out.push({
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `第 ${i} 轮的回答：这里是一段用来撑出行高的正文。`.repeat(3) }],
+        timestamp: 1_700_000_000_500 + i * 1000,
+      },
+    });
+  }
+  return out;
+}
+
+/**
  * 会话 meta 的 mock。`createdMins` 与 `mtimeMins` **刻意分开**：
  * 侧栏按创建时间排序，若 mock 里两者一致就测不出"顺序随写入跳动"这个问题。
  */
@@ -676,6 +714,25 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     sessionName: state.sessionName,
   }),
   pi_get_messages: () => ({ messages }),
+  /**
+   * 转录分页（docs/03 §2.19）：从 mock 转录的尾部往回给一页。
+   *
+   * 游标语义与真机一致（"已载入的第一行之前的边界"），只是 mock 用**行下标**
+   * 而不是字节偏移——对前端它是不透明值，只有 Rust 那个实现需要关心单位。
+   * 每页默认 50 行，与 Rust `DEFAULT_LIMIT` 对齐，否则门禁量到的分页行为和真机不一样。
+   */
+  session_page: (a) => {
+    const total = mockTranscript.length;
+    const before = typeof a.before === 'number' ? Math.min(a.before, total) : total;
+    const limit = typeof a.limit === 'number' && a.limit > 0 ? Math.min(a.limit, 500) : 50;
+    const start = Math.max(0, before - limit);
+    return {
+      rows: mockTranscript.slice(start, before),
+      startOffset: start,
+      hasMore: start > 0,
+      branchy: false,
+    };
+  },
   pi_get_session_stats: () => ({
     tokens: { input: 12_000, output: 3_400, total: 15_400, cacheRead: 9_000 },
     cost: 0.0321,

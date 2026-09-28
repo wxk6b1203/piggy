@@ -57,6 +57,34 @@ body {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: var(--pg-sp-5) calc(var(--pg-sp-6) + var(--pg-rail-clearance)) var(--pg-sp-5);
 }
+/* 分页（docs/03 §2.19）：「加载更早」贴在内容流顶端（DSH `.older` 同位置/同尺寸），
+   只有往上滚才看得到；加载中变成「载入历史…」并禁用。
+   r14 与底色/字色照 docs/12 §3.8 抄的 DSH 数值（`.older button`）。 */
+.pg-transcript-older { display: flex; justify-content: center; margin-bottom: var(--pg-sp-3); }
+.pg-transcript-older button {
+  padding: 4px 12px; border: none; border-radius: 14px;
+  background: var(--pg-hover-solid); color: var(--pg-fg-secondary);
+  font-size: var(--pg-fs-12); cursor: pointer;
+}
+.pg-transcript-older button:hover:not(:disabled) { background: var(--pg-active); }
+.pg-transcript-older button:disabled { cursor: default; opacity: 0.7; }
+.pg-transcript-hint { color: var(--pg-fg-dim); font-size: var(--pg-fs-13); padding: var(--pg-sp-2) 0; }
+/* 「回到底部」（DSH `chat.toBottom`：34×34 圆形浮起按钮，滚离底部才出现）。
+   不跟内容滚：挂在滚动容器的兄弟层（否则会被一起滚走）。
+   位置照 DSH 的 `.toBottomSlot` 口径——**对齐正文列右边缘**（max 里两项：
+   窗口够宽时贴正文列，窄时退回内边距），不是贴窗口右边。 */
+.pg-to-bottom {
+  position: absolute; bottom: 16px;
+  right: max(
+    calc(var(--pg-sp-6) + var(--pg-rail-clearance)),
+    calc((100% - 920px) / 2)
+  );
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  border: 0.5px solid var(--pg-border-l3); border-radius: var(--pg-r-pill);
+  background: var(--pg-bg-layer-2); color: var(--pg-fg);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%); cursor: pointer; z-index: 6;
+}
+.pg-to-bottom:hover { background: var(--pg-hover-solid); }
 /* 刻度梯：DSH 的几何（宽 28、贴边 12、竖直居中于可视带、内部可滚）
    —— 只有 28px 宽，落在上面的 44px 留白里，不压正文。 */
 .pg-rail {
@@ -99,6 +127,13 @@ body {
 .pg-rail-mark.is-preview::before { transform: translateY(-50%) scaleX(0.9); background: var(--pg-fg-caption); }
 /* 当前这一轮：满宽 + 最亮（用户说的"亮色的条子代表当前位置"） */
 .pg-rail-mark.is-active::before { transform: translateY(-50%) scaleX(1); background: var(--pg-fg); }
+/* 未载入的历史（分页）：梯子顶端一段虚线，点它翻页（docs/03 §2.19） */
+.pg-rail-unloaded { background: none; border: none; padding: 0; cursor: pointer; }
+.pg-rail-unloaded::before {
+  height: 2px; background: none; border-top: 2px dashed var(--pg-border-l4);
+  transform: translateY(-50%) scaleX(0.6);
+}
+.pg-rail-unloaded:hover::before { border-top-color: var(--pg-fg-caption); transform: translateY(-50%) scaleX(1); }
 .pg-rail-mark:focus-visible { outline: none; }
 .pg-rail-mark:focus-visible::before {
   transform: translateY(-50%) scaleX(1); background: var(--pg-brand);
@@ -216,6 +251,12 @@ body {
 }
 .pg-thinking summary, .pg-live-thinking summary { cursor: pointer; user-select: none; }
 .pg-thinking-body { white-space: pre-wrap; margin-top: 4px; }
+/* 压缩行（会话文件里的 `compaction` 条目，docs/03 §2.19）：与"思考"同一套左侧竖线，
+   但整行居中偏左、颜色更弱——它是历史里的一个书签，不是一条消息。 */
+.pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; margin: var(--pg-sp-3) 0; }
+.pg-compaction-tokens { color: var(--pg-fg-caption); }
+.pg-compaction-summary { margin-top: var(--pg-sp-2); font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
+.pg-compaction-summary summary { cursor: pointer; user-select: none; }
 /* 工具结果的**裸** pre（未走代码卡片的兜底路径）。
    `:not(.pg-codeblock-pre)` 是必须的：工具结果现在渲染成代码卡片（04 §5.2），
    少了这个排除，这条 max-height:240px 会盖掉卡片的折叠/展开逻辑 —— 也就是
@@ -618,7 +659,18 @@ body {
 .pg-slash-item { display: flex; gap: 8px; width: 100%; text-align: left; background: none; border: none; color: var(--pg-fg); padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
 .pg-slash-item:hover, .pg-slash-item[data-active] { background: color-mix(in srgb, var(--pg-accent) 14%, transparent); }
 .pg-slash-item[data-active] { box-shadow: inset 2px 0 0 var(--pg-accent); }
+.pg-slash-item code { flex: none; font-family: var(--pg-mono); }
 .pg-slash-desc { color: var(--pg-fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 参数提示（`/thinking <级别>`）与来源徽标（内建 / extension / prompt / skill）。
+ * 徽标靠右：一眼分清"这条是 Piggy 内建（选中即执行）"还是"这条要原样发给 pi"。 */
+.pg-slash-arg { color: var(--pg-fg-caption); }
+.pg-slash-src {
+  flex: none; margin-left: auto; align-self: center;
+  padding: 0 6px; border: 1px solid var(--pg-border-l2); border-radius: 8px;
+  color: var(--pg-fg-dim); font-size: var(--pg-fs-11); line-height: 16px;
+}
+.pg-slash-src[data-src='builtin'] { color: var(--pg-accent); border-color: color-mix(in srgb, var(--pg-accent) 45%, transparent); }
+.pg-slash-src[data-src='pi-builtin'] { color: var(--pg-fg-caption); border-style: dashed; }
 
 /* 工具 tab / 预览 / welcome */
 .pg-settings, .pg-missing { padding: 24px; font-size: 13px; }

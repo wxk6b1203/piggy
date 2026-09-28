@@ -116,6 +116,9 @@ describe('restore()：布局只能套一次，且必须套在活着的实例上'
             state: {},
           };
         });
+      if (name === 'session_page') {
+        return Promise.resolve({ rows: [], startOffset: 0, hasMore: false, branchy: false });
+      }
       if (name === 'pi_get_messages') return Promise.resolve({ messages: [] });
       return Promise.resolve(null);
     });
@@ -161,6 +164,9 @@ describe('restore()：布局只能套一次，且必须套在活着的实例上'
           worker_state: 'ready',
           state: {},
         });
+      if (name === 'session_page') {
+        return Promise.resolve({ rows: [], startOffset: 0, hasMore: false, branchy: false });
+      }
       if (name === 'pi_get_messages') return Promise.resolve({ messages: [] });
       return Promise.resolve(null);
     });

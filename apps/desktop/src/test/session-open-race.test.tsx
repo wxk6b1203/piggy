@@ -87,6 +87,7 @@ beforeEach(() => {
       await new Promise((r) => setTimeout(r, 30)); // IPC 往返窗口
       return tabCreateResponse(`tab-${seq}`);
     }
+    if (cmdName === 'session_page') return { rows: [], startOffset: 0, hasMore: false, branchy: false };
     if (cmdName === 'pi_get_messages') return { messages: [] };
     return null;
   });
@@ -192,7 +193,8 @@ describe('侧栏：同一会话文件不许并发建两个 worker', () => {
         return tabCreateResponse(`tab-${seq}`);
       }
       if (cmdName === 'pi_export_html') return { path: '/tmp/export.html' };
-      if (cmdName === 'pi_get_messages') return { messages: [] };
+      if (cmdName === 'session_page') return { rows: [], startOffset: 0, hasMore: false, branchy: false };
+    if (cmdName === 'pi_get_messages') return { messages: [] };
       return null;
     });
     mountDom(<SessionsSidebar />);

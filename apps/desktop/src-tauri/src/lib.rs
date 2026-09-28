@@ -344,6 +344,7 @@ pub fn run() {
             commands::session_dir_effective,
             commands::session_delete,
             commands::session_rename,
+            commands::session_page,
             commands::session_title_source,
             commands::session_title_generate,
             commands::title_model_options,

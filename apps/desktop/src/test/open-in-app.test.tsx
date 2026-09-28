@@ -98,6 +98,8 @@ function mockHost(
           session_name: 'Piggy', worker_state: 'ready',
           state: { model: { id: 'm1', name: 'm1', provider: 'p1' }, isStreaming: false },
         };
+      case 'session_page':
+        return { rows: [], startOffset: 0, hasMore: false, branchy: false };
       case 'pi_get_messages':
         return { messages: [] };
       default:

@@ -10,6 +10,7 @@ import { Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { cmd } from '@/lib/ipc';
 import { baseName } from '@/lib/paths';
+import { formatCacheHitPercent, formatTokens } from '@/lib/tokenFormat';
 import { windowEvents } from '@/lib/windowEvents';
 import { Icon } from '@/features/common/Icon';
 import { FileIcon } from '@/features/common/FileIcon';
@@ -22,6 +23,15 @@ type RightView = 'files' | 'stats' | 'tree' | 'fleet';
 
 export function RightBar({ tabId }: { tabId: string | null }) {
   const [view, setView] = useState<RightView>('files');
+  // 视图也可由外部命令打开：`/session` → 统计、`/tree` → 会话树（docs/04 §7.2）。
+  // 走事件而不是把 view 提进 store：右栏视图是纯局部 UI 状态，提上去只会多一份要同步的东西。
+  useEffect(
+    () =>
+      windowEvents.on('rightbar-view', (v) => {
+        if (v === 'files' || v === 'stats' || v === 'tree' || v === 'fleet') setView(v);
+      }),
+    [],
+  );
   return (
     <div className="pg-rightbar">
       <div className="pg-rightbar-body">
@@ -90,6 +100,11 @@ function StatsView({ tabId }: { tabId: string | null }) {
   const total = stats?.tokens?.total;
   const ctx = stats?.contextUsage;
   const pct = ctx?.percent;
+  // 命中率与上下文长度的口径都在 lib/tokenFormat（3 位小数，与状态行同一份实现）
+  const hit = formatCacheHitPercent(
+    stats?.tokens?.cacheRead ?? 0,
+    (stats?.tokens?.input ?? 0) + (stats?.tokens?.cacheRead ?? 0),
+  );
   return (
     <div className="pg-stats">
       <Row label="总 tokens" value={total?.toLocaleString() ?? '—'} />
@@ -98,11 +113,16 @@ function StatsView({ tabId }: { tabId: string | null }) {
         value={stats?.tokens ? `${(stats.tokens.input ?? 0).toLocaleString()} / ${(stats.tokens.output ?? 0).toLocaleString()}` : '—'}
       />
       <Row label="缓存读" value={stats?.tokens?.cacheRead?.toLocaleString() ?? '—'} />
+      <Row label="缓存命中" value={hit != null ? `${hit}%` : '—'} />
       <Row label="成本" value={stats?.cost != null ? `$${Number(stats.cost).toFixed(4)}` : '—'} />
       <div className="pg-stat-row">
         <span className="pg-stat-label">上下文</span>
         <span className="pg-stat-value">{pct != null ? `${pct}%` : '—'}</span>
       </div>
+      <Row
+        label="上下文长度"
+        value={`${formatTokens(ctx?.tokens)} / ${formatTokens(ctx?.contextWindow)}`}
+      />
       <div className="pg-usage-bar">
         <div
           className="pg-usage-fill"

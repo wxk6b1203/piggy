@@ -9,13 +9,14 @@
  *
  * 指标口径（全部来自 `get_session_stats`，pi docs/rpc-commands.md#get_session_stats）：
  *   轮 = userMessages；步 = assistantMessages + toolCalls（docs/11 §3 的步语义）
- *   缓存命中 = cacheRead / (input + cacheRead)
+ *   缓存命中 = cacheRead / (input + cacheRead)（口径在 lib/tokenFormat，3 位小数）
  *   tok/s = stats store 的实测增量速率，只在流式中显示
  */
 import { useStats } from '@/stores/stats';
 import type { SessionStats } from '@/stores/stats';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
+import { formatCacheHitPercent, formatTokens } from '@/lib/tokenFormat';
 
 export function SessionStatusLine({ tabId }: { tabId: string | null }) {
   const stats = useStats((s) => (tabId ? s.byTab[tabId] : undefined));
@@ -27,7 +28,7 @@ export function SessionStatusLine({ tabId }: { tabId: string | null }) {
   const turns = stats.userMessages ?? 0;
   const steps = (stats.assistantMessages ?? 0) + (stats.toolCalls ?? 0);
   const tokPerSec = streaming && rate && rate.tokPerSec > 0 ? Math.round(rate.tokPerSec) : null;
-  const hit = cacheHitRate(stats);
+  const hit = cacheHitPercent(stats);
   const total = stats.tokens?.total ?? 0;
 
   return (
@@ -42,10 +43,10 @@ export function SessionStatusLine({ tabId }: { tabId: string | null }) {
       </span>
       <span
         className="pg-status-pill"
-        title={`输入 ${fmt(stats.tokens?.input)} · 输出 ${fmt(stats.tokens?.output)} · 缓存读 ${fmt(stats.tokens?.cacheRead)}`}
+        title={`输入 ${formatTokens(stats.tokens?.input)} · 输出 ${formatTokens(stats.tokens?.output)} · 缓存读 ${formatTokens(stats.tokens?.cacheRead)}`}
       >
         <Icon name="database" size={14} />
-        {fmt(total)} tok
+        {formatTokens(total)} tok
         {hit != null ? ` · 缓存命中 ${hit}%` : ''}
       </span>
       {stats.cost != null ? (
@@ -58,22 +59,9 @@ export function SessionStatusLine({ tabId }: { tabId: string | null }) {
   );
 }
 
-/** 命中率 = 缓存读 /（输入 + 缓存读）；分母为 0 时无意义。 */
-function cacheHitRate(s: SessionStats): number | null {
+/** 命中率 = 缓存读 /（输入 + 缓存读）；分母为 0 时无意义（口径见 lib/tokenFormat）。 */
+function cacheHitPercent(s: SessionStats): string | null {
   const read = s.tokens?.cacheRead ?? 0;
   const input = s.tokens?.input ?? 0;
-  const denom = input + read;
-  if (denom <= 0) return null;
-  return Math.round((read / denom) * 100);
-}
-
-/** 大数字压缩：15400 → 15K，687000 → 687K（DSH 状态行同款口径）。 */
-function fmt(n: number | undefined): string {
-  if (n == null) return '0';
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) {
-    const k = n / 1000;
-    return k < 10 ? `${k.toFixed(1)}K` : `${Math.round(k)}K`;
-  }
-  return `${(n / 1_000_000).toFixed(2)}M`;
+  return formatCacheHitPercent(read, input + read);
 }

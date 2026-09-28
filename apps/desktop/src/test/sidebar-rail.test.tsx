@@ -72,6 +72,7 @@ describe('侧栏折叠：折叠态必须留一条可点的图标轨', () => {
           state: { model: { id: 'm1', name: 'm1', provider: 'p1' }, isStreaming: false },
         };
       }
+      if (name === 'session_page') return { rows: [], startOffset: 0, hasMore: false, branchy: false };
       if (name === 'pi_get_messages') return { messages: [] };
       return {};
     });

@@ -27,6 +27,7 @@ import { disposeLive } from '@/lib/live';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
+import { loadTail } from '@/lib/transcriptPage';
 import { wakeIfNeeded } from '@/lib/sleep';
 import { t } from '@/lib/i18n';
 import { Icon } from '@/features/common/Icon';
@@ -249,9 +250,9 @@ function ensureTab(snap: TabSnapshot) {
   const t = useTabs.getState();
   t.addTab(snap);
   void import('@/lib/tabEvents').then(({ ensureTabListeners }) => ensureTabListeners(snap.tab_id));
-  void cmd<{ messages: unknown[] }>('pi_get_messages', { tabId: snap.tab_id })
-    .then((r) => useMessages.getState().hydrate(snap.tab_id, r.messages as never[]))
-    .catch(() => {});
+  // 转录**分页**装载（docs/03 §2.19）：先读会话文件尾部一页，不等 pi 把整段历史搬过来。
+  // 文件读不到时 loadTail 自己会退回 pi_get_messages（lib/transcriptPage.ts）。
+  void loadTail(snap.tab_id, snap.session_file).catch(() => {});
 }
 
 /**

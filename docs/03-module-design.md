@@ -497,6 +497,45 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 `agent_dir()` / `sessions_root()`，断言默认目录仍是绝对路径（红检时它如实打印出
 `probe sessions=.pi/agent/sessions`，就是用户看到的那一幕）。
 
+### 2.19 `sessions/transcript.rs` — 转录分页读（打开不再吞整段历史）
+
+**它为什么存在**：打开会话原先调 `get_messages`（pi 进程内存里的当前上下文）一次性 hydrate
+整段历史。真机实测（2026-09-23，本机最大的会话）：
+
+| 文件 | 大小 | 行数 | 最后 10 行 | 最后 50 行 |
+|---|---|---|---|---|
+| `2026-09-21T14-18-43-680Z_01a0c455…jsonl` | 11.7 MB | 1070 | 17 KB | 269 KB |
+
+11.7 MB 里有 **6.96 MB 集中在 3 行**超长 `toolResult`（3.35 / 2.05 / 1.56 MB）——
+要看的最后 50 行只占 **2.3%**。同一台机器上 `cargo test --lib -- --ignored real_machine_page`
+量到的对照（debug 构建）：
+
+| 文件 | 尾部一页（读+解析 50 行） | 整文件读+解析 |
+|---|---|---|
+| 11.7 MB / 1070 行 | **5.1 ms** | 93 ms（1059 个可显示行） |
+| 4.9 MB / 2129 行 | 3.7 ms | 70 ms |
+| 3.9 MB / 1128 行 | 2.5 ms | 41 ms |
+
+**行 = pi 的 durable 条目**（`SessionEntry`），不是消息——否则分页边界会落在一次工具调用的中间。
+**活动分支 = 文件最后一条条目沿 `parentId` 往根走的那条链**（与 pi 的 `_buildIndex` 定 `leafId`
+的规则一致：逐条覆盖成最后一个条目）。线性文件走快路径（反向 64 KiB 分块扫描 + 字节游标）；
+窗口内一旦发现 `parentId` 链断裂（`/fork` 之类留下的分支）就退回慢路径（整文件扫一遍追叶子），
+**绝不把别的分支混进转录**。本机 28 个真实会话、5299 个 `parentId` 链接实测 **0 处断裂**。
+
+**投影规则**（哪些条目进转录）与前端渲染器一一对应：`user` / `assistant` / `toolResult` /
+`bashExecution`（`MessageView.tsx` 的四种）+ `compaction`（压缩行）。`system` 不进（前端本来就跳过），
+`custom` / `context_edit` / 模型变更只在轨迹视图里。**一页 = 一页看得见的行**：否则「加载更早」
+可能翻出一页全是渲染不出来的条目，用户点了却什么也没发生。
+
+**游标是字节偏移**（`startOffset`）：行号要全文件数一遍、条目 id 要全文件找一遍，都会把
+"打开只读一页"变成"打开读整个文件"。`hasMore` 取**乐观**口径（本页装满且前面还有字节），
+宁可多给一次"点了没反应"的机会，也不能漏掉真实存在的历史；真去翻那一页发现没有可显示行时，
+`hasMore` 会转 false，按钮自己消失（不会无限点）。
+
+守卫（`cargo test --lib sessions::transcript`，10 条）：尾页/上一页/文件头三段的游标衔接、
+非消息条目不占额度、压缩行、**3 MB 单行跨块拼回**、CRLF、截断尾行跳过、空文件、分支文件追活动分支、
+`limit` 夹取。另有一条 `--ignored` 真机用例打印真实文件的页数与耗时（上表就是它输出的）。
+
 ## 3. 前端侧模块（`src/`）
 
 ### 3.0 `lib/paths.ts` — 路径字符串（前端半边）
@@ -506,6 +545,49 @@ Rust 侧给界面的路径是**平台原生**的（`to_string_lossy()`，Windows
 **整条路径**，Monaco 也认不出 `Makefile`（`lastIndexOf('/')` 返回 -1）。现在统一走
 `baseName` / `splitPath` / `lastSeparator`（`/` 与 `\` 都算分隔符）；
 `src/test/paths.test.ts` 用 Windows、POSIX、混合分隔符、UNC、末尾分隔符五组输入锁住。
+
+### 3.0b `lib/tokenFormat.ts` — 数字口径（3 位小数 + 命中率的诚实规则）
+
+同一组数字出现在三处（Composer dock 的状态行、上下文环的 title、右栏「统计」），
+各算一遍就会出现"同一个 15400 在一处是 15.4K、另一处是 15K"。对应 DSH 的
+`client/chat/token-format.ts`（`formatTokens` / `formatExactTokens` / `formatCacheHitPercent`）。
+
+**精度（2026-09-23 用户要求）**：上下文长度与缓存命中率统一保留 **3 位小数**
+（`15400 → 15.400K`、`1_000_000 → 1.000M`、命中率 `42.857%`），小数位常量 `DECIMALS` 只此一处。
+环上的**百分数**仍是 DSH 的整数口径（它表达"还剩多少余量"），只有 title 里的长度用 3 位。
+
+**命中率的诚实规则**（照抄 DSH）：只要有 1 个 token 没命中就**绝不显示 `100%`**——
+四舍五入到 100 时自动加小数位把它区分出来（`99.9999%`）。这个数就是用来判断缓存有没有生效的，
+"99.6% 显示成 100%"会直接误导。整数运算（`percentUnits` 用 half-up 除法而不是浮点 `toFixed`），
+避免 `0.1+0.2` 那类表示误差在百分数上放大。
+
+### 3.0c `lib/slashCommands.ts` — 内建斜杠指令（pi 的 `get_commands` 不返回它们）
+
+pi 的 `get_commands` RPC **只返回扩展 / prompt / skill 注册的命令**
+（`rpc-mode.ts:682-712`）；pi 自己那 24 条**内建**命令（`core/slash-commands.ts` 的
+`BUILTIN_SLASH_COMMANDS`）不在协议里——它们是交互模式在本地解析的。于是 Piggy 里
+`/compact` 既不在补全列表里，敲下去还会被当成普通消息**发给模型**（用户报的就是这个）。
+
+这一层只收"Piggy 真的做得到"的命令（`compact` / `new` / `model` / `thinking` / `name` /
+`session` / `tree` / `export` / `copy` / `resume` / `settings` / `login` / `logout` / `hotkeys`），
+动作全部走 Piggy 已有路径（`pi_compact`、新建标签、打开设置、右栏视图事件…）；
+pi 有、Piggy 暂无入口的（`/fork` `/clone` `/reload` `/import` `/share` …）仍然**可见**，
+选中给一句"为什么没有 + 去哪儿做"——**绝不静默**（静默正是这个 bug 的形态）。
+
+三条纪律：**提交时先按指令拦一道**（`isKnownSlashCommand` → `dispatchSlashInput`），
+否则模型会收到字符串 `/compact`；**扩展/prompt/skill 命令照旧发给 pi**（那是 pi 的解析范围，
+Piggy 不重复实现）；**只有认得的才拦**（用户真的可能发一条以 `/` 开头的路径）。
+
+### 3.0d `lib/transcriptPage.ts` + `features/chat/transcriptScroll.ts` — 分页装载与滚动策略
+
+`loadTail` / `loadOlder` 是分页的唯一入口：有会话文件走 `session_page` 尾页，
+文件读不出来或没有文件时退回 `get_messages`（此时 `hasMore=false`，不显示「加载更早」）——
+**别把"文件读不到"变成"会话空白"**。
+
+`transcriptScroll.ts` 是纯函数（`distanceFromBottom` / `isAtTail` / `nextFollowing` /
+`scrollTopAfterPrepend`），阈值 25px 取自 DSH 的 `useScrollFollow(state.followingTail, 25)`。
+"打开即贴底""往上滚才停止跟随""翻页不跳"三条都是几何判断，而 jsdom 里
+`clientHeight` 恒为 0 —— 所以判断留在纯函数里单测，真几何交给浏览器门禁量。
 
 ### 3.1 `lib/ipc.ts`
 

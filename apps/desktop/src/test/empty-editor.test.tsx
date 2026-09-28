@@ -73,6 +73,7 @@ describe('空编辑区占位', () => {
           state: { model: { id: 'm1', name: 'm1', provider: 'p1' }, isStreaming: false },
         };
       }
+      if (name === 'session_page') return { rows: [], startOffset: 0, hasMore: false, branchy: false };
       if (name === 'pi_get_messages') return { messages: [] };
       return {};
     });
