@@ -1443,19 +1443,36 @@ const turnRail = { steps: {} };
   turnRail.steps.hover = await page.evaluate(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const marks = [...document.querySelectorAll('[data-rail-mark]')];
-    const target = marks[Math.min(3, marks.length - 1)];
+    // 挑**第 3 轮**：mock 里那一轮的回答是刻意写长的（约 300 字），
+    // 只有它会超出预览框的 3 行上限，才能核对"clamp 裁掉 + 省略号 + 不被父容器切"。
+    const target =
+      marks.find((m) => m.getAttribute('data-rail-mark') === '3') ??
+      marks[Math.min(3, marks.length - 1)];
     if (!target) return { ok: false, why: '没有刻度' };
     target.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
     await sleep(300);
     const box = document.querySelector('[data-rail-preview]');
     const r = box?.getBoundingClientRect();
+    const promptEl = document.querySelector('[data-rail-preview-prompt]');
+    const resEl = document.querySelector('[data-rail-preview-response]');
+    const cs = (el) => (el ? getComputedStyle(el) : null);
+    const lh = (el) => (el ? parseFloat(getComputedStyle(el).lineHeight) : 0);
     return {
       ok: true,
       turn: target.getAttribute('data-rail-mark'),
-      prompt: (document.querySelector('[data-rail-preview-prompt]')?.textContent ?? '').trim(),
-      response: (document.querySelector('[data-rail-preview-response]')?.textContent ?? '').trim(),
+      prompt: (promptEl?.textContent ?? '').trim(),
+      response: (resEl?.textContent ?? '').trim(),
       box: r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom) } : null,
       insideViewport: r ? r.x >= 0 && r.right <= window.innerWidth && r.y >= 0 && r.bottom <= window.innerHeight : false,
+      // 排版：DSH 的两个 font 令牌（--dsw-font-xs-strong-13 = 500 13px/20px、--dsw-font-xxs-12 = 12px/18px）
+      promptLineHeight: cs(promptEl)?.lineHeight ?? null,
+      promptWeight: cs(promptEl)?.fontWeight ?? null,
+      responseLineHeight: cs(resEl)?.lineHeight ?? null,
+      // 正文是不是**恰好 3 行**、以及裁掉它的到底是 clamp 还是父容器的 max-height
+      responseLines: resEl ? Math.round(resEl.clientHeight / lh(resEl)) : null,
+      responseClamped: resEl ? resEl.scrollHeight > resEl.clientHeight : null,
+      boxClipsContent: box ? box.scrollHeight > box.clientHeight + 1 : null,
+      boxContentH: box?.scrollHeight ?? null,
     };
   });
 
@@ -2150,6 +2167,27 @@ else {
       if (!hv.response) bad.push('预览滚动条：预览框没有回答摘要 ★');
       if (hv.response && !hv.response.includes('回答')) {
         bad.push(`预览滚动条：预览框正文不是回答摘要（"${hv.response}"）★`);
+      }
+      // 排版必须照 DSH 的 font 令牌（只写 font-size 会漏行高 —— 见下一条的由来）
+      if (hv.promptLineHeight !== '20px' || hv.promptWeight !== '500') {
+        bad.push(`预览滚动条：标题排版不是 DSH 的 500 13px/20px（实际 ${hv.promptWeight} ${hv.promptLineHeight}）★`);
+      }
+      if (hv.responseLineHeight !== '18px') {
+        bad.push(`预览滚动条：正文行高不是 DSH 的 18px（实际 ${hv.responseLineHeight}）★`);
+      }
+      // 正文恰好 3 行，且**是 clamp 裁的**（不是被父容器的 max-height 硬切）
+      if (hv.responseLines !== 3) {
+        bad.push(`预览滚动条：预览正文占 ${hv.responseLines} 行，应为 3 行 ★`);
+      }
+      if (!hv.responseClamped) {
+        bad.push('预览滚动条：正文没有超出 3 行，这条核对失去意义（mock 的样本该更长）★');
+      }
+      // 这一条是用户报的"overflow hidden 硬切"的回归守卫：
+      // 内容高度（1×20 + 4 + 3×18 + 上下 padding 20 = 98）必须 ≤ 容器的 100。
+      if (hv.boxClipsContent) {
+        bad.push(
+          `预览滚动条：预览框内容 ${hv.boxContentH}px 超过容器高度——第 3 行连同省略号被切掉了（行高/内边距改过？）★`,
+        );
       }
     }
   }

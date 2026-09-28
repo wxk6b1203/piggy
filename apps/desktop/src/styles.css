@@ -121,12 +121,22 @@ body {
 .pg-rail-preview-response {
   display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
 }
+/* 排版照抄 DSH 的两个 font 令牌（**不是只抄 font-size**）：
+     --dsw-font-xs-strong-13 = 500 13px/20px   → 标题
+     --dsw-font-xxs-12       = 400 12px/18px   → 正文
+   Piggy 侧对应 --pg-fs-13/--pg-lh-13 与 --pg-fs-12/--pg-lh-12。
+   ⚠️ 第一版只写了 font-size（行高继承正文的 24px），于是 1 行标题 + 3 行正文 =
+   10 + 24 + 4 + 3×24 + 10 = 120px > 容器的 max-height:100px —— **第三行连同省略号
+   被父容器切掉**，看起来就是"overflow: hidden 硬切"（用户报的正是这个）。
+   用 DSH 的行高后是 10 + 20 + 4 + 3×18 + 10 = 98px，与 100px 自洽。 */
 .pg-rail-preview-prompt {
-  color: var(--pg-fg); font-size: var(--pg-fs-13, 13px); font-weight: 600;
+  color: var(--pg-fg); font-size: var(--pg-fs-13); font-weight: 500;
+  line-height: var(--pg-lh-13);
   -webkit-line-clamp: 1;
 }
 .pg-rail-preview-response {
-  margin-top: 4px; color: var(--pg-fg-dim); font-size: var(--pg-fs-12, 12px);
+  margin-top: 4px; color: var(--pg-fg-dim); font-size: var(--pg-fs-12);
+  line-height: var(--pg-lh-12);
   -webkit-line-clamp: 3;
 }
 @keyframes pg-rail-preview-in {

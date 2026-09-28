@@ -41,6 +41,8 @@ vi.mock('@/lib/feedback', () => ({
   confirm: vi.fn(),
 }));
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   activeTurnOf,
   buildRailItems,
@@ -139,6 +141,72 @@ describe('当前轮次（activeTurnOf）', () => {
     // 阅读线在第一条之前 → 第一轮（不能返回 null，否则亮度会闪没）
     expect(activeTurnOf(items, 0, false)).toBe(1);
     expect(activeTurnOf([], 0, false)).toBeNull();
+  });
+});
+
+/**
+ * 预览框的**排版自洽性**（docs/04 §2.6）。
+ *
+ * 这条是补票：第一版只写了 `font-size`（行高继承正文的 24px），于是
+ * 1 行标题 + 3 行正文 = 10 + 24 + 4 + 3×24 + 10 = **120px** > 容器的 `max-height: 100px`
+ * ——第三行连同省略号被父容器切掉，看起来就是"overflow: hidden 硬切"。
+ * 行高换成 DSH 的令牌（`--dsw-font-xs-strong-13` = 13px/20px、`--dsw-font-xxs-12` = 12px/18px）
+ * 之后是 98px，与 100px 自洽。
+ *
+ * jsdom 量不出布局，所以这里核对的是**那个算式本身**：从真的 CSS 里读出这四个数，
+ * 谁改了行高/内边距/容器高度而没重算，这条就红。真正的渲染由浏览器门禁量。
+ */
+describe('预览框排版与容器高度自洽（CSS 数值）', () => {
+  /** 去掉注释再解析：注释里也会出现 "max-height:100px" 这类字样（我自己写的说明）。 */
+  const bare = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '');
+  const css = bare(readFileSync(resolve(__dirname, '..', 'styles.css'), 'utf8'));
+  const tokens = bare(readFileSync(resolve(__dirname, '..', 'styles', 'tokens.css'), 'utf8'));
+
+  /** 取某个选择器的声明块——**同一个选择器会出现两次**（共享块 + 它自己那块），
+      所以按"包含某个属性"来挑，而不是取第一个匹配。 */
+  const ruleOf = (selector: string, prop: string): string => {
+    const hit = css.split('}').find((r) => r.includes(selector) && r.includes(prop));
+    if (!hit) throw new Error(`styles.css 里找不到含 ${prop} 的 ${selector} 规则`);
+    return `${hit}}`;
+  };
+  const px = (src: string, re: RegExp, what: string): number => {
+    const m = re.exec(src);
+    if (!m?.[1]) throw new Error(`没能读出${what}：${re}`);
+    return parseFloat(m[1]);
+  };
+  const token = (name: string) => px(tokens, new RegExp(`(?:${name}:\\s*)(\\d+)px`), name);
+
+  it('排版取 DSH 的两个 font 令牌（只写 font-size 就是那次 bug）', () => {
+    // DSH：--dsw-font-xs-strong-13 = 500 13px/20px、--dsw-font-xxs-12 = 12px/18px
+    expect(token('--pg-lh-13')).toBe(20);
+    expect(token('--pg-lh-12')).toBe(18);
+    const prompt = ruleOf('.pg-rail-preview-prompt', 'line-height');
+    const response = ruleOf('.pg-rail-preview-response', 'line-height');
+    expect(prompt, '标题没写 line-height').toMatch(/line-height:\s*var\(--pg-lh-13\)/);
+    expect(response, '正文没写 line-height').toMatch(/line-height:\s*var\(--pg-lh-12\)/);
+    expect(prompt).toMatch(/-webkit-line-clamp:\s*1/);
+    expect(response).toMatch(/-webkit-line-clamp:\s*3/);
+    // 三行封顶靠的是 clamp，而 clamp 要求 display:-webkit-box + overflow:hidden——
+    // 那两条写在**两个类共享**的那条规则里，所以这里查共享块（不是各自那块）
+    const shared = css
+      .split('}')
+      .find((r) => r.includes('.pg-rail-preview-prompt,') && r.includes('display: -webkit-box'));
+    expect(shared, '标题/正文没有共享的 -webkit-box 规则，clamp 不生效').toBeTruthy();
+    expect(shared, '共享规则里没隐藏溢出，省略号不会出现').toContain('overflow: hidden');
+    expect(shared, '共享规则没有覆盖到正文').toContain('.pg-rail-preview-response');
+    expect(shared).toContain('-webkit-box-orient: vertical');
+  });
+
+  it('算式 1×20 + 4 + 3×18 + 上下内边距 ≤ 容器 max-height（否则第 3 行连同省略号被切）', () => {
+    const box = ruleOf('.pg-rail-preview', 'max-height');
+    const response = ruleOf('.pg-rail-preview-response', 'margin-top');
+    const pad = px(box, /padding:\s*(\d+)px/, '预览框上下内边距');
+    const maxH = px(box, /max-height:\s*(\d+)px/, '预览框 max-height');
+    const margin = px(response, /margin-top:\s*(\d+)px/, '正文上边距');
+    const content = token('--pg-lh-13') + margin + 3 * token('--pg-lh-12') + pad * 2;
+    expect(pad).toBe(10);
+    expect(content, `内容 ${content}px 超过容器 ${maxH}px——第三行与省略号会被切掉`).toBeLessThanOrEqual(maxH);
+    expect(maxH - content).toBeLessThanOrEqual(4); // 也别留太多空白（DSH 的 100 是照这套令牌算的）
   });
 });
 
