@@ -564,3 +564,55 @@ fn plugin_and_title_payloads_are_camel_case() {
     );
     assert!(a.get("isDefault").is_none(), "PathApplication 不该发 isDefault：{a}");
 }
+
+/// 「标题模型」下拉的数据源：`title_model_options` 的返回形状（docs/03 §2.16）。
+///
+/// 这条是**跨 IPC 契约**，与 `sessions/title.rs::model_options_keys_are_camel_case`
+/// 是同一件事的两道锁（那边锁 Rust 自己的序列化，这边锁"发出去的那份值"）。
+/// 前端 `sessionTitle.ts::normalizeModelOptions` 读的是 `models / note / piBin / elapsedMs`，
+/// 少一个键的表现是**界面少一句话**而不是报错——所以键名要在这里写死。
+#[test]
+fn title_model_options_payload_is_camel_case() {
+    use piggy_lib::sessions::title::{ModelOption, ModelOptions};
+
+    let opts = ModelOptions {
+        models: vec![
+            ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3-flash".into(), reasoning: true },
+            ModelOption { provider: "local".into(), id: "no-think".into(), reasoning: false },
+        ],
+        note: None,
+        pi_bin: "/usr/local/bin/pi".into(),
+        elapsed_ms: 612,
+    };
+    let v = serde_json::to_value(&opts).unwrap();
+    for k in ["models", "note", "piBin", "elapsedMs"] {
+        assert!(v.get(k).is_some(), "ModelOptions 缺 {k}：{v}");
+    }
+    for bad in ["pi_bin", "elapsed_ms"] {
+        assert!(v.get(bad).is_none(), "ModelOptions 漏出 snake_case {bad}：{v}");
+    }
+    // 前端拿 `elapsedMs` 做算术（undefined 会变成 NaN 显示给用户——本项目真发生过）
+    assert!(v["elapsedMs"].is_number(), "{}", v["elapsedMs"]);
+    // reasoning 必须是**布尔**：前端用它决定"思考强度"能不能选。
+    // 字符串 "yes" 在 JS 里也是真值 → 不支持推理的模型会被显示成支持。
+    for m in v["models"].as_array().unwrap() {
+        assert!(m["reasoning"].is_boolean(), "reasoning 必须是布尔：{m}");
+        assert!(m["provider"].is_string() && m["id"].is_string(), "{m}");
+    }
+    assert_eq!(v["models"][1]["reasoning"], serde_json::json!(false));
+}
+
+/// 思考强度：合法值只有 pi 认的那 7 个，且**只有**它们能被写进 config
+/// （写错了 pi 只打一行 stderr 警告然后静默用默认档，界面上看不出任何区别）。
+#[tokio::test]
+async fn thinking_levels_are_the_pi_ones_and_invalid_ones_are_rejected() {
+    use piggy_lib::sessions::title::{is_valid_thinking, THINKING_LEVELS};
+
+    for lv in THINKING_LEVELS {
+        assert!(is_valid_thinking(lv), "{lv} 应当是合法档位");
+    }
+    for bad in ["", "  ", "none", "HIGH", "extreme", "off,high"] {
+        assert!(!is_valid_thinking(bad), "{bad:?} 不该被当成合法档位");
+    }
+}
+

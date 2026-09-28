@@ -8,14 +8,45 @@
  * 这里不缓存、不做本地合并：生成完重新拉会话列表，界面显示的必须就是磁盘上的。
  */
 import { cmd } from '@/lib/ipc';
+import { thinkingLabel } from '@/lib/thinking';
 
 export type TitleStrategy = 'first' | 'recent' | 'both';
+
+/** pi 认为可用的一个模型（`title_model_options` 的一项）。 */
+export interface ModelOption {
+  provider: string;
+  id: string;
+  /** pi 的 `m.reasoning`。false = 它只认 `off`，思考强度这个下拉对它没意义。 */
+  reasoning: boolean;
+}
+
+/**
+ * 「标题模型」下拉的数据源（`pi --list-models` 的解析结果）。
+ *
+ * `note` 是**一个模型都没解析出来时** pi 的原话（没配密钥、或表格格式变了）。
+ * 有它界面才能说清"为什么没有可选项"，而不是显示一个空下拉。
+ */
+export interface TitleModelOptions {
+  models: ModelOption[];
+  note: string | null;
+  /** 是哪个 pi 答的（排错时第一个要问的问题） */
+  piBin: string | null;
+  elapsedMs: number | null;
+}
 
 /** 生成标题**会拿什么去生成**（不调用模型，纯读会话文件）。 */
 export interface TitleSourceInfo {
   cwd: string | null;
   provider: string | null;
   modelId: string | null;
+  /** **真正会被调用**的那个模型（设置覆盖优先）；null = 都不给，pi 用默认 */
+  modelUsed?: string | null;
+  /** `modelUsed` 是从哪儿来的：override / session / default / invalid */
+  modelSource?: 'override' | 'session' | 'default' | 'invalid';
+  /** 覆盖写错了时的原因（生成时会直接失败，所以预览必须说出来） */
+  modelError?: string | null;
+  /** 这次请求的思考强度；null = 不传 `--thinking`（用 pi/模型默认档） */
+  thinking?: string | null;
   firstMessage: string | null;
   recentMessages: string[];
   userMessageCount: number;
@@ -35,6 +66,8 @@ export interface TitleResult {
   modelId: string | null;
   /** 实际用了哪个模型（`provider/modelId`）；null = 让 pi 用它自己的默认 */
   modelUsed: string | null;
+  /** 这次请求的思考强度；null = 没传 `--thinking`（用 pi/模型默认档） */
+  thinkingUsed: string | null;
   /** 耗时（毫秒）。**null = 后端没给**（形状漂移时不再渲染成 NaN） */
   elapsedMs: number | null;
   /** 送出去的提示词字数。**null = 后端没给** */
@@ -46,6 +79,44 @@ export interface TitleResult {
 export async function loadTitleSource(path: string): Promise<TitleSourceInfo> {
   return await cmd<TitleSourceInfo>('session_title_source', { path });
 }
+
+/** 问 pi 现在有哪些可用模型（给它一个下拉，而不是让用户手打 provider/modelId）。 */
+export async function loadTitleModels(): Promise<TitleModelOptions> {
+  return normalizeModelOptions(await cmd<unknown>('title_model_options'));
+}
+
+/**
+ * 归一化模型列表（与 `normalizeTitleResult` 同一条纪律：形状在 IPC 边界处校验）。
+ *
+ * 这里**必须**把 `reasoning` 收紧成布尔：Rust 发 `"yes"`（字符串）时 JS 也会当真值，
+ * 于是"不支持推理的模型"会被界面当成支持——那正是我们自己文档里写过的
+ * "看上去很像事实的错误结论"。认不出就按 false 处理，并 warn。
+ */
+export function normalizeModelOptions(raw: unknown): TitleModelOptions {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const list = Array.isArray(r.models) ? r.models : [];
+  const models: ModelOption[] = [];
+  for (const item of list) {
+    const m = (item ?? {}) as Record<string, unknown>;
+    const provider = typeof m.provider === 'string' ? m.provider : '';
+    const id = typeof m.id === 'string' ? m.id : '';
+    if (!provider || !id) continue;
+    if (typeof m.reasoning !== 'boolean') {
+      console.warn('[sessionTitle] 形状漂移：模型项没有布尔 reasoning', m);
+    }
+    models.push({ provider, id, reasoning: m.reasoning === true });
+  }
+  if (!Array.isArray(r.models)) {
+    console.warn('[sessionTitle] 形状漂移：title_model_options 没有 models 数组', r);
+  }
+  return {
+    models,
+    note: typeof r.note === 'string' && r.note !== '' ? r.note : null,
+    piBin: typeof r.piBin === 'string' && r.piBin !== '' ? r.piBin : null,
+    elapsedMs: typeof r.elapsedMs === 'number' && Number.isFinite(r.elapsedMs) ? r.elapsedMs : null,
+  };
+}
+
 
 /**
  * 把后端返回的形状归一化（docs/15 规矩 28：IPC 形状在边界处校验）。
@@ -74,6 +145,7 @@ export function normalizeTitleResult(raw: unknown): TitleResult {
     provider: str(r.provider),
     modelId: str(r.modelId),
     modelUsed: str(r.modelUsed),
+    thinkingUsed: str(r.thinkingUsed),
     elapsedMs,
     promptChars,
     applied: r.applied === true,
@@ -101,6 +173,9 @@ export function describeRun(r: TitleResult): string {
   const parts: string[] = [r.modelUsed ?? 'pi 的默认模型'];
   if (r.elapsedMs !== null) parts.push(`${(r.elapsedMs / 1000).toFixed(1)}s`);
   if (r.promptChars !== null) parts.push(`素材 ${r.promptChars} 字`);
+  // 思考强度只在**真的设了**的时候才说：没设 = 用 pi/模型默认档，
+  // 那是模型的常态，写出来只会让提示更长（真正的"安静地按用户要求做了"）。
+  if (r.thinkingUsed) parts.push(`思考 ${thinkingLabel(r.thinkingUsed)}`);
   if (!r.applied) parts.push('未写入');
   return parts.join(' · ');
 }

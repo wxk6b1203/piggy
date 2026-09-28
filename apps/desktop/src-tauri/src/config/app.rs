@@ -76,6 +76,16 @@ pub struct PerfConfig {
     /// （会话文件里最后一次 `model_change`）。填了就用它——想用便宜模型刷标题时用。
     #[serde(default)]
     pub title_model: Option<String>,
+    /// 生成标题时的思考强度（pi `--thinking`）。`None` = 不传这个开关，
+    /// 用 pi 与模型自己的默认档。
+    ///
+    /// 取值必须是 pi 认的那 7 个（`sessions::title::THINKING_LEVELS`）。
+    /// **刻意不用枚举 + serde 校验**：config.json 是可以手改的，而
+    /// `perf_config_load` 是"整份反序列化失败就 `unwrap_or_default()`"——
+    /// 一个拼错的枚举值会让**所有**设置一起被重置成默认，一个错字毁掉一份配置。
+    /// 存字符串、由 `clamp()` 单独丢掉这一个字段，坏影响的半径就只有它自己。
+    #[serde(default)]
+    pub title_thinking: Option<String>,
 }
 
 fn default_title_max_chars() -> u32 {
@@ -115,6 +125,7 @@ impl Default for PerfConfig {
             title_max_chars: default_title_max_chars(),
             title_source: crate::sessions::title::TitleStrategy::default(),
             title_model: None,
+            title_thinking: None,
         }
     }
 }
@@ -135,6 +146,17 @@ impl PerfConfig {
                 None
             } else {
                 Some(m.to_string())
+            };
+        }
+        // 思考强度：不认识的值**丢掉**（回落"不传 --thinking"）。
+        // pi 自己对不认识的档位是"警告 + 静默用默认"，所以留着一个拼错的值
+        // 等于每次生成都多一行没人看的警告，行为还跟没设一样。
+        if let Some(t) = self.title_thinking.as_deref() {
+            let t = t.trim();
+            self.title_thinking = if crate::sessions::title::is_valid_thinking(t) {
+                Some(t.to_string())
+            } else {
+                None
             };
         }
     }

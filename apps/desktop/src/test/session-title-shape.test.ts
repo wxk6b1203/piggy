@@ -26,7 +26,12 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() =
 vi.mock('@/lib/feedback', () => ({ toast: { error: vi.fn(), success: vi.fn() }, FeedbackBridge: () => null }));
 
 import { mockInvoke } from '@/lib/mockBackend';
-import { describeRun, normalizeTitleResult, type TitleResult } from '@/lib/sessionTitle';
+import {
+  describeRun,
+  normalizeModelOptions,
+  normalizeTitleResult,
+  type TitleResult,
+} from '@/lib/sessionTitle';
 
 /** 与 `src-tauri/src/sessions/title.rs::generated_result_keys_are_camel_case` 同源。 */
 const RESULT_KEYS = [
@@ -35,6 +40,7 @@ const RESULT_KEYS = [
   'provider',
   'modelId',
   'modelUsed',
+  'thinkingUsed',
   'elapsedMs',
   'promptChars',
   'applied',
@@ -46,6 +52,10 @@ const SOURCE_KEYS = [
   'cwd',
   'provider',
   'modelId',
+  'modelUsed',
+  'modelSource',
+  'modelError',
+  'thinking',
   'firstMessage',
   'recentMessages',
   'userMessageCount',
@@ -55,6 +65,17 @@ const SOURCE_KEYS = [
   'maxChars',
   'promptChars',
 ];
+
+/** 与 `title.rs::model_options_keys_are_camel_case` 同源。 */
+const MODEL_OPTIONS_KEYS = ['models', 'note', 'piBin', 'elapsedMs'];
+
+/**
+ * pi 的思考档位（`packages/coding-agent/src/cli/args.ts:60` 的
+ * `VALID_THINKING_LEVELS`）。Rust 侧 `title.rs::THINKING_LEVELS` 是**另一份**手写清单，
+ * 两边的用例互为金标——抄错一个字母时 pi 只会打一行 stderr 警告然后静默用默认档，
+ * 界面上完全看不出区别。
+ */
+const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 describe('标题生成的 mock 形状（跨语言金标）', () => {
   it('session_title_generate 的键与 Rust 契约一致', async () => {
@@ -85,8 +106,72 @@ describe('标题生成的 mock 形状（跨语言金标）', () => {
     void raw;
   });
 
-  it('形状漂移时降级而不是渲染成 NaN（补票的兜底那一层）', () => {
-    // 模拟"又有人忘了 camelCase"：只有 snake_case 字段。
+  it('title_model_options 的键与 Rust 契约一致，且 reasoning 是布尔', async () => {
+    const r = (await mockInvoke('title_model_options', {})) as Record<string, unknown>;
+    expect(Object.keys(r).sort()).toEqual([...MODEL_OPTIONS_KEYS].sort());
+    expect(Array.isArray(r.models)).toBe(true);
+    expect(typeof r.elapsedMs).toBe('number');
+    // reasoning 必须是布尔：字符串 "yes" 在 JS 里是真值，
+    // 会让"不支持推理的模型"看起来支持思考——一个很像事实的错误结论
+    for (const m of r.models as Record<string, unknown>[]) {
+      expect(typeof m.reasoning).toBe('boolean');
+      expect(typeof m.provider).toBe('string');
+      expect(typeof m.id).toBe('string');
+    }
+  });
+
+  it('归一化层把非布尔的 reasoning 收成 false 而不是当真值', () => {
+    const opts = normalizeModelOptions({
+      models: [
+        { provider: 'p', id: 'good', reasoning: true },
+        { provider: 'p', id: 'string-flag', reasoning: 'yes' },
+        { provider: 'p', id: '', reasoning: true },
+        { id: 'no-provider', reasoning: true },
+      ],
+      note: '',
+      piBin: '/bin/pi',
+      elapsed_ms: 1,
+    });
+    // 缺 provider/id 的项被丢掉；字符串 reasoning 降级成 false（宁可少说"支持"）
+    expect(opts.models.map((m) => m.id)).toEqual(['good', 'string-flag']);
+    expect(opts.models[1]!.reasoning).toBe(false);
+    // 认不出的键（snake_case）不会被当成 elapsedMs —— 归一化只认 camelCase
+    expect(opts.elapsedMs).toBeNull();
+    expect(opts.note).toBeNull();
+    // 完全没有 models 数组时也不炸
+    expect(normalizeModelOptions(undefined).models).toEqual([]);
+    expect(normalizeModelOptions({}).models).toEqual([]);
+  });
+
+  it('思考档位清单与 pi 的 VALID_THINKING_LEVELS 逐个一致', async () => {
+    const { THINKING_LEVELS, thinkingLabel, thinkingOptions } = await import('@/lib/thinking');
+    expect([...THINKING_LEVELS]).toEqual(PI_THINKING_LEVELS);
+    // 每一档都要有中文名：漏一个的后果是下拉里出现一个英文/空白的选项
+    for (const lv of THINKING_LEVELS) {
+      expect(thinkingLabel(lv)).toBeTruthy();
+      expect(thinkingLabel(lv)).not.toBe(lv);
+    }
+    expect(thinkingOptions().map((o) => o.value)).toEqual(PI_THINKING_LEVELS);
+    // 认不出的值原样显示（不隐藏"我们不认识它"这件事）
+    expect(thinkingLabel('wat')).toBe('wat');
+  });
+
+  it('设了思考强度时提示里会说出来（用户要知道自己的选择生效了）', async () => {
+    const { normalizeTitleResult, describeRun } = await import('@/lib/sessionTitle');
+    const withThinking = normalizeTitleResult({
+      title: 't', raw: 'r', modelUsed: 'p/m', thinkingUsed: 'xhigh',
+      elapsedMs: 1000, promptChars: 10, applied: true,
+    });
+    expect(describeRun(withThinking)).toBe('p/m · 1.0s · 素材 10 字 · 思考 极高');
+    // 没设 = 不提（那是模型的常态，写出来只会让提示更长）
+    const without = normalizeTitleResult({
+      title: 't', raw: 'r', modelUsed: 'p/m', elapsedMs: 1000, promptChars: 10, applied: true,
+    });
+    expect(describeRun(without)).toBe('p/m · 1.0s · 素材 10 字');
+    expect(without.thinkingUsed).toBeNull();
+  });
+
+  it('形状漂移时降级而不是渲染成 NaN（补票的兜底那一层）', () => {    // 模拟"又有人忘了 camelCase"：只有 snake_case 字段。
     // 归一化这一层是补票——根因已经在 Rust 侧锁住了，但**任何**将来的字段漂移
     // 都不该把 NaN / undefined 送到用户眼前。
     const legacy = {

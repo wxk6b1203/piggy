@@ -10,6 +10,15 @@
  */
 import { Modal } from 'antd';
 import type { TitleSourceInfo } from '@/lib/sessionTitle';
+import { thinkingLabel } from '@/lib/thinking';
+
+/** "这个模型是谁定的"——用户对标题不满意时，改法完全取决于这一格。 */
+function sourceLabel(s: TitleSourceInfo['modelSource']): string {
+  if (s === 'override') return '设置里指定的';
+  if (s === 'session') return '会话自己最后一次用过的';
+  if (s === 'invalid') return '设置里写错了';
+  return 'pi 的默认';
+}
 
 export function SessionTitlePreview({
   open,
@@ -38,9 +47,22 @@ export function SessionTitlePreview({
           <p className="pg-title-preview-row">
             <span>会用哪个模型</span>
             <strong data-title-model>
-              {info.provider
-                ? `${info.provider}/${info.modelId ?? '?'}`
-                : 'pi 的默认模型（会话里没有 model_change 记录）'}
+              {info.modelSource === 'invalid'
+                ? '设置里的「标题模型」写错了'
+                : info.modelUsed
+                  ? `${info.modelUsed}（${sourceLabel(info.modelSource)}）`
+                  : 'pi 的默认模型（设置与会话里都没指定）'}
+            </strong>
+          </p>
+          {info.modelError && (
+            <p className="pg-plugin-warn" data-title-model-error>
+              {info.modelError}
+            </p>
+          )}
+          <p className="pg-title-preview-row">
+            <span>思考强度</span>
+            <strong data-title-thinking>
+              {info.thinking ? thinkingLabel(info.thinking) : '不传（用模型自己的默认档）'}
             </strong>
           </p>
           <p className="pg-title-preview-row">

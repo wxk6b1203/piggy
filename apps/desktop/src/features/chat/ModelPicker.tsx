@@ -15,6 +15,7 @@ import { cmd } from '@/lib/ipc';
 import { useTabs } from '@/stores/tabs';
 import { Icon } from '@/features/common/Icon';
 import { Picker, type PickerItem } from '@/features/common/Picker';
+import { thinkingLabel as thinkLabel } from '@/lib/thinking';
 
 interface ModelInfo {
   id: string;
@@ -23,19 +24,6 @@ interface ModelInfo {
   reasoning?: boolean;
   contextWindow?: number;
 }
-
-/** thinking 档位的中文名。pi 的取值见 docs/rpc-commands.md#set_thinking_level。 */
-const THINKING_LABEL: Record<string, string> = {
-  off: '关闭',
-  minimal: '极简',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最大',
-};
-
-const thinkLabel = (lv: string) => THINKING_LABEL[lv] ?? lv;
 
 export function ModelPicker({ tabId }: { tabId: string }) {
   const model = useTabs((s) => s.tabs[tabId]?.model ?? null);

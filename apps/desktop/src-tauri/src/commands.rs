@@ -364,6 +364,7 @@ pub async fn perf_config_save(
     title_max_chars: Option<u32>,
     title_source: Option<String>,
     title_model: Option<String>,
+    title_thinking: Option<String>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -380,6 +381,22 @@ pub async fn perf_config_save(
         let m = m.trim();
         // 空串 = 清掉覆盖（回到"跟会话自己的模型"），不是"用一个空模型名"
         cfg.title_model = if m.is_empty() { None } else { Some(m.to_string()) };
+    }
+    if let Some(t) = title_thinking.as_deref() {
+        let t = t.trim();
+        // 空串 = 清掉（回到"用 pi/模型自己的默认档"）。
+        // 不认识的值在这里**报错**（而不是像 clamp 那样默默丢掉）：
+        // 界面只可能从固定清单里选，走到这里说明调用方写错了，应该吵。
+        if t.is_empty() {
+            cfg.title_thinking = None;
+        } else if crate::sessions::title::is_valid_thinking(t) {
+            cfg.title_thinking = Some(t.to_string());
+        } else {
+            return Err(format!(
+                "未知的思考强度 {t:?}（可选：{}）",
+                crate::sessions::title::THINKING_LEVELS.join(" / ")
+            ));
+        }
     }
 
     // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）
@@ -726,10 +743,34 @@ pub async fn session_title_source(path: String) -> Result<Value, String> {
             &src,
             cfg.title_source,
             cfg.title_max_chars,
+            cfg.title_model.as_deref(),
+            cfg.title_thinking.as_deref(),
         ))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// pi 此刻**认为可用**的模型（"标题模型"下拉的数据源，docs/04 §2.2）。
+///
+/// 走 `pi --list-models`：与 `get_available_models` RPC 是同一份数据
+/// （`ModelRuntime.getAvailable()`），但**不需要会话**——"标题模型"是全局设置，
+/// 打开设置页时可能一个标签页都没有。真机实测 0.6s，所以由界面拉一次即可。
+#[tauri::command]
+pub async fn title_model_options(
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let pi_bin = {
+        let mut reg = state.registry.lock().await;
+        reg.resolve_bin()?
+    };
+    // cwd 用 HOME：pi 会顺带读 `<cwd>/.pi/…` 的项目级配置，而"列出模型"这件事
+    // 属于全局设置页，不该跟着某个项目走（项目级模型仍可手动填，见 docs/15 缺口）。
+    let cwd = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let opts = crate::sessions::title::list_models(&pi_bin, &cwd).await?;
+    serde_json::to_value(&opts).map_err(|e| e.to_string())
 }
 
 /// 生成会话标题（docs/03 §2.16）。
@@ -774,15 +815,16 @@ pub async fn session_title_generate(
         let mut reg = state.registry.lock().await;
         reg.resolve_bin()?
     };
-    let generated = crate::sessions::title::generate(
-        &pi_bin,
-        &cwd,
-        provider.as_deref(),
-        model_id.as_deref(),
-        &system,
-        &user,
+    let generated = crate::sessions::title::generate(crate::sessions::title::GenRequest {
+        pi_bin: &pi_bin,
+        cwd: &cwd,
+        provider: provider.as_deref(),
+        model_id: model_id.as_deref(),
+        thinking: cfg.title_thinking.as_deref(),
+        system: &system,
+        user: &user,
         max_chars,
-    )
+    })
     .await?;
 
     if !generated.usable {
@@ -806,7 +848,20 @@ pub async fn session_title_generate(
         (Some(p), Some(m)) => json!(format!("{p}/{m}")),
         _ => Value::Null,
     };
-    out["source"] = crate::sessions::title::describe(&source, strategy, max_chars);
+    // 这次请求的思考强度（null = 没传 `--thinking`，用 pi/模型默认）。
+    // 报的是**请求值**：pi 对不支持的档位会静默降级（`clampThinkingLevel`），
+    // 客户端拿不到降级后的实际值，所以这里不假装知道（docs/15 已知缺口）。
+    out["thinkingUsed"] = match cfg.title_thinking.as_deref() {
+        Some(t) => json!(t),
+        None => Value::Null,
+    };
+    out["source"] = crate::sessions::title::describe(
+        &source,
+        strategy,
+        max_chars,
+        cfg.title_model.as_deref(),
+        cfg.title_thinking.as_deref(),
+    );
     Ok(out)
 }
 

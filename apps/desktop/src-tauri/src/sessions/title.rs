@@ -16,13 +16,15 @@
 //! **一次性 pi 进程**：
 //!
 //! ```text
-//! pi -p --no-session -nt -nc --provider <p> --model <m> --system-prompt <S> <USER>
+//! pi -p --no-session -nt -nc [--provider <p> --model <m>] [--thinking <level>] --system-prompt <S> <USER>
 //! ```
 //!
 //! * `-p` 打印模式：模型的正文直接进 stdout，没有 TUI 转义；
 //! * `--no-session`：**不写会话文件**（实测确认：跑完 sessions 目录里多 0 个文件）；
 //! * `-nt`：不带任何工具（实测 `tools: []`）——生成标题不该让模型去读文件；
-//! * `-nc`：不读 AGENTS.md/CLAUDE.md（标题与项目上下文无关，读了反而是噪声）。
+//! * `-nc`：不读 AGENTS.md/CLAUDE.md（标题与项目上下文无关，读了反而是噪声）；
+//! * `--thinking`：可选，取值必须是 pi `cli/args.ts` 里那 7 个档位之一
+//!   （写错 pi 只打一行警告然后静默用默认档，所以由 `is_valid_thinking` 把关）。
 //!
 //! 代价是每次约一次进程启动 + 一次模型调用。这是**用户显式点的动作**，不在热路径上。
 //!
@@ -73,12 +75,54 @@ impl TitleStrategy {
 
 /// 默认字数上限。侧栏一行约 220px，20 个汉字正好；再长就被省略号吃掉，等于白生成。
 pub const DEFAULT_MAX_CHARS: u32 = 20;
+
+/// pi CLI 认可的思考档位，从 `packages/coding-agent/src/cli/args.ts:60`
+/// 的 `VALID_THINKING_LEVELS` **逐个抄来**的，不是自己起的名。
+///
+/// 为什么要抄：写错一个字母 pi **不会报错**——它只在 stderr 打一行
+/// `Warning: Invalid thinking level "…"` 然后**静默用默认档**继续跑
+/// （真机验证过）。也就是说拼错 = 用户以为设了、实际没设，而且没有任何提示。
+/// 所以这里必须自己校验一遍，前端那份清单与本常量互为金标（见
+/// `thinking_levels_match_pi_cli` 与 `session-title-shape.test.ts`）。
+pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// 是不是 pi 认的档位。空串**不算**（空 = 不传这个开关）。
+pub fn is_valid_thinking(level: &str) -> bool {
+    THINKING_LEVELS.contains(&level.trim())
+}
+
+/// `pi --list-models` 表格里的一行（**跨 IPC**，键名 camelCase）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub provider: String,
+    pub id: String,
+    /// pi 表格里的 `thinking` 列（源码里是 `m.reasoning`）。
+    /// 它决定"思考强度"这个下拉有没有意义：不支持推理的模型 pi 只认 `off`。
+    pub reasoning: bool,
+}
+
+/// `title_model_options` 的返回形状（**跨 IPC**，键名 camelCase）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOptions {
+    pub models: Vec<ModelOption>,
+    /// 一个模型都没解析出来时，把 pi 的**原话**带回来。
+    /// 否则界面只能说"没有模型"，而真正的原因（没配密钥 / 表格格式变了）
+    /// 就躺在 stdout 里没人看见。
+    pub note: Option<String>,
+    /// 是哪个 pi 答的（排错时第一个要问的问题）
+    pub pi_bin: String,
+    pub elapsed_ms: u128,
+}
 /// "最近几条"取几条用户消息进素材。
 pub const RECENT_LIMIT: usize = 3;
 /// 单条消息进提示词前先截到多少字符——长会话里第一条消息可能是一整篇粘贴的文档。
 const PER_MESSAGE_CHARS: usize = 400;
 /// 一次性 pi 进程的超时。标题是小事，卡住不能把界面钉死。
 const GENERATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// `pi --list-models` 的超时（真机实测 0.6s；它只读配置、不调模型）。
+const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 从会话文件里读出来的生成素材。
 ///
@@ -317,34 +361,68 @@ pub struct Generated {
     pub usable: bool,
 }
 
-/// 起一个一次性 pi 进程生成标题。**不写任何文件**。
-pub async fn generate(
-    pi_bin: &Path,
-    cwd: &Path,
+/// 一次性生成进程的 argv。
+///
+/// 抽成纯函数是为了让"到底传了什么"能被单测覆盖：这几个开关每一个都有实际后果，
+/// 而拼错了**不会报错**——只会换一种行为（`--no-session` 漏了就会写进会话转录、
+/// `-nt` 漏了模型就可能去动文件）。这类错误只能靠对着 argv 断言发现。
+pub fn generate_args(
     provider: Option<&str>,
     model_id: Option<&str>,
+    thinking: Option<&str>,
     system: &str,
     user: &str,
-    max_chars: u32,
-) -> Result<Generated, String> {
-    let started = std::time::Instant::now();
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--no-session".into(),
         "-nt".into(),
         "-nc".into(),
     ];
+    // provider/model **成对**才传（`pick_model` 已经保证了这一点）
     if let (Some(p), Some(m)) = (provider, model_id) {
         args.push("--provider".into());
         args.push(p.to_string());
         args.push("--model".into());
         args.push(m.to_string());
     }
+    // 思考强度：空/未设 = 不传这个开关，用 pi 与模型自己的默认。
+    // pi 对**不认识**的档位只打一行警告然后静默用默认档（真机验证过），
+    // 所以这里是最后一道关：只放行 `THINKING_LEVELS` 里的值。
+    if let Some(t) = thinking.map(str::trim).filter(|s| is_valid_thinking(s)) {
+        args.push("--thinking".into());
+        args.push(t.to_string());
+    }
     args.push("--system-prompt".into());
     args.push(system.to_string());
     // `--` 之后一律当消息：提示词里可能出现以 `-` 开头的内容（用户粘贴的 diff）
     args.push("--".into());
     args.push(user.to_string());
+    args
+}
+
+/// 一次生成请求。
+///
+/// 参数到 8 个时，"第 5 个位置传的是什么"已经没法从调用点读出来了——而且这里
+/// 三个 `Option<&str>` 挨在一起（provider / model_id / thinking），传串了**不会报错**，
+/// 只会换成另一个模型或另一个档位。抽成结构体让调用点自解释。
+pub struct GenRequest<'a> {
+    pub pi_bin: &'a Path,
+    pub cwd: &'a Path,
+    pub provider: Option<&'a str>,
+    pub model_id: Option<&'a str>,
+    /// 思考档位（必须是 `THINKING_LEVELS` 里的；非法值不会被传给 pi）
+    pub thinking: Option<&'a str>,
+    pub system: &'a str,
+    pub user: &'a str,
+    pub max_chars: u32,
+}
+
+/// 起一个一次性 pi 进程生成标题。**不写任何文件**。
+pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
+    let GenRequest { pi_bin, cwd, provider, model_id, thinking, system, user, max_chars } = req;
+    let started = std::time::Instant::now();
+    let args = generate_args(provider, model_id, thinking, system, user);
 
     let mut child = Command::new(pi_bin)
         .args(&args)
@@ -428,12 +506,40 @@ pub fn pick_model(
 }
 
 /// 给界面看的素材摘要（不生成，只看会拿什么去生成）。
-pub fn describe(source: &TitleSource, strategy: TitleStrategy, max_chars: u32) -> Value {
+pub fn describe(
+    source: &TitleSource,
+    strategy: TitleStrategy,
+    max_chars: u32,
+    override_ref: Option<&str>,
+    thinking: Option<&str>,
+) -> Value {
     let (system, user) = build_prompt(source, strategy, max_chars);
+    // "会用哪个模型"必须是**真正会被用的那个**，而不是会话里那个：
+    // 设置里有覆盖时，会话自己的模型根本不会被调用。预览界面照着这里显示，
+    // 两者分叉的话用户会对着一个错名字判断"为什么标题这么差"。
+    let from_override = override_ref.map(str::trim).is_some_and(|s| !s.is_empty());
+    let (model_used, model_source, model_error) = match pick_model(override_ref, source) {
+        Ok((Some(p), Some(m))) => (
+            Some(format!("{p}/{m}")),
+            if from_override { "override" } else { "session" },
+            None,
+        ),
+        // 谁都没给出模型 → 让 pi 用它自己的默认
+        Ok(_) => (None, "default", None),
+        // 覆盖写错了（比如只写了 provider）：生成时 `pick_model` 会直接报错，
+        // 所以**不能**说成"默认"——那会让人以为会正常生成。这里把原因带到界面上。
+        Err(e) => (None, "invalid", Some(e)),
+    };
     json!({
         "cwd": source.cwd,
         "provider": source.provider,
         "modelId": source.model_id,
+        "modelUsed": model_used,
+        // 这个名字是从哪儿来的（设置覆盖 / 会话自己 / pi 的默认 / 覆盖写错了）——
+        // 与"实际是哪个"分开说，因为改法完全不同
+        "modelSource": model_source,
+        "modelError": model_error,
+        "thinking": thinking.map(str::trim).filter(|s| !s.is_empty()),
         "firstMessage": source.first_message,
         "recentMessages": source.recent_messages,
         "userMessageCount": source.user_message_count,
@@ -442,6 +548,161 @@ pub fn describe(source: &TitleSource, strategy: TitleStrategy, max_chars: u32) -
         "strategy": strategy.as_str(),
         "maxChars": max_chars,
         "promptChars": system.chars().count() + user.chars().count(),
+    })
+}
+
+/// 按「两个及以上空格」切列。
+///
+/// 表格是 `padEnd` 对齐后 `"  "` 连接的，所以列间**至少**两个空格，
+/// 而单元格内部不会有连续空格（provider / model id 不含空格，其余是
+/// `1M` / `384K` / `yes` / `no`）。
+fn split_columns(line: &str) -> Vec<&str> {
+    let bytes = line.as_bytes();
+    let mut out: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+            out.push(&line[start..i]);
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push(&line[start..]);
+    out.into_iter().map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
+/// 解析 `pi --list-models` 的输出。
+///
+/// pi **没有** `--json`（`cli/list-models.ts` 只打一张给人看的表），所以这里解析表格。
+/// 这件事本身是有风险的——表格格式变了，解析就会悄悄少给几行。所以：
+///   * 表头按**首两列的字面量**（`provider` / `model`）识别，不靠"第一行是表头"
+///     （pi 以后往 stdout 前面加一行说明也不会错位）；
+///   * 认不出的行**跳过**，不猜；
+///   * `thinking` 列不是 `yes`/`no` 就跳过（列错位时不会把 `1M` 当成推理能力）；
+///   * 解析出一条都没有时，调用方把 pi 的原话交给界面显示（见 `ModelOptions::note`），
+///     而不是显示一个空下拉。
+pub fn parse_list_models(stdout: &str) -> Vec<ModelOption> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cells = split_columns(line);
+        if cells.first() == Some(&"provider") && cells.get(1) == Some(&"model") {
+            continue;
+        }
+        // 六列：provider / model / context / max-out / thinking / images
+        if cells.len() < 6 {
+            continue;
+        }
+        let (provider, id) = (cells[0], cells[1]);
+        if provider.is_empty() || id.is_empty() {
+            continue;
+        }
+        let reasoning = match cells[4] {
+            "yes" => true,
+            "no" => false,
+            _ => continue,
+        };
+        let opt = ModelOption {
+            provider: provider.to_string(),
+            id: id.to_string(),
+            reasoning,
+        };
+        if !out.contains(&opt) {
+            out.push(opt);
+        }
+    }
+    out
+}
+
+/// 跑一次 `pi --list-models`：pi 此刻**认为可用**的模型（已配好密钥的那些）。
+///
+/// 为什么用 CLI 而不是 `get_available_models` RPC：RPC 那条是**会话级**的
+/// （Piggy 的 `pi_get_available_models` 必须带 `tabId`，见 `commands.rs`），
+/// 而"标题模型"是全局设置——打开设置页时可能一个标签页都没有。
+/// 两条路取的是同一份数据（`ModelRuntime.getAvailable()`，`list-models.ts:37`）。
+///
+/// `cwd` 会影响 pi 读到的**项目级**配置（`<cwd>/.pi/…`）：这里用 HOME，
+/// 所以列出来的是"全局配置下可用的模型"（与标题进程真正跑的目录可能不同，
+/// 详见 docs/15 的已知缺口）。项目级模型仍可手动填入。
+pub async fn list_models(pi_bin: &Path, cwd: &Path) -> Result<ModelOptions, String> {
+    let started = std::time::Instant::now();
+    let mut child = Command::new(pi_bin)
+        .args(["--list-models"])
+        // 与一次性生成进程同样的处理：stdin 关掉，否则 pi 可能等着读输入
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("启动 {} 失败：{e}", pi_bin.display()))?;
+
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let collect = async {
+        let mut o = String::new();
+        let mut e = String::new();
+        if let Some(s) = stdout.as_mut() {
+            let _ = s.read_to_string(&mut o).await;
+        }
+        if let Some(s) = stderr.as_mut() {
+            let _ = s.read_to_string(&mut e).await;
+        }
+        (o, e)
+    };
+    let (out, err) = match tokio::time::timeout(LIST_TIMEOUT, collect).await {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(format!("列出模型超过 {} 秒未返回，已中止", LIST_TIMEOUT.as_secs()));
+        }
+    };
+    let status = child.wait().await.map_err(|e| format!("等待 pi 失败：{e}"))?;
+    let models = parse_list_models(&out);
+    if models.is_empty() {
+        // 成功退出但一个都没解析出来：把 pi 的原话（stdout 优先，其次 stderr 最后一行）
+        // 带回去。**不要**让界面只显示"没有模型"——那会让人以为是没装模型。
+        let note = if !status.success() {
+            err.trim().lines().last().map(|s| s.to_string())
+        } else {
+            None
+        }
+        .or_else(|| {
+            let text = out.trim();
+            if text.is_empty() {
+                err.trim().lines().last().map(str::to_string)
+            } else {
+                Some(truncate_chars(text, 400))
+            }
+        });
+        if !status.success() {
+            return Err(format!(
+                "pi 列出模型失败（退出码 {}）{}",
+                status.code().map(|c| c.to_string()).unwrap_or_else(|| "信号".into()),
+                note.map(|n| format!("：{n}")).unwrap_or_default()
+            ));
+        }
+        return Ok(ModelOptions {
+            models,
+            note,
+            pi_bin: pi_bin.display().to_string(),
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
+    Ok(ModelOptions {
+        models,
+        note: None,
+        pi_bin: pi_bin.display().to_string(),
+        elapsed_ms: started.elapsed().as_millis(),
     })
 }
 
@@ -691,6 +952,47 @@ mod tests {
         assert!(with_text > 0, "最近 3 个会话里一个用户文字消息都没有？");
     }
 
+    /// **真机核对**（`cargo test --lib -- --ignored real_machine_lists --nocapture`）。
+    ///
+    /// 解析器已经用真输出当金标（`parses_the_real_list_models_table`），但那是我
+    /// 抄下来的一段字符串。这条是**真的去跑这台机器上的 pi**：
+    /// 它证明"命令能起来、表格读得懂、reasoning 列没错位"。
+    /// 只读，不调用模型。
+    #[test]
+    #[ignore]
+    fn real_machine_lists_models_from_pi() {
+        let root = crate::plugin::inventory::agent_dir();
+        let pi = crate::pi::discovery::discover(
+            crate::pi::discovery::PiSource::System,
+            None,
+            None,
+        )
+        .expect("这台机器上应当能找到 pi");
+        println!("pi = {} ({})", pi.path.display(), pi.version);
+        println!("agent dir = {}（PI_CODING_AGENT_DIR 可覆盖，验证时用得上）", root.display());
+        let out = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(list_models(&pi.path, &root))
+            .expect("列出模型不该失败");
+        println!("耗时 {}ms，共 {} 个模型", out.elapsed_ms, out.models.len());
+        for m in out.models.iter().take(20) {
+            println!(
+                "  {}/{}  reasoning={}",
+                m.provider, m.id, m.reasoning
+            );
+        }
+        if let Some(n) = &out.note {
+            println!("note = {n}");
+        }
+        assert!(
+            !out.models.is_empty(),
+            "一个模型都没解析出来——要么这台机器没配任何可用模型，要么 pi 的表格格式变了（note={:?}）",
+            out.note
+        );
+    }
+
     fn pi_files_sessions_root() -> std::path::PathBuf {
         // 与 config/pi_files.rs 的口径一致：settings.json 的 sessionDir 优先，否则 ~/.pi/agent/sessions
         crate::config::pi_files::sessions_root()
@@ -768,12 +1070,16 @@ mod tests {
             current_name: None,
             message_count: 2,
         };
-        let v = describe(&src, TitleStrategy::Both, 20);
+        let v = describe(&src, TitleStrategy::Both, 20, Some("over/p"), Some("high"));
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         for k in [
             "cwd",
             "provider",
             "modelId",
+            "modelUsed",
+            "modelSource",
+            "modelError",
+            "thinking",
             "firstMessage",
             "recentMessages",
             "userMessageCount",
@@ -785,9 +1091,186 @@ mod tests {
         ] {
             assert!(keys.contains(&k), "素材描述缺少 {k}（实际 {keys:?}）");
         }
-        for bad in ["model_id", "first_message", "recent_messages", "max_chars"] {
+        for bad in ["model_id", "first_message", "recent_messages", "max_chars", "model_used"] {
             assert!(!keys.contains(&bad), "素材描述漏出了 snake_case 键 {bad}");
         }
+        // "会用哪个模型"必须是**真正会被用的那个**：有覆盖时会话自己的模型根本不会被调用，
+        // 预览要是显示会话那个，用户会对着一个错名字判断"标题为什么这么差"。
+        assert_eq!(v["modelUsed"], json!("over/p"));
+        assert_eq!(v["modelSource"], json!("override"));
+        assert_eq!(v["thinking"], json!("high"));
+    }
+
+    /// 预览里的"会用哪个模型"必须跟着**实际生效**的那一个走，三种来源各说各的。
+    #[test]
+    fn describe_reports_the_effective_model_and_where_it_came_from() {
+        let mut src = TitleSource {
+            cwd: None,
+            provider: Some("sess-p".into()),
+            model_id: Some("sess-m".into()),
+            first_message: None,
+            recent_messages: vec![],
+            user_message_count: 0,
+            current_name: None,
+            message_count: 0,
+        };
+        // 没有覆盖 → 会话自己的
+        let v = describe(&src, TitleStrategy::Both, 20, None, None);
+        assert_eq!(v["modelUsed"], json!("sess-p/sess-m"));
+        assert_eq!(v["modelSource"], json!("session"));
+        assert!(v["thinking"].is_null(), "没设思考强度时应当是 null（= 不传 --thinking）");
+        // 空串覆盖 = 没覆盖（config.json 手改成 "" 时不该变成"用一个空模型"）
+        let v = describe(&src, TitleStrategy::Both, 20, Some("  "), Some("  "));
+        assert_eq!(v["modelSource"], json!("session"));
+        assert!(v["thinking"].is_null());
+        // 会话里也没有 → pi 的默认
+        src.provider = None;
+        src.model_id = None;
+        let v = describe(&src, TitleStrategy::Both, 20, None, None);
+        assert!(v["modelUsed"].is_null());
+        assert_eq!(v["modelSource"], json!("default"));
+        // 覆盖写成半截 → 说"覆盖写错了"，**不能**说成"用默认"（生成时它会直接报错）
+        let v = describe(&src, TitleStrategy::Both, 20, Some("半截"), None);
+        assert_eq!(v["modelSource"], json!("invalid"));
+        assert!(v["modelError"].is_string(), "写错的覆盖必须把原因带出来：{v}");
+        assert!(v["modelUsed"].is_null());
+    }
+
+    /// 思考档位清单**照抄 pi**：`cli/args.ts:60` 的 `VALID_THINKING_LEVELS`。
+    ///
+    /// 这条用例的价值在于"抄错了会红"。pi 对不认识的档位只打一行 stderr 警告
+    /// 然后静默用默认档（真机验证），所以抄错一个字母 = 用户以为设了、实际没设，
+    /// 而且没有任何提示。前端 `lib/thinking.ts` 里那份清单与这里互为金标。
+    #[test]
+    fn thinking_levels_match_pi_cli() {
+        assert_eq!(
+            THINKING_LEVELS,
+            ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(THINKING_LEVELS.len(), 7);
+        assert!(is_valid_thinking("xhigh"));
+        assert!(is_valid_thinking("  max  "), "两侧空白不该让它变成非法值");
+        assert!(!is_valid_thinking(""));
+        assert!(!is_valid_thinking("HIGH"), "pi 只认小写");
+        assert!(!is_valid_thinking("none"), "none 是别家的写法，pi 认的是 off");
+    }
+
+    /// argv 是"这批开关唯一被证明传对了"的地方——它们拼错了都不报错，只会换行为。
+    #[test]
+    fn generate_args_carry_every_switch() {
+        let a = generate_args(Some("p"), Some("m"), Some("high"), "SYS", "USER");
+        assert_eq!(
+            a,
+            vec![
+                "-p", "--no-session", "-nt", "-nc", "--provider", "p", "--model", "m",
+                "--thinking", "high", "--system-prompt", "SYS", "--", "USER"
+            ]
+        );
+        // 没设思考强度 → 不传这个开关（传了就等于替用户做了决定）
+        let a = generate_args(Some("p"), Some("m"), None, "SYS", "USER");
+        assert!(!a.contains(&"--thinking".to_string()), "{a:?}");
+        // 非法档位**不能**漏出去：pi 只会警告 + 静默用默认档
+        let a = generate_args(None, None, Some("HIGH"), "SYS", "USER");
+        assert!(!a.contains(&"--thinking".to_string()), "非法档位被传出去了：{a:?}");
+        // provider/model 成对才传：只给一半会变成"错配组合"
+        let a = generate_args(Some("p"), None, None, "SYS", "USER");
+        assert!(!a.contains(&"--provider".to_string()), "{a:?}");
+        // `--` 之前是开关、之后是消息——用户粘贴的 diff 可能以 `-` 开头
+        let a = generate_args(None, None, None, "SYS", "-不是开关");
+        assert_eq!(a[a.len() - 2], "--", "{a:?}");
+        assert_eq!(a[a.len() - 1], "-不是开关");
+        // 最后一项永远是消息本身（`-p` 模式下它就是那一轮的用户输入）
+        assert_eq!(a.last().unwrap(), "-不是开关");
+    }
+
+    /// `pi --list-models` 的真实输出（本机 pi 0.87.1 原样抄下来的）。
+    ///
+    /// 这是**表格解析**，是整个功能里最容易随 pi 升级悄悄坏掉的一块，
+    /// 所以用真输出当金标：列数、两空格分隔、`yes`/`no` 都在里面。
+    #[test]
+    fn parses_the_real_list_models_table() {
+        let real = concat!(
+            "provider             model           context  max-out  thinking  images\n",
+            "cc-switch-deep-seek  deepseek-flash  1M       384K     yes       yes   \n",
+            "cc-switch-zhipu-glm  glm-5.3         1M       128K     yes       no    \n",
+            "cc-switch-zhipu-glm  glm-5.3-flash   1M       128K     yes       yes   \n",
+        );
+        let got = parse_list_models(real);
+        assert_eq!(
+            got,
+            vec![
+                ModelOption { provider: "cc-switch-deep-seek".into(), id: "deepseek-flash".into(), reasoning: true },
+                ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3".into(), reasoning: true },
+                ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3-flash".into(), reasoning: true },
+            ]
+        );
+        assert_eq!(got.len(), 3, "表头被当成模型了？");
+    }
+
+    /// 表格变了、或者 pi 压根没有可用模型时：宁可**一条都不给**，也不要瞎猜。
+    ///
+    /// pi 在"没有可用模型"时打的是 `formatNoModelsAvailableMessage()` 那段人话
+    /// （多行、含 URL），解析它只可能得到垃圾；而列错位时把 `1M` 当成 `reasoning`
+    /// 会让界面显示"不支持思考"——一个看起来很像事实的错误结论。
+    #[test]
+    fn unparseable_or_shifted_output_yields_nothing() {
+        // "没有可用模型"的提示（形状取自 pi 的多行说明）
+        let guidance = "No models are available.\n\nConfigure a provider in ~/.pi/agent/auth.json\n";
+        assert!(parse_list_models(guidance).is_empty());
+        // 列错位：thinking 列不是 yes/no → 整行丢掉
+        let shifted = "p  m  1M  384K  maybe  yes\n";
+        assert!(parse_list_models(shifted).is_empty());
+        // 只有表头
+        let header = "provider  model  context  max-out  thinking  images\n";
+        assert!(parse_list_models(header).is_empty());
+        // 空输出 / 空白
+        assert!(parse_list_models("").is_empty());
+        assert!(parse_list_models("\n   \n").is_empty());
+        // 表头不在第一行也能认（pi 以后加一行说明不会让整张表错位）
+        let prefixed = concat!(
+            "some banner line\n",
+            "provider  model  context  max-out  thinking  images\n",
+            "p  m  1M  384K  no  yes\n",
+        );
+        let got = parse_list_models(prefixed);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].provider, "p");
+        assert_eq!(got[0].id, "m");
+        assert!(!got[0].reasoning, "no 必须解析成 false");
+        // 单列/短行不会 panic，也不会被当成模型
+        assert!(parse_list_models("garbage\np  m\n").is_empty());
+    }
+
+    /// `title_model_options` 的返回形状（前端读 camelCase，见 `sessionTitle.ts`）。
+    #[test]
+    fn model_options_keys_are_camel_case() {
+        let opts = ModelOptions {
+            models: vec![ModelOption {
+                provider: "p".into(),
+                id: "m".into(),
+                reasoning: true,
+            }],
+            note: Some("pi 的原话".into()),
+            pi_bin: "/usr/local/bin/pi".into(),
+            elapsed_ms: 620,
+        };
+        let v = serde_json::to_value(&opts).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        for k in ["models", "note", "piBin", "elapsedMs"] {
+            assert!(keys.contains(&k), "模型列表缺少 {k}（实际 {keys:?}）");
+        }
+        for bad in ["pi_bin", "elapsed_ms"] {
+            assert!(!keys.contains(&bad), "模型列表漏出了 snake_case 键 {bad}：{keys:?}");
+        }
+        let m = &v["models"][0];
+        let mkeys: Vec<&str> = m.as_object().unwrap().keys().map(String::as_str).collect();
+        for k in ["provider", "id", "reasoning"] {
+            assert!(mkeys.contains(&k), "模型项缺少 {k}（实际 {mkeys:?}）");
+        }
+        // reasoning 必须是布尔（前端拿它判断"这个模型能不能选思考强度"；
+        // 字符串 "yes" 在 JS 里是真值，会让不支持推理的模型看起来支持）
+        assert!(m["reasoning"].is_boolean(), "{}", m["reasoning"]);
+        assert!(v["elapsedMs"].is_number(), "{}", v["elapsedMs"]);
     }
 
     /// 模型选择：覆盖 > 会话自己的 > 都不给，且**成对**生效。

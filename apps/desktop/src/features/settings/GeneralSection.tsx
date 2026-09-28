@@ -13,6 +13,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Input, Select, Switch } from 'antd';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
+import { loadTitleModels, type ModelOption } from '@/lib/sessionTitle';
+import { thinkingOptions } from '@/lib/thinking';
 
 interface PiSourceOption {
   id: 'system' | 'bundled' | 'custom';
@@ -43,11 +45,20 @@ export function GeneralSection() {
   const [sessionDir, setSessionDir] = useState<{ dir: string; isCustom: boolean; raw: string | null } | null>(null);
   const [dirInput, setDirInput] = useState('');
   // 标题生成（docs/03 §2.16）
-  const [titleCfg, setTitleCfg] = useState<{ maxChars: number; source: string; model: string }>({
+  const [titleCfg, setTitleCfg] = useState<{ maxChars: number; source: string; model: string; thinking: string }>({
     maxChars: 20,
     source: 'both',
     model: '',
+    thinking: '',
   });
+  // 「标题模型」下拉的数据（`pi --list-models` 的结果，真机 0.6s）
+  const [models, setModels] = useState<ModelOption[] | null>(null);
+  const [modelsNote, setModelsNote] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  // 手动输入模式：列表拉不到时**必须**有这条路，否则用户遇到
+  // "pi 没列出来的模型"就再也填不进去了（以前这里是自由输入框）。
+  // null = 用户还没表态（由"列表有没有拉到"决定，见下面的 manualModel）
+  const [manualModelOverride, setManualModelOverride] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
@@ -63,6 +74,7 @@ export function GeneralSection() {
       title_max_chars?: number;
       title_source?: string;
       title_model?: string | null;
+      title_thinking?: string | null;
     }>('perf_config_load')
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
@@ -72,9 +84,27 @@ export function GeneralSection() {
           maxChars: c.title_max_chars ?? 20,
           source: c.title_source ?? 'both',
           model: c.title_model ?? '',
+          thinking: c.title_thinking ?? '',
         });
       })
       .catch(() => {});
+    // 模型列表：拉不到不是致命错误——退回手动输入，并把原因说出来。
+    // **不缓存**：用户可能刚在「模型」页加了个提供商，切回来就该看到它。
+    setModelsLoading(true);
+    void loadTitleModels()
+      .then((r) => {
+        setModels(r.models);
+        setModelsNote(
+          r.models.length === 0
+            ? `pi 没有列出任何可用模型${r.note ? `——它说：${r.note}` : ''}。可以直接手动填 provider/modelId。`
+            : null,
+        );
+      })
+      .catch((e) => {
+        setModels([]);
+        setModelsNote(`拉取模型列表失败（${String(e)}）——可以手动填 provider/modelId。`);
+      })
+      .finally(() => setModelsLoading(false));
     void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
       .then((v) => {
         setSessionDir(v);
@@ -91,7 +121,7 @@ export function GeneralSection() {
     permissionMode?: string;
     perf?: typeof perf;
     delegation?: boolean;
-    title?: { maxChars: number; source: string; model: string };
+    title?: { maxChars: number; source: string; model: string; thinking: string };
   }) => {
     if (busy) return;
     setBusy(true);
@@ -106,6 +136,7 @@ export function GeneralSection() {
         titleMaxChars: patch.title?.maxChars ?? titleCfg.maxChars,
         titleSource: patch.title?.source ?? titleCfg.source,
         titleModel: patch.title?.model ?? titleCfg.model,
+        titleThinking: patch.title?.thinking ?? titleCfg.thinking,
       });
       // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
       if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
@@ -156,6 +187,29 @@ export function GeneralSection() {
   const disabledReason = pi?.builtinAvailable
     ? null
     : '「捆绑 pi」不可用：当前是 lite SKU，安装包里没有捆绑 pi。用 full SKU 构建后可选。';
+
+  // 「标题模型」下拉：按 provider 分组（与聊天里的模型选择器同一套分组方式），
+  // 外加一项"跟会话自己的模型"（值 = 空串，落库就是清掉覆盖）。
+  const modelSelectOptions = [
+    { value: '', label: '跟会话自己的模型' },
+    ...Array.from(new Set((models ?? []).map((m) => m.provider))).map((provider) => ({
+      label: provider,
+      options: (models ?? [])
+        .filter((m) => m.provider === provider)
+        .map((m) => ({
+          value: `${m.provider}/${m.id}`,
+          label: m.reasoning ? m.id : `${m.id}（不支持思考）`,
+        })),
+    })),
+  ];
+  const modelsLoaded = models !== null && models.length > 0;
+  // 用户没显式选过"手动输入"时：列表拉不到就自动退回输入框
+  const manualModel =
+    manualModelOverride === null ? models !== null && !modelsLoaded : manualModelOverride;
+  // 选中的模型支持不支持思考：只有**明确知道**它不支持时才禁用那个下拉。
+  // 留空（= 跟会话自己的模型）时不知道是谁，就不禁用——那时 pi 会按实际模型自己降级。
+  const selectedModel = (models ?? []).find((m) => `${m.provider}/${m.id}` === titleCfg.model);
+  const thinkingUnsupported = selectedModel ? !selectedModel.reasoning : false;
 
   return (
     <div className="pg-settings-editor">
@@ -214,19 +268,89 @@ export function GeneralSection() {
         />
       </div>
       <div className="pg-settings-row">
-        <span className="pg-settings-label" />
-        <Input
-          style={{ maxWidth: 300 }}
-          placeholder="标题模型：留空 = 跟会话自己的模型"
-          value={titleCfg.model}
-          onChange={(e) => setTitleCfg((c) => ({ ...c, model: e.target.value }))}
-          onBlur={() => void save({ title: titleCfg })}
-          aria-label="标题模型"
+        <span className="pg-settings-label">标题模型</span>
+        {manualModel ? (
+          <Input
+            style={{ maxWidth: 300 }}
+            placeholder="provider/modelId"
+            value={titleCfg.model}
+            onChange={(e) => setTitleCfg((c) => ({ ...c, model: e.target.value }))}
+            onBlur={() => void save({ title: titleCfg })}
+            aria-label="标题模型"
+          />
+        ) : (
+          <Select
+            style={{ width: 320 }}
+            showSearch
+            allowClear
+            loading={modelsLoading}
+            data-title-model-select
+            value={titleCfg.model || undefined}
+            placeholder="跟会话自己的模型"
+            // 清空（点 ×）= 回到"跟会话自己的模型"，而不是留一个空字符串
+            onChange={(v) => {
+              const next = { ...titleCfg, model: v ?? '' };
+              setTitleCfg(next);
+              void save({ title: next });
+            }}
+            aria-label="标题模型"
+            optionFilterProp="label"
+            options={modelSelectOptions}
+          />
+        )}
+        <Select
+          style={{ width: 168 }}
+          allowClear
+          data-title-thinking-select
+          value={titleCfg.thinking || undefined}
+          placeholder="跟模型默认"
+          disabled={thinkingUnsupported}
+          onChange={(v) => {
+            const next = { ...titleCfg, thinking: v ?? '' };
+            setTitleCfg(next);
+            void save({ title: next });
+          }}
+          aria-label="标题思考强度"
+          options={thinkingOptions()}
         />
-        <span className="pg-fg-dim">
-          填 <code>provider/modelId</code> 可指定一个更便宜的模型；留空则用该会话最后一次用过的模型
-        </span>
+        {modelsLoaded && (
+          <Button type="link" size="small" onClick={() => setManualModelOverride(!manualModel)}>
+            {manualModel ? '从列表里选' : '手动输入'}
+          </Button>
+        )}
       </div>
+      {titleCfg.model && (
+        <p className="pg-fg-dim pg-settings-note">
+          标题会用 <code>{titleCfg.model}</code> 生成；清空 = 用该会话最后一次用过的模型。
+          思考强度留空 = 不传 <code>--thinking</code>，用 pi 与模型自己的默认档。
+        </p>
+      )}
+      {/* 「列表为什么是空的 / 为什么没有下拉」必须说出来：pi 的原话通常就在 note 里
+          （没配密钥、或它换了表格格式），比"没有可用模型"这种话有用得多。
+          **不能只在有下拉时显示**——恰恰是自动退回手动输入的时候，
+          用户最需要知道"列表去哪了"。 */}
+      {modelsNote && (
+        <p className="pg-runtime-note" data-title-models-note>
+          {modelsNote}
+        </p>
+      )}
+      {thinkingUnsupported && (
+        <p className="pg-runtime-note" data-title-thinking-note>
+          <code>{titleCfg.model}</code> 没有声明推理能力，pi 只认「关闭」——
+          所以这里的档位不可选（会话里的选择器对它会显示同一件事）。
+        </p>
+      )}
+      {/* 选了档位之后的**真话**：pi 会在请求时按模型能力收敛档位，界面看不到结果。
+          实测（本地假模型 + 抓请求体）：没声明的模型里「极高/最大」都变成 high，
+          而声明了 `low: null` 的模型请求 low 会被**升**成 medium。
+          不说这一句，用户会以为选了就一定按选的走——那是本项目最忌讳的静默失效。 */}
+      {titleCfg.thinking && !thinkingUnsupported && (
+        <p className="pg-fg-dim pg-settings-note" data-title-thinking-clamp>
+          档位由 pi 在发请求时按**模型自己声明的能力**收敛：模型没声明的档位会被换成它支持的
+          那一档（实测：未声明的模型里「极高 / 最大」都会发成 <code>high</code>），
+          而这一步的结果界面上看不到。
+        </p>
+      )}
       <p className="pg-fg-dim pg-settings-note">
         生成时会新起一个一次性 pi 进程（<code>--no-session</code>），所以这段对话不会进会话转录。
         入口：会话行右键菜单、行上的 ✎ 图标、命令面板的「生成会话标题」。

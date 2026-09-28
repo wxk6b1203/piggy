@@ -280,7 +280,27 @@ export function setMockTitleFail(v: boolean) {
 /** 生成出来的标题按 20 字上限截断（与真机同一条规则），每次换一个以便看出"重新生成"生效了。 */
 let mockTitleSeq = 0;
 let mockTitleNext = '插件管理页的标题生成';
-export const mockTitleCfg = { maxChars: 20, source: 'both' as string };
+/** 标题配置。`perf_config_save` 会真的改它，`perf_config_load` 会真的读它——
+    否则设置页在 mock 下"改了不生效"，门禁也就核对不了"选完模型到底写进去了什么"。 */
+export const mockTitleCfg = {
+  maxChars: 20,
+  source: 'both' as string,
+  model: '' as string,
+  thinking: '' as string,
+};
+/**
+ * `title_model_options` 的假数据（= `pi --list-models` 的解析结果）。
+ *
+ * 三条各自代表一类界面分支，缺一条就有一整块渲染没人核对：
+ *   · 同一 provider 两个模型 → 分组是不是真的生效；
+ *   · 另一个 provider → 组标题是不是各自的 provider 名；
+ *   · `reasoning: false` → "思考强度"那个下拉应当**禁用并说明原因**。
+ */
+export const mockTitleModels = [
+  { provider: 'mock-glm', id: 'glm-5.3-flash', reasoning: true },
+  { provider: 'mock-glm', id: 'glm-5.3', reasoning: true },
+  { provider: 'mock-plain', id: 'no-think-model', reasoning: false },
+];
 export const mockTitleSource = {
   first: '给 Piggy 加一个根据消息生成会话标题的功能',
   recent: ['再加一个右键菜单', '要支持重新生成'],
@@ -476,7 +496,17 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
      以前这里是硬编码常量：点「完全权限」→ 保存成功 → reload 读回 'workspace'
      → 选中状态弹回原样，看起来就是"按钮点了没反应"。
      mock 不记录写入会让调试得出错误结论，所以必须真的存下来。 */
-  perf_config_load: () => ({ ...appCfg }),
+  /* 真机的 `perf_config_load` 返回的是 Rust `PerfConfig` —— **snake_case**
+     （`title_max_chars` / `title_source` / …），前端读的也是 snake_case。
+     这一份刻意保持同样的键名：mock 换成 camelCase 的话，"两边一致"这条
+     就成了 mock 自己编出来的假象。 */
+  perf_config_load: () => ({
+    ...appCfg,
+    title_max_chars: mockTitleCfg.maxChars,
+    title_source: mockTitleCfg.source,
+    title_model: mockTitleCfg.model || null,
+    title_thinking: mockTitleCfg.thinking || null,
+  }),
   perf_config_save: (a) => {
     appCfg.max_workers = Number(a.maxWorkers ?? appCfg.max_workers);
     appCfg.idle_timeout_min = Number(a.idleTimeoutMin ?? appCfg.idle_timeout_min);
@@ -486,6 +516,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (a.subagentDelegation !== undefined) {
       appCfg.subagent_delegation = Boolean(a.subagentDelegation);
     }
+    // 标题那几项**真的写进去**：以前 mock 把这一段整个丢掉了，于是设置页在 mock 下
+    // "改完再读回来还是默认值"——门禁也就永远核对不了"选完模型到底存了什么"。
+    if (a.titleMaxChars !== undefined) mockTitleCfg.maxChars = Number(a.titleMaxChars);
+    if (a.titleSource !== undefined) mockTitleCfg.source = String(a.titleSource);
+    if (a.titleModel !== undefined) mockTitleCfg.model = String(a.titleModel ?? '');
+    if (a.titleThinking !== undefined) mockTitleCfg.thinking = String(a.titleThinking ?? '');
     return null;
   },
   tab_sleep: () => null,
@@ -751,6 +787,12 @@ pub fn main() {
       cwd: '/mock/project',
       provider: 'mock-glm',
       modelId: 'glm-5.3-flash',
+      // 「会用哪个模型」跟**实际生效**的那个走（真机同一条规则）：
+      // 设置里有覆盖就用覆盖，否则会话自己的
+      modelUsed: mockTitleCfg.model || 'mock-glm/glm-5.3-flash',
+      modelSource: mockTitleCfg.model ? 'override' : 'session',
+      modelError: null,
+      thinking: mockTitleCfg.thinking || null,
       firstMessage: mockTitleSource.first,
       recentMessages: mockTitleSource.recent,
       userMessageCount: mockTitleSource.recent.length + 1,
@@ -761,6 +803,14 @@ pub fn main() {
       promptChars: 180,
     };
   },
+  /* 「标题模型」下拉的数据源。真机这里是起一个一次性 pi 跑 `--list-models`（0.6s），
+     mock 里直接给三行（含一个不支持推理的模型，用来核对"档位禁用+说明原因"）。 */
+  title_model_options: () => ({
+    models: mockTitleModels,
+    note: null,
+    piBin: '/mock/bin/pi',
+    elapsedMs: 612,
+  }),
   session_title_generate: (args) => {
     const path = String(args.path ?? '');
     const apply = args.apply !== false;
@@ -784,7 +834,9 @@ pub fn main() {
       raw,
       provider: 'mock-glm',
       modelId: 'glm-5.3-flash',
-      modelUsed: 'mock-glm/glm-5.3-flash',
+      modelUsed: mockTitleCfg.model || 'mock-glm/glm-5.3-flash',
+      // 与真机同一条规则：报的是**请求值**（pi 会按模型能力静默降级，客户端拿不到降级后的值）
+      thinkingUsed: mockTitleCfg.thinking || null,
       elapsedMs: 812,
       promptChars: 180,
       applied: apply,
@@ -792,13 +844,17 @@ pub fn main() {
         cwd: '/mock/project',
         provider: 'mock-glm',
         modelId: 'glm-5.3-flash',
+        modelUsed: mockTitleCfg.model || 'mock-glm/glm-5.3-flash',
+        modelSource: mockTitleCfg.model ? 'override' : 'session',
+        modelError: null,
+        thinking: mockTitleCfg.thinking || null,
         firstMessage: mockTitleSource.first,
         recentMessages: mockTitleSource.recent,
         userMessageCount: 3,
         messageCount: 12,
         currentName: null,
-        strategy: 'both',
-        maxChars: 20,
+        strategy: mockTitleCfg.source,
+        maxChars: mockTitleCfg.maxChars,
         promptChars: 180,
       },
     };

@@ -294,7 +294,7 @@ pi **没有**标题生成：`set_session_name` 只负责把名字写进会话文
 models.json / 环境变量三级）、走不走代理、`compat` 覆盖、OAuth 刷新——pi 都已经处理好了。
 
 ```text
-pi -p --no-session -nt -nc [--provider P --model M] --system-prompt SYS -- USER
+pi -p --no-session -nt -nc [--provider P --model M] [--thinking LEVEL] --system-prompt SYS -- USER
 ```
 
 | 参数 | 为什么 |
@@ -303,6 +303,7 @@ pi -p --no-session -nt -nc [--provider P --model M] --system-prompt SYS -- USER
 | `--no-session` | **不写会话文件**（实测跑完 sessions 目录多 0 个文件） |
 | `-nt` | 不带任何工具（实测 `tools: []`）——起标题不该让模型去读文件 |
 | `-nc` | 不读 AGENTS.md/CLAUDE.md（标题与项目上下文无关，读了是噪声） |
+| `--thinking` | 可选，见下（档位写错 pi 只警告不报错，所以由 `is_valid_thinking` 把关） |
 | `--` | 之后一律当消息：提示词里可能出现以 `-` 开头的粘贴内容 |
 
 **标题不进模型输入**：生成在独立进程里、`--no-session`，所以这段对话完全不进
@@ -327,7 +328,8 @@ DSH 用 UTF-8 字节（`maxTitleBytes` 默认 80），于是"20 字节"在中文
 | 命令 | 作用 |
 |---|---|
 | `session_title_source` | 列出**会拿什么去生成**（不调用模型，纯读会话文件） |
-| `session_title_generate` | 生成并（默认）写进会话名；返回 title/raw/用了哪个模型/耗时 |
+| `session_title_generate` | 生成并（默认）写进会话名；返回 title/raw/用了哪个模型/思考档/耗时 |
+| `title_model_options` | 跑一次 `pi --list-models`，把可用模型交回界面（见下） |
 
 **失败时绝不覆盖旧名字**：模型没给出可用标题（收拾后为空）时返回错误并**保留原名字**，
 这是这块最可能造成的数据损坏。生成失败的原因（密钥过期、模型名写错）取自 pi 的
@@ -335,6 +337,51 @@ stderr 最后一行。
 
 模型选择（`pick_model`，纯函数）：设置覆盖 > 会话最后一次 `model_change` > 都不给
 （让 pi 用默认）。**成对生效**——只给一半会退化成错配组合，宁可都不传。
+预览界面显示的"会用哪个模型"用的是**真正会被调用的那个**（`modelUsed` + `modelSource`
+= override / session / default / invalid）；覆盖写成半截时 `modelSource = "invalid"`
+并带上 `modelError`——生成时它会直接失败，预览**不能**说成"用默认"。
+
+#### 思考强度（`title_thinking`）
+
+界面上是"标题模型"旁边的一个下拉，落到命令行就是 `--thinking <level>`。
+档位清单**照抄 pi**（`cli/args.ts:60` 的 `VALID_THINKING_LEVELS`，7 个），
+Rust 与前端各写一份、互为金标：
+`sessions/title.rs::THINKING_LEVELS` ↔ `src/lib/thinking.ts::THINKING_LEVELS`。
+
+为什么必须自己校验一遍：**pi 对不认识的档位不报错**——只在 stderr 打一行
+`Warning: Invalid thinking level "…"` 然后**静默用默认档**继续跑（真机验证过）。
+也就是说拼错一个字母 = 用户以为设了、实际没设，界面上完全看不出区别。
+所以 `clamp()`（读配置时）丢掉非法值、`perf_config_save`（写配置时）直接报错。
+
+**pi 还会按模型能力再收敛一次**（`clampThinkingLevel`），这一步客户端看不到：
+用本地假服务器抓请求体实测（同一台机器上跑真 pi 0.87.1）——
+
+| 模型声明 | 请求的档位 | 实际发出的 `reasoning_effort` |
+|---|---|---|
+| 无 `thinkingLevelMap`（普通推理模型） | 不传 | `medium`（pi 的默认） |
+| 同上 | `high` | `high` |
+| 同上 | `xhigh` / `max` | **`high`**（没声明 → 降到支持的最高档） |
+| `{xhigh: "xhigh", low: null}` | `xhigh` | `xhigh`（声明了才真的发出去） |
+| 同上 | `low` | **`medium`**（声明为不支持 → 往上找） |
+| `reasoning: false` | `max` | 无 `reasoning_effort` 字段（降到 `off`，**不报错**） |
+
+界面据此做了两件事：选了不支持推理的模型时把档位**禁用并写明原因**；
+选了档位时说明"pi 还会按模型声明的能力收敛一次"（不然就是静默失效）。
+
+#### 模型列表从哪儿来（`title_model_options`）
+
+"标题模型"是**全局设置**，而 pi 的 `get_available_models` 是**会话级**命令
+（Piggy 的 `pi_get_available_models` 必须带 `tabId`）——打开设置页时可能一个标签页都没有。
+所以走 CLI：`pi --list-models`，它取的是同一个 `ModelRuntime.getAvailable()`
+（`cli/list-models.ts:37`），只是不需要会话。真机实测 **0.6s**。
+
+pi **没有** `--json`，所以只能解析那张给人看的表（列间两个及以上空格：
+`provider / model / context / max-out / thinking / images`）。这是本功能里最容易随 pi
+升级悄悄坏掉的一块，因此：表头按**首两列字面量**识别（不靠"第一行是表头"）、
+认不出的行**跳过不猜**、`thinking` 列不是 `yes`/`no` 就整行丢掉（列错位时不会把 `1M`
+当成推理能力）、一个都没解析出来时把 **pi 的原话**交给界面显示（`note`）。
+真输出当金标锁在 `parses_the_real_list_models_table`；`real_machine_lists_models_from_pi`
+（`--ignored`）会真的去跑这台机器上的 pi。
 
 ## 3. 前端侧模块（`src/`）
 

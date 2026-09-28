@@ -138,23 +138,30 @@ describe('右键菜单', () => {
 });
 
 describe('标题素材预览', () => {
+  const baseInfo = {
+    cwd: '/proj',
+    provider: 'mock-glm',
+    modelId: 'glm-5.3-flash',
+    firstMessage: '给 Piggy 加标题生成',
+    recentMessages: ['再加一个右键菜单', '要支持重新生成'],
+    userMessageCount: 3,
+    messageCount: 12,
+    currentName: null,
+    strategy: 'both' as const,
+    maxChars: 20,
+    promptChars: 180,
+  };
+
   it('列出取材方式、会用哪个模型、以及会送出去的消息', async () => {
     mountDom(
       <SessionTitlePreview
         open
         onClose={() => {}}
         info={{
-          cwd: '/proj',
-          provider: 'mock-glm',
-          modelId: 'glm-5.3-flash',
-          firstMessage: '给 Piggy 加标题生成',
-          recentMessages: ['再加一个右键菜单', '要支持重新生成'],
-          userMessageCount: 3,
-          messageCount: 12,
-          currentName: null,
-          strategy: 'both',
-          maxChars: 20,
-          promptChars: 180,
+          ...baseInfo,
+          modelUsed: 'mock-glm/glm-5.3-flash',
+          modelSource: 'session',
+          thinking: null,
         }}
         error={null}
       />,
@@ -166,9 +173,56 @@ describe('标题素材预览', () => {
     expect(text).toContain('第一条 + 最近几条');
     expect(text).toContain('20');
     expect(text).toContain('mock-glm/glm-5.3-flash');
+    // 模型是谁定的必须说出来：改法完全取决于这一格
+    expect(text).toContain('会话自己最后一次用过的');
+    // 没设思考强度时说"不传"，而不是显示空白
+    expect(text).toContain('不传（用模型自己的默认档）');
     expect(text).toContain('给 Piggy 加标题生成');
     expect(text).toContain('要支持重新生成');
     expect(text).toContain('共 12 条');
+  });
+
+  it('设置里有覆盖时显示的是覆盖那个模型（不是会话自己的）', async () => {
+    mountDom(
+      <SessionTitlePreview
+        open
+        onClose={() => {}}
+        info={{
+          ...baseInfo,
+          modelUsed: 'cheap/fast-model',
+          modelSource: 'override',
+          thinking: 'high',
+        }}
+        error={null}
+      />,
+    );
+    await flush();
+    const box = document.body.querySelector('[data-title-preview]')!;
+    // "会用哪个模型"必须是**真正会被调用**的那个：显示会话自己的模型会让用户
+    // 对着一个错名字判断"标题为什么这么差"
+    expect(box.textContent).toContain('cheap/fast-model');
+    expect(box.textContent).toContain('设置里指定的');
+    expect(box.querySelector('[data-title-thinking]')!.textContent).toContain('高');
+  });
+
+  it('覆盖写错了就直接说错（生成会失败，不能显示成"用默认"）', async () => {
+    mountDom(
+      <SessionTitlePreview
+        open
+        onClose={() => {}}
+        info={{
+          ...baseInfo,
+          modelUsed: null,
+          modelSource: 'invalid',
+          modelError: '设置里的「标题模型」要写成 provider/modelId，现在是 "半截"',
+        }}
+        error={null}
+      />,
+    );
+    await flush();
+    const box = document.body.querySelector('[data-title-preview]')!;
+    expect(box.textContent).toContain('写错了');
+    expect(box.querySelector('[data-title-model-error]')!.textContent).toContain('provider/modelId');
   });
 
   it('没有用户文字消息时明说"生成出来会是瞎编的"', async () => {
@@ -177,16 +231,16 @@ describe('标题素材预览', () => {
         open
         onClose={() => {}}
         info={{
-          cwd: null,
+          ...baseInfo,
           provider: null,
           modelId: null,
+          modelUsed: null,
+          modelSource: 'default',
+          thinking: null,
           firstMessage: null,
           recentMessages: [],
           userMessageCount: 0,
           messageCount: 4,
-          currentName: null,
-          strategy: 'both',
-          maxChars: 20,
           promptChars: 90,
         }}
         error={null}

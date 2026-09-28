@@ -1158,6 +1158,119 @@ if (sessionTitle.firstRect) {
   titleRun.clicked = clicked;
 }
 
+/* 通用设置里的「标题模型 / 思考强度」下拉（docs/04 §2.2）。
+ *
+ * 这里量的是三件**只有真浏览器 + 真点击**才成立的事：
+ *   (a) antd 的下拉是 portal 到 body 的，jsdom 里量不到它的**实际位置**——
+ *       被视口切掉一半这种坏法只有真布局看得出来（规矩 32）；
+ *   (b) 选项文字是不是按 provider 分组、有没有长到折行；
+ *   (c) 选完之后**值真的存下来了**（mock 会把 perf_config_save 应用到 mockTitleCfg，
+ *       与真机 perf_config_save 的读-改-写同义）——只断言"发了命令"是不够的。 */
+const titleSettings = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const nav = (label) => {
+    const b = qa('.pg-settings-navitem').find((x) => (x.textContent ?? '').trim() === label);
+    if (!b) throw new Error(`找不到设置节：${label}`);
+    b.click();
+  };
+  const openSel = async (attr) => {
+    const el = document.querySelector(`[${attr}] .ant-select-content`);
+    if (!el) return false;
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await sleep(250);
+    return true;
+  };
+  const options = () =>
+    // 只在**当前可见**的那个下拉里找：antd 关掉的下拉仍留在 DOM 里
+    // （加 `ant-select-dropdown-hidden`），不排除的话模型与思考两个下拉的选项会混在一起
+    qa('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').map((o) => ({
+      label: (o.textContent ?? '').trim(),
+      // 折行/竖排时高度会异常（中文按钮塌成竖排是踩过的坑）
+      h: Math.round(o.getBoundingClientRect().height),
+    }));
+  const pick = async (needle) => {
+    const hit = qa(
+      '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option',
+      document.body,
+    ).find((o) => (o.textContent ?? '').includes(needle));
+    if (!hit) return false;
+    hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await sleep(350);
+    return true;
+  };
+  // **必须拷贝**：`mockTitleCfg` 是模块里的同一个对象，直接把引用放进返回值的话，
+  // Puppeteer 是在 evaluate 结束**之后**才序列化它——那时它早被后面的操作改过了，
+  // 于是"选之前是什么"读出来的是"选之后是什么"。这个坑本段的第三条断言自己抓到了。
+  const cfg = () => ({ ...(globalThis.__piggyMock?.mockTitleCfg ?? {}) });
+
+  nav('通用设置');
+  await sleep(900);
+
+  const base = cfg();
+  const hasModelSel = !!document.querySelector('[data-title-model-select]');
+  const hasThinkingSel = !!document.querySelector('[data-title-thinking-select]');
+  // 只看**真的**手动输入框：`aria-label` 在下拉上也有，而 antd 的 Select 内部
+  // 就是一个带 aria-label 的 input，不区分会永远为真
+  const manualFallback = !!document.querySelector('input.ant-input[aria-label="标题模型"]');
+
+  // —— 模型下拉：打开、量位置、看分组
+  const openedModel = await openSel('data-title-model-select');
+  const modelBox = document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')?.getBoundingClientRect() ?? null;
+  const modelOptions = options();
+  const groups = qa('.ant-select-item-group', document.body).map((g) => (g.textContent ?? '').trim());
+  const pickedModel = await pick('glm-5.3-flash');
+  const afterModel = cfg();
+
+  // —— 思考强度：先挑一个**不支持推理**的模型，档位必须禁用并说明原因
+  await openSel('data-title-model-select');
+  const pickedPlain = await pick('no-think-model');
+  await sleep(250);
+  const thinkingDisabled = !!document
+    .querySelector('[data-title-thinking-select]')
+    ?.className.includes('ant-select-disabled');
+  const reasonText = (document.querySelector('[data-title-thinking-note]')?.textContent ?? '').trim();
+
+  // —— 换回支持推理的模型，再选一个档位：值必须真的存下来
+  await openSel('data-title-model-select');
+  await pick('glm-5.3');
+  await sleep(200);
+  const openedThinking = await openSel('data-title-thinking-select');
+  const thinkingOptions = options();
+  const pickedThinking = await pick('极高');
+  const afterThinking = cfg();
+
+  // 顺手收摊：菜单/下拉别留着影响后面的段落
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  await sleep(150);
+
+  return {
+    hasModelSel,
+    hasThinkingSel,
+    manualFallback,
+    base,
+    openedModel,
+    modelInsideViewport: modelBox
+      ? modelBox.left >= 0 && modelBox.top >= 0 &&
+        modelBox.right <= window.innerWidth && modelBox.bottom <= window.innerHeight
+      : false,
+    modelBox: modelBox
+      ? { x: Math.round(modelBox.x), y: Math.round(modelBox.y), w: Math.round(modelBox.width), h: Math.round(modelBox.height) }
+      : null,
+    modelOptions,
+    groups,
+    pickedModel,
+    afterModel,
+    pickedPlain,
+    thinkingDisabled,
+    reasonText,
+    openedThinking,
+    thinkingOptions,
+    pickedThinking,
+    afterThinking,
+  };
+});
+
 /* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
  * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
  * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
@@ -1647,6 +1760,59 @@ else {
       bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
     }
     if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+}
+
+/* 通用设置里的「标题模型 / 思考强度」下拉（docs/04 §2.2、docs/03 §2.16） */
+{
+  const ts = titleSettings ?? {};
+  if (!ts.hasModelSel) bad.push('标题设置：没有「标题模型」下拉（应当从 pi 的模型列表里选）★');
+  if (!ts.hasThinkingSel) bad.push('标题设置：没有「思考强度」下拉 ★');
+  if (ts.manualFallback) {
+    bad.push('标题设置：模型列表已经拿到了，却还在显示手动输入框（下拉没渲染出来？）★');
+  }
+  if (!ts.openedModel) bad.push('标题设置：模型下拉点不开 ★');
+  else {
+    if (!ts.modelInsideViewport) {
+      bad.push(`标题设置：模型下拉被视口切掉了（${JSON.stringify(ts.modelBox)}）★`);
+    }
+    const labels = (ts.modelOptions ?? []).map((o) => o.label).join('|');
+    if (!labels.includes('glm-5.3-flash')) {
+      bad.push(`标题设置：模型下拉里没有 mock 的模型（只有 ${labels}）★`);
+    }
+    if ((ts.groups ?? []).length < 2) {
+      bad.push(`标题设置：模型没有按 provider 分组（分组只有 ${JSON.stringify(ts.groups)}）★`);
+    }
+    if ((ts.modelOptions ?? []).some((o) => o.h > 40)) {
+      bad.push(`标题设置：模型选项被折成两行（高度 ${JSON.stringify(ts.modelOptions)}）★`);
+    }
+    if (!(labels ?? '').includes('不支持思考')) {
+      bad.push('标题设置：不支持推理的模型没有当场标出来（要等选完思考档才发现）★');
+    }
+  }
+  if (!ts.pickedModel) bad.push('标题设置：点不中模型选项 ★');
+  else if ((ts.afterModel ?? {}).model !== 'mock-glm/glm-5.3-flash') {
+    // 只断言"发了命令"是不够的：这里读的是 mock 保存后的状态，
+    // 与真机 perf_config_save 的读-改-写语义一致
+    bad.push(`标题设置：选了模型但没存下来（mockTitleCfg.model = ${JSON.stringify(ts.afterModel?.model)}）★`);
+  }
+  if (!ts.pickedPlain) bad.push('标题设置：点不中"不支持思考"的那个模型 ★');
+  else if (!ts.thinkingDisabled) {
+    // pi 会把不支持的档位**静默降级**成 off：界面不禁用就等于骗人（规矩：不许静默失效）
+    bad.push('标题设置：选了不支持推理的模型，思考强度却还能点 ★');
+  } else if (!(ts.reasonText ?? '').includes('没有声明推理能力')) {
+    bad.push(`标题设置：思考档禁用了但没说原因（"${ts.reasonText}"）★`);
+  }
+  if (!ts.openedThinking) bad.push('标题设置：思考强度下拉点不开 ★');
+  else if ((ts.thinkingOptions ?? []).length !== 7) {
+    bad.push(`标题设置：思考档位不是 7 个（是 ${JSON.stringify((ts.thinkingOptions ?? []).map((o) => o.label))}）★`);
+  }
+  if (!ts.pickedThinking) bad.push('标题设置：点不中思考档位 ★');
+  else if ((ts.afterThinking ?? {}).thinking !== 'xhigh') {
+    bad.push(`标题设置：选了「极高」但没存下来（mockTitleCfg.thinking = ${JSON.stringify(ts.afterThinking?.thinking)}）★`);
+  }
+  if ((ts.base ?? {}).thinking) {
+    bad.push(`标题设置：核对开始时配置里就有思考档（${ts.base.thinking}），这条核对失去意义 ★`);
   }
 }
 
