@@ -6,9 +6,12 @@ import 'dockview-react/dist/styles/dockview.css';
 import '@vscode/codicons/dist/codicon.css';
 import './styles.css';
 import { ErrorBoundary, installGlobalErrorReporting } from './features/common/ErrorBoundary';
+import { installResizeObserverProbe } from './lib/resizeProbe';
 
 // 必须在任何应用代码之前装：这样连模块求值期的异常也能被捕获并送到宿主终端
 installGlobalErrorReporting();
+// RO 探针也要在最前面装：第三方库在**调用时**读全局 ResizeObserver（见 lib/resizeProbe）
+installResizeObserverProbe();
 
 /**
  * 开发期调试钩子（仅 DEV）。

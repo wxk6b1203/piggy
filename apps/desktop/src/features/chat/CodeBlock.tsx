@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t, tf } from '@/lib/i18n';
+import { watchSize } from '@/lib/resizeWatch';
 import { Icon } from '@/features/common/Icon';
 import {
   AUTO_COLLAPSE_LINES,
@@ -197,7 +198,12 @@ export function CodeBlock({ code, lang, title, collapsible, wrap }: CodeBlockPro
    * **量的是 `<pre>` 不是外层 body**：限高和 `overflow:auto` 都长在 `pre` 上，
    * body 的 `scrollHeight == clientHeight` 恒成立，量 body 永远得到"没超高"，
    * 按钮一次都不会出现（第一版就是这么写的，真机探针抓到的）。
-   * ResizeObserver 额外盯住 pre 的内容子节点，因为高亮 HTML 是异步换上去的。
+   *
+   * 尺寸订阅走 `lib/resizeWatch`（**全应用共用一个 ResizeObserver**）：
+   * 每个代码块各建一两个观察者的话，一次会话就是几百个观察者 ——
+   * 每个都是"回调 → setState → 布局变"这条链上独立的一环（用户日志里的
+   * `ResizeObserver loop` 警告就是这么来的）。观察者只负责"外部尺寸变了叫我"，
+   * 内容变化由依赖项 `html` / `shown` / `collapsed` / `expanded` / `doWrap` 触发。
    */
   const measure = useCallback(() => {
     const pre = preRef.current;
@@ -208,13 +214,14 @@ export function CodeBlock({ code, lang, title, collapsible, wrap }: CodeBlockPro
     const pre = preRef.current;
     if (!pre) return;
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(pre);
+    const unwatch = watchSize(pre, measure);
     const inner = pre.firstElementChild;
-    if (inner) ro.observe(inner);
-    return () => ro.disconnect();
-  }, [measure, collapsed, html, expanded]);
+    const unwatchInner = inner ? watchSize(inner, measure) : () => {};
+    return () => {
+      unwatch();
+      unwatchInner();
+    };
+  }, [measure, collapsed, html, expanded, doWrap]);
 
   const status =
     failed ? t('code.hlFailed') : resolution.kind === 'unknown' ? t('code.hlUnknown') : null;

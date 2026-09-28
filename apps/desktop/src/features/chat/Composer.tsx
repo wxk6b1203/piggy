@@ -15,7 +15,7 @@ import { wakeIfNeeded } from '@/lib/sleep';
 import { useTabMsg } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
 import { useSessionStats } from '@/stores/stats';
-import { formatTokens } from '@/lib/tokenFormat';
+import { clampPercent, DECIMALS, formatPercent, formatTokens } from '@/lib/tokenFormat';
 import {
   builtinRows,
   dispatchSlashInput,
@@ -416,16 +416,19 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
  * viewBox 0 0 14 14、r=5.5、C=2π·5.5、rotate(-90 7 7)；容量缺失时 DSH 返回 null，此处同。
  *
  * 环上的百分数保持 DSH 的整数口径（它表达的是"还剩多少余量"），
- * 而 title 里的**上下文长度**按 3 位小数展示（lib/tokenFormat）。
+ * 而 title 里的**上下文占用**按 3 位小数展示（lib/tokenFormat）。
+ *
+ * ⚠️ 两个数都必须过 `formatPercent`：pi 给的是 f64 商，直接拼模板串会把
+ * `20.316000000000003` 这样的 IEEE-754 尾巴印在界面上（用户 2026-09-23 报的就是这条）。
  */
 function ContextMeter({ tabId }: { tabId: string }) {
   const stats = useSessionStats(tabId);
   const pct = stats?.contextUsage?.percent;
   if (pct == null) return null;
 
-  const value = Math.max(0, Math.min(100, pct));
+  const value = clampPercent(pct);
   const C = 2 * Math.PI * 5.5;
-  const title = `上下文占用 ${value}%（${formatTokens(stats?.contextUsage?.tokens)} / ${formatTokens(stats?.contextUsage?.contextWindow)}）`;
+  const title = `上下文占用 ${formatPercent(value, DECIMALS)}%（${formatTokens(stats?.contextUsage?.tokens)} / ${formatTokens(stats?.contextUsage?.contextWindow)}）`;
 
   return (
     <button className="pg-ctx-meter" title={title} aria-label={title}>
@@ -441,7 +444,7 @@ function ContextMeter({ tabId }: { tabId: string }) {
           />
         </g>
       </svg>
-      <span>{value}%</span>
+      <span>{formatPercent(value, 0)}%</span>
     </button>
   );
 }

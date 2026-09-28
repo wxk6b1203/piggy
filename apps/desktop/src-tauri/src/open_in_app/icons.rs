@@ -286,9 +286,7 @@ mod tests {
     /// Linux：hi-color 主题命中最省事的那条路径。
     #[test]
     fn linux_theme_icon_lookup_prefers_largest_size() {
-        struct FakeLinux {
-            facts: Facts,
-        }
+        struct FakeLinux;
         impl Host for FakeLinux {
             fn is_dir(&self, _: &Path) -> bool {
                 false
@@ -328,7 +326,7 @@ mod tests {
             ssh: false,
             env,
         };
-        let host = FakeLinux { facts: facts.clone() };
+        let host = FakeLinux;
         // 512/256 不存在 → 落到 128（而不是直接放弃）
         assert_eq!(
             linux_icon_bytes(&host, &facts, "kitty"),

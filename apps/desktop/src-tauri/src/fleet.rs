@@ -624,7 +624,7 @@ mod tests {
 
         assert_eq!(mgr.settle_lane("tab-r1", "结论1").unwrap(), ("run-1".into(), "r1".into()));
         assert_eq!(mgr.settle_lane("tab-未知", "x"), None);
-        assert!(mgr.maybe_finish("run-1") == false);
+        assert!(!mgr.maybe_finish("run-1"));
         assert_eq!(mgr.settle_lane("tab-r2", "结论2").unwrap(), ("run-1".into(), "r2".into()));
         assert!(mgr.maybe_finish("run-1"));
         let snap = mgr.snapshot();

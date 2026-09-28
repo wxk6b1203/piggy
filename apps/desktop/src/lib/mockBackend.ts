@@ -593,6 +593,19 @@ function mockCheckSource(source: string) {
   return { ok: true, problem: null, hint: '', sourceKind: 'local', sourceKindLabel: '本地路径' };
 }
 
+/**
+ * mock 的上下文用量：**故意**用 pi 那种 f64 商，不留整数值。
+ *
+ * `15400 / 75800 × 100 = 20.316622691292876` —— 界面上任何一处忘记过
+ * `formatPercent` 就会把这个尾巴印出来（用户 2026-09-23 报的
+ * `上下文占用 20.316000000000003%` 就是这么来的）。门禁据此断言"百分比是
+ * 整数或最多 3 位小数"，同时核对这个原始值本身**确实超过 3 位小数**，
+ * 否则那条断言是空转（改回整数就会失去复现能力）。
+ */
+export const MOCK_CONTEXT_TOKENS = 15_400;
+export const MOCK_CONTEXT_WINDOW = 75_800;
+export const MOCK_CONTEXT_PERCENT = (MOCK_CONTEXT_TOKENS / MOCK_CONTEXT_WINDOW) * 100;
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {
     // 与真机一致：收割上一 JS 上下文遗留的全部 tab（registry 清空）。
@@ -807,7 +820,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   pi_get_session_stats: () => ({
     tokens: { input: 12_000, output: 3_400, total: 15_400, cacheRead: 9_000 },
     cost: 0.0321,
-    contextUsage: { tokens: 15_400, contextWindow: 1_000_000, percent: 2 },
+    contextUsage: {
+      tokens: MOCK_CONTEXT_TOKENS,
+      contextWindow: MOCK_CONTEXT_WINDOW,
+      percent: MOCK_CONTEXT_PERCENT,
+    },
     userMessages: 3,
     assistantMessages: 3,
     toolCalls: 5,

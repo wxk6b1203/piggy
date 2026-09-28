@@ -26,6 +26,14 @@
  *
  * 想改成别的精度只动 {@link DECIMALS} 一处；命中率的"诚实规则"见
  * {@link formatCacheHitPercent}。
+ *
+ * ## 上下文占用百分比：必须过 {@link formatPercent}（2026-09-23 用户报的浮点垃圾）
+ *
+ * 用户贴的日志里出现过 `上下文占用 20.316000000000003%` —— 这个数直接来自 pi 的
+ * `contextUsage.percent`（`tokens / contextWindow × 100` 的 f64），不是错误值，
+ * 只是**没格式化**就拼进了界面（`${pct}%`）。同一个数在环的标签、环的 title、
+ * 右栏「上下文」行三处出现，任何一处漏格式化都会漏出这串尾巴，
+ * 所以三处都只准用 {@link formatPercent}，不准再写字面量模板串。
  */
 
 /** 上下文长度与命中率的显示小数位（`15.400K` / `87.345%`）。 */
@@ -63,6 +71,55 @@ export function formatTokens(value: number | null | undefined): string {
 export function formatExactTokens(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—';
   return Math.round(value).toLocaleString('en-US');
+}
+
+/**
+ * 把任意来路的百分比夹到 `[0, 100]`，非有限数当 0。
+ *
+ * 给"要拿去做几何"的地方用（环的 `strokeDasharray`、用量条的 `width`、
+ * `data-level` 分档）：几何不能被 `NaN` / `140` / `-3` 污染，
+ * 而**显示**文本另有 {@link formatPercent}（它会顺带夹一次）。
+ *
+ * @param value - 原始百分比（pi 的 `contextUsage.percent` 之类）
+ * @returns `0..100` 的有限数
+ */
+export function clampPercent(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+/**
+ * 百分比显示：固定 {@link DECIMALS} 位小数（half-up），末尾 0 **不省**。
+ *
+ * ```text
+ * 20.316000000000003 → 20.316%    2     → 2.000%
+ * 20.316000000000003 → 20%（decimals=0，环上的短标签）
+ * ```
+ *
+ * 为什么必须走这里：pi 给的是 f64 商，`${20.316622691292876}%` 会把
+ * IEEE-754 的尾巴直接印在界面上（用户 2026-09-23 报的正是这条）。
+ *
+ * 注意与 {@link formatCacheHitPercent} 的区别：命中率有"部分命中不许显示成
+ * 100%"的诚实规则，占用率**没有**——占用 99.9999% 说成 100% 不会误导谁，
+ * 所以这里就是老老实实的四舍五入。
+ *
+ * @param value - 百分比（`20.316` 表示 20.316%）；缺失/非法 → `—`
+ * @param decimals - 小数位，默认 {@link DECIMALS}
+ * @returns 百分数串（不含 `%`）
+ */
+export function formatPercent(
+  value: number | null | undefined,
+  decimals: number = DECIMALS,
+): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const d = Math.max(0, Math.min(6, Math.trunc(decimals)));
+  const scale = 10 ** d;
+  // 夹到 [0,100] 再量化：夹在量化之前，避免 100.0004 → 100.000 之后再夹的来回
+  const clamped = clampPercent(value);
+  const x = clamped * scale;
+  const q = Math.floor(x);
+  const units = Math.min(100 * scale, x - q >= 0.5 ? q + 1 : q);
+  return fixedPercent(units, d);
 }
 
 /**

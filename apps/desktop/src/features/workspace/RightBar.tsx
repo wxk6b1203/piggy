@@ -10,7 +10,7 @@ import { Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { cmd } from '@/lib/ipc';
 import { baseName } from '@/lib/paths';
-import { formatCacheHitPercent, formatTokens } from '@/lib/tokenFormat';
+import { clampPercent, formatCacheHitPercent, formatPercent, formatTokens } from '@/lib/tokenFormat';
 import { windowEvents } from '@/lib/windowEvents';
 import { Icon } from '@/features/common/Icon';
 import { FileIcon } from '@/features/common/FileIcon';
@@ -100,7 +100,8 @@ function StatsView({ tabId }: { tabId: string | null }) {
   const total = stats?.tokens?.total;
   const ctx = stats?.contextUsage;
   const pct = ctx?.percent;
-  // 命中率与上下文长度的口径都在 lib/tokenFormat（3 位小数，与状态行同一份实现）
+  const used = clampPercent(pct);
+  // 命中率、上下文长度、上下文占用的口径都在 lib/tokenFormat（3 位小数，与状态行同一份实现）
   const hit = formatCacheHitPercent(
     stats?.tokens?.cacheRead ?? 0,
     (stats?.tokens?.input ?? 0) + (stats?.tokens?.cacheRead ?? 0),
@@ -117,7 +118,9 @@ function StatsView({ tabId }: { tabId: string | null }) {
       <Row label="成本" value={stats?.cost != null ? `$${Number(stats.cost).toFixed(4)}` : '—'} />
       <div className="pg-stat-row">
         <span className="pg-stat-label">上下文</span>
-        <span className="pg-stat-value">{pct != null ? `${pct}%` : '—'}</span>
+        <span className="pg-stat-value" data-ctx-percent={formatPercent(pct)}>
+          {pct != null ? `${formatPercent(pct)}%` : '—'}
+        </span>
       </div>
       <Row
         label="上下文长度"
@@ -126,8 +129,8 @@ function StatsView({ tabId }: { tabId: string | null }) {
       <div className="pg-usage-bar">
         <div
           className="pg-usage-fill"
-          style={{ width: `${Math.min(100, pct ?? 0)}%` }}
-          data-level={(pct ?? 0) > 85 ? 'high' : (pct ?? 0) > 60 ? 'mid' : 'low'}
+          style={{ width: `${used}%` }}
+          data-level={used > 85 ? 'high' : used > 60 ? 'mid' : 'low'}
         />
       </div>
       <Row label="消息" value={stats ? `${stats.userMessages ?? 0} 用户 / ${stats.assistantMessages ?? 0} 助手` : '—'} />

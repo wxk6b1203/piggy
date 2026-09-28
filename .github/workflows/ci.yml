@@ -28,7 +28,9 @@ jobs:
       - name: fmt
         run: cd apps/desktop/src-tauri && cargo fmt --check
       - name: clippy
-        run: cd apps/desktop/src-tauri && cargo clippy -- -D warnings
+        # `--all-targets` 是必须的：默认只 lint lib，test 目标里的提示会悄悄长回来
+        # （2026-09-23 实测：只跑 lib 时漏掉 5 处，见 docs/15 §4）
+        run: cd apps/desktop/src-tauri && cargo clippy --all-targets -- -D warnings
       - name: unit + fixtures 对拍
         run: cd apps/desktop/src-tauri && cargo test --lib --tests
 

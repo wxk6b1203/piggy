@@ -740,10 +740,11 @@ mod tests {
 
     /// 一条消息条目（parentId 由调用方串好）
     fn msg(id: &str, parent: &str, role: &str, text: &str) -> String {
+        // 内容块先拼出来：`format!` 里再套 `format!` 会被 clippy 拦（`--all-targets`）
+        let content = format!(r#"{{"type":"text","text":"{text}"}}"#);
         format!(
-            r#"{{"type":"message","id":"{id}","parentId":{parent},"timestamp":"2026-09-23T00:00:0{}.000Z","message":{{"role":"{role}","content":[{text}],"timestamp":1}}}}"#,
+            r#"{{"type":"message","id":"{id}","parentId":{parent},"timestamp":"2026-09-23T00:00:0{}.000Z","message":{{"role":"{role}","content":[{content}],"timestamp":1}}}}"#,
             id.len() % 10,
-            text = format!(r#"{{"type":"text","text":"{text}"}}"#)
         )
     }
 
@@ -942,7 +943,6 @@ mod tests {
         for i in 1..=20 {
             let uid = format!("u{i:02}");
             lines.push(msg(&uid, &format!("\"{parent}\""), "user", &format!("问题 {i}")));
-            parent = uid.clone();
             let aid = format!("a{i:02}");
             lines.push(msg(&aid, &format!("\"{uid}\""), "assistant", &format!("回答 {i}")));
             parent = aid;

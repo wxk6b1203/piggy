@@ -2125,6 +2125,37 @@ const downPages = [];
     }
   }
 }
+/* 数字口径（用户 2026-09-23 报 `上下文占用 20.316000000000003%`）：
+   百分比必须过 `lib/tokenFormat` 的 `formatPercent` —— 环上的短标签是 DSH 的整数口径，
+   环的 title 与右栏「上下文」是 3 位小数。mock 的 percent 故意留 f64 尾巴，
+   所以这里一旦有人图省事写 `${pct}%`，断言立刻红。 */
+const numbersMeter = await page.evaluate(() => {
+  const meter = document.querySelector('.pg-ctx-meter');
+  const railBtn = [...document.querySelectorAll('.pg-rightrail .pg-rail-btn')].find(
+    (b) => b.getAttribute('title') === '统计',
+  );
+  railBtn?.click();
+  return {
+    label: meter?.querySelector('span')?.textContent ?? null,
+    title: meter?.getAttribute('title') ?? null,
+    dash: meter?.querySelector('.pg-ctx-fill')?.getAttribute('stroke-dasharray') ?? null,
+    hasRailBtn: !!railBtn,
+    rawPercent: globalThis.__piggyMock?.MOCK_CONTEXT_PERCENT ?? null,
+  };
+});
+await page.waitForTimeout(400);
+const numbersStats = await page.evaluate(() => {
+  const el = document.querySelector('[data-ctx-percent]');
+  const fill = document.querySelector('.pg-usage-fill');
+  return {
+    text: el?.textContent ?? null,
+    attr: el?.getAttribute('data-ctx-percent') ?? null,
+    width: fill ? getComputedStyle(fill).width : null,
+    level: fill?.getAttribute('data-level') ?? null,
+  };
+});
+const numbers = { meter: numbersMeter, stats: numbersStats };
+
 const scrolledDown = {
   /** 滚轮阶段开始时的行数（换窗刚落地）—— 单调性只看滚轮阶段自己 */
   startLoaded: downPages.start?.loaded ?? 0,
@@ -2146,7 +2177,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
-      sessionTitle, menuProbe, cornerProbe, titleRun,
+      sessionTitle, menuProbe, cornerProbe, titleRun, numbers,
     },
     null,
     1,
@@ -3079,6 +3110,51 @@ if (!sc.liveMonotonic) {
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
 if (pageErrors.some((e) => /ResizeObserver loop/.test(e))) {
   bad.push('页面错误里出现 ResizeObserver 自触发循环（量了自己）★');
+}
+
+/* 数字口径：百分比不许把 f64 的尾巴印在界面上。
+   先核对夹具本身有复现能力（原始值是 20.316622691292876，>3 位小数），
+   再核对三处显示：环标签（DSH 整数）、环 title（3 位小数）、右栏「上下文」（3 位小数）。 */
+const THREE_DECIMALS = /^\d+\.\d{3}$/;
+if (!(typeof numbers.meter.rawPercent === 'number') || !/\d\.\d{4,}/.test(String(numbers.meter.rawPercent))) {
+  bad.push(
+    `数字口径：mock 的原始 percent=${String(numbers.meter.rawPercent)} 本身没带浮点尾巴，` +
+      '这条核对失去复现能力（改回整数就等于不测了）★',
+  );
+}
+if (numbers.meter.label == null) {
+  bad.push('数字口径：输入卡下方没有上下文环（统计没上来？）★');
+} else {
+  if (!/^\d+%$/.test(numbers.meter.label)) {
+    bad.push(
+      `数字口径：环上的百分比是 "${numbers.meter.label}"，应为整数 + %（DSH 口径）★`,
+    );
+  }
+  const m = /^上下文占用 ([\d.]+)%（(.+) \/ (.+)）$/.exec(numbers.meter.title ?? '');
+  if (!m) {
+    bad.push(`数字口径：环的 title 不是「上下文占用 N%（x / y）」：${JSON.stringify(numbers.meter.title)} ★`);
+  } else if (!THREE_DECIMALS.test(m[1])) {
+    bad.push(`数字口径：title 里的占用率 "${m[1]}" 不是 3 位小数 —— 又把原始 float 拼进去了 ★`);
+  }
+  if (numbers.meter.dash && !/^[\d.]+ [\d.]+$/.test(numbers.meter.dash)) {
+    bad.push(`数字口径：环的 stroke-dasharray "${numbers.meter.dash}" 不是两个数 ★`);
+  }
+}
+if (!numbers.meter.hasRailBtn) {
+  bad.push('数字口径：右栏没有「统计」入口，这条核对是空转 ★');
+} else if (numbers.stats.text == null) {
+  bad.push('数字口径：右栏统计里没有「上下文」一行 ★');
+} else {
+  const shown = numbers.stats.text.replace(/%$/, '');
+  if (!THREE_DECIMALS.test(shown)) {
+    bad.push(`数字口径：右栏「上下文」显示 "${numbers.stats.text}"，应为 3 位小数 ★`);
+  }
+  if (numbers.stats.attr !== shown) {
+    bad.push(`数字口径：右栏「上下文」的 data 属性 (${String(numbers.stats.attr)}) 与显示文本不一致 ★`);
+  }
+  if (numbers.stats.width == null || numbers.stats.level == null) {
+    bad.push('数字口径：右栏没有用量条（宽度/分档读不到）★');
+  }
 }
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

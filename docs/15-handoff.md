@@ -12,11 +12,13 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **320/320**：apps/desktop **253**（28 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、11 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` 30 |
-| `cargo test` | **197 + 3 + 11**（另有 2 条 `#[ignore]` 的真机核对：`real_home` / `real_network`）全绿：fleet 状态机/结果收集/容量排队 16 条、argv 组装 13 条（含**委派开关的档位组合/缺失 fail-closed**）、扩展资源定位 4 条、「打开方式」64 条（目录表自检 / 三平台定位链 / 观察窗四态真进程 / macOS 真机解析与图标提取 / 文件关联真机查询 / 路径校验与拒绝面 / base64 向量）、**提供商 40 条**（生成目录的自检 + 手写金标 / 总览合成的来源与优先级 / models.json 增删改与未知字段保留 / **真 socket 的列举请求与解析**（含 401、非 JSON、超大、单行坏数据）/ auth.json 写入往返） |
+| `vitest` | **499/499**：apps/desktop **432**（46 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 31 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
+| `cargo test` | **307 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
+| `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **11** 条：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
+| `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
@@ -762,6 +764,36 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     —— 明明不是资源加载。`window.onerror` 的三种形状（运行时异常 / 资源失败 / 浏览器合成事件）
     必须分开打，否则日志会把人带到错误的方向（这次差点让我去查资源加载）。
 
+77. **没有调用栈的警告，就给它装一个"现场证人"。**
+    合成事件（ResizeObserver 循环警告、跨域脚本错误）在 `window.onerror` 里
+    **既没有 `error`、也没有栈**，靠读代码猜是谁干的——这次猜了三轮。
+    正确做法是包住那个 API（`lib/resizeProbe.ts` 包 `ResizeObserver` 构造器），
+    记下"谁 new 的 + 最后一次回调来自哪个创建点"，下次警告到达时直接点名。
+    诊断成本一次付清，比每轮猜便宜。
+
+78. **同一帧里连发 N 条的同一条日志＝一条。**
+    用户贴的三行 `ResizeObserver loop ...` 让他以为出了三个问题。按"同文本 + 3 秒窗口
+    （从第一条算起，不顺延）"折叠，窗口过后补一条 `（同类已折叠 N 条）`。
+    别把折叠做成静音：数量信息必须留在日志里。
+
+79. **观察者/监听器的数量本身就是风险指标。**
+    每个"回调 → setState → 布局变"都是一条级联链的环。几百个代码块各建 1~2 个
+    `ResizeObserver`，就是几百次让浏览器判定"循环没收敛"的机会。收成一个共享实例
+    （`lib/resizeWatch.ts` 的 `watchSize`）之后，一次投递跑完全部回调、React 合成一次渲染。
+    新写尺寸订阅前先问：能不能挂到那一个上。
+
+80. **同一条警告在不同引擎上的"吵闹程度"不一样，别拿门禁没红当没事、也别拿真机有红当有 bug。**
+    这条 `ResizeObserver loop` 在 Chromium（门禁）里从不出现，在 WKWebView（真机 macOS）
+    里偶发——按规范逻辑实现会发出远多于 Chrome 的通知（csswg-drafts #6610）。
+    判据只能是**可见副作用**：抖动、跳动、位置乱走算 bug；控制台多一行不算。
+    这条要写进文档，否则下一轮又要重新怀疑一遍。
+
+81. **凡是"算出来的数"直接进界面的地方，都要问一句"它是什么精度"。**
+    用户报的 `上下文占用 20.316000000000003%` 不是错误值，是 f64 商没格式化。
+    同一个数在三处露面（环标签、环 title、右栏），所以三处共用 `formatPercent`，
+    并且**夹具要故意留尾巴**（`15400 / 75800 × 100`），否则断言是空转：
+    改回整数就再也测不出这个 bug 了。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -778,7 +810,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |
 | codicon 双份 | 构建产物里两份 `codicon.ttf`（Piggy 一份 + Monaco 自带一份），约 150 KB 冗余 |
 | **CI 的 `cargo fmt --check` 一直是红的** | docs/08 §2 写着「格式化：prettier + rustfmt（**CI 校验**）」，`.github/workflows/ci.yml` 也真的跑 `cargo fmt --check`；但仓库里**没有 `rustfmt.toml`**，而现有 Rust 代码是按 ~120 列写的（`cargo fmt --check` 实测 **390 处差异**）。也就是说那一格从来没绿过。两条路：①加 `rustfmt.toml`（`max_width = 120`）再跑一次全仓格式化（会是一个巨大的无关 diff）；②把 docs/08 那句改成实际执行者。**本轮没动它**——不在这个功能的范围内，但它是"文档说有、实际没有"的又一处 |
-| **CI 的 `cargo clippy -- -D warnings` 曾经也是红的** | 2026-09-25 核对：本轮之前 lib 有 **2 条** error（`lib.rs` 的 `match` 单分支 + `perf_config_save` 参数过多）。前者本轮顺手修成 `if let`；后者是 **IPC 界面决定的**（前端送扁平对象，每个字段一个开关），已显式 `#[allow(clippy::too_many_arguments)]` 并注明"合并成结构体 = 线格式变更"。现在这一格**通过**了 |
+| **CI 的 `cargo clippy -- -D warnings` 曾经也是红的** | 2026-09-25 核对：本轮之前 lib 有 **2 条** error（`lib.rs` 的 `match` 单分支 + `perf_config_save` 参数过多）。前者本轮顺手修成 `if let`；后者是 **IPC 界面决定的**（前端送扁平对象，每个字段一个开关），已显式 `#[allow(clippy::too_many_arguments)]` 并注明"合并成结构体 = 线格式变更"。现在这一格**通过**了。2026-09-23 又补一条：只跑 `-- -D warnings`（默认 lib target）**看不见 test 目标里的提示**——加 `--all-targets` 会多出 5 处（单分支 `match`、死赋值、`format!` 套 `format!`、测试桩里没人读的字段、`== false`），本轮全部清掉，所以现在 `cargo clippy --all-targets -- -D warnings` 也是绿的。**门禁口径以后按 `--all-targets` 算**（CI 若只跑 lib，这 5 处会悄悄长回来） |
 | **`pnpm lint` 是空转** | docs/08 §4 与 docs/10 §2.2 都写着某些红线"lint 强制"，但 `apps/desktop/package.json` **没有 `lint` 脚本**，`pnpm -r --if-present lint` 一个文件都扫不到。手工 `npx eslint .` 现存 **189 error / 35 warning**（含 `no-undef` 打在 `src-tauri/resources/*.js` 这类构建产物上）。二选一：①接上 lint 并清存量（要先把构建产物加进 ignores）；②把文档里的"lint 强制"改成实际执行者（本轮预览语言表那条红线就是这么办的——由 `src/test/preview-lang.test.ts` 承担） |
 | `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
 | ~~左侧"常驻视图轨"~~ **已决定不做**（2026-09-24） | docs/04 §1.2 曾规划一条常驻的 44px L 轨（VS Code 活动栏语义）。查 DSH 源码：`ui-layout/.../AppFrame.tsx:183-186` 写明 *neither platform keeps an icon rail* —— 折叠后的重开控件走标题栏（macOS `shell.leading` 座位 / Windows caption 行）。而且左栏只有一个视图（会话列表），轨上没有可切的东西。**计划已从 docs/04 删除**；左侧只有折叠态那条 56px 轨（`SidebarRail`），右侧那条 40px 常驻轨（`RightBar`）保留（它本身也是对 DSH 的偏离 —— DSH 右栏用 dockview tab 条，若哪天要百分百对齐，该动的是这条） |

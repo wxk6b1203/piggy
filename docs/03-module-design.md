@@ -511,6 +511,25 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 两者都没有 → 浏览器**合成事件**（ResizeObserver 循环警告、跨域脚本错误等）原样打出，
 并对 `ResizeObserver loop` 附一句"查观察的元素是否由自己的输出决定大小"。
 
+**两件配套**（用户同一轮反馈："出现了一些奇怪的日志不知道有没有影响"）：
+
+1. **连发的同一条折叠**。浏览器把同一条合成事件警告连着报三遍，终端里像出了三个问题。
+   同文本在 `REPEAT_WINDOW_MS`（3s，从**第一条**算起，不顺延）内再次到达就折叠，
+   窗口过后若还在发生，补打一条 `（同类已折叠 N 条）`。折叠表上限 64 条并整体清空，
+   防"有人把唯一 id 拼进消息里"把它撑爆。
+2. **循环警告附现场报告**（`lib/resizeProbe.ts`，仅 DEV）。这条警告在 `window.onerror` 里
+   **既没有 error、也没有栈**，前后让我们猜了三轮。探针包装 `ResizeObserver` 构造器，
+   记下"谁 new 的"（第三方库也会经过）与"最近一次真的被调用的回调来自哪个创建点"，
+   警告到达时一并打出。生产构建不装探针、也不多打一行。
+
+**这条警告在 macOS 上更吵，是规范差异而不是我们的 bug**：门禁（Chromium/Playwright）
+里从来复现不出来，真机（Tauri = WKWebView）里偶发。按规范逻辑实现会发出**远多于**
+Chrome 的循环错误通知（csswg-drafts #6610：*Following spec logic results in many more
+"resize loop error notifications" than are sent by Chrome*），规范原文是"循环结束仍有未投递的
+通知"就报错，而"下一帧再投递"本来就是允许的——即它只说明**这一帧**没收敛完，不等于死循环。
+判据因此是**有没有可见副作用**：抖动/跳动/位置乱走 → 按纪律改（见 04 §2.1.1 第 6/7 条）；
+只是控制台多一行 → 折叠后留档，不影响功能。
+
 ### 2.19 `sessions/transcript.rs` — 转录分页读（打开不再吞整段历史）
 
 **它为什么存在**：打开会话原先调 `get_messages`（pi 进程内存里的当前上下文）一次性 hydrate
@@ -605,6 +624,16 @@ Rust 侧给界面的路径是**平台原生**的（`to_string_lossy()`，Windows
 （`15400 → 15.400K`、`1_000_000 → 1.000M`、命中率 `42.857%`），小数位常量 `DECIMALS` 只此一处。
 环上的**百分数**仍是 DSH 的整数口径（它表达"还剩多少余量"），只有 title 里的长度用 3 位。
 
+**上下文占用百分比必须过 `formatPercent`**（2026-09-23 用户第二轮反馈：
+"底下的上下文占用出现了 `20.316000000000003%` 这样的奇怪字样"）。这个数来自 pi 的
+`contextUsage.percent`，是 `tokens / contextWindow × 100` 的 **f64**——值没错，
+错的是直接拼进模板串（`${pct}%`）。现在同一个格式化函数管三处：环的短标签
+（`formatPercent(pct, 0)` → `20%`，DSH 整数口径）、环的 title（3 位小数 → `20.317%`）、
+右栏「上下文」行（3 位小数）。`clampPercent` 另管"要拿去做几何"的场合
+（环的 `strokeDasharray`、用量条 `width`、`data-level` 分档），免得 `NaN` / `140` / `-3` 污染几何。
+夹具纪律：mock 与门禁**故意**用带尾巴的原始值（`15400 / 75800 × 100 = 20.316622691292878`），
+并且断言这个原始值本身超过 3 位小数——否则"格式化"那条断言是空转（改回整数就没复现能力了）。
+
 **命中率的诚实规则**（照抄 DSH）：只要有 1 个 token 没命中就**绝不显示 `100%`**——
 四舍五入到 100 时自动加小数位把它区分出来（`99.9999%`）。这个数就是用来判断缓存有没有生效的，
 "99.6% 显示成 100%"会直接误导。整数运算（`percentUnits` 用 half-up 除法而不是浮点 `toFixed`），
@@ -637,6 +666,24 @@ Piggy 不重复实现）；**只有认得的才拦**（用户真的可能发一�
 `scrollTopAfterPrepend`），阈值 25px 取自 DSH 的 `useScrollFollow(state.followingTail, 25)`。
 "打开即贴底""往上滚才停止跟随""翻页不跳"三条都是几何判断，而 jsdom 里
 `clientHeight` 恒为 0 —— 所以判断留在纯函数里单测，真几何交给浏览器门禁量。
+
+### 3.0e `lib/resizeWatch.ts` + `lib/resizeProbe.ts` — 全应用一个尺寸订阅（+ 谁建的它）
+
+**为什么要收成一个**：转录区里每个代码块各建 1~2 个观察者（一次会话几百个），梯子再建一个。
+观察者多不只是开销——每个都是"回调 → setState → 布局变 → 再通知"这条链上独立的一环，
+浏览器判定"循环没收敛"（`ResizeObserver loop completed with undelivered notifications`）
+的机会随之变多，而这条警告在 WKWebView 上比 Chromium 上吵得多（§2.18b）。
+`watchSize(el, cb)` 用**一个** `ResizeObserver` 扇出（`WeakMap<Element, Set<Watcher>>`），
+一次投递跑完全部回调、React 合成一次渲染，链只有一圈。无 `ResizeObserver` 的环境
+（jsdom、老 WebKit）退化成空操作，初次测量仍由各处的 `useLayoutEffect` 负责。
+
+三条纪律写在模块头：**回调里只准读布局 + setState**（要写几何就在 `useLayoutEffect` 里写）；
+**被观察的元素不能由这次回调的输出决定大小**（梯子量转录带，不量 `.pg-rail` 自己）；
+**不用了就退订**（最后一个回调退掉才 `unobserve`）。`resizeWatchStats()` 报"实例数 / 元素数"，
+`instances > 1` 就说明有人绕开它自己 `new` 了——门禁与单测据此钉住。
+
+`resizeProbe.ts`（仅 DEV）包装全局 `ResizeObserver` 记创建点与最后回调来源，
+给 §2.18b 的循环警告当现场证人。
 
 ### 3.1 `lib/ipc.ts`
 

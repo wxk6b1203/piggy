@@ -8,8 +8,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   DECIMALS,
+  clampPercent,
   formatCacheHitPercent,
   formatExactTokens,
+  formatPercent,
   formatTokens,
 } from '@/lib/tokenFormat';
 
@@ -76,5 +78,43 @@ describe('formatCacheHitPercent：3 位小数 + 不把部分命中凑成 100%', 
 
   it('超过分母的缓存读被夹住，不会算出 >100%', () => {
     expect(formatCacheHitPercent(5_000, 1_000)).toBe('100');
+  });
+});
+
+describe('formatPercent：上下文占用百分比不许露出 f64 尾巴', () => {
+  // 真机形状：15400 / 75800 × 100 = 20.316622691292878（用户看到的是同形状的 20.316000000000003）
+  const RAW = (15_400 / 75_800) * 100;
+
+  it('用户报的那串垃圾被收敛成 3 位小数', () => {
+    // 夹具本身必须带尾巴，否则这条核对是空转
+    expect(String(RAW)).toMatch(/^\d+\.\d{4,}$/);
+    expect(formatPercent(RAW)).toBe('20.317');
+    expect(formatPercent(RAW)).not.toContain('000000');
+  });
+
+  it('整数模式（环上的短标签）：DSH 口径', () => {
+    expect(formatPercent(RAW, 0)).toBe('20');
+    expect(formatPercent(0.4, 0)).toBe('0'); // half-up 也不能进到 1（0.4 < 0.5）
+    expect(formatPercent(0.5, 0)).toBe('1');
+    expect(formatPercent(99.6, 0)).toBe('100');
+  });
+
+  it('末尾 0 不省，三处数字列宽一致', () => {
+    expect(formatPercent(2)).toBe('2.000');
+    expect(formatPercent(0)).toBe('0.000');
+    expect(formatPercent(100)).toBe('100.000');
+    expect(formatPercent(33.3333)).toBe('33.333');
+  });
+
+  it('夹到 0..100：几何与文本都不会被 NaN/超界污染', () => {
+    expect(formatPercent(140.5)).toBe('100.000');
+    expect(formatPercent(-3)).toBe('0.000');
+    expect(formatPercent(Number.NaN)).toBe('—');
+    expect(formatPercent(null)).toBe('—');
+    expect(formatPercent(undefined)).toBe('—');
+    expect(clampPercent(Number.NaN)).toBe(0);
+    expect(clampPercent(140)).toBe(100);
+    expect(clampPercent(-1)).toBe(0);
+    expect(clampPercent(20.316622691292876)).toBeCloseTo(20.3166226912928, 10);
   });
 });

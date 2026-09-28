@@ -30,6 +30,7 @@
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { watchSize } from '@/lib/resizeWatch';
 import type { RailItem } from './turnRailItems';
 
 /** 相邻刻度的固定间距（DSH `TURN_SPACING_PX`）。 */
@@ -81,6 +82,9 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
    * 于是"没人滚，梯子自己在动"（用户多次截图的刻度位置都不一样）。
    *
    * 另外只在新值真的不同时 setState：观察者回调里做无谓的 set 会白跑一轮渲染。
+   *
+   * 观察者走 `lib/resizeWatch` 的**共享实例**（全应用一个）：梯子只是众多订阅者之一，
+   * 一次投递把所有订阅者的回调跑完、React 合成一次渲染，链只有一圈。
    */
   useEffect(() => {
     const el = railRef.current?.closest('.pg-transcript-wrap');
@@ -90,9 +94,7 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
       setBandH((prev) => (prev === h ? prev : h));
     };
     apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return watchSize(el, apply);
   }, []);
 
   const total = virtualizer.getTotalSize() + RAIL_INSET_PX * 2;

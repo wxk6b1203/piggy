@@ -27,11 +27,8 @@ fn all_fixtures_classify() {
             // 响应类：仅要求可解析为 JSON（client 按回执处理）
             continue;
         }
-        match classify(&raw) {
-            PiEvent::Other { kind } => {
-                panic!("fixture {name} 意外落入未知事件分类: {kind}");
-            }
-            _ => {}
+        if let PiEvent::Other { kind } = classify(&raw) {
+            panic!("fixture {name} 意外落入未知事件分类: {kind}");
         }
         count += 1;
     }
