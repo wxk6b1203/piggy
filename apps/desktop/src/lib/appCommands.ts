@@ -60,6 +60,15 @@ export function useAppCommands() {
     const ui = () => useUi.getState();
     const tabs = () => useTabs.getState();
 
+    // 关于与许可（docs/03 §2.17）：与系统菜单「许可与第三方声明」、
+    // 侧栏版本号落到同一个 aboutOpen 状态上
+    registerCommand({
+      id: 'app.about',
+      title: '关于 Piggy 与许可',
+      category: '应用',
+      run: () => ui().setAboutOpen(true),
+    });
+
     registerCommand({
       id: 'session.title.generate',
       title: '生成会话标题',

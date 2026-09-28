@@ -32,6 +32,7 @@
     }
   },
   "bundle": {
+    "copyright": "Copyright (C) 2026 wxk6b1203 · GPL-3.0-or-later",
     "active": true,
     "targets": "all",
     "icon": [

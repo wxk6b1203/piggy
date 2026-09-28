@@ -3,6 +3,7 @@ pub mod config;
 pub mod events;
 pub mod fleet;
 pub mod fs_guard;
+pub mod legal;
 pub mod open_in_app;
 pub mod pi;
 pub mod plugin;
@@ -16,7 +17,7 @@ use crate::pi::discovery::discover;
 use crate::sessions::registry::Registry;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -99,6 +100,19 @@ pub fn run() {
         }
     };
     tauri::Builder::default()
+        // 应用菜单的点击：把「许可与第三方声明」交给前端弹对话框
+        // （不在这里自己拼窗口：文案与第三方表都在前端一处渲染，
+        //   菜单项与应用内入口必须落到**同一个**界面上——规矩 36）
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == crate::legal::MENU_ID_LEGAL {
+                // 窗口可能被托盘收起来了：先亮出来再发事件，否则用户点了菜单什么都不发生
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit("app:open-about", serde_json::json!({}));
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -129,6 +143,12 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            // 应用菜单（docs/04 §2.5）：默认菜单 + 「许可与第三方声明」。
+            // 失败**不拦启动**（菜单没了应用照跑，而且应用内还有两个入口），
+            // 但绝不静默——GPL §5(d) 要求交互界面显示这些声明。
+            if let Err(e) = crate::legal::install_app_menu(app.handle()) {
+                eprintln!("[piggy] 警告：安装应用菜单失败（许可条目将只在应用内可见）: {e}");
+            }
             // 全局唤起（docs/09 M4）：Cmd/Ctrl+Shift+P 显示并聚焦主窗
             #[cfg(desktop)]
             {
@@ -323,6 +343,7 @@ pub fn run() {
             commands::session_title_source,
             commands::session_title_generate,
             commands::title_model_options,
+            commands::legal_notices,
             commands::layout_load,
             commands::layout_save,
             commands::pi_get_entries,

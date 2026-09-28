@@ -1321,6 +1321,62 @@ for (const width of [1280, 1180, 900]) {
 await page.setViewportSize({ width: 1280, height: 860 });
 await page.waitForTimeout(300);
 
+/* 「关于 Piggy 与许可」（docs/03 §2.17、docs/04 §2.5）。
+ *
+ * 这是 GPLv3 §5(d) 要求的那个界面，所以核对的是"**真的能看见全文**"：
+ *   (a) 从侧栏版本号点开（鼠标用户最自然的入口）；
+ *   (b) §0 要求显示的三件事都在（版权 / 无担保 / 怎么查看全文）；
+ *   (c) 全文**限高可滚**——674 行直接铺开会把对话框撑到按钮都看不见，
+ *       那样 "how to view a copy of this License" 就成了一句空话（真布局才量得出来）。 */
+const aboutProbe = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const chip = document.querySelector('.pg-brand-version');
+  if (!chip) return { ok: false, why: '侧栏没有版本号（入口没了）' };
+  const tag = chip.tagName.toLowerCase();
+  chip.click();
+  await sleep(700);
+  const box = document.querySelector('[data-legal-notices]');
+  if (!box) return { ok: false, why: '点了版本号没打开对话框', tag };
+  const pre = document.querySelector('[data-legal-text]');
+  const modal = document.querySelector('.ant-modal');
+  const mr = modal?.getBoundingClientRect();
+  const pr = pre?.getBoundingClientRect();
+  const rows = [...document.querySelectorAll('[data-third-party]')].map((r) =>
+    (r.textContent ?? '').trim(),
+  );
+  // 打开状态下量：对话框要落在视口里、全文区要真的能滚
+  const out = {
+    ok: true,
+    tag,
+    title: (document.querySelector('.ant-modal-title')?.textContent ?? '').trim(),
+    copyright: (document.querySelector('[data-legal-copyright]')?.textContent ?? '').trim(),
+    warranty: (document.querySelector('[data-legal-warranty]')?.textContent ?? '').trim(),
+    textChars: (pre?.textContent ?? '').length,
+    // 滚动容器是**对话框正文**（全文区自己不限高，避免两层滚动条）
+    bodyScrollable: (() => {
+      const b = document.querySelector('.ant-modal-body');
+      return b ? b.scrollHeight > b.clientHeight + 8 : false;
+    })(),
+    textHeight: pr ? Math.round(pr.height) : 0,
+    textInsideViewport: pr ? pr.bottom <= window.innerWidth + window.innerHeight : false,
+    modalInsideViewport: mr
+      ? mr.left >= 0 && mr.top >= 0 && mr.right <= window.innerWidth && mr.bottom <= window.innerHeight
+      : false,
+    modalRect: mr ? { x: Math.round(mr.x), y: Math.round(mr.y), w: Math.round(mr.width), h: Math.round(mr.height) } : null,
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    thirdPartyRows: rows.length,
+    thirdPartyText: rows.join(' | ').slice(0, 200),
+    hasLicenseLink: !!box.querySelector('a[href^="https://www.gnu.org/"]'),
+    bodyHasUndefined: /undefined|NaN/.test(box.textContent ?? ''),
+  };
+  // 收摊：Escape 关掉，别影响后面的段落
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(400);
+  out.closedByEscape = !document.querySelector('[data-legal-notices]')?.closest('.ant-modal-wrap')
+    || getComputedStyle(document.querySelector('[data-legal-notices]').closest('.ant-modal-wrap')).display === 'none';
+  return out;
+});
+
 /* ---------- 13. 插件页：四种来源 + 启停 + 安装任务 ----------
  * 这一页的价值全在"**状态是谁定的**"和"**操作真的落到了 pi 的文件上**"。
  * 所以核对三件事：(a) 四种来源各自的徽标/状态都渲染了；(b) 点开关会发出
@@ -1391,16 +1447,26 @@ const plugins = await page.evaluate(async () => {
     .find((b) => (b.textContent ?? '').replace(/\s/g, '') === '添加插件');
   const addBtnFound = !!addBtn;
   addBtn?.click();
+  // ⚠️ 只认**可见**的那个对话框：antd 会把关闭的 Modal 留在 DOM 里
+  // （除非组件显式 destroyOnHidden），于是 `[role="dialog"]` 可能先命中一个隐藏的空壳
+  // ——本项目已经撞过一次（新增「关于与许可」对话框时，这一段全部拿到空字符串）。
+  const visibleDialog = () => {
+    for (const d of document.querySelectorAll('[role="dialog"]')) {
+      const wrap = d.closest('.ant-modal-wrap');
+      if (!wrap || getComputedStyle(wrap).display !== 'none') return d;
+    }
+    return null;
+  };
   const clickAt = performance.now();
   let dialogMs = -1;
   for (let i = 0; i < 60; i += 1) {
-    if (document.querySelector('[role="dialog"]')) {
+    if (visibleDialog()) {
       dialogMs = Math.round(performance.now() - clickAt);
       break;
     }
     await sleep(100);
   }
-  const dlg = document.querySelector('[role="dialog"]');
+  const dlg = visibleDialog();
   const dlgBtn = (label) =>
     [...(dlg?.querySelectorAll('button') ?? [])].find(
       (b) => (b.textContent ?? '').replace(/\s/g, '') === label,
@@ -1810,6 +1876,46 @@ else {
       bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
     }
     if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+}
+
+/* 关于与许可对话框（docs/03 §2.17）：§5(d) 的界面义务 */
+{
+  const a = aboutProbe ?? {};
+  if (!a.ok) {
+    bad.push(`关于与许可：${a.why ?? '探针没跑起来'} ★`);
+  } else {
+    if (a.tag !== 'button') {
+      bad.push(`关于与许可：侧栏版本号是 <${a.tag}>，点不动（鼠标用户没有入口）★`);
+    }
+    if (!a.copyright.includes('Copyright (C) 2026 wxk6b1203')) {
+      bad.push(`关于与许可：版权行不对（"${a.copyright}"）★`);
+    }
+    if (!a.warranty.includes('没有任何担保')) {
+      bad.push(`关于与许可：无担保声明没显示（GPL §0 要求的三件事之一）★`);
+    }
+    if (!a.hasLicenseLink) {
+      bad.push('关于与许可：没有指向 gnu.org 的许可入口 ★');
+    }
+    if (!a.textChars) {
+      bad.push('关于与许可：界面上没有 GPL 全文 ★');
+    }
+    if (!a.bodyScrollable) {
+      bad.push(`关于与许可：正文不可滚动（全文高 ${a.textHeight}，内容 ${a.textChars} 字）——真机 674 行会撑爆对话框 ★`);
+    }
+    if (!a.modalInsideViewport) {
+      bad.push(`关于与许可：对话框超出视口（${JSON.stringify(a.modalRect)} / ${JSON.stringify(a.viewport)}）★`);
+    }
+    if ((a.thirdPartyRows ?? 0) < 5) {
+      bad.push(`关于与许可：第三方组件只列了 ${a.thirdPartyRows} 条 ★`);
+    }
+    if (!(a.thirdPartyText ?? '').includes('MIT')) {
+      bad.push('关于与许可：第三方表里没有许可名 ★');
+    }
+    if (a.bodyHasUndefined) {
+      bad.push('关于与许可：界面上出现了 undefined / NaN（形状漂移）★');
+    }
+    if (!a.closedByEscape) bad.push('关于与许可：Escape 关不掉对话框 ★');
   }
 }
 

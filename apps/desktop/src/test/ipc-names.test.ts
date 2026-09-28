@@ -66,6 +66,73 @@ function invokedCommands(): Map<string, string[]> {
   return found;
 }
 
+/**
+ * Rust 侧 `emit("通道")` 发过的通道。
+ *
+ * 也收格式串（`emit(&format!("plugin:log:{}", id), …)`）——这类通道前端是按前缀
+ * 订阅的（`name.startsWith('plugin:')`），所以返回里同时给"精确集合"与"前缀集合"。
+ */
+function rustEmittedChannels(): { exact: Set<string>; prefix: string[] } {
+  const exact = new Set<string>();
+  const prefix: string[] = [];
+  for (const file of walkRs(resolve(SRC, '../src-tauri/src'))) {
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/\bemit(?:_to|_filter)?\(\s*(?:&)?(?:format!\()?"([^"]+)"/g)) {
+      const ch = m[1];
+      if (ch === undefined) continue;
+      // `format!("plugin:log:{}")` 这类：只取 `{` 之前的部分当前缀
+      const brace = ch.indexOf('{');
+      if (brace >= 0) prefix.push(ch.slice(0, brace));
+      else exact.add(ch);
+    }
+  }
+  return { exact, prefix };
+}
+
+/** 前端订阅的通道：`on('x')`（真机）与 `mockOn('x')`（mock 侧的同一批通道）。 */
+function subscribedChannels(): Map<string, string[]> {
+  const found = new Map<string, string[]>();
+  for (const file of walk(SRC)) {
+    if (file.endsWith(join('lib', 'ipc.ts'))) continue;
+    if (file.includes(`${join('src', 'test')}`)) continue;
+    const text = readFileSync(file, 'utf8')
+      .split('\n')
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .join('\n');
+    for (const m of text.matchAll(/\b(?:on|mockOn)(?:<[^>]*>)?\(\s*'([^']+)'/g)) {
+      const ch = m[1];
+      if (ch === undefined) continue;
+      const list = found.get(ch) ?? [];
+      list.push(file.slice(SRC.length + 1));
+      found.set(ch, list);
+    }
+  }
+  return found;
+}
+
+/** 前端自己发的通道（`windowEvents.emit` / mock 的 `emit`）——这类不需要 Rust 侧有对应。 */
+function frontendEmittedChannels(): Set<string> {
+  const out = new Set<string>();
+  for (const file of walk(SRC)) {
+    if (file.includes(`${join('src', 'test')}`)) continue;
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/\bemit\(\s*'([^']+)'/g)) {
+      const ch = m[1];
+      if (ch !== undefined) out.add(ch);
+    }
+  }
+  return out;
+}
+
+function walkRs(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) walkRs(p, out);
+    else if (p.endsWith('.rs')) out.push(p);
+  }
+  return out;
+}
+
 describe('IPC 命令名契约', () => {
   const registered = registeredCommands();
   const invoked = invokedCommands();
@@ -85,5 +152,37 @@ describe('IPC 命令名契约', () => {
       .filter(([name]) => !registered.has(name))
       .map(([name, files]) => `${name}（${[...new Set(files)].join(', ')}）`);
     expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * **事件通道对得上吗**：前端 `on('x')` 订阅的通道，必须在 Rust 里真的存在
+ * （`emit("x")`），或者是前端自己发的（`windowEvents.emit` / mock 的 `emit`）。
+ *
+ * 与命令名同一个缺口：`on('app:open-about')` 与 Rust 的 `emit("app:open-about")`
+ * 之间**没有任何类型约束**，一边拼错就是"点了菜单什么都不发生"——
+ * 而浏览器门禁跑的是 mock，看不见真机那条路。
+ * 加「关于与许可」时新增了 `app:open-about`，所以顺手把这条也纳入扫描。
+ */
+describe('IPC 事件通道契约', () => {
+  const { exact, prefix } = rustEmittedChannels();
+  const subscribed = subscribedChannels();
+  const feEmitted = frontendEmittedChannels();
+
+  it('扫描本身有效（两侧都非空）', () => {
+    // Rust 侧目前只有 3 条精确通道（sessions:changed / fleet:changed / app:open-about）
+    // + `pty:out:` 前缀通道；阈值卡在"扫到东西"而不是"扫到很多"
+    expect(exact.size).toBeGreaterThanOrEqual(3);
+    expect(subscribed.size).toBeGreaterThan(3);
+    // 本轮新增的那条必须在两边都扫到
+    expect(exact.has('app:open-about'), 'Rust 侧没扫到 app:open-about').toBe(true);
+    expect(subscribed.has('app:open-about'), '前端没订阅 app:open-about').toBe(true);
+  });
+
+  it('前端订阅的每个通道都有出处', () => {
+    const orphans = [...subscribed.entries()]
+      .filter(([ch]) => !exact.has(ch) && !feEmitted.has(ch) && !prefix.some((p) => ch.startsWith(p)))
+      .map(([ch, files]) => `${ch}（${[...new Set(files)].join(', ')}）`);
+    expect(orphans).toEqual([]);
   });
 });

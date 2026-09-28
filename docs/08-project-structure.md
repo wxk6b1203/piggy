@@ -22,8 +22,10 @@ piggy/
 │     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
 │     │  │  ├─ plugin/            # 插件盘点/安装升级/启停/路径登记（03 §2.15）
 │     │  │  ├─ fleet/
+│     │  │  ├─ legal.rs           # 许可与第三方声明 + 系统菜单（03 §2.17）
 │     │  │  └─ events.rs  shortcuts.rs
 │     │  ├─ tests/contract.rs     # 02 §9 契约测试（需 PATH 上的 pi）
+│     │  ├─ tests/menu_smoke.rs   # 系统菜单结构（harness=false：muda 只能在主线程建菜单）
 │     │  ├─ capabilities/         # Tauri 权限清单（§6）
 │     │  └─ tauri.conf.json
 │     ├─ index.html

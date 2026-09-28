@@ -308,6 +308,72 @@ export const mockTitleSource = {
 /** 会话 path → 生成出来的名字（真机是 pi 写进会话文件的 session_info）。 */
 const mockSessionNames = new Map<string, string>();
 
+/* ---------------- 关于与许可的 mock（docs/03 §2.17） ----------------
+   真机的 `legal_notices` 由 Rust 侧 `include_str!("…/LICENSE")` 提供（gnu.org 原文全文，
+   674 行 / 35149 字节）。mock 里**故意只放开头并写明"这是节选"**——
+   在 mock 里塞一份假全文，等于让"界面显示的是不是原文"这件事永远测不出来；
+   留足够的行数让限高滚动区能被真实地量到就够了。 */
+
+/** 与 Rust `legal::THIRD_PARTY` 对应的那份清单（两侧都与 THIRD_PARTY_NOTICES.md 对拍）。 */
+export const mockThirdParty = [
+  { name: 'pi', license: 'MIT', holder: 'Copyright (c) 2025 Mario Zechner', usage: '驱动会话的编码代理；full SKU 随安装包分发' },
+  { name: 'DeepSeek Harness', license: 'MIT', holder: 'Copyright (c) 2026 DeepSeek', usage: '设计 token 数值与交互规格的参照' },
+  { name: '@vscode/codicons', license: 'CC-BY-4.0（图标字形）/ MIT（构建代码）', holder: 'Microsoft Corporation', usage: 'UI 图标字体' },
+  { name: 'seti-ui', license: 'MIT', holder: 'Copyright (c) 2014 Jesse Weed', usage: '文件类型图标（WOFF 字体）' },
+  { name: 'Monaco Editor', license: 'MIT', holder: 'Microsoft Corporation', usage: '编辑器与预览基座' },
+  { name: 'VS Code 内置主题', license: 'MIT', holder: 'Microsoft Corporation', usage: 'Monaco 的语法着色规则（只有 tokenColors）' },
+];
+
+export const mockGplExcerpt = `                    GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+                            Preamble
+
+  The GNU General Public License is a free, copyleft license for
+software and other kinds of works.
+
+  The licenses for most software and other practical works are designed
+to take away your freedom to share and change the works.  By contrast,
+the GNU General Public License is intended to guarantee your freedom to
+share and change all versions of a program--to make sure it remains free
+software for all its users.  We, the Free Software Foundation, use the
+GNU General Public License for most of our software; it applies also to
+any other work released this way by its authors.  You can apply it to
+your programs, too.
+
+  When we speak of free software, we are referring to freedom, not
+price.  Our General Public Licenses are designed to make sure that you
+have the freedom to distribute copies of free software (and charge for
+them if you wish), that you receive source code or can get it if you
+want it, that you can change the software or use pieces of it in new
+free programs, and that you know you can do these things.
+
+  To protect your rights, we need to prevent others from denying you
+these rights or asking you to surrender the rights.  Therefore, you have
+certain responsibilities if you distribute copies of the software, or if
+you modify it: responsibilities to respect the freedom of others.
+
+  For example, if you distribute copies of such a program, whether
+gratis or for a fee, you must pass on to the recipients the same
+freedoms that you received.  You must make sure that they, too, receive
+or can get the source code.  And you must show them these terms so they
+know their rights.
+
+                       TERMS AND CONDITIONS
+
+  0. Definitions.
+
+  "This License" refers to version 3 of the GNU General Public License.
+
+  "Copyright" also means copyright-like laws that apply to other kinds of
+works, such as semiconductor masks.
+
+── 以上是 mock 的节选：真机这里返回的是仓库根 LICENSE 的全文（674 行） ──`;
+
 /* ---------------- 插件页的 mock 状态（docs/04 §2.3） ----------------
    mock 的职责不是"像真的 pi 一样加载扩展"，而是让**门禁能驱动整条交互链**：
    点开关必须真的改状态、点安装必须真的产生一个任务与输出、点删除必须真的把行去掉。
@@ -859,6 +925,22 @@ pub fn main() {
       },
     };
   },
+  /* ---------------- 关于与许可（docs/03 §2.17） ----------------
+     形状与真机一致（camelCase），文本是**节选并写明节选**（见上面的说明）。 */
+  legal_notices: () => ({
+    name: 'Piggy',
+    version: '0.1.0',
+    copyright: 'Copyright (C) 2026 wxk6b1203',
+    spdx: 'GPL-3.0-or-later',
+    licenseName: 'GNU General Public License v3.0 or later',
+    warranty:
+      '本程序是自由软件：你可以按自由软件基金会发布的 GNU 通用公共许可证（第 3 版，' +
+      '或你选择的任何更新版本）重新分发和/或修改它。本程序的分发是希望它有用，' +
+      '但没有任何担保，甚至没有适销性或特定用途适用性的默示担保。',
+    licenseUrl: 'https://www.gnu.org/licenses/gpl-3.0.html',
+    gplText: mockGplExcerpt,
+    thirdParty: mockThirdParty,
+  }),
   /* ---------------- 插件页（docs/04 §2.3） ---------------- */
   plugin_overview: () => mockPluginOverview(),
   plugin_jobs: () => ({ jobs: [...mockPluginJobs.values()] }),

@@ -49,11 +49,22 @@ trash = "5"
 
 [dev-dependencies]
 tempfile = "3"
+# `test` feature 提供 mock_app / MockRuntime：用来核对**系统菜单的真实结构**
+# （"macOS 的 App 子菜单是第一项"、"Help 子菜单的 id"这两个假设一旦被 tauri 改掉，
+#   许可条目会静默地少一条——所以要让它可测，而不是靠祈祷）
+tauri = { version = "2", features = ["test"] }
 
 [[test]]
 name = "contract"
 path = "tests/contract.rs"
 required-features = ["contract"]
+
+# 系统菜单结构核对：harness = false → 在**主线程**执行
+# （muda 的菜单只能在主线程创建，普通用例跑在 worker 线程上会 panic）
+[[test]]
+name = "menu_smoke"
+path = "tests/menu_smoke.rs"
+harness = false
 
 [[test]]
 name = "fixtures_parse"

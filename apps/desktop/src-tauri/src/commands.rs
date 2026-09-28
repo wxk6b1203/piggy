@@ -865,6 +865,16 @@ pub async fn session_title_generate(
     Ok(out)
 }
 
+/// 许可与第三方声明（docs/03 §2.17）。
+///
+/// 版本号取自 `package_info()`（= Cargo.toml），**不是**前端写死的那个字符串——
+/// 「关于」里显示的版本必须是这个二进制真实的版本。
+#[tauri::command]
+pub async fn legal_notices(app: AppHandle) -> Result<Value, String> {
+    let version = app.package_info().version.to_string();
+    Ok(crate::legal::notices(&version))
+}
+
 #[tauri::command]
 pub async fn layout_load() -> Result<Value, String> {
     app::layout_load()

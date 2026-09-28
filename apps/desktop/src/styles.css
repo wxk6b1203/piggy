@@ -378,7 +378,10 @@ body {
   flex: none; font-size: var(--pg-fs-11); color: var(--pg-fg-caption);
   border: 1px solid var(--pg-border-l2); border-radius: var(--pg-r-pill);
   padding: 0 var(--pg-sp-3); line-height: 16px;
+  /* 它是按钮（关于与许可的入口），但看起来仍是一枚版本徽标 */
+  background: none; font-family: inherit; cursor: pointer;
 }
+.pg-brand-version:hover { color: var(--pg-fg); border-color: var(--pg-border-l3); }
 .pg-brand-spacer { flex: 1; }
 
 /* 新建会话：38px 高、r12、elevated 填充（DSH 用白底主按钮，暗色下 = button-elevated-fill） */
@@ -1347,6 +1350,26 @@ body {
 .pg-title-thinking { flex: 0 1 140px; min-width: 116px; max-width: 150px; }
 /* 「手动输入 / 从列表里选」是个链接按钮：不许被压扁（压扁后文字会竖排） */
 .pg-title-manual { flex: none; }
+/* 「关于 Piggy 与许可」（docs/04 §2.5）。
+   限高在对话框**正文**上（组件里的 `Modal.styles.body.maxHeight = 60vh`）：
+   674 行原文直接铺开会让模态高过窗口，底部的「关闭 / 复制全部」被推到视口外
+   ——实测 1280×860 下 879px，比窗口还高。 */
+.pg-about { font-size: var(--pg-fs-12); line-height: 1.65; }
+.pg-about-head { display: flex; align-items: baseline; gap: var(--pg-sp-3); font-size: var(--pg-fs-14); margin: 0 0 var(--pg-sp-3); }
+.pg-about-version { color: var(--pg-fg-dim); font-family: var(--pg-mono); font-size: var(--pg-fs-11); }
+.pg-about-h { margin: var(--pg-sp-5) 0 var(--pg-sp-2); font-size: var(--pg-fs-12); }
+.pg-about-table { width: 100%; border-collapse: collapse; font-size: var(--pg-fs-11); }
+.pg-about-table th { text-align: left; color: var(--pg-fg-dim); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--pg-border-l2); }
+.pg-about-table td { padding: 4px 6px; vertical-align: top; border-bottom: 1px solid var(--pg-border-l2); }
+.pg-about-license {
+  /* 刻意**不**给这里加限高：限高会造出**两层滚动条**（对话框正文 + 全文区），
+     用户滚到一半就不知道自己在滚哪一个。让正文（`Modal.styles.body.maxHeight`）
+     当唯一的滚动容器，往下滚就是原文——674 行本来就是要滚着看的。 */
+  margin: 0; padding: var(--pg-sp-4);
+  background: var(--pg-bg-layer-2); border: 1px solid var(--pg-border-l2);
+  border-radius: var(--pg-r-md); font-family: var(--pg-mono); font-size: 10.5px;
+  line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
 /* 「运行」页：来源/权限档位按钮组 + 当前生效二进制 */
 .pg-runtime-modes { display: flex; gap: var(--pg-sp-3); flex-wrap: wrap; }
 .pg-runtime-current {

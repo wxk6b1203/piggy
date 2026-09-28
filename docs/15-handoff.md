@@ -436,11 +436,30 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     · `or later` **不在 GPLv3 原文里**（原文只写 v3），它必须由**项目自己的声明**表达
       —— README 的 notice 段 + `license` 字段写 `GPL-3.0-or-later`，两者缺一不可。
 
+
+43. **把 `loading` 放进 `useEffect` 依赖、而失败路径又复位 `loading`，等于写了一个无限重试循环。**
+    「关于与许可」对话框第一版是这么写的：
+    `if (!open || info || loading) return;` + `[open, info, loading]` 依赖，
+    靠 `loading` 挡重入。成功时没事（`info` 有值就停了），但**失败时**
+    `finally { setLoading(false) }` 会重新满足条件 → 再拉一次 → 再失败 →
+    无限刷 IPC。单测表现是**用例超时**，真机表现是转圈不停、后端被自己刷屏。
+    修法：用显式的"这次打开试过了吗"闸门（`attempted`，关闭时复位），失败就停在失败态，
+    另给一个「重试」按钮。这条是**用例抓出来的**，不是看代码看出来的——
+    所以用例里除了断言错误文案，还断言了**只调一次**（`invokeMock.mock.calls.length === 1`）。
+
+44. **antd 关闭的 Modal 仍留在 DOM 里；按 `[role="dialog"]` 找元素的代码会先命中它。**
+    加「关于与许可」之后，插件页门禁整段变红（"裸包名没有被拦下"、`""` 之类的空字符串）——
+    因为那段用 `document.querySelector('[role="dialog"]')` 找安装对话框，
+    先命中了我的（隐藏的）对话框，于是后面所有断言都在一个空壳上做。
+    两条修法都做了：新组件加 `destroyOnHidden`；门禁改成**只认可见的那个**
+    （`closest('.ant-modal-wrap')` 的 `display !== 'none'`）。
+    与规矩 33（`.ant-modal-content` 是 v5 类名）同源：**antd 的 DOM 约定要按当前版本实测**。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
-| **GPL §5(d) 的「Appropriate Legal Notices」还没有界面** | GPLv3 对**有交互界面**的作品要求显示版权声明 + 无担保声明 + 如何查看许可（§0 定义、§5(d) 义务）。现在这三样只存在于仓库文件里，应用内**没有任何入口**（侧栏那颗 `Piggy v0.1.0` 是纯文本，点不动；设置页也没有「关于」）。分发安装包之前应当补一个：点版本号 → 弹「关于」，含 `Copyright (C) 2026 wxk6b1203`、无担保那句、LICENSE 全文入口（可复用 `resources/pi-LICENSE.txt` 的做法把 LICENSE 也打进包）。本轮只做了文件层（LICENSE / manifest / README / THIRD_PARTY_NOTICES + 一致性测试），界面这一层**没做** |
+| **系统菜单在 Windows/Linux 上未验证** | macOS 已实测（`tests/menu_smoke.rs` 锁结构：App 子菜单第一项是「关于」、第二项是我们的条目、Edit 子菜单仍是 7 项）。Windows/Linux 走 `append_to_help`（`Menu::default` 本机只在 macOS 自动安装，我们显式装），但**没有真机跑过**——那两平台会因此多出一条菜单栏。真机确认前不要声称可用 |
 | **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |

@@ -393,6 +393,42 @@ pi **没有** `--json`，所以只能解析那张给人看的表（列间两个�
 真输出当金标锁在 `parses_the_real_list_models_table`；`real_machine_lists_models_from_pi`
 （`--ignored`）会真的去跑这台机器上的 pi。
 
+### 2.17 `legal.rs` — 许可与第三方声明
+
+GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显示
+**①版权声明 ②无担保声明 ③可以按本许可再分发 ④怎么看许可全文**；§5(d) 要求
+**有交互界面**的作品都显示它。所以光在仓库里放一份 `LICENSE` 不够——用户拿到的是安装包。
+
+两道出口，一个界面：
+
+| 出口 | 平台 | 内容 |
+|---|---|---|
+| 系统菜单「许可与第三方声明」 | macOS 在 **App 菜单「关于」正下方**；其它平台在 Help | 只负责"找得到"：亮出窗口 + 发 `app:open-about` |
+| 「关于 Piggy 与许可」对话框（前端 `AboutDialog`） | 全平台（另有命令面板、侧栏版本号两个入口） | 负责"看得全"：版权 / 无担保 / 许可名 + **GPLv3 全文** + 第三方组件表 |
+
+**为什么系统「关于」面板不够**：那是个信息框，能显示版权行与一小段 credits，塞不下
+674 行原文。所以 `bundle.copyright`（tauri.conf.json）让原生面板显示版权，
+全文落在应用内——后者才是 §0 那句 *how to view a copy of this License*。
+
+**菜单是"扩展"而不是"重搭"**：`install_app_menu` 从 `tauri::Menu::default` 出发，
+只往 App 子菜单插一条。自己从零搭菜单会让**标准 Edit 子菜单消失 → ⌘C/⌘V/⌘A 在整个应用里失效**，
+而这种坏法在界面上完全看不出来（只有用户想复制一段回复时才发现）。
+`tests/menu_smoke.rs`（`harness = false`，因为 muda 只能在主线程建菜单）锁三件事：
+菜单能建起来、许可条目在「关于」正下方、**Edit 子菜单仍是 7 项**。
+实测结构：`App 子菜单 = [predefined:About, item:legal-notices, …]`。
+
+**GPL 原文是嵌进来的**：`include_str!("../../../../LICENSE")` 指向仓库根那一份
+（编译期嵌入，零漂移），它的 sha256 由 `src/test/license.test.ts` 锁着
+（= 与 gnu.org 逐字节一致）。第三方清单 `THIRD_PARTY` 与 `THIRD_PARTY_NOTICES.md`
+**双向对拍**（`third_party_matches_the_notices_file`）：只查单向会漏掉
+"文档里登记了、界面（和安装包）里没有"——那正是署名漏掉的方式。
+
+命令：
+
+| 命令 | 作用 |
+|---|---|
+| `legal_notices` | 返回版权 / 无担保 / 许可名 / **GPLv3 全文** / 第三方表；版本号取自 `package_info()`（= Cargo.toml，不是前端写死的那个） |
+
 ## 3. 前端侧模块（`src/`）
 
 ### 3.1 `lib/ipc.ts`

@@ -47,6 +47,7 @@ export function SessionsSidebar() {
   const theme = useUi((s) => s.theme);
   const toggleTheme = useUi((s) => s.toggleTheme);
   const setSidebarOpen = useUi((s) => s.setSidebarOpen);
+  const setAboutOpen = useUi((s) => s.setAboutOpen);
 
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -255,7 +256,17 @@ export function SessionsSidebar() {
       <div className="pg-brand-row">
         <span className="pg-brand-logo" aria-hidden="true">🐷</span>
         <span className="pg-brand-name">Piggy</span>
-        <span className="pg-brand-version" title="Piggy 版本">v0.1.0</span>
+        {/* 版本号是「关于与许可」的第三个入口（docs/04 §2.5）：系统菜单在
+            macOS 上才有、命令面板要用户记得住名字，鼠标用户最自然会点这里。
+            三个入口都只置 aboutOpen，界面只有一处（规矩 36）。 */}
+        <button
+          className="pg-brand-version"
+          title="关于 Piggy 与许可"
+          aria-label="关于 Piggy 与许可"
+          onClick={() => setAboutOpen(true)}
+        >
+          v0.1.0
+        </button>
         <span className="pg-brand-spacer" />
         <button className="pg-icon-btn" title="切换主题" onClick={toggleTheme}>
           <Icon name={theme === 'dark' ? 'color-mode' : 'lightbulb'} size={14} />

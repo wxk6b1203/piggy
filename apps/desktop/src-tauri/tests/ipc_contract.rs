@@ -616,3 +616,43 @@ async fn thinking_levels_are_the_pi_ones_and_invalid_ones_are_rejected() {
     }
 }
 
+
+/// 「关于与许可」的载荷形状（docs/03 §2.17）。
+///
+/// 前端 `normalizeNotices` 读的是 `licenseName / licenseUrl / gplText / thirdParty` 这些
+/// camelCase 键；少一个的表现是**界面少一块**（比如没有全文、或第三方表空着），
+/// 而不是抛错——所以键名要在这里写死。
+#[test]
+fn legal_notices_payload_is_camel_case_and_complete() {
+    let v = piggy_lib::legal::notices("9.9.9");
+    for k in [
+        "name",
+        "version",
+        "copyright",
+        "spdx",
+        "licenseName",
+        "warranty",
+        "licenseUrl",
+        "gplText",
+        "thirdParty",
+    ] {
+        assert!(v.get(k).is_some(), "legal_notices 缺 {k}：{v}");
+    }
+    for bad in ["license_name", "license_url", "gpl_text", "third_party"] {
+        assert!(v.get(bad).is_none(), "legal_notices 漏出 snake_case {bad}");
+    }
+    // 版本号来自 package_info（调用方传进来），必须是字符串
+    assert_eq!(v["version"], "9.9.9");
+    // GPL 全文是真的全文（不是"详见 LICENSE"那句话）
+    let text = v["gplText"].as_str().unwrap();
+    assert!(text.len() > 30_000, "全文只有 {} 字节，像是被截断了", text.len());
+    assert!(text.contains("END OF TERMS AND CONDITIONS"));
+    // 第三方表：每一项四个键都得在（少 holder = 署名缺主体）
+    let rows = v["thirdParty"].as_array().unwrap();
+    assert!(rows.len() >= 5, "第三方表只剩 {} 条", rows.len());
+    for r in rows {
+        for k in ["name", "license", "holder", "usage"] {
+            assert!(r[k].is_string() && !r[k].as_str().unwrap().is_empty(), "{r} 的 {k} 缺失");
+        }
+    }
+}

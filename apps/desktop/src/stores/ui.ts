@@ -16,6 +16,10 @@ interface UiState {
   helpOpen: boolean;
   setHelpOpen(b: boolean): void;
 
+  /** 「关于 Piggy 与许可」（docs/03 §2.17）：三个入口共用一个状态 */
+  aboutOpen: boolean;
+  setAboutOpen(b: boolean): void;
+
   sidebarOpen: boolean;
   setSidebarOpen(b: boolean): void;
 
@@ -48,6 +52,11 @@ export const useUi = create<UiState>()(
   helpOpen: false,
   setHelpOpen(b) {
     set({ helpOpen: b });
+  },
+
+  aboutOpen: false,
+  setAboutOpen(b) {
+    set({ aboutOpen: b });
   },
 
   sidebarOpen: true,
