@@ -9,6 +9,8 @@ Piggy 不复制 pi 的大脑，只做它的宿主：为每个会话管理一个�
 
 ![对话视图：转录 + 变更文件卡 + 预览滚动条 + Composer dock](docs/screenshots/chat.png)
 
+![任务清单：转录里的清单行（含与上次清单的差异）+ 输入框上方的计划面板](docs/screenshots/todo.png)
+
 <p align="center">
   <img src="docs/screenshots/trajectory.png" width="49%" alt="轨迹视图：事件流 + 三轨时间线（含可展开的压缩行）" />
   <img src="docs/screenshots/settings-providers.png" width="49%" alt="提供商配置页" />
@@ -152,6 +154,9 @@ node scripts/shot.mjs ../../docs/screenshots/trajectory.png --fresh --wait 2500 
 node scripts/shot.mjs ../../docs/screenshots/settings-providers.png --fresh --wait 2500 \
   --click .pg-sidebar-settings --wait 1500
 ```
+
+任务清单那张的完整复现脚本（要现造一段带 `todo_write` 的会话）在
+`apps/desktop/docs/screenshots/README.md`。
 
 `--fresh` 会清掉 localStorage + sessionStorage——截图必须是**冷启动**的样子，
 否则上一轮门禁留下的标签会跟着进画面。
