@@ -656,3 +656,101 @@ fn legal_notices_payload_is_camel_case_and_complete() {
         }
     }
 }
+
+/* ==================== 任务清单：能力探测与投影（docs/03 §2.20） ==================== */
+
+/// `plugin_capability` 的返回形状 + 真实的"探测到 / 停用"两种结果。
+///
+/// 为什么值得锁：前端**完全依赖** `supported` 这个布尔决定要不要显示 todo 界面。
+/// 字段改名（`supported` → `ok`）不会报错，只会让功能静默消失 ——
+/// 用户看到的是"装了插件但 Piggy 没反应"。
+#[test]
+fn plugin_capability_shape_and_detection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = tmp.path().join("agent");
+    let ext = agent.join("extensions/pi-todo");
+    std::fs::create_dir_all(&ext).unwrap();
+    // 声明式（package.json 的 pi.piggy.capabilities）
+    std::fs::write(
+        ext.join("package.json"),
+        r#"{"name":"pi-todo","version":"0.1.0","pi":{"extensions":["./index.ts"],"piggy":{"capabilities":["todo"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(ext.join("index.ts"), "export default () => {}").unwrap();
+
+    let out = piggy_lib::plugin::capabilities::status("todo", &agent, None).expect("status ok");
+    for key in ["capability", "label", "markers", "detected", "supported", "enabled", "plugin", "disabled", "considered", "problems"] {
+        assert!(out.get(key).is_some(), "plugin_capability 缺少字段 {key}：{out}");
+    }
+    assert_eq!(out["supported"], true, "声明了能力且已启用 → supported 应为 true：{out}");
+    assert_eq!(out["detected"], true);
+    assert_eq!(out["plugin"]["name"], "pi-todo");
+    assert!(
+        out["plugin"]["evidence"].as_str().unwrap().contains("capabilities"),
+        "凭据要说清是声明命中：{}",
+        out["plugin"]["evidence"]
+    );
+    assert!(out["disabled"].as_array().unwrap().is_empty());
+
+    // 停用（pi 的写法：settings 里的 `-` 规则）→ supported=false，但 detected 仍为 true
+    std::fs::write(
+        agent.join("settings.json"),
+        r#"{"extensions":["-extensions/pi-todo"]}"#,
+    )
+    .unwrap();
+    let off = piggy_lib::plugin::capabilities::status("todo", &agent, None).expect("status ok");
+    assert_eq!(off["supported"], false, "停用后不该再声称支持：{off}");
+    assert_eq!(off["detected"], true, "停用不等于没探测到：{off}");
+    assert_eq!(off["disabled"].as_array().unwrap().len(), 1);
+    assert!(off["plugin"].is_null());
+
+    // 内容探测兜底：没有 package.json 的裸扩展文件
+    let agent2 = tmp.path().join("agent2");
+    std::fs::create_dir_all(agent2.join("extensions")).unwrap();
+    std::fs::write(
+        agent2.join("extensions/naked.ts"),
+        "pi.registerTool({ name: 'todo_write', description: 'x' })",
+    )
+    .unwrap();
+    let naked = piggy_lib::plugin::capabilities::status("todo", &agent2, None).expect("status ok");
+    assert_eq!(naked["supported"], true, "裸文件应被内容探测命中：{naked}");
+    assert!(
+        naked["plugin"]["evidence"].as_str().unwrap().contains("内容探测"),
+        "{}",
+        naked["plugin"]["evidence"]
+    );
+}
+
+/// `session_todo` 的返回形状（前端 `TodoProjection` 逐字段读它）。
+#[test]
+fn session_todo_projection_shape() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("s.jsonl");
+    let mut f = std::fs::File::create(&path).unwrap();
+    writeln!(f, r#"{{"type":"message","id":"u1","parentId":null,"message":{{"role":"user","content":[]}}}}"#).unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"custom","id":"e1","parentId":"u1","customType":"todo/write","data":{{"todos":[{{"content":"一","status":"pending"}}]}}}}"#
+    )
+    .unwrap();
+    drop(f);
+
+    let p = piggy_lib::sessions::transcript::todo_projection(&path).expect("projection ok");
+    let out = p.to_json();
+    for key in ["todos", "source", "offset", "clearedByTurn", "writes", "branchy", "chainBroken", "scannedBytes", "parsedLines"] {
+        assert!(out.get(key).is_some(), "session_todo 缺少字段 {key}：{out}");
+    }
+    assert!(out["todos"].is_array(), "todos 是数组（有清单时）：{out}");
+    assert_eq!(out["todos"][0]["content"], "一");
+    assert_eq!(out["todos"][0]["status"], "pending");
+    assert_eq!(out["source"], "event");
+    assert_eq!(out["writes"], 1);
+    assert!(out["branchy"].is_boolean());
+    assert!(out["scannedBytes"].is_number());
+    // 没有清单时必须是 null（不是空数组）：前端据此区分"没有计划"与"空计划"
+    let empty = tmp.path().join("empty.jsonl");
+    std::fs::write(&empty, "{\"type\":\"message\",\"id\":\"u1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":[]}}\n").unwrap();
+    let p2 = piggy_lib::sessions::transcript::todo_projection(&empty).expect("projection ok");
+    assert!(p2.to_json()["todos"].is_null(), "没写过清单 → todos 必须是 null");
+}

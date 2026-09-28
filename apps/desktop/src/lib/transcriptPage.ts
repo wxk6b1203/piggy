@@ -15,6 +15,7 @@
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
 import { useMessages } from '@/stores/messages';
+import { loadTodosForSession } from '@/stores/todo';
 import { useTabs } from '@/stores/tabs';
 import type { AgentMessage } from '@piggy/pi-protocol';
 import type { OutlineTurn } from '@/features/chat/turnRailItems';
@@ -65,6 +66,9 @@ export async function loadTail(tabId: string, sessionFile: string | null | undef
     // 轮廓与页码是两件事（整段会话的"形状" vs 一页内容），并行取、不互相等。
     // 轮廓失败不影响转录：刻度退化成"只画已载入的那部分"。
     void loadOutline(tabId, sessionFile);
+    // 任务清单同理：它是"整段会话的最新一次 todo_write"，可能远在已载入的那一页之前。
+    // 没探测到 todo 能力时 `loadTodosForSession` 直接返回，连扫描都不发生。
+    void loadTodosForSession(tabId, sessionFile, useTabs.getState().tabs[tabId]?.cwd ?? null);
   } catch (e) {
     // 读不出来就说清楚（控制台留证据），界面退回老路径，绝不静默留白
     console.warn('[piggy] 会话分页读失败，退回 get_messages：', e);

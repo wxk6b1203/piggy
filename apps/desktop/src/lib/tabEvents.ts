@@ -6,6 +6,7 @@ import { on, cmd } from '@/lib/ipc';
 import { liveFor } from '@/lib/live';
 import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
+import { useTodo } from '@/stores/todo';
 import { useTabs } from '@/stores/tabs';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
 import { handleFireAndForget } from '@/features/dialogs/DialogRouter';
@@ -33,6 +34,8 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     un.push(
       await on(`pi:commit:${tabId}`, (ev: { type: string }) => {
         useMessages.getState().applyCommit(tabId, ev);
+        // 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
+        useTodo.getState().noteCommit(tabId, ev);
         useTrajectory.getState().appendCommit(tabId, ev);
         if (ev.type === 'bash_execution_update') {
           const b = ev as unknown as { delta?: string };

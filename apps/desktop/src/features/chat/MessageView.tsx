@@ -19,6 +19,9 @@ import { ChangedFiles, changedFilesOf } from './ChangedFiles';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Markdown } from './markdown';
 import { ToolRow } from './ToolRow';
+import { TodoRow } from './TodoRow';
+import { useTodoSupported } from '@/stores/todo';
+import type { TodoItem } from '@/lib/todoModel';
 import { firstLine } from './toolRowModel';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 import { formatExactTokens } from '@/lib/tokenFormat';
@@ -26,11 +29,15 @@ import { formatExactTokens } from '@/lib/tokenFormat';
 export function MessageView({
   view,
   call,
+  baseline,
 }: {
   view: MessageView;
   /** 该行的工具调用参数（`toolCalls[toolCallId]`，见 stores/messages.ts） */
   call?: { name: string; args?: Record<string, unknown> } | undefined;
+  /** todo_write 行的**上一份**清单（差异对比；见 lib/todoModel 的 `todoBaselines`） */
+  baseline?: TodoItem[] | undefined;
 }) {
+  const todoOn = useTodoSupported();
   const m = view.message as AgentMessage & { content?: unknown };
   const role = view.role;
   if (role === 'user') {
@@ -70,6 +77,20 @@ export function MessageView({
        用户 2026-09-23："多工具消息时主工作区空间利用率非常低，能不能跟 dsh 一样做窄折叠"——
        实测：6 行 read 结果此前占 258px、3 行 bash 占 201px，而 DSH 的一行是 24px（docs/12 §3.3、
        DSH `ToolRow`/`DisclosureRow`）。摘要取自调用参数（store 的 `toolCalls` 索引）。 */
+    /* 任务清单（`todo_write`）不是普通工具调用：它是一份**计划**，
+       所以渲染成清单行（DSH `TodoRow`）而不是"标题 + 摘要 + 代码块"。
+       前提是探测到 todo 插件且已启用 —— 没装插件时与从前一模一样（走通用工具行）。 */
+    if (todoOn && rm.toolName === 'todo_write') {
+      return (
+        <TodoRow
+          args={call?.args}
+          toolCallId={rm.toolCallId}
+          text={text}
+          isError={rm.isError === true}
+          baseline={baseline}
+        />
+      );
+    }
     return (
       <ToolRow
         toolName={rm.toolName}

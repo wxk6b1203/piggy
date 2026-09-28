@@ -24,6 +24,7 @@ import {
 } from '@/lib/slashCommands';
 import { Icon } from '@/features/common/Icon';
 import { ModelPicker } from './ModelPicker';
+import { TodoPanel } from './TodoPanel';
 import { PermissionPicker } from './PermissionPicker';
 import { SessionStatusLine } from './SessionStatusLine';
 
@@ -282,6 +283,11 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
       )}
 
       {/* DSH 输入卡（docs/12 §3.8）：占位行 + 工具行同处一个 r22 卡 */}
+      {/* 计划面板（DSH `TodoPanel` @ `conversation.input.dock`）：
+          DSH 渲染这个槽就在输入卡**正上方**（ConversationContent.tsx:155-161 先 dock 再 inputBar），
+          这里保持同一位置。没有 todo 能力时组件自己返回 null。 */}
+      <TodoPanel tabId={tabId} />
+
       <div className="pg-composer-card">
         <div className="pg-composer-box">
           <textarea

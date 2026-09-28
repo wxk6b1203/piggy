@@ -443,6 +443,101 @@ const fleet = await page.evaluate(async () => {
     };
   })();
 
+  /* 任务清单（docs/03 §2.20）：todo 插件提供的计划在界面上的**真几何**。
+     起因：todo 由 pi 扩展提供，Piggy 只管显示 —— 所以两件事都要量：
+       ① 转录里的那一行是不是 24px 窄行、摘要/`+N`/差异在不在；
+       ② 计划面板在**输入卡正上方**（DSH 的 `conversation.input.dock` 位置）、
+          默认折叠、展开后列表不超 180px 且能滚。
+     jsdom 量不到这些（没有布局），所以放在真浏览器门禁里。 */
+  const todo = await (async () => {
+    const rows = [
+      { role: 'user', content: [{ type: 'text', text: '帮我做三件事：一、二、三' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'td-1', name: 'todo_write', arguments: { todos: [
+            { content: '写迁移脚本', status: 'pending' },
+            { content: '跑回归测试', status: 'pending' },
+            { content: '更新文档', status: 'pending' },
+          ] } },
+        ],
+      },
+      { role: 'toolResult', toolName: 'todo_write', toolCallId: 'td-1',
+        content: [{ type: 'text', text: 'Updated todo list: 3 pending, 0 in progress, 0 completed.' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'td-2', name: 'todo_write', arguments: { todos: [
+            { content: '写迁移脚本', status: 'completed' },
+            { content: '跑回归测试', status: 'in_progress' },
+            { content: '补一条端到端验证', status: 'in_progress' },
+          ] } },
+        ],
+      },
+      { role: 'toolResult', toolName: 'todo_write', toolCallId: 'td-2',
+        content: [{ type: 'text', text: 'Updated todo list: 0 pending, 2 in progress, 1 completed.' }] },
+    ];
+    stores.useMessages.getState().hydrate(tabId, rows);
+    // 清单状态走**真实代码路径**（重连时的 piggy:resync 折叠），不是直接塞 store
+    stores.useTodo.getState().noteCommit(tabId, {
+      type: 'piggy:resync',
+      entries: rows.map((m) => ({ type: 'message', message: m })),
+    });
+    await new Promise((r) => setTimeout(r, 900));
+
+    const h = (el) => (el ? Math.round(el.getBoundingClientRect().height) : null);
+    const rectOf = (el) => (el ? el.getBoundingClientRect().toJSON() : null);
+    const todoRows = [...document.querySelectorAll('[data-todo-row]')];
+    const panel = document.querySelector('[data-todo-panel]');
+    const card = document.querySelector('.pg-composer-card');
+    const head = panel?.querySelector('[data-todo-panel-head]');
+    const beforeExpand = {
+      panelH: h(panel),
+      headH: h(head),
+      progress: panel?.querySelector('[data-todo-progress]')?.textContent ?? null,
+      source: panel?.querySelector('[data-todo-source]')?.textContent ?? null,
+      listPresent: !!panel?.querySelector('[data-todo-panel-list]'),
+      // 面板必须整个落在输入卡**上方**
+      panelBottom: panel ? Math.round(panel.getBoundingClientRect().bottom) : null,
+      cardTop: card ? Math.round(card.getBoundingClientRect().top) : null,
+      widthRatio: panel && card ? +(panel.getBoundingClientRect().width / card.getBoundingClientRect().width).toFixed(3) : null,
+    };
+    head?.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const list = panel?.querySelector('[data-todo-panel-list]');
+    const items = list ? [...list.querySelectorAll('.pg-todo-panel-item')] : [];
+    const expanded = {
+      listPresent: !!list,
+      listH: h(list),
+      maxHeight: list ? getComputedStyle(list).maxHeight : null,
+      itemH: h(items[0]),
+      itemGap: items.length > 1 ? Math.round(items[1].getBoundingClientRect().top - items[0].getBoundingClientRect().bottom) : null,
+      statuses: items.map((i) => i.getAttribute('data-status')),
+      texts: items.map((i) => i.textContent),
+      panelH: h(panel),
+      aria: head?.getAttribute('aria-expanded') ?? null,
+    };
+    head?.click();
+    await new Promise((r) => setTimeout(r, 150));
+    const reCollapsed = { listPresent: !!panel?.querySelector('[data-todo-panel-list]') };
+
+    const second = todoRows[1];
+    return {
+      rowCount: todoRows.length,
+      rowH: h(todoRows[0]),
+      firstSummary: todoRows[0]?.querySelector('[data-todo-summary]')?.textContent ?? null,
+      secondSummary: second?.querySelector('[data-todo-summary]')?.textContent ?? null,
+      secondExtra: second?.querySelector('[data-todo-extra]')?.textContent ?? null,
+      secondDiff: second?.querySelector('[data-todo-diff]')?.textContent ?? null,
+      firstHasDiff: !!todoRows[0]?.querySelector('[data-todo-diff]'),
+      genericTodoRows: [...document.querySelectorAll('[data-tool-row][data-tool="todo_write"]')].length,
+      beforeExpand,
+      expanded,
+      reCollapsed,
+      panelRect: rectOf(panel),
+    };
+  })();
+
   return {
     tabId,
     aLaneBlocks,
@@ -453,6 +548,7 @@ const fleet = await page.evaluate(async () => {
     code,
     compact,
     markdown,
+    todo,
     bridged: stores.useFleet.getState().bridge.installed,
     synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
   };
@@ -2436,6 +2532,67 @@ const scrolledDown = {
   toLatestGone: downPages.at(-1)?.toLatest === false,
 };
 
+/* ---------- 15. 能力闸门：**没探测到 todo 插件时，todo 界面一点都不出现** ----------
+ * 这条是用户要求的分界线："如果探测到 todo 插件并已经启用，piggy 就自动支持 todo 功能"。
+ * 反过来必须同样成立：关掉能力探测之后，即便会话里全是 `todo_write` 的行，
+ * 也不该冒出清单行或计划面板（否则用户会以为 Piggy 自带任务清单）。
+ * 做法：把 mock 的能力开关写进 localStorage → **重载页面**走一遍真实启动探测 → 再灌同样的行。 */
+// ⚠️ 不能只调 `mockSetTodoCapability(false)` 再 goto：本脚本开头注册的 init script 会在
+// **每次导航**时清空 localStorage，模块状态也随重载重置。所以在导航**之前**用另一条
+// init script 把开关写进去（init script 按注册顺序执行，这条在后，清空之后才跑）。
+await page.addInitScript(() => {
+  try {
+    localStorage.setItem('piggy:mock:todo-capability', 'off');
+  } catch {
+    /* 无 localStorage：这一条核对会失去意义，下面的断言会红 */
+  }
+});
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.pg-composer', { timeout: 15000 });
+await page.waitForTimeout(900);
+const gateOff = await page.evaluate(async () => {
+  const stores = globalThis.__piggyStores;
+  const tabId = stores.useTabs.getState().activeTabId;
+  const rows = [
+    { role: 'user', content: [{ type: 'text', text: '做三件事' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'toolCall', id: 'g-1', name: 'todo_write', arguments: { todos: [
+          { content: '一', status: 'pending' },
+          { content: '二', status: 'pending' },
+          { content: '三', status: 'pending' },
+        ] } },
+      ],
+    },
+    { role: 'toolResult', toolName: 'todo_write', toolCallId: 'g-1',
+      content: [{ type: 'text', text: 'Updated todo list: 3 pending, 0 in progress, 0 completed.' }] },
+  ];
+  stores.useMessages.getState().hydrate(tabId, rows);
+  stores.useTodo.getState().noteCommit(tabId, {
+    type: 'piggy:resync',
+    entries: rows.map((m) => ({ type: 'message', message: m })),
+  });
+  await new Promise((r) => setTimeout(r, 700));
+  return {
+    supported: stores.useTodo.getState().capability?.supported ?? null,
+    panels: document.querySelectorAll('[data-todo-panel]').length,
+    todoRows: document.querySelectorAll('[data-todo-row]').length,
+    genericRows: document.querySelectorAll('[data-tool-row][data-tool="todo_write"]').length,
+  };
+});
+// 这一跑结束后脚本就收尾了；Playwright 每次运行都是全新的浏览器 profile，
+// localStorage 不会留到下一次（手跑 shot.mjs 也是另一个进程）。
+
+if (gateOff.supported !== false) {
+  bad.push(`能力闸门：关掉探测后 supported 仍是 ${gateOff.supported}（应 false）★`);
+}
+if (gateOff.panels !== 0) bad.push(`能力闸门：没插件却有 ${gateOff.panels} 个计划面板 ★`);
+if (gateOff.todoRows !== 0) bad.push(`能力闸门：没插件却有 ${gateOff.todoRows} 行清单行 ★`);
+if (gateOff.genericRows < 1) {
+  bad.push('能力闸门：没插件时该退回通用工具行，却一行都没有 ★');
+}
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -2513,6 +2670,67 @@ else {
   if (!cb.collapsedHidden) bad.push('代码块：60 行的块没有默认折叠 ★');
   if (cb.silentFail) bad.push(`代码块：有 ${cb.silentFail} 张卡"声称有语言、没高亮、也不吭声"（静默失败又回来了）★`);
 }
+/* 任务清单：这一段的判据全部来自"它是插件提供的"这件事 ——
+   ① 转录里一行 24px（与工具行同一套几何）、摘要是 `n/m 已完成 · 当前`、并行的用 `+N` 报出、
+      第二行必须比出**真实变化**（基线按调用 id 配对，配错了会集体显示"首次记录"）；
+   ② 计划面板在输入卡**正上方**、默认折叠、展开后列表不超 180px、项内 gap 10px；
+   ③ 一行都不能退回通用工具行（那说明 todo 分支没走到）。 */
+const td = fleet.todo ?? {};
+if (!td.rowCount) {
+  bad.push('任务清单：转录里一行清单都没渲染（[data-todo-row] = 0）★');
+} else {
+  if (td.rowCount !== 2) bad.push(`任务清单：夹具是两次写入，应渲染 2 行，实际 ${td.rowCount} ★`);
+  if (td.rowH == null || td.rowH > 26) bad.push(`任务清单：行高 ${td.rowH}px（应为 24px 窄行）★`);
+  if (td.firstSummary !== '0/3 已完成') {
+    bad.push(`任务清单：首行摘要应是「0/3 已完成」，实际 ${JSON.stringify(td.firstSummary)} ★`);
+  }
+  if (td.secondSummary !== '1/3 已完成 · 跑回归测试') {
+    bad.push(`任务清单：第二行摘要应是「1/3 已完成 · 跑回归测试」，实际 ${JSON.stringify(td.secondSummary)} ★`);
+  }
+  if (td.secondExtra !== '+1') {
+    bad.push(`任务清单：并行进行中应报出 +1，实际 ${JSON.stringify(td.secondExtra)} ★`);
+  }
+  if (td.firstHasDiff) bad.push('任务清单：第一行不该有差异摘要（它是首次记录）★');
+  // 第二份把「写迁移脚本」标完成、「跑回归测试」转进行中、加了一条、去掉了「更新文档」
+  if (!/新增 1/.test(td.secondDiff ?? '') || !/更新 2/.test(td.secondDiff ?? '') || !/移除 1/.test(td.secondDiff ?? '')) {
+    bad.push(`任务清单：第二行差异应是「新增 1 · 更新 2 · 移除 1」，实际 ${JSON.stringify(td.secondDiff)} ★`);
+  }
+  if (td.genericTodoRows) {
+    bad.push(`任务清单：有 ${td.genericTodoRows} 行退回了通用工具行（todo 分支没走到）★`);
+  }
+}
+const tdb = td.beforeExpand ?? {};
+if (tdb.panelH == null) {
+  bad.push('任务清单：计划面板没渲染（[data-todo-panel] 找不到）★');
+} else {
+  if (tdb.listPresent) bad.push('任务清单：面板默认应折叠，列表却在 DOM 里 ★');
+  if (tdb.panelBottom == null || tdb.cardTop == null || tdb.panelBottom > tdb.cardTop) {
+    bad.push(`任务清单：面板不在输入卡正上方（面板底 ${tdb.panelBottom} / 卡顶 ${tdb.cardTop}）★`);
+  }
+  if (!/已完成/.test(tdb.progress ?? '') || !/进行中/.test(tdb.progress ?? '')) {
+    bad.push(`任务清单：头部进度不对（${JSON.stringify(tdb.progress)}）★`);
+  }
+}
+const tde = td.expanded ?? {};
+if (!tde.listPresent) {
+  bad.push('任务清单：点开头部后面板列表没出现 ★');
+} else {
+  if (tde.maxHeight !== '180px') bad.push(`任务清单：列表 max-height 应为 180px，实际 ${tde.maxHeight} ★`);
+  if (tde.itemH != null && (tde.itemH < 18 || tde.itemH > 22)) {
+    bad.push(`任务清单：列表项行高 ${tde.itemH}px（DSH 是 20px）★`);
+  }
+  if (tde.itemGap != null && tde.itemGap !== 8) {
+    bad.push(`任务清单：列表项间距 ${tde.itemGap}px（DSH 是 8px）★`);
+  }
+  if ((tde.statuses ?? []).join(',') !== 'completed,in_progress,in_progress') {
+    bad.push(`任务清单：展开后三态顺序不对（${JSON.stringify(tde.statuses)}）★`);
+  }
+  if ((tde.texts ?? []).join('|') !== '写迁移脚本|跑回归测试|补一条端到端验证') {
+    bad.push(`任务清单：展开后的条目文字不对（${JSON.stringify(tde.texts)}）★`);
+  }
+}
+if (td.reCollapsed?.listPresent) bad.push('任务清单：再点一下应折回去，列表还在 ★');
+
 /* 工具窄行：把"空间利用率"变成可断言的真几何。
    用户报的是"多工具消息时主工作区空间利用率非常低" —— 修之前实测一个 6 行 read 结果占 258px、
    3 行 bash 占 201px，DSH 的一行是 24px。这里钉住：行高 24、连续三行 ≤ 76、折叠时正文在 DOM

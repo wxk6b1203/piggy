@@ -613,6 +613,101 @@ K 缩写（`formatTokens`），两者都出自 `lib/tokenFormat`（§3.0b）。
 `limit` 夹取；轮廓的锚点精确落在用户消息上、工具输出里引用的 role 字样不能凭空造轮、
 20 轮会话只读 3 行也能给出全部 20 轮、正文截断；尾页 `hasNewer=false` 而换窗页 `hasNewer=true`。另有一条 `--ignored` 真机用例打印真实文件的页数与耗时（上表就是它输出的）。
 
+### 2.20 任务清单（todo）：能力探测 + 会话投影 + 界面
+
+**它为什么在这里，而不是"Piggy 自己实现一个 todo"**：清单是 **pi 扩展**提供的
+（本机是 `pi-todo`，见 `/Users/wxk/Documents/Project/pi-todo`），Piggy 只做三件事：
+探测、读出来、显示。所以用户的要求"如果探测到 todo 插件并已经启用，Piggy 就自动支持"
+在实现上就是一句判断：**`supported === false` 时整个 todo 界面不出现**（与没这功能时一模一样）。
+
+#### 2.20a 能力探测（`plugin/capabilities.rs`）
+
+为什么需要它：pi 的 RPC **没有**任何"列出已装扩展"的命令（`rpc-types.ts` 里 33 条命令
+一条都不沾，与插件页同理），所以只能读文件。两件事必须做对：
+
+1. **哪些插件真的会加载** —— 直接复用 `plugin/inventory.rs` 的盘点（它已经把四种来源
+   与 pi 的 `!`/`+`/`-` 通配符规则实现了一遍）。**不重复实现**：两份判定必然分叉，
+   而分叉的表现是"插件页说已启用、todo 界面却不出现"。
+2. **哪个插件提供这个能力** —— 两级证据，谁能说清楚就听谁的：
+
+| 级别 | 依据 | 适用 |
+|---|---|---|
+| 1. 声明 | `package.json` 的 `pi.piggy.capabilities[]` | 有清单的正规装法（npm 包 / 本地包 / 发现目录里的目录） |
+| 2. 内容探测 | 扩展入口文件里出现标记串（todo 是 `todo_write`） | 兜底：发现目录里直接放一个 `index.ts`（pi-guardrails 就是这么装的） |
+
+真机结果（`cargo test --lib real_machine_todo_capability -- --ignored --nocapture`）：
+`considered: 6`，命中 `pi-todo`（声明式，`evidence: package.json 声明 …`），
+`problems` 里只有一条**如实**的提示 —— `pi-web-access/dist/index.js` 超过 512 KiB，
+只探测了前一段（"未命中不代表没有"），不是噪音而是事实。
+
+内容探测的边界（写清楚）：
+* 每个入口最多读 512 KiB，超限只读前一段并把 `truncated` 标出来；
+* 目录入口按 **pi 自己的约定**下探一层（`index.{ts,js,mjs,cjs}`，`loader.ts:702-744`）——
+  真机上 `pi-web-access` 的 `pi.extensions` 就是一个目录 `["./dist"]`，
+  把它当"探测失败"报出来是噪音（这条是被真机数据逼出来的）；
+* 读不到文件进 `problems`，不当作"没命中"。
+
+#### 2.20b 会话投影（`sessions/transcript.rs::todo_projection`）
+
+界面要的是"这个会话的**当前**任务清单"。两条来路，按优先级：
+
+1. `todo/write` —— 插件写的 **custom 会话条目**（与 DSH 的事件同名同形，
+   `dsh-tool-todo/src/types.ts:26-31`）；
+2. `todo_write` 的**工具调用参数** —— 兜底，兼容"只注册了工具、没写条目"的实现。
+
+折叠规则与 DSH 的 `todos` 投影单元逐条一致（`tool-todo/src/index.ts:134-145`）：
+**last-write-wins**，且 `turn/start`（用户发新消息）把它清空 —— 清空后 `todos=null`
+但 `clearedByTurn=true`，界面能说清"上一轮有过一份清单"，而不是假装从来没有。
+
+**一趟扫、只解析候选行**：既没有 `todo` 字样、又不是用户消息的行完全不解析。
+真机上最贵的是三行 3.35 MB 的工具输出 —— 它们连"读个 id"都不做：
+`fast_role` 一眼看出是 `toolResult`，而工具结果**不可能**是候选（清单只出现在
+custom 条目 / 用户消息 / 助手消息里），于是直接跳过。
+
+**分支怎么处理**（这块最容易做错）：会话文件可以有分支（fork / 回退），
+**被放弃的分支上可能有一份清单**。做法是从叶子沿 `parentId` 走到根，只有落在活动分支上的
+候选参与折叠；链条走断（父条目找不到）或候选自己没有 id 时，退回"按文件序"折叠并把
+`chainBroken` 报出来（宁可给出最新一次写入，也不要给出半个历史）。
+
+真机实测（release，`cargo test --release --lib real_machine_todo -- --ignored --nocapture`）：
+
+| 会话 | 大小 | todo 投影 | 对照：轮次轮廓（同一份文件、同一次运行） |
+|---|---|---|---|
+| `01a0c455…jsonl` | 11.7 MB | **15.5 ms**（解析 30 行） | 8.8 ms |
+| `01a0438c…jsonl` | 4.9 MB | **10.0 ms**（解析 88 行） | 10.1 ms |
+| `01a0679f…jsonl` | 3.9 MB | **6.1 ms**（解析 16 行） | 5.2 ms |
+
+即：与"打开会话本来就要付的轮廓扫描"同量级。而且**只在探测到 todo 能力时才会发生**
+（`loadTodosForSession` 先看 `supported`，没装插件连扫描都不发）。
+
+> 踩坑记录（值得留着）：第一版按"行首前缀里找 `"id":"`"判断线性，结果把 11.7 MB 那场
+> 会话判成**有分支**，走整文件解析的慢路径 —— 真机 400 ms。根因是
+> `web-search-results` 这类条目把载荷写在前面、结构字段写在**最后 80 字节**，
+> 而载荷里的 `data.id` 与要找的 `"id":"` 长得一模一样。三条修正：
+> ① 只认**结构头部**（到第一个载荷键为止）；② 头部没有时看**尾部窗口**（最后 512 字节），
+> 且 `id`/`parentId` 必须**成对**出现；③ 取窗口里**最后一次**出现（结构字段在载荷之后）。
+> 另外 `"parentId":null`（根条目）与"没有这个键"必须分开 —— 早先都 flatten 成 `None`，
+> 于是根条目被踢出链条，整份文件被误判成"走断"。这四条各有一条测试钉着。
+
+#### 2.20c 前端（`lib/todo.ts` / `lib/todoModel.ts` / `stores/todo.ts` / `features/chat/TodoRow|TodoPanel.tsx`）
+
+* `lib/todo.ts`：两条 IPC（`plugin_capability`、`session_todo`）与形状归一化
+  （docs/15 规矩 28：IPC 边界必须补默认值）；`todos: null` 与"形状坏了"分开处理 ——
+  后者也当 `null`（少显示比显示错的强），但**不编造**一份空清单。
+* `lib/todoModel.ts`：纯函数模型，逐条对齐 DSH（`plan-summary.ts` 的摘要、
+  `TodoPanel` 的进度标签、`todo-diff-model.ts` 的差异算法、`locales.ts:77-107` 的中文文案）。
+  差异**按 `content` 配对**（整表替换下没有 id），状态变化与顺序调整都算"更新"。
+* `stores/todo.ts`：能力状态（机器级一份）+ 每个 tab 的清单。三条来路职责分明 ——
+  `loadCapability()`（启动探测）、`seed()`（打开会话时后端整文件投影铺底）、
+  `noteCommit()`（实时增量：新写入替换、用户发言清空）。
+  项目级插件按需补探一次（`probedProjects`），同一个项目不重复探。
+* 界面：`TodoRow`（转录里 24px 的清单行）与 `TodoPanel`（输入卡正上方的计划面板），
+  几何与文案的 DSH 出处见 docs/04 §2.1.4。
+
+守卫：Rust 12 条（折叠、清空、坏形状、预筛、分支、断链、载荷在前、半行、真机）
++ `tests/ipc_contract.rs` 2 条（两个命令的返回形状）+ 前端 55 条（模型 20、行 8、
+面板 9、store 16、转录接线 2）+ 浏览器门禁（真几何 12 项断言 + 能力闸门 4 项）。
+
 ## 3. 前端侧模块（`src/`）
 
 ### 3.0 `lib/paths.ts` — 路径字符串（前端半边）

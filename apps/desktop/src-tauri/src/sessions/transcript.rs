@@ -157,6 +157,9 @@ impl Outline {
 const EXCERPT_CAP: usize = 400;
 /// 读 `"role"` 时只看行首这么多字节（见 [`fast_role`]）。
 const ROLE_HEAD: usize = 256;
+/// 读 `id` / `parentId` 时的**尾部**回退窗口：pi 有一类条目把它们写在载荷之后
+/// （实测 `web-search-results`），只看行首会漏掉，于是链条判断出错。
+const TAIL_WINDOW: usize = 512;
 
 
 /// 读一页转录。
@@ -434,6 +437,21 @@ pub fn read_after(path: &Path, after: u64, limit: usize) -> Result<Page, String>
 
 /// 整文件扫描 + 沿 parentId 追活动分支 → 按文件序返回可显示的行（含偏移）。
 fn branch_visible(file: &mut File) -> Result<Vec<(u64, Row)>, String> {
+    Ok(branch_entries(file)?
+        .into_iter()
+        .filter_map(|(offset, entry)| row_of(&entry, offset).map(|row| (offset, row)))
+        .collect())
+}
+
+/// 整文件扫描 + 沿 parentId 追活动分支 → **原始条目**（含 custom 条目），文件序。
+///
+/// 与 [`branch_visible`] 的区别只在最后一层：那个把条目映射成"可显示的行"
+/// （custom 条目会被 `row_of` 丢掉），这个保留全部 —— todo 投影要读的正是
+/// `todo/write` 这种**不进转录**的 custom 条目。
+///
+/// 成本：整文件解析（真机 11.7 MB 的会话约 90ms）。所以只在**确实有分支**时走这里；
+/// 线性文件（常态）走上面那条便宜的顺序扫描，见 [`todo_projection`]。
+fn branch_entries(file: &mut File) -> Result<Vec<(u64, Value)>, String> {
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     file.read_to_end(&mut raw).map_err(|e| e.to_string())?;
@@ -478,10 +496,7 @@ fn branch_visible(file: &mut File) -> Result<Vec<(u64, Row)>, String> {
     }
     chain.reverse(); // 根 → 叶子
 
-    Ok(chain
-        .into_iter()
-        .filter_map(|i| row_of(&entries[i].1, entries[i].0).map(|row| (entries[i].0, row)))
-        .collect())
+    Ok(chain.into_iter().map(|i| entries[i].clone()).collect())
 }
 
 
@@ -600,9 +615,445 @@ pub fn outline(path: &Path) -> Result<Outline, String> {
     Ok(Outline { turns, total_bytes })
 }
 
+/* ────────────────────── 会话里的任务清单投影（docs/03 §2.20） ────────────────────── */
+
+/// 一条 todo。字段与 pi-todo / DSH 的 `TodoItem` **同形**（只有内容与三态，
+/// 没有 id/priority —— 整表替换下条目不需要稳定身份，见 DSH `src/types.ts:14-24`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TodoItem {
+    pub content: String,
+    /// `pending` / `in_progress` / `completed`（非法值在读取时就丢掉整条）
+    pub status: String,
+}
+
+/// 会话的任务清单投影。
+///
+/// 这是 DSH `sessionProjections` 的 `todos` 单元的等价物
+/// （`packages/todo/tool-todo/src/index.ts:134-145`）：**最新一次整表写入**就是当前计划，
+/// `null` = 还没有过写入。**外加 DSH 的 turn/start 清空规则**：写入之后又开始了新的一轮
+/// （用户发了新消息）→ 投影回 `null`（`cleared_by_turn = true` 说明是"被清空"而不是"没写过"）。
+///
+/// 两个来源，按优先级：
+///   1. `todo/write` —— 插件写的 **custom 会话条目**（与 DSH 的事件同名同形）；
+///   2. `todo_write` 的**工具调用参数** —— 兜底：兼容"只注册了工具、没写条目"的实现。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TodoProjection {
+    /// 当前计划（`None` = 没有 / 已被新一轮清空）
+    pub todos: Option<Vec<TodoItem>>,
+    /// 这条结论来自哪：`event`（custom 条目）/ `call`（工具调用参数）
+    pub source: Option<String>,
+    /// 那条写入在文件里的字节偏移（界面可以据此"跳到那一轮"）
+    pub offset: Option<u64>,
+    /// 写入之后又开始了新的一轮 —— 按 DSH 的规则清空
+    pub cleared_by_turn: bool,
+    /// 整段会话里见过几次整表写入
+    pub writes: usize,
+    /// 文件有分支（活动分支比全部条目短）
+    pub branchy: bool,
+    /// 链条走断了 —— 上面的结论是**按文件序**折出来的（退回行为），不是沿活动分支
+    pub chain_broken: bool,
+    /// 扫了多少字节（性能观测用；真机 11.7 MB 的会话见 --ignored real_machine_todo）
+    pub scanned_bytes: u64,
+    /// 真正解析了多少行（预筛省掉的那些不算）
+    pub parsed_lines: usize,
+}
+
+impl TodoProjection {
+    /// 转成前端要的 JSON（字段名与 `apps/desktop/src/lib/todo.ts` 对齐）。
+    pub fn to_json(&self) -> Value {
+        json!({
+            "todos": self.todos.as_ref().map(|list| list
+                .iter()
+                .map(|t| json!({"content": t.content, "status": t.status}))
+                .collect::<Vec<_>>()),
+            "source": self.source,
+            "offset": self.offset,
+            "clearedByTurn": self.cleared_by_turn,
+            "writes": self.writes,
+            "branchy": self.branchy,
+            "chainBroken": self.chain_broken,
+            "scannedBytes": self.scanned_bytes,
+            "parsedLines": self.parsed_lines,
+        })
+    }
+}
+
+/// 字节级子串查找（预筛用，不解析 JSON）。
+///
+/// 按首字节定位再比对，而不是在每个位置都比一次整个 needle：真机上最贵的几行是
+/// 3.35 MB 的工具输出，逐位置比较会白白扫掉几百万次四字节比较。
+fn has_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return false;
+    }
+    let first = needle[0];
+    let mut from = 0usize;
+    while let Some(pos) = hay[from..].iter().position(|b| *b == first) {
+        let at = from + pos;
+        if at + needle.len() <= hay.len() && &hay[at..at + needle.len()] == needle {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// 取一行的**结构头部**：到第一个载荷键（`"message"` / `"data"` / `"details"`）为止。
+///
+/// 为什么需要它（真机踩到的）：pi 写条目时结构字段在前、载荷在后，但**不是所有条目都这样**
+/// —— 实测 11.7 MB 那场会话里，`web-search-results` 这个 custom 条目写成
+/// `{"type":"custom","customType":"web-search-results","data":{"id":"…","type":"search",…}}`：
+/// 顶层的 `id`/`parentId` 不在前缀里，而载荷里的 `data.id` 长得一模一样。
+/// 早先直接在前缀里找 `"id":"` 的实现因此把 `data.id` 当成了条目 id，
+/// 于是"parentId 对不上"→ 整份文件被误判成**有分支** → 走整文件解析的慢路径
+/// （真机实测 11.7 MB 要 400 ms，而线性快路径只要几十毫秒）。
+///
+/// 切掉载荷之后，这类条目在链条判断里被**跳过**（它本来也不在 pi 的 `by_id` 里，
+/// 不参与 parentId 链），线性文件于是真的被判成线性。
+fn struct_head(raw: &[u8]) -> &[u8] {
+    let limit = raw.len().min(ROLE_HEAD);
+    let head = &raw[..limit];
+    let mut cut = head.len();
+    for key in [&b"\"message\":"[..], &b"\"data\":"[..], &b"\"details\":"[..]] {
+        if let Some(at) = head.windows(key.len()).position(|w| w == key) {
+            cut = cut.min(at);
+        }
+    }
+    &head[..cut]
+}
+
+/// 一行的链条身份：`(id, parentId)`。两者**要么都从同一个窗口取到，要么都不用**。
+///
+/// 两个窗口，按优先级：
+///   1. **结构头部**（[`struct_head`]，到第一个载荷键为止）—— 绝大多数条目的形状；
+///   2. **尾部窗口**（最后 [`TAIL_WINDOW`] 字节）—— pi 有一类条目（实测
+///      `web-search-results`，52 KB 一行）把 `id`/`parentId` 写在载荷**之后**，
+///      它们出现在最后 ~80 字节里，而载荷里的 `data.id` 在行首附近。
+///
+/// 为什么必须成对：载荷里出现一个 `"id"` 是常有的事（搜索结果、工具输出都可能有），
+/// 但载荷里同时出现 `"id"` 与 `"parentId"` 且都落在最后 512 字节里则近乎不可能。
+/// 只读到一半时**按没有处理** —— 这一行不参与链条，也就不会把链条带偏
+/// （真机那条"整份线性会话被判成分支、慢路径 400 ms"的根因就是只读到了半个）。
+///
+/// ⚠️ `"parentId":null`（根条目）与"没有这个键"必须分开：前者是链条的**终点**，
+/// 后者是"这一行不在链条上"。早先把两者都 `flatten()` 成 `None`，于是根条目被踢出
+/// 链条 → 沿 parentId 走到根时报"父条目找不到" → 整份文件被误判成走断。
+///
+/// 残留风险（写清楚）：若某行载荷末尾恰好同时含这两个键，会被误当成结构字段，
+/// 后果是链条某条边指向不存在的条目 —— 那时 [`todo_projection`] 会走
+/// `chainBroken` 的退回路径，并在返回值里标明结论不可信，而不是静默给出错误的计划。
+/// @returns `Some((id, parentId))` —— `parentId` 为 `None` 表示这条是**根**（显式 `null`）；
+///          `None` 表示这一行没有可用的链条身份（不参与链条）
+fn chain_ref(raw: &[u8]) -> Option<(String, Option<String>)> {
+    let head = struct_head(raw);
+    if let (Some(Some(id)), Some(parent)) = (scan_key(head, "id"), scan_key(head, "parentId")) {
+        return Some((id.to_string(), parent.map(str::to_string)));
+    }
+    let tail_len = raw.len().min(TAIL_WINDOW);
+    let tail = &raw[raw.len() - tail_len..];
+    if let (Some(Some(id)), Some(parent)) = (scan_key(tail, "id"), scan_key(tail, "parentId")) {
+        return Some((id.to_string(), parent.map(str::to_string)));
+    }
+    None
+}
+
+/// 在一个字节切片里读 `"key":"值"` / `"key":null`。
+///
+/// 取**最后一次**出现：尾部窗口里可能先撞上载荷的 `data.id`，而条目自己的字段写在
+/// 载荷之后（真机 `web-search-results` 就是这么写的）—— 取最后一个才是结构字段。
+fn scan_key<'a>(slice: &'a [u8], key: &str) -> Option<Option<&'a str>> {
+    let needle = format!("\"{key}\":");
+    let at = slice.windows(needle.len()).rposition(|w| w == needle.as_bytes())? + needle.len();
+    let rest = &slice[at..];
+    match rest.first() {
+        Some(b'"') => {
+            let body = &rest[1..];
+            let end = body.iter().position(|b| *b == b'"')?;
+            std::str::from_utf8(&body[..end]).ok().map(Some)
+        }
+        // `null`（根条目）
+        Some(b'n') if rest.starts_with(b"null") => Some(None),
+        // 认不出来的形状：当这一行没有该键
+        _ => None,
+    }
+}
+
+/// 从任意 JSON 里读清单（形状不对 → `None`，绝不猜）。
+fn read_todo_items(value: &Value) -> Option<Vec<TodoItem>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let content = item.get("content")?.as_str()?.to_string();
+        let status = item.get("status")?.as_str()?.to_string();
+        if !matches!(status.as_str(), "pending" | "in_progress" | "completed") {
+            return None;
+        }
+        out.push(TodoItem { content, status });
+    }
+    Some(out)
+}
+
+/// 一条条目对投影的贡献。
+enum Fold {
+    /// 整表写入（带上来源与来源优先级：事件 0 < 调用 1）
+    Write(Vec<TodoItem>, u8),
+    /// 新一轮开始（用户消息）
+    TurnStart,
+    None,
+}
+
+/// 判一条条目是不是"写入"或"新一轮"。
+fn classify(entry: &Value) -> Fold {
+    match entry.get("type").and_then(Value::as_str) {
+        Some("custom") => {
+            if entry.get("customType").and_then(Value::as_str) != Some("todo/write") {
+                return Fold::None;
+            }
+            match entry.get("data").and_then(|d| d.get("todos")).and_then(read_todo_items) {
+                Some(list) => Fold::Write(list, 0),
+                None => Fold::None, // 形状不认识：宁可不认，也不要显示半份清单
+            }
+        }
+        Some("message") => {
+            let message = match entry.get("message") {
+                Some(m) => m,
+                None => return Fold::None,
+            };
+            match message.get("role").and_then(Value::as_str) {
+                Some("user") => Fold::TurnStart,
+                Some("assistant") => {
+                    let Some(content) = message.get("content").and_then(Value::as_array) else {
+                        return Fold::None;
+                    };
+                    let mut best: Option<Vec<TodoItem>> = None;
+                    for block in content {
+                        if block.get("type").and_then(Value::as_str) != Some("toolCall") {
+                            continue;
+                        }
+                        if block.get("name").and_then(Value::as_str) != Some("todo_write") {
+                            continue;
+                        }
+                        if let Some(list) = block
+                            .get("arguments")
+                            .and_then(|a| a.get("todos"))
+                            .and_then(read_todo_items)
+                        {
+                            best = Some(list); // 同一条消息里多次调用：取最后一次
+                        }
+                    }
+                    match best {
+                        Some(list) => Fold::Write(list, 1),
+                        None => Fold::None,
+                    }
+                }
+                _ => Fold::None,
+            }
+        }
+        _ => Fold::None,
+    }
+}
+
+/// 把一串（文件序）条目折叠成投影。
+///
+/// 规则就是 DSH 的 last-write-wins：**最后一次整表写入赢**，`turn/start` 把它清掉。
+/// 来源优先级不参与"谁赢"—— 文件序已经决定了先后（插件先让模型调用、
+/// 执行时再追写 custom 条目，所以同一份清单的条目天然排在调用之后）。
+/// 来源只用来告诉前端"这条结论是读条目得来的，还是从调用参数里刨出来的"。
+fn fold_projection(entries: &[(u64, &Fold)]) -> (Option<Vec<TodoItem>>, Option<String>, Option<u64>, bool, usize) {
+    let mut current: Option<(Vec<TodoItem>, u8, u64)> = None; // (清单, 来源, 偏移)
+    let mut cleared = false;
+    let mut writes = 0usize;
+    for (offset, fold) in entries {
+        match fold {
+            Fold::Write(list, rank) => {
+                writes += 1;
+                current = Some((list.clone(), *rank, *offset));
+                cleared = false;
+            }
+            Fold::TurnStart => {
+                if current.is_some() {
+                    cleared = true;
+                }
+            }
+            Fold::None => {}
+        }
+    }
+    match current {
+        Some((list, rank, offset)) => {
+            let source = if rank == 0 { "event" } else { "call" };
+            if cleared {
+                // 写过了，但之后又开了新一轮：按 DSH 的 turn/start 规则清空。
+                // 偏移与来源照样给出 —— 界面要能说"这里曾经有过一份清单"。
+                (None, Some(source.to_string()), Some(offset), true, writes)
+            } else {
+                (Some(list), Some(source.to_string()), Some(offset), false, writes)
+            }
+        }
+        None => (None, None, None, false, writes),
+    }
+}
+
+/// 扫一遍会话文件，产出 todo 投影。
+///
+/// ## 一趟扫、只解析候选行
+///
+/// 与 [`outline`] 同一族（整文件顺序扫一次），但预筛更狠：一行里既没有 `todo` 字样、
+/// 又不是用户消息的行**完全不解析**。真机上那几行 3.35 MB 的工具输出就死在这一步 ——
+/// 解析它们（哪怕只为读一个 `id`）是这里最贵的开销。
+///
+/// 链条身份（`id` / `parentId`）改由**字节级扫描**取得（[`chain_key`]），
+/// 所以整份文件再也不需要"有分支就整文件解析"的慢路径。真机实测见
+/// `--ignored real_machine_todo`。
+///
+/// ## 分支怎么处理（这是这一块最容易做错的地方）
+///
+/// 会话文件可以有分支（fork / 回退）。**被放弃的分支上可能有一份清单**，
+/// 把它当成"当前计划"就是说了假话。做法：
+///
+///   1. 扫的过程中记下 `id → (偏移, parentId)`；
+///   2. 叶子 = 最后一个有 id 的条目（pi 的 leafId 规则），沿 `parentId` 往根走；
+///   3. 只有**落在活动分支上**的候选（写入 / 用户消息）参与折叠；
+///   4. 链条走断（父条目找不到）或候选自己没有 id 时，**退回按文件序折叠**并把
+///      `chainBroken` 标出来 —— 宁可给出"最新一次写入"，也不要给出半个历史。
+///
+/// @param path - 会话 JSONL 文件
+/// @returns 投影（含来源、偏移、是否被新一轮清空、链条是否可信）
+pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
+    let file = File::open(path).map_err(|e| format!("{} 读取失败: {e}", path.display()))?;
+    let mut reader = std::io::BufReader::with_capacity(CHUNK, file);
+
+    /// 一条候选（写入或新一轮）在文件里的位置与它的链条身份。
+    struct Candidate {
+        offset: u64,
+        id: Option<String>,
+        fold: Fold,
+    }
+
+    let mut chain: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    let mut id_order: Vec<String> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut offset = 0u64;
+    let mut scanned_bytes = 0u64;
+    let mut parsed_lines = 0usize;
+    let mut line: Vec<u8> = Vec::new();
+
+    loop {
+        line.clear();
+        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut line)
+            .map_err(|e| format!("读取失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        let start = offset;
+        offset += n as u64;
+        scanned_bytes += n as u64;
+
+        let raw = trim_ascii(&line);
+        if raw.is_empty() {
+            continue;
+        }
+        // 会话头（`"type":"session"`）没有 parentId，不参与链条
+        if has_bytes(raw, b"\"type\":\"session\"") {
+            continue;
+        }
+        if let Some((id_value, parent)) = chain_ref(raw) {
+            chain.insert(id_value.clone(), parent);
+            id_order.push(id_value);
+        }
+
+        // 预筛一：工具结果 / bash 执行行**不可能**是候选（清单只出现在 custom 条目、
+        // 用户消息、助手消息里）。真机上最贵的那几行正是 toolResult（3.35 MB），
+        // 这里连字节搜索都不做 —— 与 `outline` 跳过它们的理由是同一个。
+        let role = fast_role(raw);
+        if matches!(role, Some("toolResult") | Some("bashExecution")) {
+            continue;
+        }
+        // 预筛二：没有 todo 字样、又不是用户消息 → 不解析
+        let has_todo = has_bytes(raw, b"todo");
+        let is_user = role == Some("user");
+        if !has_todo && !is_user {
+            continue;
+        }
+        let text = String::from_utf8_lossy(raw);
+        let Ok(entry) = serde_json::from_str::<Value>(&text) else {
+            continue; // 坏行/半行：与 read_page 同样跳过
+        };
+        parsed_lines += 1;
+        let fold = classify(&entry);
+        if matches!(fold, Fold::None) {
+            continue;
+        }
+        let candidate_id = chain_ref(raw).map(|(id, _)| id);
+        candidates.push(Candidate { offset: start, id: candidate_id, fold });
+    }
+
+    // 活动分支：从叶子沿 parentId 走到根
+    let mut on_chain: Option<std::collections::HashSet<String>> = None;
+    let mut chain_broken = false;
+    if let Some(leaf) = id_order.last() {
+        let mut path = std::collections::HashSet::new();
+        let mut cursor = Some(leaf.clone());
+        let mut guard = 0usize;
+        while let Some(current) = cursor {
+            if !path.insert(current.clone()) {
+                break; // 成环：坏文件
+            }
+            guard += 1;
+            if guard > id_order.len() + 1 {
+                break;
+            }
+            match chain.get(&current) {
+                Some(Some(parent)) => cursor = Some(parent.clone()),
+                Some(None) => cursor = None, // 到根
+                None => {
+                    chain_broken = true;
+                    cursor = None;
+                }
+            }
+        }
+        on_chain = Some(path);
+    }
+
+    // 候选自身没有 id（形状可疑）时全盘退回文件序 —— 见函数头第 4 条
+    if candidates.iter().any(|c| c.id.is_none()) {
+        chain_broken = true;
+  }
+
+    let selected: Vec<(u64, &Fold)> = candidates
+        .iter()
+        .filter(|c| {
+            if chain_broken {
+                return true;
+            }
+            match (&on_chain, &c.id) {
+                (Some(path), Some(id)) => path.contains(id),
+                _ => true,
+            }
+        })
+        .map(|c| (c.offset, &c.fold))
+        .collect();
+
+    let branchy = on_chain
+        .as_ref()
+        .map(|path| path.len() < id_order.len())
+        .unwrap_or(false);
+
+    let (todos, source, write_offset, cleared, writes) = fold_projection(&selected);
+    Ok(TodoProjection {
+        todos,
+        source,
+        offset: write_offset,
+        cleared_by_turn: cleared,
+        writes,
+        branchy,
+        chain_broken,
+        scanned_bytes,
+        parsed_lines,
+    })
+}
+
 /// 去掉行首尾的 ASCII 空白（`\n` / `\r` / 空格 / 制表符），不碰内容。
-fn trim_ascii(line: &[u8]) -> &[u8] {
-    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
+fn trim_ascii(line: &[u8]) -> &[u8] {    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
     let start = line.iter().position(|b| !is_ws(b)).unwrap_or(line.len());
     let end = line.iter().rposition(|b| !is_ws(b)).map(|i| i + 1).unwrap_or(start);
     &line[start..end]
@@ -1305,6 +1756,398 @@ mod tests {
                 "    轮廓：{} 轮 / {outline_us}µs（整文件 {} 字节，只有含正文的行被解析）",
                 o.turns.len(),
                 o.total_bytes,
+            );
+        }
+    }
+
+    /* ────────────────── todo 投影（docs/03 §2.20） ────────────────── */
+
+    /// 造一个条目，**字节布局照抄 pi**：`{"type":…,"id":…,"parentId":…,"timestamp":…,"message":…}`。
+    ///
+    /// 为什么不用 `serde_json::Map` 直接序列化：那个默认按**字母序**输出，`parentId`
+    /// 会被排到 `message` 之后（大消息一撑就出 256 字节前缀）—— 于是这个 fixture 会
+    /// 让"结构字段在行首"的前提失效，测出来的结论对真机不成立。真机 pi 写的顺序是
+    /// 结构字段在前（1070 行实测，见模块头的性能注释），这里照着写。
+    fn entry(id: &str, parent: Option<&str>, body: serde_json::Map<String, Value>) -> String {
+        let ty = body.get("type").cloned().unwrap_or(json!("message"));
+        let parent_json = match parent {
+            Some(p) => json!(p),
+            None => Value::Null,
+        };
+        let mut parts = vec![
+            format!("\"type\":{ty}"),
+            format!("\"id\":{}", json!(id)),
+            format!("\"parentId\":{parent_json}"),
+            "\"timestamp\":\"2026-01-01T00:00:00.000Z\"".to_string(),
+        ];
+        for (k, v) in &body {
+            if k == "type" {
+                continue;
+            }
+            parts.push(format!("{}:{v}", json!(k)));
+        }
+        format!("{{{}}}", parts.join(","))
+    }
+
+    /// 用户消息
+    fn user(id: &str, parent: Option<&str>, text: &str) -> String {
+        let mut b = serde_json::Map::new();
+        b.insert("type".into(), json!("message"));
+        b.insert(
+            "message".into(),
+            json!({"role": "user", "content": [{"type": "text", "text": text}]}),
+        );
+        entry(id, parent, b)
+    }
+
+    /// 助手消息里的一次 `todo_write` 调用
+    fn call(id: &str, parent: Option<&str>, todos: Value) -> String {
+        let mut b = serde_json::Map::new();
+        b.insert("type".into(), json!("message"));
+        b.insert(
+            "message".into(),
+            json!({"role": "assistant", "content": [
+                {"type": "toolCall", "id": "c1", "name": "todo_write", "arguments": {"todos": todos}}
+            ]}),
+        );
+        entry(id, parent, b)
+    }
+
+    /// 插件追写的 `todo/write` custom 条目
+    fn event(id: &str, parent: Option<&str>, todos: Value) -> String {
+        let mut b = serde_json::Map::new();
+        b.insert("type".into(), json!("custom"));
+        b.insert("customType".into(), json!("todo/write"));
+        b.insert("data".into(), json!({"todos": todos}));
+        entry(id, parent, b)
+    }
+
+    /// 别的扩展写的 custom 条目（不该被认成 todo）
+    fn other_custom(id: &str, parent: Option<&str>) -> String {
+        let mut b = serde_json::Map::new();
+        b.insert("type".into(), json!("custom"));
+        b.insert("customType".into(), json!("pi-guardrails/observation"));
+        b.insert("data".into(), json!({"note": "todo_write mentioned in a note"}));
+        entry(id, parent, b)
+    }
+
+    /// 一段很长、带 todo 字样的工具输出（必须被预筛跳过，不解析）
+    fn fat_tool_result(id: &str, parent: Option<&str>) -> String {
+        let filler = "x".repeat(200_000);
+        let mut b = serde_json::Map::new();
+        b.insert("type".into(), json!("message"));
+        b.insert(
+            "message".into(),
+            json!({"role": "toolResult", "toolName": "bash", "content": [
+                {"type": "text", "text": format!("{filler} todo_write {filler}")}
+            ]}),
+        );
+        entry(id, parent, b)
+    }
+
+    #[test]
+    fn todo_projection_reads_the_last_write() {
+        let lines = vec![
+            user("u1", None, "做三件事"),
+            call("a1", Some("u1"), json!([
+                {"content": "一", "status": "in_progress"},
+                {"content": "二", "status": "pending"},
+                {"content": "三", "status": "pending"}
+            ])),
+            event("e1", Some("a1"), json!([
+                {"content": "一", "status": "completed"},
+                {"content": "二", "status": "in_progress"},
+                {"content": "三", "status": "pending"}
+            ])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        let todos = p.todos.expect("应有清单");
+        assert_eq!(todos.len(), 3);
+        assert_eq!(todos[1].status, "in_progress");
+        assert_eq!(todos[0].status, "completed", "事件比调用参数新，应取事件");
+        assert_eq!(p.source.as_deref(), Some("event"));
+        assert_eq!(p.writes, 2, "一次调用 + 一次事件");
+        assert!(!p.cleared_by_turn);
+        assert!(!p.branchy);
+        assert!(p.offset.is_some());
+    }
+
+    #[test]
+    fn todo_projection_falls_back_to_the_tool_call_arguments() {
+        let lines = vec![
+            user("u1", None, "做两件事"),
+            call("a1", Some("u1"), json!([
+                {"content": "一", "status": "pending"},
+                {"content": "二", "status": "pending"}
+            ])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert_eq!(p.todos.unwrap().len(), 2);
+        assert_eq!(p.source.as_deref(), Some("call"), "没有事件条目时应退回调用参数");
+    }
+
+    #[test]
+    fn todo_projection_clears_when_a_new_turn_starts() {
+        // DSH：`turn/start` → 投影回 null（`src/index.ts:140`）
+        let lines = vec![
+            user("u1", None, "第一件事"),
+            event("e1", Some("u1"), json!([{"content": "一", "status": "completed"}])),
+            user("u2", Some("e1"), "还有个新活儿"),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(p.todos.is_none(), "新一轮开始后不该再显示旧计划");
+        assert!(p.cleared_by_turn, "要说清是『被新一轮清空』而不是『没写过』");
+        assert_eq!(p.writes, 1);
+        assert!(p.offset.is_some(), "清空也要留下『曾经写过』的位置");
+    }
+
+    #[test]
+    fn todo_projection_stays_visible_while_the_turn_continues() {
+        let lines = vec![
+            user("u1", None, "第一件事"),
+            event("e1", Some("u1"), json!([{"content": "一", "status": "in_progress"}])),
+            event("e2", Some("e1"), json!([{"content": "一", "status": "completed"}])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert_eq!(p.todos.unwrap()[0].status, "completed");
+        assert!(!p.cleared_by_turn);
+        assert_eq!(p.writes, 2);
+    }
+
+    #[test]
+    fn todo_projection_ignores_foreign_entries_and_malformed_lists() {
+        let lines = vec![
+            user("u1", None, "x"),
+            other_custom("c1", Some("u1")),
+            event("e1", Some("c1"), json!([{"content": "一", "status": "done"}])), // 非法状态
+            event("e2", Some("e1"), json!("不是数组")),
+            event("e3", Some("e2"), json!([{"content": "一"}])), // 缺 status
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(p.todos.is_none(), "形状不认识的清单宁可不显示");
+        assert_eq!(p.writes, 0, "不认识的条目不算一次写入");
+    }
+
+    #[test]
+    fn todo_projection_without_any_write_is_empty() {
+        let lines = vec![user("u1", None, "普通对话"), call("a1", Some("u1"), json!([]))];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        // 空数组是一次合法的"清空"写入
+        assert_eq!(p.todos.unwrap().len(), 0);
+        assert_eq!(p.writes, 1);
+    }
+
+    #[test]
+    fn todo_projection_skips_fat_tool_output_without_parsing_it() {
+        let lines = vec![
+            user("u1", None, "跑个命令"),
+            fat_tool_result("t1", Some("u1")),
+            event("e1", Some("t1"), json!([{"content": "一", "status": "pending"}])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let t0 = std::time::Instant::now();
+        let p = todo_projection(&path).unwrap();
+        let us = t0.elapsed().as_micros();
+        assert_eq!(p.todos.unwrap().len(), 1);
+        // 预筛必须真的生效：三段 200 KB 的正文只该解析 3 行（user / custom / 无）
+        assert!(p.parsed_lines <= 3, "解析了 {} 行，预筛没生效", p.parsed_lines);
+        assert!(p.scanned_bytes > 400_000);
+        println!("todo 投影：{} 字节 / 解析 {} 行 / {us}µs", p.scanned_bytes, p.parsed_lines);
+    }
+
+    #[test]
+    fn todo_projection_follows_the_active_branch_only() {
+        // 分支场景：u1 → a1（旧分支上写了清单）→ u2（改写需求）→ a2（新分支，没有清单）
+        // 叶子是 a2，所以活动分支是 u2/a2 —— **不该**看到 a1 上的清单。
+        let lines = vec![
+            user("u1", None, "第一版需求"),
+            event("e1", Some("u1"), json!([{"content": "旧计划", "status": "pending"}])),
+            user("u2", Some("u1"), "算了，改需求"),
+            {
+                let mut b = serde_json::Map::new();
+                b.insert("type".into(), json!("message"));
+                b.insert("message".into(), json!({"role": "assistant", "content": [{"type": "text", "text": "好"}]}));
+                entry("a2", Some("u2"), b)
+            },
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(p.branchy, "parentId 链断了 → 应走分支慢路径");
+        assert!(p.todos.is_none(), "被放弃的分支上的清单不能当成当前计划");
+        assert_eq!(p.writes, 0);
+    }
+
+    #[test]
+    fn todo_projection_reads_the_branch_that_actually_has_the_list() {
+        // 线性链（u1 → u2 → e1）：清单在链尾，应当读到；这条路径必须是便宜的那条
+        let lines = vec![
+            user("u1", None, "第一版需求"),
+            user("u2", Some("u1"), "改需求"),
+            event("e1", Some("u2"), json!([{"content": "新计划", "status": "pending"}])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(!p.branchy, "parentId 首尾相接的链就是线性文件，别走慢路径");
+        assert_eq!(p.todos.unwrap()[0].content, "新计划");
+    }
+
+    /// 真机回归：`web-search-results` 这类**载荷在前**的 custom 条目。
+    ///
+    /// 它写成 `{"type":"custom","customType":"…","data":{"id":"…"}}`：顶层没有 `id`/`parentId`，
+    /// 而载荷里的 `data.id` 与前缀扫描要找的 `"id":"` 长得一模一样。
+    /// 早先的实现把它当成条目 id，于是 parentId 对不上 → 整份**线性**会话被误判成有分支
+    /// → 走整文件解析的慢路径（真机 11.7 MB 实测 400 ms，快路径只要几十毫秒）。
+    /// 这条用例把"线性就是线性"钉住。
+    #[test]
+    fn payload_first_entries_do_not_make_a_linear_file_look_branched() {
+        // 真机形状：载荷里的 `data.id` 在前，条目自己的 id/parentId 在**最后**
+        let payload_first = r#"{"type":"custom","customType":"web-search-results","data":{"id":"nested-id","type":"search","timestamp":1790003230702,"query":"x"},"id":"s1","parentId":"a1","timestamp":"2026-09-21T15:07:10.776Z"}"#.to_string();
+        let lines = vec![
+            user("u1", None, "查一下"),
+            call("a1", Some("u1"), json!([
+                {"content": "一", "status": "pending"},
+                {"content": "二", "status": "pending"},
+                {"content": "三", "status": "pending"}
+            ])),
+            payload_first, // 它在**链条中间**：e1 的 parent 就是它（真机 line 108 的形状）
+            event("e1", Some("s1"), json!([
+                {"content": "一", "status": "in_progress"},
+                {"content": "二", "status": "pending"},
+                {"content": "三", "status": "pending"}
+            ])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(!p.branchy, "载荷在前的 custom 条目不该把线性会话判成分支（真机 400ms 慢路径的成因）");
+        assert_eq!(p.todos.unwrap()[0].status, "in_progress");
+        assert_eq!(p.writes, 2);
+        assert_eq!(p.source.as_deref(), Some("event"));
+    }
+
+    /// 载荷里只有 `id`、没有 `parentId` → **按没有链条身份处理**（成对才认）。
+    ///
+    /// 载荷里出现单个 `"id"` 太常见（搜索结果、工具输出），认了它就会把链条带偏 ——
+    /// 真机那次"线性会话被判成分支"正是这么来的。成对要求把它挡在门外。
+    #[test]
+    fn a_lone_payload_id_is_not_mistaken_for_the_entry_id() {
+        let payload_only = r#"{"type":"custom","customType":"other","data":{"id":"nested-id","note":"x"}}"#.to_string();
+        let lines = vec![
+            user("u1", None, "x"),
+            call("a1", Some("u1"), json!([
+                {"content": "一", "status": "pending"},
+                {"content": "二", "status": "pending"},
+                {"content": "三", "status": "pending"}
+            ])),
+            payload_only,
+            event("e1", Some("a1"), json!([
+                {"content": "一", "status": "completed"},
+                {"content": "二", "status": "pending"},
+                {"content": "三", "status": "pending"}
+            ])),
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(!p.branchy, "载荷里的单个 id 不该被当成条目 id");
+        assert!(!p.chain_broken, "这一行干脆不参与链条，链条应当完好");
+        assert_eq!(p.todos.unwrap()[0].status, "completed");
+    }
+
+    /// 链条**走断**（父条目找不到）：退回按文件序折叠，并把 `chainBroken` 标出来。
+    ///
+    /// 这条是"不静默说谎"的兜底：走断意味着我们无法判断哪条是活动分支，
+    /// 于是给出"最新一次写入"（用户最后一次看到的计划），同时明确标注链条不可信 ——
+    /// 界面/日志据此可以说清结论的强度。
+    #[test]
+    fn a_broken_chain_falls_back_to_file_order_and_says_so() {
+        let dangling = r#"{"type":"message","id":"a2","parentId":"missing-id","message":{"role":"assistant","content":[{"type":"text","text":"好"}]}}"#.to_string();
+        let lines = vec![
+            user("u1", None, "x"),
+            event("e1", Some("u1"), json!([{"content": "一", "status": "pending"}])),
+            dangling,
+        ];
+        let (_d, path) = write_session(&lines);
+        let p = todo_projection(&path).unwrap();
+        assert!(p.chain_broken, "父条目找不到时应标出链条走断");
+        assert_eq!(p.todos.map(|t| t.len()), Some(1), "退回文件序后应仍看得到那份清单");
+    }
+
+    #[test]
+    fn todo_projection_survives_a_truncated_last_line() {
+        let dir = tempdir::TempDir::new();
+        let path = dir.path().join("half.jsonl");
+        let mut f = File::create(&path).unwrap();
+        writeln!(f, "{}", user("u1", None, "x")).unwrap();
+        writeln!(f, "{}", event("e1", Some("u1"), json!([{"content": "一", "status": "pending"}]))).unwrap();
+        write!(f, "{{\"type\":\"message\",\"id\":\"a1\",\"message\":{{\"role\":\"assis").unwrap();
+        drop(f);
+        let p = todo_projection(&path).unwrap();
+        assert_eq!(p.todos.unwrap().len(), 1, "半行应被跳过，不影响前面的结论");
+    }
+
+    /// 真机（可选）：对着本机最大的几个会话文件跑一遍投影，看成本。
+    /// `cargo test -- --ignored real_machine_todo`
+    #[test]
+    #[ignore]
+    fn real_machine_todo() {
+        // 指定单个文件（例如"我刚在某个项目里跑了一场真实会话，核一下投影对不对"）：
+        //   PIGGY_TODO_SESSION=/path/to/s.jsonl cargo test --release --lib real_machine_todo -- --ignored --nocapture
+        if let Ok(one) = std::env::var("PIGGY_TODO_SESSION") {
+            let p = std::path::PathBuf::from(&one);
+            let sz = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let t0 = std::time::Instant::now();
+            let proj = todo_projection(&p).unwrap();
+            let us = t0.elapsed().as_micros();
+            println!(
+                "{} ({:.1} MB) → {us}µs：{} / 来源 {} / 写 {} 次 / 解析 {} 行 / branchy={} / chainBroken={}",
+                p.file_name().unwrap().to_string_lossy(),
+                sz as f64 / 1e6,
+                match &proj.todos {
+                    Some(list) => format!("{} 条：{}", list.len(), list.iter().map(|t| format!("[{}] {}", t.status, t.content)).collect::<Vec<_>>().join(" | ")),
+                    None => "无".to_string(),
+                },
+                proj.source.clone().unwrap_or_else(|| "-".into()),
+                proj.writes,
+                proj.parsed_lines,
+                proj.branchy,
+                proj.chain_broken,
+            );
+            return;
+        }
+        let root = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".pi/agent/sessions");
+        let mut files: Vec<(u64, std::path::PathBuf)> = Vec::new();
+        collect_jsonl(&root, &mut files);
+        files.sort_by_key(|f| std::cmp::Reverse(f.0));
+        for (sz, p) in files.iter().take(3) {
+            let t0 = std::time::Instant::now();
+            let proj = todo_projection(p).unwrap();
+            let us = t0.elapsed().as_micros();
+            // 同一次运行里量一个**已有的**整文件投影做对照（轮廓是打开会话时本来就要付的成本）
+            let t1 = std::time::Instant::now();
+            let outline = outline(p).unwrap();
+            let outline_us = t1.elapsed().as_micros();
+            println!(
+                "{} ({:.1} MB) → todo 投影 {us}µs：{} / 来源 {} / 写 {} 次 / 扫 {} 字节 / 解析 {} 行 / branchy={}",
+                p.file_name().unwrap().to_string_lossy(),
+                *sz as f64 / 1e6,
+                match &proj.todos {
+                    Some(list) => format!("{} 条", list.len()),
+                    None => "无".to_string(),
+                },
+                proj.source.clone().unwrap_or_else(|| "-".into()),
+                proj.writes,
+                proj.scanned_bytes,
+                proj.parsed_lines,
+                proj.branchy,
+            );
+            println!(
+                "    对照：轮次轮廓 {} 轮 / {outline_us}µs（同一份文件、同一次运行）",
+                outline.turns.len(),
             );
         }
     }

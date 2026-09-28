@@ -28,9 +28,11 @@ import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPa
 import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
+import { useTodoSupported } from '@/stores/todo';
 import { useTabs } from '@/stores/tabs';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
+import { todoBaselines, type TodoItem } from '@/lib/todoModel';
 import {
   activeTurnOf,
   findRowIndexByOffset,
@@ -73,6 +75,18 @@ export function Transcript({ tabId }: { tabId: string }) {
   const hydrated = useTabMsg(tabId, (t) => t.hydrated);
   // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置
   const rowIds = streaming && !hasNewer ? [...ids, LIVE_ID] : ids;
+  const todoOn = useTodoSupported();
+  /**
+   * 每一条 `todo_write` 的**上一份清单**（差异对比的基线，DSH 的 `todoHistory`）。
+   *
+   * 按行配对而不是用"当前清单"：历史那一行的差异必须跟**它当时**的上一次比，
+   * 否则往上翻历史时每一行都显示"与现在这份清单相比"，那是假的。
+   * 没探测到 todo 能力时不算（一个字节都不多花）。
+   */
+  const baselines = useMemo(
+    () => (todoOn ? todoBaselines(ids.map((id) => byId[id]).filter(Boolean) as MessageViewT[]) : null),
+    [todoOn, ids, byId],
+  );
   const railPlacement = useAppConfig((s) => s.railPlacement);
 
   /**
@@ -411,7 +425,7 @@ export function Transcript({ tabId }: { tabId: string }) {
                     <div className="pg-role">assistant ▌</div>
                   </div>
                 ) : (
-                  <Row tabId={tabId} id={id} />
+                  <Row tabId={tabId} id={id} baselines={baselines} />
                 )}
               </div>
             );
@@ -472,7 +486,16 @@ export function Transcript({ tabId }: { tabId: string }) {
   );
 }
 
-function Row({ tabId, id }: { tabId: string; id: string }) {
+function Row({
+  tabId,
+  id,
+  baselines,
+}: {
+  tabId: string;
+  id: string;
+  /** `todo_write` 的调用 id → 它的上一份清单（见 `todoBaselines`） */
+  baselines: Map<string, TodoItem[]> | null;
+}) {
   const view = useStore(
     useMessages,
     (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined,
@@ -482,6 +505,10 @@ function Row({ tabId, id }: { tabId: string; id: string }) {
      这里按 `toolCallId` 取出来交给 `MessageView`；拿不到就是 undefined，行会退到结果首行。 */
   const callId = view?.role === 'toolResult' ? (view.message as { toolCallId?: string }).toolCallId : undefined;
   const call = useStore(useMessages, (s) => (callId ? s.tabs[tabId]?.toolCalls[callId] : undefined));
+  /* 差异基线按**调用 id** 查（`todoBaselines` 的键就是 callId，不是 store 的行 id）。
+     查错了不会报错，只会让每一行都显示成「首次记录」—— 属于最难发现的那类错，
+     所以 `todo-transcript.test.tsx` 专门端到端跑了两行写入来钉它。 */
+  const baseline = callId ? baselines?.get(callId) : undefined;
   if (!view) return null;
-  return <MessageView view={view} call={call} />;
+  return <MessageView view={view} call={call} baseline={baseline} />;
 }

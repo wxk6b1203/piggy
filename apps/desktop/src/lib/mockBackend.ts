@@ -596,6 +596,125 @@ function emitPlugin(channel: string, payload: unknown) {
   for (const h of set) h(payload);
 }
 
+/* ---------------- 任务清单能力与投影（docs/03 §2.20） ---------------- */
+
+/**
+ * mock 的 todo 能力状态。默认**探测到且已启用**（门禁要能量到 todo 界面），
+ * 浏览器里可以调 {@link mockSetTodoCapability} 把它关掉，
+ * 用来核对"没插件 ⇒ 界面一点都不出现"这条闸门。
+ */
+const TODO_FLAG_KEY = 'piggy:mock:todo-capability';
+
+// 存在 localStorage 里（而不是只放模块变量）：门禁要**重载页面**才能重新走一遍启动探测，
+// 模块级变量一重载就没了，"没插件时界面不出现"这条就永远测不到。
+let mockTodoSupported = (() => {
+  try {
+    return globalThis.localStorage?.getItem(TODO_FLAG_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+})();
+
+/** 门禁用：切换 mock 的 todo 能力探测结果（会写 localStorage，重载后仍生效）。 */
+export function mockSetTodoCapability(supported: boolean): void {
+  mockTodoSupported = supported;
+  try {
+    globalThis.localStorage?.setItem(TODO_FLAG_KEY, supported ? 'on' : 'off');
+  } catch {
+    /* 无 localStorage：只影响本次会话 */
+  }
+}
+
+/** `plugin_capability` 的返回（字段名与 Rust `plugin::capabilities::status` 一致）。 */
+function mockPluginCapability(capability: string) {
+  const enabled = mockTodoSupported;
+  const plugin = {
+    name: 'pi-todo',
+    key: 'global:discovered:/mock/home/.pi/agent/extensions/pi-todo',
+    kind: 'discovered',
+    scope: 'global',
+    scopeLabel: '全局',
+    source: '/mock/home/.pi/agent/extensions/pi-todo',
+    path: '/mock/home/.pi/agent/extensions/pi-todo',
+    version: '0.1.0',
+    entries: ['/mock/home/.pi/agent/extensions/pi-todo/index.ts'],
+    enabled: true,
+    enabledBy: '默认加载（没有任何规则排除它）',
+    evidence: 'package.json 声明 pi.piggy.capabilities 含 "todo"',
+    probes: [],
+  };
+  return {
+    capability: capability || 'todo',
+    label: '任务清单',
+    markers: ['todo_write'],
+    detected: true,
+    supported: enabled,
+    enabled,
+    plugin: enabled ? plugin : null,
+    disabled: enabled ? [] : [{ ...plugin, enabled: false, enabledBy: '-extensions/pi-todo' }],
+    considered: 6,
+    problems: [],
+  };
+}
+
+/** 从 mock 转录里折出清单（与 Rust 同规则：last-write-wins + 新一轮清空）。 */
+function mockTodoProjection() {
+  let current: Array<{ content: string; status: string }> | null = null;
+  let source: 'event' | 'call' | null = null;
+  let cleared = false;
+  let writes = 0;
+  const readList = (value: unknown): Array<{ content: string; status: string }> | null => {
+    if (!Array.isArray(value)) return null;
+    const out: Array<{ content: string; status: string }> = [];
+    for (const raw of value) {
+      const item = raw as { content?: unknown; status?: unknown };
+      if (typeof item?.content !== 'string') return null;
+      if (item.status !== 'pending' && item.status !== 'in_progress' && item.status !== 'completed') return null;
+      out.push({ content: item.content, status: item.status });
+    }
+    return out;
+  };
+  for (const row of mockTranscript) {
+    const msg = row.message as { role?: string; content?: unknown; customType?: string; data?: unknown };
+    if (msg.customType === 'todo/write') {
+      const list = readList((msg.data as { todos?: unknown } | undefined)?.todos);
+      if (list) {
+        current = list;
+        source = 'event';
+        writes += 1;
+        cleared = false;
+      }
+      continue;
+    }
+    if (msg.role === 'user') {
+      if (current !== null) cleared = true;
+      continue;
+    }
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      const b = block as { type?: string; name?: string; arguments?: { todos?: unknown } };
+      if (b?.type !== 'toolCall' || b.name !== 'todo_write') continue;
+      const list = readList(b.arguments?.todos);
+      if (list) {
+        current = list;
+        source = 'call';
+        writes += 1;
+        cleared = false;
+      }
+    }
+  }
+  return {
+    todos: cleared ? null : current,
+    source,
+    offset: null,
+    clearedByTurn: cleared,
+    writes,
+    branchy: false,
+    scannedBytes: 0,
+    parsedLines: 0,
+  };
+}
+
 function mockPluginOverview() {
   const groups = [
     { id: 'project', label: '本项目', dir: '/mock/project/.pi', settingsPath: '/mock/project/.pi/settings.json' },
@@ -843,6 +962,14 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
    * 真机是 Rust 扫会话文件；mock 用行下标当偏移（对前端不透明），
    * 规则与真机一致：**每个 user 行开启新的一轮**，其后的 assistant 文本归这一轮。
    */
+  /**
+   * 会话的任务清单投影（Rust `transcript::todo_projection` 的 mock 版）。
+   *
+   * 规则必须与 Rust 侧**逐条一致**（否则门禁量到的是 mock 的行为，不是真机的）：
+   * 最后一次整表写入赢（`todo/write` 条目优先，工具调用参数兜底），
+   * 之后若出现用户消息（新一轮）则清空。
+   */
+  session_todo: () => mockTodoProjection(),
   session_outline: () => {
     const turns: Array<{ turn: number; start: number; end: number; prompt: string; response: string }> = [];
     const text = (m: unknown): string => {
@@ -1174,6 +1301,7 @@ pub fn main() {
   }),
   /* ---------------- 插件页（docs/04 §2.3） ---------------- */
   plugin_overview: () => mockPluginOverview(),
+  plugin_capability: (a) => mockPluginCapability(String(a.capability ?? '')),
   plugin_jobs: () => ({ jobs: [...mockPluginJobs.values()] }),
   plugin_job_cancel: (args) => {
     const id = String(args.jobId ?? '');

@@ -723,6 +723,24 @@ pub async fn session_outline(path: String) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// 会话里的**任务清单投影**（docs/03 §2.20）：最新一次整表写入 = 当前计划。
+///
+/// 为什么不由前端从已载入的行里推：分页只载入尾部一页，而清单可能写在很久以前那一轮
+/// （DSH 的原话是 "The list survives across turns and reopened sessions"，
+/// `packages/todo/tool-todo/README.md:12`）。所以这里跟 `session_outline` 一样，
+/// 是"一次扫描、整个会话"的投影，单独一条命令。
+///
+/// **只在探测到 todo 能力时才会被调用**（`plugin_capability`）—— 没装插件就没有这次扫描。
+#[tauri::command]
+pub async fn session_todo(path: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let p = crate::sessions::transcript::todo_projection(std::path::Path::new(&path))?;
+        Ok::<Value, String>(p.to_json())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 会话转录**分页**读（docs/03 §2.19）。
 ///
 /// 不起 worker、不依赖 pi 进程：直接读会话 JSONL 的尾部一页。这样打开长会话

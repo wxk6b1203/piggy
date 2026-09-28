@@ -396,6 +396,92 @@ body {
 .pg-trow[data-state='error'] .pg-trow-sep { background: var(--pg-error); }
 /* 展开后的正文：与窄行之间留 4px，卡片本身照旧 */
 .pg-trow [data-tool-body] { padding: 4px 0 2px; }
+
+/* ────────────────────────── 任务清单（docs/03 §2.20、docs/04 §2.1.4） ──────────────────────────
+   两侧都逐条对齐 DSH：
+   - 转录行：`ui-tool/.../todo-row.tsx`（窄行 + `+N` 与差异摘要放在不可省略的一侧）
+   - 计划面板：`ui-conversation/.../TodoPanel.module.css`（圆角 12px / padding 6px 12px /
+     头部 gap 10px / 列表 gap 8px / max-height 180px / 项内 gap 10px / 13px·20px）      */
+
+/* 摘要右侧那两块**不可省略**：`+N`（还有几条在跑）与差异摘要。
+   DSH 把它们放在可截断文本之外，正是为了窄行时不丢信息。 */
+.pg-todo-extra,
+.pg-todo-diff-summary {
+  flex: none; margin-left: 8px;
+  font-size: var(--pg-fs-12); line-height: 24px; color: var(--pg-fg-dim);
+}
+.pg-todo-extra { font-variant-numeric: tabular-nums; }
+
+/* 展开后的清单：与窄行留 4px，行内 13px/20px */
+.pg-todorow [data-todo-body] { padding: 4px 0 2px 22px; }
+.pg-todo-body { display: flex; flex-direction: column; gap: 8px; }
+.pg-todo-caption { font-size: var(--pg-fs-12); line-height: 18px; color: var(--pg-fg-dim); }
+.pg-todo-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.pg-todo-item {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  font-size: var(--pg-fs-13); line-height: 20px; color: var(--pg-fg-secondary);
+}
+.pg-todo-glyph { display: grid; flex: none; place-items: center; width: 16px; height: 16px; color: var(--pg-fg-dim); }
+.pg-todo-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-todo-status { flex: none; margin-left: auto; font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
+/* 三态必须一眼可分（DSH 用 StateDot：done/ongoing/idle） */
+.pg-todo-item[data-status='completed'] .pg-todo-glyph { color: var(--pg-ok); }
+.pg-todo-item[data-status='completed'] .pg-todo-content { color: var(--pg-fg-dim); }
+.pg-todo-item[data-status='in_progress'] .pg-todo-glyph { color: var(--pg-accent); }
+.pg-todo-item[data-status='in_progress'] .pg-todo-content { color: var(--pg-fg); }
+/* 变化标记（DSH `todo.diff.*Item`）：新增/更新/顺序调整/移除 */
+.pg-todo-item[data-change='added'] .pg-todo-content::after,
+.pg-todo-item[data-change='updated'] .pg-todo-content::after,
+.pg-todo-item[data-change='moved'] .pg-todo-content::after { content: ' ●'; color: var(--pg-accent); font-size: 9px; vertical-align: 2px; }
+.pg-todo-removed .pg-todo-content { text-decoration: line-through; color: var(--pg-fg-dim); }
+.pg-todo-item[data-change='removed'] .pg-todo-glyph { color: var(--pg-error); }
+.pg-todo-result {
+  margin: 0; padding: 6px 8px; border-radius: var(--pg-r-md); background: var(--pg-bg-layer-2);
+  font-family: var(--pg-mono); font-size: var(--pg-fs-12); line-height: 18px;
+  color: var(--pg-fg-dim); white-space: pre-wrap; word-break: break-word;
+}
+/* 失败（例如被复杂度闸门拒绝）：拒绝原因原样摊开，别让用户以为"写成功了" */
+.pg-todo-error { font-size: var(--pg-fs-13); line-height: 20px; color: var(--pg-error); }
+
+/* 计划面板（DSH `TodoPanel`）：位于输入卡正上方，宽度与输入卡对齐 */
+.pg-todo-panel {
+  flex: none; box-sizing: border-box; margin: 0 auto 6px;
+  width: 100%; max-width: var(--pg-composer-max-w);
+  border: 0.5px solid var(--pg-border-l1);
+  border-radius: 12px; background: var(--pg-menu, var(--pg-bg-layer-2));
+  backdrop-filter: blur(12px);
+}
+.pg-todo-panel-body { display: flex; flex-direction: column; gap: 8px; padding: 6px 12px; }
+.pg-todo-panel-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 0; border: none; background: transparent; text-align: left; cursor: pointer;
+}
+.pg-todo-panel-quiet { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
+.pg-todo-panel-lead { display: grid; flex: none; place-items: center; color: var(--pg-fg-dim); }
+.pg-todo-panel-title {
+  flex: none; font-size: var(--pg-fs-13); line-height: 24px; font-weight: 500; color: var(--pg-fg);
+}
+.pg-todo-panel-progress {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--pg-fs-13); line-height: 20px; color: var(--pg-fg-dim);
+}
+.pg-todo-panel-source { flex: none; font-size: var(--pg-fs-11); color: var(--pg-fg-dim); opacity: 0.7; }
+.pg-todo-panel-chevron { display: grid; flex: none; place-items: center; color: var(--pg-fg-dim); }
+.pg-todo-panel-list {
+  display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none;
+  max-height: 180px; overflow-y: auto;
+}
+.pg-todo-panel-item {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  font-size: var(--pg-fs-13); line-height: 20px; color: var(--pg-fg-secondary);
+}
+.pg-todo-panel-glyph { display: grid; flex: none; place-items: center; width: 16px; height: 16px; color: var(--pg-fg-dim); }
+.pg-todo-panel-item[data-status='completed'] .pg-todo-panel-glyph { color: var(--pg-ok); }
+.pg-todo-panel-item[data-status='completed'] .pg-todo-panel-content { color: var(--pg-fg-dim); }
+.pg-todo-panel-item[data-status='in_progress'] .pg-todo-panel-glyph { color: var(--pg-accent); }
+.pg-todo-panel-item[data-status='in_progress'] .pg-todo-panel-content { color: var(--pg-fg); }
+.pg-todo-panel-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 思考行：同样一行 24px，展开看全文 */
 .pg-thinkrow { margin: 0; }
 .pg-thinkrow .pg-drow-title { color: var(--pg-fg-dim); }

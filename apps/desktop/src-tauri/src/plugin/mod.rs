@@ -23,6 +23,7 @@
 //! 所以界面上明确写：**改动对新开的会话生效**；已经在跑的会话要重启。
 
 pub mod builtins_generated;
+pub mod capabilities;
 pub mod cli;
 pub mod inventory;
 
@@ -45,6 +46,23 @@ pub async fn plugin_overview(project_dir: Option<String>) -> Result<Value, Strin
     tokio::task::spawn_blocking(move || {
         let cwd = project_dir.map(PathBuf::from);
         inventory::overview(&paths::agent_dir(), cwd.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 能力探测（docs/03 §2.20）：某个已启用的插件是否提供某个能力。
+///
+/// 目前只有 `todo`（任务清单）一个能力。**返回形状由 `tests/ipc_contract.rs` 锁死**：
+/// 前端拿 `supported` 决定要不要显示 todo 界面（`false` 就一点都不显示）。
+#[tauri::command]
+pub async fn plugin_capability(
+    capability: String,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let cwd = project_dir.map(PathBuf::from);
+        capabilities::status(&capability, &paths::agent_dir(), cwd.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?

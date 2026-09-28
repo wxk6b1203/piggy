@@ -27,18 +27,21 @@ if (import.meta.env.DEV) {
     import('@/stores/messages'),
     import('@/stores/trajectory'),
     import('@/stores/fleet'),
+    // todo store：`ui:startup` 的清单段要**灌计划**再量面板几何（真布局才量得到）
+    import('@/stores/todo'),
     // 命令表也要走这个钩子：`ui:startup` 第 7 段要拿**应用自己那份注册表**去核
     // 空编辑区列出的快捷键与标题。另 import 一份 `@/lib/commands` 会得到**空表**
     // （模块实例不同，见上），断言会集体假红 —— 实测踩过。
     import('@/lib/commands'),
     import('@/features/workspace/EditorArea'),
     import('@/features/common/monaco-pool'),
-  ]).then(([tabs, messages, trajectory, fleet, commands, editor, pool]) => {
+  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
       useTrajectory: trajectory.useTrajectory,
       useFleet: fleet.useFleet,
+      useTodo: todo.useTodo,
     };
     (globalThis as Record<string, unknown>).__piggyCommands = commands;
     // 预览相关（ui:startup 第 5/9 段与 Monaco 资源核对用）；另 import 一份会拿到另一个实例

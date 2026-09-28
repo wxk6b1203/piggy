@@ -2,6 +2,7 @@ import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
 import { useEffect } from 'react';
 import { useUi } from '@/stores/ui';
 import { useAppConfig } from '@/stores/appConfig';
+import { useTodo } from '@/stores/todo';
 import { watchSessionsChanged } from '@/stores/sessions';
 import { useFleet } from '@/stores/fleet';
 import { on } from '@/lib/ipc';
@@ -13,6 +14,10 @@ import { AboutDialog } from '@/features/dialogs/AboutDialog';
 void watchSessionsChanged();
 // 界面要用的应用配置（预览滚动条位置等）：启动读一次，之后由设置页推新值
 void useAppConfig.getState().load();
+// todo 能力探测（docs/03 §2.20）：**探测到已启用的 todo 插件**才显示 todo 界面。
+// 没装插件（或探测失败）时 `supported=false` —— 界面与从前一模一样，不留半截功能。
+// 项目级插件在打开会话时按需再探一次（见 stores/todo.ts 的 loadTodosForSession）。
+void useTodo.getState().loadCapability();
 // Fleet（A 层）快照全局订阅（一次，docs/06 §5）
 void on('fleet:changed', (payload: { runs?: never[] }) => {
   useFleet.getState().applySnapshot(payload as never);
