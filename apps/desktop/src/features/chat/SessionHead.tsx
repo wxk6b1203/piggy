@@ -7,6 +7,7 @@
  * worker 运行状态改由 Composer 上方的流式条 + 状态行表达。
  */
 import { useMemo } from 'react';
+import { baseName } from '@/lib/paths';
 import { useTabs } from '@/stores/tabs';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
@@ -27,7 +28,7 @@ export function SessionHead({ tabId }: { tabId: string }) {
     if (named) return named;
     const first = firstUser?.trim();
     if (first) return first.length > 60 ? `${first.slice(0, 60)}…` : first;
-    const dir = tab?.cwd?.split('/').filter(Boolean).at(-1);
+    const dir = tab?.cwd ? baseName(tab.cwd) : undefined;
     return dir ? `${dir} · 新会话` : '新会话';
   }, [tab?.sessionName, tab?.cwd, firstUser]);
 

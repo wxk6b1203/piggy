@@ -6,6 +6,7 @@
  * 映射表由 `scripts/sync-seti-icons.mjs` 从 VS Code 检出生成。
  */
 import { SETI_DEFS, SETI_EXT, SETI_LANG, SETI_NAME, SETI_FILE } from './seti-icons';
+import { baseName } from '@/lib/paths';
 
 export interface FileIconProps {
   /** 文件名或路径（取 basename 参与匹配） */
@@ -55,7 +56,7 @@ export function FileIcon({ name, isDir, open, size = 14, className }: FileIconPr
 
 /** 文件名 → Seti 定义；匹配不到返回 undefined（调用方回退到 codicon）。 */
 export function resolve(name: string): { c: string; f?: string } | undefined {
-  const base = name.split('/').pop() ?? name;
+  const base = baseName(name);
   const lower = base.toLowerCase();
 
   const byName = SETI_NAME[lower];

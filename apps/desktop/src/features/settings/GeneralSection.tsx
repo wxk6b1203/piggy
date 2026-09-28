@@ -43,7 +43,14 @@ export function GeneralSection() {
   const [perm, setPerm] = useState<string>('workspace');
   const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
   const [delegation, setDelegation] = useState(false);
-  const [sessionDir, setSessionDir] = useState<{ dir: string; isCustom: boolean; raw: string | null } | null>(null);
+  // source 是 Windows 事故后加的：默认地址出问题时，得能一眼看出这个目录是
+  // 默认值、settings.json 里的自定义值、还是 PI_CODING_AGENT_SESSION_DIR 环境变量。
+  const [sessionDir, setSessionDir] = useState<{
+    dir: string;
+    isCustom: boolean;
+    raw: string | null;
+    source?: 'default' | 'settings' | 'env';
+  } | null>(null);
   const [dirInput, setDirInput] = useState('');
   // 标题生成（docs/03 §2.16）
   const [titleCfg, setTitleCfg] = useState<{ maxChars: number; source: string; model: string; thinking: string }>({
@@ -109,7 +116,9 @@ export function GeneralSection() {
         setModelsNote(`拉取模型列表失败（${String(e)}）——可以手动填 provider/modelId。`);
       })
       .finally(() => setModelsLoading(false));
-    void cmd<{ dir: string; isCustom: boolean; raw: string | null }>('session_dir_effective')
+    void cmd<{ dir: string; isCustom: boolean; raw: string | null; source?: 'default' | 'settings' | 'env' }>(
+      'session_dir_effective',
+    )
       .then((v) => {
         setSessionDir(v);
         setDirInput(v.raw ?? '');
@@ -235,7 +244,11 @@ export function GeneralSection() {
         {sessionDir && (
           <span className="pg-fg-dim">
             当前生效：{sessionDir.dir}
-            {sessionDir.isCustom ? '（自定义）' : '（默认）'}
+            {sessionDir.source === 'env'
+              ? '（自定义 · 来自环境变量 PI_CODING_AGENT_SESSION_DIR）'
+              : sessionDir.isCustom
+                ? '（自定义）'
+                : '（默认）'}
           </span>
         )}
       </div>

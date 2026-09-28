@@ -30,11 +30,9 @@ impl Facts {
     /// 从当前进程环境探测。
     pub fn detect() -> Facts {
         let env: HashMap<String, String> = std::env::vars().collect();
-        let home = env
-            .get("HOME")
-            .or_else(|| env.get("USERPROFILE"))
-            .map(PathBuf::from)
-            .unwrap_or_default();
+        // 主目录口径统一走 config::paths（HOME/USERPROFILE/HOMEDRIVE+HOMEPATH 的平台顺序，
+        // 同 pi 的 Node homedir()）；这里只是不再自己挑一遍变量。
+        let home = crate::config::paths::home_dir().unwrap_or_default();
         Facts {
             platform: Platform::current(),
             app_roots: vec![

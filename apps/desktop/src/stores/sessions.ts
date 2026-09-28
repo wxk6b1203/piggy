@@ -1,6 +1,7 @@
 /** 会话列表 store（WP2，docs/03 §2.8）：Rust 扫描 + sessions:changed 事件刷新 */
 import { create } from 'zustand';
 import { cmd, on } from '@/lib/ipc';
+import { baseName } from '@/lib/paths';
 
 export interface SessionMeta {
   path: string;
@@ -32,9 +33,10 @@ interface SessionsState {
   removeLocal(path: string): void;
 }
 
-function groupLabel(cwd: string): string {
-  const parts = cwd.split('/').filter(Boolean);
-  return parts.at(-1) ?? cwd;
+/** 项目分组标题 = cwd 最后一段。导出是为了单测（Windows 反斜杠路径，见 `test/paths.test.ts`）。 */
+export function groupLabel(cwd: string): string {
+  // Windows 路径是反斜杠（C:\Users\x\proj）：只按 '/' 切会把整条路径当项目名
+  return baseName(cwd) || cwd;
 }
 
 export const useSessions = create<SessionsState>()((set, get) => ({

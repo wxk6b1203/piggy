@@ -14,6 +14,7 @@ import { Icon } from '@/features/common/Icon';
 import { OpenPathAction } from './OpenPathAction';
 import { langForPath } from '@/features/common/monaco-langs';
 import { toast } from '@/lib/feedback';
+import { splitPath as splitNativePath } from '@/lib/paths';
 
 interface PreviewData {
   path: string;
@@ -67,7 +68,7 @@ export function FilePreview({
     el.toggleAttribute('data-clipped', !!inner && inner.offsetWidth > el.clientWidth);
   }, [path, data]);
 
-  const { dir, name } = useMemo(() => splitPath(data?.path ?? path), [data?.path, path]);
+  const { dir, name } = useMemo(() => splitNativePath(data?.path ?? path), [data?.path, path]);
   // 语言**只有这一处判定**（`monaco-langs.ts` 的表 + 逐门懒加载）。
   // 这里原来还有一张 16 项的本地表：`.rs`/`.java`/`.toml`/`Dockerfile`/`.rb`… 全都不在表里，
   // 于是"语言条写着 plaintext、正文一行都不上色"——正是 docs/15 规矩 25 那类静默降级。
@@ -140,9 +141,5 @@ export function FilePreview({
   );
 }
 
-/** 目录部分灰、文件名亮；目录末尾保留分隔符以便视觉衔接。 */
-function splitPath(p: string): { dir: string; name: string } {
-  const i = p.lastIndexOf('/');
-  if (i < 0) return { dir: '', name: p };
-  return { dir: p.slice(0, i + 1), name: p.slice(i + 1) };
-}
+/* 目录部分灰、文件名亮；分隔符判定走 `@/lib/paths`：
+   Windows 路径是反斜杠，只认 `/` 会把整条路径当文件名。 */

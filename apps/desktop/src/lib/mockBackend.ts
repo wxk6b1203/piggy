@@ -861,7 +861,7 @@ pub fn main() {
     };
   },
   pi_stderr_tail: () => [],
-  session_dir_effective: () => ({ dir: '/Users/mock/.pi/agent/sessions', isCustom: false, raw: null }),
+  session_dir_effective: () => ({ dir: '/Users/mock/.pi/agent/sessions', isCustom: false, raw: null, source: 'default' }),
   auth_list: () => ({
     providers: [
       { provider: 'mock-anthropic', kind: 'api_key', masked: 'sk-ant…Xk2f' },

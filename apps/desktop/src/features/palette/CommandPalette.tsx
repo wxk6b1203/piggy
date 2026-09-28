@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { allCommands, getCommand } from '@/lib/commands';
 import { displayChord, keysFor } from '@/lib/keymap';
+import { baseName } from '@/lib/paths';
 import { useUi } from '@/stores/ui';
 import { useSessions, sessionTitle } from '@/stores/sessions';
 import { useTabs } from '@/stores/tabs';
@@ -123,5 +124,5 @@ export function CommandPalette() {
 }
 
 function g0(cwd: string | null): string {
-  return cwd?.split('/').filter(Boolean).at(-1) ?? '';
+  return cwd ? baseName(cwd) : '';
 }

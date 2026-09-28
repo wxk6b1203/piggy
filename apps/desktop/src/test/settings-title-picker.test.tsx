@@ -102,7 +102,7 @@ function prime(overrides: Record<string, unknown> = {}) {
         if (a.titleThinking !== undefined) cfg.title_thinking = a.titleThinking || null;
         return null;
       case 'session_dir_effective':
-        return { dir: '/tmp/sessions', isCustom: false, raw: null };
+        return { dir: '/tmp/sessions', isCustom: false, raw: null, source: 'default' };
       case 'title_model_options':
         return { models: MODELS, note: null, piBin: '/usr/local/bin/pi', elapsedMs: 612 };
       default:

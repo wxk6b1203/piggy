@@ -23,18 +23,22 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// panic hook（docs/09 M4）：崩溃转储到 ~/.piggy/logs/（Rust panic hook → 本地日志），
 /// 再交回默认 hook（保留原 stderr 行为）。
+///
+/// 主目录解析走 `config::paths`：老代码只看 `HOME`，Windows 上拿不到 → panic 日志
+/// 一个都不写（静默）。
 fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(dir) = std::env::var_os("HOME").map(PathBuf::from).map(|h| h.join(".piggy/logs")) {
-            let _ = std::fs::create_dir_all(&dir);
-            let ts = now_ms();
-            let msg = format!(
-                "panic @{ts}: {info}\nlocation: {:?}\n---\n",
-                info.location()
-            );
-            let _ = std::fs::write(dir.join(format!("panic-{ts}.log")), msg);
-        }
+        let dir = crate::config::paths::home_dir_or_temp()
+            .join(".piggy")
+            .join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        let ts = now_ms();
+        let msg = format!(
+            "panic @{ts}: {info}\nlocation: {:?}\n---\n",
+            info.location()
+        );
+        let _ = std::fs::write(dir.join(format!("panic-{ts}.log")), msg);
         default(info);
     }));
 }
@@ -55,7 +59,8 @@ fn builtin_pi_path() -> Option<PathBuf> {
     } else {
         exe.parent()?.to_path_buf()
     }
-    .join("resources/pi");
+    .join("resources")
+    .join("pi");
     Some(if cfg!(windows) { base.join("pi.exe") } else { base.join("pi") })
 }
 
@@ -176,9 +181,9 @@ pub fn run() {
                 let resource_dir = app4.path().resource_dir().ok();
                 if let Some(rd) = resource_dir.as_ref() {
                     let builtin = if cfg!(windows) {
-                        rd.join("resources/pi/pi.exe")
+                        rd.join("resources").join("pi").join("pi.exe")
                     } else {
-                        rd.join("resources/pi/pi")
+                        rd.join("resources").join("pi").join("pi")
                     };
                     let mut reg = state.registry.lock().await;
                     reg.builtin = Some(builtin);

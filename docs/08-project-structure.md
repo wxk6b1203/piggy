@@ -18,12 +18,13 @@ piggy/
 │     │  │  ├─ commands/          # IPC 薄层（pi_*.rs session_*.rs config_*.rs fleet_*.rs app_*.rs）
 │     │  │  ├─ pi/                # discovery process codec client protocol coalesce
 │     │  │  ├─ sessions/          # registry list tree
-│     │  │  ├─ config/            # auth models settings app（03 §2.10）
+│     │  │  ├─ config/            # paths auth models settings app（03 §2.10/§2.18）
 │     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
 │     │  │  ├─ plugin/            # 插件盘点/安装升级/启停/路径登记（03 §2.15）
 │     │  │  ├─ fleet/
 │     │  │  ├─ legal.rs           # 许可与第三方声明 + 系统菜单（03 §2.17）
 │     │  │  └─ events.rs  shortcuts.rs
+│     │  ├─ tests/path_separators.rs # join 字面量不许带分隔符（03 §2.18）
 │     │  ├─ tests/contract.rs     # 02 §9 契约测试（需 PATH 上的 pi）
 │     │  ├─ tests/menu_smoke.rs   # 系统菜单结构（harness=false：muda 只能在主线程建菜单）
 │     │  ├─ capabilities/         # Tauri 权限清单（§6）
@@ -95,7 +96,8 @@ piggy/
 | Rust 单元 | codec（分帧边界）、coalesce（合帧语义）、config 原子写、registry 状态机 | `cargo test` |
 | 协议对拍 | Rust 序列化 ↔ TS zod 对同一 fixture 集双向解析 | fixture JSON 入库，两侧测试读取（CI 作业 `contract-matrix`） |
 | 契约测试 | 02 §9 C1–C11 对真实 pi 二进制 | `tests/contract.rs`（本地/CI 装 pi；CI 环境 `npm i -g @earendil-works/pi-coding-agent`） |
-| 前端单测 | store reducer（commit 批量应用）、视图模型转换、键位解析 | vitest |
+| 静态纪律 | 跨平台路径不许在 `join` 字面量里写分隔符（macOS 上测不出，只能扫源码） | `tests/path_separators.rs` |
+| 前端单测 | store reducer（commit 批量应用）、视图模型转换、键位解析、Windows 路径取末段 | vitest |
 | 组件/集成 | 转录虚拟化 + 实时块转正、Composer 流式态、palette 导航 | vitest + @testing-library/react（jsdom 下无 Tauri，mock `lib/ipc`） |
 | E2E | 关键旅程（00 §4 的 1/2/3） | tauri-driver（WebDriver）+ WebdriverIO；性能场景走 §6 |
 | 性能 | 05 §6 场景库 S1–S6 | nightly 工作流 + 预算断言 |

@@ -961,7 +961,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_machine_lists_models_from_pi() {
-        let root = crate::plugin::inventory::agent_dir();
+        let root = crate::config::paths::agent_dir();
         let pi = crate::pi::discovery::discover(
             crate::pi::discovery::PiSource::System,
             None,

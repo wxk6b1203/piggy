@@ -42,6 +42,23 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     scan_dir(&pi_files::sessions_root())
 }
 
+/// 收集一个 `.jsonl` 会话文件（非 jsonl / 解析失败静默跳过）。
+fn push_session(out: &mut Vec<SessionMeta>, path: &Path) {
+    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return;
+    }
+    if let Some(meta) = parse_session_file(path) {
+        out.push(meta);
+    }
+}
+
+/// 扫描会话根目录，两种布局都要认（docs/03 §2.18）：
+///
+/// - **默认布局**：`<root>/--<cwd 编码>--/<时间戳>_<uuid>.jsonl`（pi 按 cwd 分子目录）
+/// - **自定义 sessionDir**：pi 把该目录当**叶子**用，所有项目的会话**平铺**在根下
+///   （`SessionManager.create` 直接 `join(sessionDir, 文件名)`，见 `session-manager.ts:1752-1756`）
+///
+/// 老代码只认子目录，于是"设了自定义 sessionDir 的机器上一片空白"。
 pub fn scan_dir(root: &Path) -> Vec<SessionMeta> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(root) else {
@@ -49,20 +66,15 @@ pub fn scan_dir(root: &Path) -> Vec<SessionMeta> {
     };
     for proj in rd.flatten() {
         let proj_path = proj.path();
-        if !proj_path.is_dir() {
-            continue;
-        }
-        let Ok(files) = std::fs::read_dir(&proj_path) else {
-            continue;
-        };
-        for f in files.flatten() {
-            let path = f.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        if proj_path.is_dir() {
+            let Ok(files) = std::fs::read_dir(&proj_path) else {
                 continue;
+            };
+            for f in files.flatten() {
+                push_session(&mut out, &f.path());
             }
-            if let Some(meta) = parse_session_file(&path) {
-                out.push(meta);
-            }
+        } else {
+            push_session(&mut out, &proj_path);
         }
     }
     // 按**创建时间**降序。用 mtime 排会随写入变化，顺序看起来经常变（用户报过）。
@@ -194,14 +206,25 @@ pub fn trash_session(path: &str) -> Result<(), String> {
 /// session header 并置 flushed，此后所有条目（含 `--name` 命名）直接追加落盘——
 /// 绕过"首个 LLM 回合完成才写盘"的懒落盘，空白会话因此不会再丢失。
 ///
-/// 路径遵循 pi 自身约定，保证与扫描器/终端 pi 双向兼容（G7）：
-/// `<sessionRoot>/--<cwd 编码>--/<ISO时间戳>_<uuid>.jsonl`
+/// 落点必须与 pi 自己的布局规则一致，否则**终端 pi 的会话选择器看不见这些会话**（G7）：
+///
+/// | 生效会话根 | pi 的落点 | 依据 |
+/// |---|---|---|
+/// | 默认（`<agent>/sessions`） | `<root>/--<cwd 编码>--/<ts>_<id>.jsonl` | `getDefaultSessionDirPath`（`session-manager.ts:592-593`） |
+/// | 自定义（`sessionDir` / 环境变量） | `<root>/<ts>_<id>.jsonl`（**平铺**） | 自定义值被当叶子用（`SessionManager.create` `:1752-1756`），列举走 `listSessionsFromDir`（`:941-953`，只读该目录下的 `*.jsonl`，不下钻） |
+///
+/// 真机踩到过：本机 `settings.json` 的 `sessionDir` 指到 `…/tmp/session`，
+/// Piggy 老代码仍往里建 `--Users-wxk--/` 子目录 → 那一层里的会话在终端 pi 里"不存在"。
 pub fn precreate_session_file(cwd: &Path) -> Result<PathBuf, String> {
-    precreate_session_file_in(&pi_files::sessions_root(), cwd)
+    precreate_session_file_with(pi_files::sessions_root_spec(), cwd)
 }
 
-/// 同上，root 由调用方注入（测试友好）。
-pub fn precreate_session_file_in(root: &Path, cwd: &Path) -> Result<PathBuf, String> {
+/// 落点决策（纯函数，不碰文件系统）：默认布局按 cwd 编码建子目录，自定义布局平铺。
+fn precreate_dir(spec: &(PathBuf, bool), cwd: &Path) -> PathBuf {
+    let (root, flat) = spec;
+    if *flat {
+        return root.clone();
+    }
     // pi getDefaultSessionDirPath：去掉一个前导 / 或 \，再把 / \ : 全替换为 -，两侧包 --
     let s = cwd.to_string_lossy();
     let stripped = s
@@ -209,7 +232,17 @@ pub fn precreate_session_file_in(root: &Path, cwd: &Path) -> Result<PathBuf, Str
         .or_else(|| s.strip_prefix('\\'))
         .unwrap_or(&s);
     let safe = stripped.replace(['/', '\\', ':'], "-");
-    let dir = root.join(format!("--{safe}--"));
+    root.join(format!("--{safe}--"))
+}
+
+/// 同上，root + 布局由调用方注入（测试友好）。
+pub fn precreate_session_file_in(root: &Path, cwd: &Path, flat: bool) -> Result<PathBuf, String> {
+    precreate_session_file_with((root.to_path_buf(), flat), cwd)
+}
+
+/// 真正干活的那个：`(会话根, 是否自定义布局)` + cwd。
+fn precreate_session_file_with(spec: (PathBuf, bool), cwd: &Path) -> Result<PathBuf, String> {
+    let dir = precreate_dir(&spec, cwd);
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建会话目录失败: {e}"))?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -456,7 +489,7 @@ mod tests {
     fn precreate_follows_pi_dir_and_file_naming() {
         let root = std::env::temp_dir().join(format!("piggy-precreate-{}", std::process::id()));
         let cwd = Path::new("/Users/wxk/My:Proj");
-        let p = precreate_session_file_in(&root, cwd).expect("precreate");
+        let p = precreate_session_file_in(&root, cwd, false).expect("precreate");
         // 目录编码与 pi getDefaultSessionDirPath 一致
         assert_eq!(
             p.parent().unwrap(),
@@ -471,9 +504,49 @@ mod tests {
         assert_eq!(id.matches('-').count(), 4);
         // 空文件已创建；再次创建不覆盖（O_EXCL，生成新名）
         assert!(p.metadata().unwrap().len() == 0);
-        let p2 = precreate_session_file_in(&root, cwd).expect("precreate 2");
+        let p2 = precreate_session_file_in(&root, cwd, false).expect("precreate 2");
         assert_ne!(p, p2);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **自定义** `sessionDir` 是叶子目录：pi 自己的列举（`listSessionsFromDir`）只读该目录下的
+    /// `*.jsonl`，不下钻。所以预创建必须**平铺**，否则终端 pi 看不见这些会话（G7 双向兼容）。
+    /// 真机背景：本机 `settings.json` 的 `sessionDir` 指到 `…/tmp/session`，
+    /// 那一层同时有 pi 写的平铺文件与老代码建的 `--Users-wxk--/` 子目录。
+    #[test]
+    fn precreate_is_flat_for_custom_session_dir() {
+        let root = std::env::temp_dir().join(format!("piggy-precreate-flat-{}", std::process::id()));
+        let cwd = Path::new("/Users/wxk/proj");
+        let p = precreate_session_file_in(&root, cwd, true).expect("precreate");
+        assert_eq!(p.parent().unwrap(), root, "自定义会话根下必须平铺，不能再套 --cwd-- 子目录");
+        assert!(p.is_file());
+        // 平铺文件必须能被扫描器认出来（读写两条路对同一布局）。
+        // 注意：刚预创建的是**空文件**，pi 还没写 header（懒落盘），所以此刻扫不到——
+        // 这里补一行 header 模拟 pi 落盘后的样子，再扫。
+        assert!(scan_dir(&root).is_empty(), "空文件不该被当成会话列出");
+        std::fs::write(&p, "{\"type\":\"session\",\"version\":3,\"id\":\"flat\",\"cwd\":\"/Users/wxk/proj\"}\n")
+            .unwrap();
+        let list = scan_dir(&root);
+        assert_eq!(list.len(), 1, "平铺布局的会话没被扫到");
+        assert_eq!(list[0].session_id.as_deref(), Some("flat"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 生产入口必须用**生效会话根 + 它的布局规则**（两边漂移 = 又写回子目录）。
+    ///
+    /// 这里只算路径、不落盘：真机上 `sessions_root_spec()` 指向用户真实的会话目录，
+    /// 单测往里写文件就是污染（一开始那版就是，红检失败后还留下了探针目录）。
+    #[test]
+    fn precreate_wiring_uses_the_effective_root_and_its_layout() {
+        let spec = pi_files::sessions_root_spec();
+        let cwd = Path::new("/tmp/piggy-wiring-probe");
+        let dir = precreate_dir(&spec, cwd);
+        if spec.1 {
+            assert_eq!(dir, spec.0, "自定义根下写成了子目录");
+            assert!(!dir.ends_with("--tmp-piggy-wiring-probe--"));
+        } else {
+            assert_eq!(dir, spec.0.join("--tmp-piggy-wiring-probe--"), "默认根下应按 cwd 编码建子目录");
+        }
     }
 }
 
@@ -561,8 +634,7 @@ mod created_time_tests {
 
     /// 扫描顺序：按创建时间降序，**不受 mtime 影响**。
     #[test]
-    fn scan_sorts_by_created_not_mtime() {
-        let dir = std::env::temp_dir().join("piggy-created-ms-sort");
+    fn scan_sorts_by_created_not_mtime() {        let dir = std::env::temp_dir().join("piggy-created-ms-sort");
         let proj = dir.join("--proj--");
         std::fs::create_dir_all(&proj).unwrap();
         // 先写"创建晚"的，再写"创建早"的 —— 这样创建早的那个 mtime 反而更新，
@@ -582,6 +654,36 @@ mod created_time_tests {
             list[1].mtime_ms > list[0].mtime_ms,
             "本用例前提：创建早的 old 反而 mtime 更晚（否则测不出区别）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 自定义 sessionDir 的机器上，pi 把会话**平铺**在根目录下（不再有 `--cwd--` 子目录）。
+    /// 老代码只扫子目录 → 这类机器侧栏一片空白（docs/03 §2.18）。
+    #[test]
+    fn scan_accepts_flat_custom_session_dir() {
+        let dir = std::env::temp_dir().join("piggy-scan-flat-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("--proj--")).unwrap();
+        // 默认布局：子目录里的会话
+        std::fs::write(
+            dir.join("--proj--").join("2023-01-01T00-00-00-000Z_nested.jsonl"),
+            "{\"type\":\"session\",\"version\":3,\"id\":\"nested\",\"cwd\":\"/tmp/p\"}\n",
+        )
+        .unwrap();
+        // 自定义布局：根目录下的扁平会话
+        std::fs::write(
+            dir.join("2024-01-01T00-00-00-000Z_flat.jsonl"),
+            "{\"type\":\"session\",\"version\":3,\"id\":\"flat\",\"cwd\":\"/tmp/q\"}\n",
+        )
+        .unwrap();
+        // 非 jsonl 的杂项文件不该被当成会话
+        std::fs::write(dir.join("notes.md"), "x").unwrap();
+
+        let list = scan_dir(&dir);
+        let ids: Vec<_> = list.iter().filter_map(|m| m.session_id.clone()).collect();
+        assert!(ids.contains(&"flat".to_string()), "扁平布局的会话漏了: {ids:?}");
+        assert!(ids.contains(&"nested".to_string()), "子目录布局的会话漏了: {ids:?}");
+        assert_eq!(ids.len(), 2, "只该扫到 2 个会话: {ids:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

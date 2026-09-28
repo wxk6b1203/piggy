@@ -530,11 +530,57 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     这也是本机验证不了的点：`rustup target add x86_64-pc-windows-msvc` 在本机镜像上 404
     （Tsinghua 镜像没有该组件），所以 **Windows 的编译与运行只有用户那台机器能确认**。
 
+51. **`HOME` 在 Windows 上默认不存在——凡是解析主目录的地方都必须有平台兜底。**
+    Windows debug run 的第二批报障：默认地址显示成 `.pi/agent\sessions`，新建会话报
+    「无法确定 cwd」。根因一个：`std::env::var_os("HOME")` → `None` →
+    `unwrap_or_default()` → **空路径** → `join(".pi/agent")` 退化成**相对路径**。
+    同一个根因在四处冒头（会话目录 / 新建 cwd / `~/.piggy` 配置与 panic 日志 / 文件预览沙箱），
+    所以修法不是打四个补丁，而是收成一个模块 `config/paths.rs`：
+    主目录按平台给顺序（Windows `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH` → `HOME`；
+    其它 `HOME` → `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH`），空串当未设置，
+    agent 目录认 `PI_CODING_AGENT_DIR`（同 pi 的 `getAgentDir()`）。
+    三条教训：
+    ① **空路径是"合法的"前缀**：`Path::starts_with("")` 恒为真，于是预览沙箱在 Windows 上
+       等于不存在（任意文件可读）。凡是"拿 home 做前缀校验"的地方，空值必须**直接拒绝**；
+    ② 这类 bug 在本机（macOS）**测不出来**——它是"环境变量缺失"的 bug，不是"平台代码"的 bug。
+       所以值不值得写"抹掉 `HOME` 起子进程跑真正生产入口"的端到端探针：值得，
+       红检时它原样打印 `probe sessions=.pi/agent/sessions`，就是用户看到的那一幕；
+    ③ 主目录这种"到处都要用"的事实只允许有一个出口。老代码在 12 处各写各的，
+       修一处不修一处，症状就会以完全不同的面目出现（cwd 报错 vs 路径显示错）。
+52. **跨平台路径只准用 `Path::join` 拼，字面量里不许写分隔符。**
+    `.pi/agent\sessions` 这种"半反斜杠半正斜杠"就是这么来的。这条纪律**只能在源码层面守**：
+    `PathBuf::from("C:\\Users\\x").join(".pi/agent")` 与 `.join(".pi").join("agent")`
+    在 macOS/Linux 上产生**完全相同**的字符串（`/` 是分隔符，`\` 只是普通字符），
+    单元测试永远分不出对错——所以加了 `tests/path_separators.rs` 静态扫描
+    （豁免注释、`join("/")` 归一化、含空格的显示分隔符、`#[cfg(test)]` 之后的夹具）。
+    守卫自身也带自检（喂进原始 bug 那行必须报错），免得扫描器悄悄失效。
+53. **界面里的路径来自 Rust，是平台原生的——`split('/')` 在 Windows 上等于不切。**
+    同一个报障的另一半：项目分组标题 / 标签页标题 / 右栏根名会显示**整条路径**，
+    Monaco 认不出 `Makefile`（`lastIndexOf('/')` 返回 -1，`FILE_LANG` 永远命中不了）。
+    前端统一走 `lib/paths.ts` 的 `baseName` / `splitPath`（`/` 与 `\` 都算分隔符），
+    测试用 Windows / POSIX / 混合分隔符 / UNC / 末尾分隔符五组输入锁住。
+
+54. **自定义 `sessionDir` 是"叶子"目录——pi 的布局规则跟着它变，读写两边都要跟。**
+    修 51/52 的过程中顺手在**本机**核了一遍生效会话根：`settings.json` 的 `sessionDir` 指到
+    `~/Documents/Project/tmp/session`，那里根下 88 个平铺 `.jsonl`（pi 自己写的）
+    外加 `--Users-wxk--/` 里 39 个（Piggy 预创建写的）。原因是 pi 的两套规则：
+    **默认根**按 cwd 分子目录（`--<cwd 编码>--`），**自定义根**当叶子用、平铺
+    （列举走 `listSessionsFromDir`，`session-manager.ts:941-953` **只读该目录下的 `*.jsonl`**）。
+    Piggy 老代码读只认子目录、写永远建子目录，于是"侧栏看不见自己的会话"且
+    "终端 pi 的会话选择器也看不见"——两个方向同时坏，而界面上只表现为"少了一堆会话"。
+    修法是把决策抽成纯函数 `precreate_dir(&(root, is_custom), cwd)`，与扫描器共用同一份
+    `sessions_root_spec()`。教训：**"落点"和"列举"必须是同一个函数说了算**，
+    否则一个平台/配置分支上就会悄悄分叉（这次是"自定义目录"这一支，恰好是用户在用的那支）。
+    另一条：单测不要往真实的生效会话根里写文件——第一版接线测试就是这么写的，
+    红检失败后留了一个探针目录；改成纯函数断言后既没副作用又照样能红。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
 |---|---|
 | **系统菜单在 Windows/Linux 上未验证** | macOS 已实测（`tests/menu_smoke.rs` 锁结构：App 子菜单第一项是「关于」、第二项是我们的条目、Edit 子菜单仍是 7 项）。Windows/Linux 走 `append_to_help`（`Menu::default` 本机只在 macOS 自动安装，我们显式装），但**没有真机跑过**——那两平台会因此多出一条菜单栏。真机确认前不要声称可用 |
+| **自定义会话目录的布局改动只在 macOS 上验过** | 本机 `sessionDir` 恰好是自定义的（`…/tmp/session`），所以「平铺写入」这条在真机上验到了（红检时如实写进 `--tmp-piggy-wiring-probe--/`）。但 Windows 上 `sessionDir` 若指向 `D:\sessions`，`--cwd--` 编码（`C--Users-x--`）与平铺两种落点都没在真机跑过 |
+| **Windows 的路径解析只有静态与模拟证据** | `config/paths.rs` 的四条环境形状、`~` 展开、`is_under`、会话根优先级都有测试，端到端探针也在子进程里抹掉 `HOME` 跑过；但**真机 Windows 上的渲染**（`C:\Users\…\sessions` 全反斜杠）只有 `#[cfg(windows)]` 断言在用户机器上生效。这次修完需要用户在 Windows 上复验：新建会话不再报「无法确定 cwd」、设置页「当前生效」显示带盘符的绝对路径 |
 | 会话**没有“加载更早”分页** | DSH 的长会话会用分页折叠早期历史（刻度上有“未加载”锚点，点了先翻页）。Piggy 目前**一次性把整段会话读进 store** 并全部虚拟化渲染，所以预览滚动条天然覆盖整段历史，但也意味着几千轮的会话会在打开时一次性拉全部 entries（渲染是虚拟化的，代价在 IPC 与内存）。要做分页的话，`RailItem` 要加 `anchor: loaded / unloaded`，跳未加载的刻度先翻页 |
 | 预览滚动条的**窄窗口行为** | DSH 在转录容器 < 900px 时直接**隐藏**滚动条（`@container`）。Piggy 没做这条：转录因为侧栏 + 右栏通常只有 530–700px，照搬会让功能在多数窗口下“看起来是坏的”。现在由用户的开关决定，代价是窄窗口下两侧各 44px 留白会挤压正文。要改成自适应得先定“多窄算窄”，而 Piggy 的转录宽度与 DSH 不是一个量级 |
 | 预览滚动条只在 **Chrome** 里量过 | 刻度几何、跟随、预览框、居中都在 Playwright/Chromium 下量的（门禁）。WebKit（Tauri 在 macOS 用的引擎）与 Windows/Linux **未跑过**——`mask-image` 渐隐在 WebKit 的差异未验证 |

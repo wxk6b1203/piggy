@@ -152,6 +152,8 @@ Piggy 的转录视图默认走 messages；"历史考古"视图与分支树走 en
 
 会话文件位于 `~/.pi/agent/sessions/--<path>--/<timestamp>_<session-id>.jsonl`（`<path>` 为 cwd 路径分隔符替换为 `-`；版本 v3 树结构；首行 SessionHeader）。删除 = 删文件（pi 有 trash 机制，Piggy 优先移入系统回收站/`.trash` 兜底）。
 
+**根目录可以被改**（`main.ts:675-679`）：`--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `settings.json` 的 `sessionDir` > 默认 `<agent>/sessions`；agent 目录本身又被 `PI_CODING_AGENT_DIR` 覆盖。注意自定义 `sessionDir` 在 pi 那边是**叶子**目录——所有项目的会话平铺在里面，不再有 `--<path>--` 那一层。Piggy 侧解析口径与两种布局的扫描见 03 §2.18 / §2.8。
+
 **懒落盘【M0 契约实测】**：`get_state.sessionFile` 在 spawn 后即分配路径，但文件**首个 LLM 回合完成才写盘**；bash 直执行等仅追加内存条目的操作不触发落盘。依赖文件存在性的功能（列表扫描 §6.2、互斥 §6.3、崩溃恢复 §7.5）必须容忍"已分配未落盘"中间态。
 
 **新会话预落盘【M1 实测】**：pi 对 `--session <空文件>` 会立即写入 SessionHeader 并置 flushed（`_setSessionFile` 的空文件分支），此后所有条目直接追加。Piggy 新建会话（`tab_create` 无 session_path）据此先按 pi 命名约定预创建空文件再打开，空白会话从创建起即持久化、重启可见；预创建失败时回退懒落盘。终端 pi 自建的会话仍是懒落盘，扫描器保留对"已分配未落盘"的容忍。

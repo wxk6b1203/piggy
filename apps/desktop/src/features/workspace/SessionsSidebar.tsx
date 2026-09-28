@@ -5,6 +5,7 @@ import { windowEvents } from '@/lib/windowEvents';
 import { Modal, Input, Button } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { pickDirectory } from '@/lib/picker';
+import { baseName } from '@/lib/paths';
 import { createTabGuarded, findTabBySession } from '@/lib/tabCreate';
 import { createTab, useTabs, type TabSnapshot } from '@/stores/tabs';
 import {
@@ -134,7 +135,7 @@ export function SessionsSidebar() {
   const newSession = async (cwd?: string) => {
     try {
       const snap = await createTabGuarded({ cwd, name: '新会话' });
-      const label = cwd ? `${cwd.split('/').filter(Boolean).pop()} · 新会话` : '新会话';
+      const label = cwd ? `${baseName(cwd)} · 新会话` : '新会话';
       await openSessionTab(snap, label);
       void load(); // 新目录/新会话立即上侧栏（不依赖 watcher 时序）
     } catch (e) {

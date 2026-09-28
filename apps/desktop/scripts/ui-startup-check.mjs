@@ -1308,7 +1308,14 @@ for (const width of [1280, 1180, 900]) {
     let lines = 1;
     for (let i = 1; i < cys.length; i += 1) if (cys[i] - cys[i - 1] > 20) lines += 1;
     const editor = document.querySelector('.pg-settings-editor');
+    // 会话目录那一行（docs/03 §2.18）：Windows 事故里"默认地址"是这条文案暴露出来的，
+    // 所以门禁要求它**必须写着一条绝对路径**，别又是一个 `.pi/agent\sessions`。
+    const dirRow = [...document.querySelectorAll('.pg-settings-row')].find((r) =>
+      r.querySelector('input[placeholder*=".pi/agent/sessions"]'),
+    );
+    const dirText = (dirRow?.textContent ?? '').replace(/\s+/g, ' ').trim();
     return {
+      sessionDir: { text: dirText, absolute: /(^|[：:])\s*(\/|[A-Za-z]:\\|\\\\)/.test(dirText) },
       editorW: Math.round(editor?.getBoundingClientRect().width ?? 0),
       editorRight: Math.round(editor?.getBoundingClientRect().right ?? 0),
       items,
@@ -2357,6 +2364,14 @@ else {
   if (maxRight > (user.editorRight ?? 0)) {
     bad.push(`标题设置：1180 下控件越过了内容区右缘（${maxRight} > ${user.editorRight}）★`);
   }
+  // 会话目录：「当前生效」必须写着**绝对**路径（Windows 上曾经退化成相对路径）
+  const dir = wide.sessionDir ?? {};
+  if (!dir.text.includes('当前生效')) {
+    bad.push('会话目录：设置页没显示「当前生效」的那条路径（Windows 事故就是靠它暴露的）★');
+  } else if (!dir.absolute) {
+    bad.push(`会话目录：「当前生效」不是绝对路径：${dir.text} ★`);
+  }
+
   // ③ 窄窗口（900）：允许换行，但**不许溢出、不许压扁**
   const narrow = at(900);
   if (narrow.rowOverflow > 0 || narrow.docOverflow > 0) {

@@ -1,6 +1,6 @@
 //! IPC 命令层（docs/03 §1 原则 2）：参数校验 + 转发，不含业务逻辑。
 
-use crate::config::{app, pi_files};
+use crate::config::{app, paths, pi_files};
 use crate::events::{EventSink, TauriSink};
 use crate::pi::discovery::{discover, PiSource};
 use crate::pi::permission::PermissionMode;
@@ -25,9 +25,12 @@ pub struct AppState {
 
 /// watcher 监听根：agent 目录（含 settings.json）+ 生效会话根。
 /// 自定义 sessionDir 在 agent 目录之外时必须单独监听，否则新会话不刷新侧栏。
+///
+/// agent 目录直接取 [`paths::agent_dir`]：老代码在这里自己拼 HOME + `.pi/agent`，
+/// Windows 上（不设 HOME）会拼出**相对**的 `.pi/agent` → 监听了一个不存在的目录，
+/// 侧栏再也不自动刷新。
 pub fn watcher_roots() -> Vec<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let agent_root = PathBuf::from(home).join(".pi/agent");
+    let agent_root = paths::agent_dir();
     let sessions = pi_files::sessions_root();
     if sessions.starts_with(&agent_root) {
         vec![agent_root]
@@ -170,14 +173,12 @@ pub async fn tab_create(
     name: Option<String>,
     permission: Option<String>,
 ) -> Result<TabSnapshot, String> {
-    // 空串/纯空白 = 未提供（回退 HOME）；`~` 前缀展开（用户手输路径的常态）
-    let cwd = cwd
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(|s| pi_files::expand_home(&s).to_string_lossy().into_owned())
-        .map(PathBuf::from)
-        .or_else(home_dir)
-        .ok_or_else(|| "无法确定 cwd".to_string())?;
+    // 空串/纯空白 = 未提供（回退用户主目录）；`~` 前缀展开（用户手输路径的常态）
+    let cwd = tab_cwd(cwd.as_deref()).ok_or_else(|| {
+        "无法确定 cwd：Home 目录解析失败（HOME / USERPROFILE / HOMEDRIVE+HOMEPATH 均为空），\
+         请在新建会话时显式填写项目目录"
+            .to_string()
+    })?;
     if !cwd.is_dir() {
         return Err(format!(
             "SESSION_CWD_MISSING: 项目目录不存在: {}（请先创建该目录）",
@@ -662,8 +663,21 @@ pub async fn pi_stderr_tail(
     serde_json::to_value(tail).map_err(|e| e.to_string())
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// `tab_create` 的 cwd 解析（抽成函数是为了可测：这是用户报「无法确定 cwd」的那条路）。
+///
+/// - 空/纯空白 = 未提供 → 用户主目录（**不是**只看 `HOME`：Windows 默认不设 `HOME`，
+///   老代码在这里直接失败，见 [`paths`] 的模块注释）
+/// - `~` / `~/x`（Windows 上还有 `~\x`）展开
+fn tab_cwd(input: Option<&str>) -> Option<PathBuf> {
+    tab_cwd_with(input, paths::home_dir(), cfg!(windows))
+}
+
+/// 主目录与平台由调用方注入（纯函数，便于在任意平台上验证 Windows 形状）。
+fn tab_cwd_with(input: Option<&str>, home: Option<PathBuf>, windows: bool) -> Option<PathBuf> {
+    match input.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(paths::expand_home_in(s, home.as_deref(), windows)),
+        None => home,
+    }
 }
 
 /* ---------------- M1：会话列表 / 布局 / thinking / tree / fork / commands ---------------- */
@@ -706,9 +720,9 @@ async fn set_session_name_via_worker(
     path: String,
     name: String,
 ) -> Result<(), String> {
-    let cwd = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/".into()),
-    );
+    // 这个临时 worker 只为调一次 set_session_name：cwd 用主目录（让 pi 读到全局配置），
+    // 主目录拿不到时退临时目录——老代码退 `"/"`，在 Windows 上是"当前盘根"，语义全错。
+    let cwd = paths::home_dir_or_temp();
     let worker = {
         let mut reg = state.registry.lock().await;
         let pi_bin = reg.resolve_bin()?;
@@ -778,11 +792,10 @@ pub async fn title_model_options(
         let mut reg = state.registry.lock().await;
         reg.resolve_bin()?
     };
-    // cwd 用 HOME：pi 会顺带读 `<cwd>/.pi/…` 的项目级配置，而"列出模型"这件事
+    // cwd 用主目录：pi 会顺带读 `<cwd>/.pi/…` 的项目级配置，而"列出模型"这件事
     // 属于全局设置页，不该跟着某个项目走（项目级模型仍可手动填，见 docs/15 缺口）。
-    let cwd = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    // 老代码这里退 `"/"`，Windows 上是"当前盘根"——现在退临时目录，至少是个真目录。
+    let cwd = paths::home_dir_or_temp();
     let opts = crate::sessions::title::list_models(&pi_bin, &cwd).await?;
     serde_json::to_value(&opts).map_err(|e| e.to_string())
 }
@@ -818,12 +831,13 @@ pub async fn session_title_generate(
     // model_change）。会话里也没有（新建还没发过消息）→ 都不传，让 pi 用它自己的默认。
     let (provider, model_id) =
         crate::sessions::title::pick_model(cfg.title_model.as_deref(), &source)?;
+    // 会话自己的目录优先（跟着会话的项目配置走）；目录没了或没记录 → 主目录。
     let cwd = source
         .cwd
         .as_deref()
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_dir())
-        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+        .unwrap_or_else(paths::home_dir_or_temp);
 
     let pi_bin = {
         let mut reg = state.registry.lock().await;
@@ -994,12 +1008,16 @@ pub async fn pi_export_html(
     worker.export_html(output_path.as_deref()).await
 }
 
-/// 文件预览读取（M1 限定 $HOME 子树；docs/08 §6 scope 收敛）。
+/// 文件预览读取（M1 限定用户目录子树；docs/08 §6 scope 收敛）。
+///
+/// 主目录拿不到时**必须拒绝**：老代码用 `starts_with("")` 判越界，而空路径是
+/// 任意路径的前缀（`Path::new("/etc/passwd").starts_with("") == true`），
+/// Windows 上（不设 HOME）这条沙箱等于不存在。
 #[tauri::command]
 pub async fn fs_preview_read(path: String) -> Result<Value, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = paths::home_dir().ok_or("无法确定用户目录（HOME / USERPROFILE 均为空），预览已禁用")?;
     let pb = std::path::PathBuf::from(&path);
-    if !pb.starts_with(&home) {
+    if !paths::is_under(&home, &pb) {
         return Err("路径越界（仅限用户目录）".into());
     }
     let md = std::fs::metadata(&pb).map_err(|e| e.to_string())?;
@@ -1462,7 +1480,11 @@ pub async fn pty_open(
     cwd: Option<String>,
 ) -> Result<Value, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let cwd = cwd.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+    let cwd = cwd
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| paths::expand_home(&s).to_string_lossy().into_owned())
+        .unwrap_or_else(|| paths::home_dir_or_temp().to_string_lossy().into_owned());
     let handle = crate::pty::open_pty(&state.pty, &app, &id, &cwd, 24, 80)?;
     Ok(serde_json::json!({ "id": handle.id, "rows": handle.rows, "cols": handle.cols }))
 }
@@ -1485,4 +1507,69 @@ pub async fn pty_resize(
 #[tauri::command]
 pub async fn pty_close(state: State<'_, AppState>, id: String) -> Result<(), String> {
     crate::pty::close_pty(&state.pty, &id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /* ---------------- tab_create 的 cwd 解析 ---------------- */
+
+    /// Windows 形状：只设了 USERPROFILE（没有 HOME）时也必须解析出主目录。
+    /// 这正是用户报「无法确定 cwd」的场景——老代码只看 HOME，于是返回 None。
+    #[test]
+    fn tab_cwd_uses_userprofile_home_on_windows() {
+        let windows_home = PathBuf::from(r"C:\Users\x");
+        assert_eq!(
+            tab_cwd_with(None, Some(windows_home.clone()), true),
+            Some(windows_home.clone())
+        );
+        // 显式路径照旧
+        assert_eq!(
+            tab_cwd_with(Some(r"D:\proj"), Some(windows_home.clone()), true),
+            Some(PathBuf::from(r"D:\proj"))
+        );
+        // 空白 = 未提供
+        assert_eq!(
+            tab_cwd_with(Some("   "), Some(windows_home.clone()), true),
+            Some(windows_home.clone())
+        );
+        // Windows 上 `~\proj` 也要展开（POSIX 上它是普通文件名）
+        assert_eq!(
+            tab_cwd_with(Some(r"~\proj"), Some(windows_home), true),
+            Some(PathBuf::from(r"C:\Users\x").join("proj"))
+        );
+    }
+
+    #[test]
+    fn tab_cwd_expands_tilde_and_keeps_absolute() {
+        let home = PathBuf::from("/h/u");
+        assert_eq!(tab_cwd_with(Some("~"), Some(home.clone()), false), Some(home.clone()));
+        assert_eq!(
+            tab_cwd_with(Some("~/proj"), Some(home.clone()), false),
+            Some(home.join("proj"))
+        );
+        assert_eq!(
+            tab_cwd_with(Some("/abs/p"), Some(home), false),
+            Some(PathBuf::from("/abs/p"))
+        );
+    }
+
+    /// 主目录与 cwd 都拿不到时返回 None（调用方给出可操作的报错）。
+    #[test]
+    fn tab_cwd_none_without_home() {
+        assert_eq!(tab_cwd_with(None, None, true), None);
+        // 但用户显式给了路径就还能干活
+        assert_eq!(
+            tab_cwd_with(Some("/p"), None, false),
+            Some(PathBuf::from("/p"))
+        );
+    }
+
+    /// 接线：生产入口必须和 `paths::home_dir()` 同源（两边漂移 = 又回到 HOME-only）。
+    #[test]
+    fn tab_cwd_wired_to_shared_home_resolver() {
+        assert_eq!(tab_cwd(None), paths::home_dir());
+        assert_eq!(tab_cwd(Some("")), paths::home_dir());
+    }
 }

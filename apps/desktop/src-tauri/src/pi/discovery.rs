@@ -287,8 +287,9 @@ impl WellKnownEnv {
     fn from_process() -> Self {
         let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
         Self {
-            // Windows 一般不设 HOME（Git Bash 才设），所以 USERPROFILE 是主力
-            home: var("HOME").or_else(|| var("USERPROFILE")),
+            // 主目录口径与 pi 目录、Piggy 配置目录统一（config::paths）：
+            // Windows 上 USERPROFILE 优先，再兜 HOMEDRIVE+HOMEPATH。
+            home: crate::config::paths::home_dir(),
             appdata: var("APPDATA"),
             localappdata: var("LOCALAPPDATA"),
         }
@@ -315,9 +316,9 @@ pub fn well_known_candidates(env: &WellKnownEnv, windows: bool, names: &[String]
         }
     } else {
         if let Some(h) = &env.home {
-            dirs.push(h.join(".local/bin"));
-            dirs.push(h.join("Library/pnpm/bin"));
-            dirs.push(h.join(".cargo/bin"));
+            dirs.push(h.join(".local").join("bin"));
+            dirs.push(h.join("Library").join("pnpm").join("bin"));
+            dirs.push(h.join(".cargo").join("bin"));
         }
         dirs.push(PathBuf::from("/usr/local/bin"));
         dirs.push(PathBuf::from("/opt/homebrew/bin"));

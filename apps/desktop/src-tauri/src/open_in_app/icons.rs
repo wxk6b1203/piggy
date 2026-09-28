@@ -37,7 +37,7 @@ pub fn icon_png(
 
 /// bundle 的图标：`Info.plist` 的 `CFBundleIconFile` → `Contents/Resources/*.icns` → `sips` 转 PNG。
 fn bundle_icon_png(host: &dyn Host, bundle: &Path, timeout: Duration) -> Option<Vec<u8>> {
-    let resources = bundle.join("Contents/Resources");
+    let resources = bundle.join("Contents").join("Resources");
     let declared = host
         .run(
             "plutil",
@@ -47,7 +47,7 @@ fn bundle_icon_png(host: &dyn Host, bundle: &Path, timeout: Duration) -> Option<
                 "raw",
                 "-o",
                 "-",
-                &bundle.join("Contents/Info.plist").to_string_lossy(),
+                &bundle.join("Contents").join("Info.plist").to_string_lossy(),
             ],
             timeout,
         )
@@ -119,7 +119,7 @@ pub fn theme_icon_bytes(host: &dyn Host, facts: &Facts, icon: &str) -> Option<Ve
         for size in HICOLOR_SIZES {
             for ext in ["png", "svg"] {
                 let p = dir
-                    .join("icons/hicolor")
+                    .join("icons").join("hicolor")
                     .join(size)
                     .join("apps")
                     .join(format!("{icon}.{ext}"));
@@ -129,7 +129,7 @@ pub fn theme_icon_bytes(host: &dyn Host, facts: &Facts, icon: &str) -> Option<Ve
             }
         }
         let scalable = dir
-            .join("icons/hicolor/scalable/apps")
+            .join("icons").join("hicolor").join("scalable").join("apps")
             .join(format!("{icon}.svg"));
         if let Some(bytes) = read_icon_file(host, &scalable) {
             return Some(bytes);

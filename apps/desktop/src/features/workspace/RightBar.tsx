@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import { cmd } from '@/lib/ipc';
+import { baseName } from '@/lib/paths';
 import { windowEvents } from '@/lib/windowEvents';
 import { Icon } from '@/features/common/Icon';
 import { FileIcon } from '@/features/common/FileIcon';
@@ -239,7 +240,7 @@ function FilesView({ tabId }: { tabId: string | null }) {
     <div className="pg-files" role="tree" aria-label="项目文件">
       <div className="pg-files-head" title={cwd}>
         <Icon name="root-folder" size={13} />
-        <span className="pg-files-rootname">{cwd.split('/').filter(Boolean).at(-1) ?? cwd}</span>
+        <span className="pg-files-rootname">{baseName(cwd) || cwd}</span>
       </div>
       <DirEntries
         dir={cwd}

@@ -1,64 +1,119 @@
 //! pi 配置文件读写（docs/03 §2.10）：auth.json / models.json / settings.json。
 //! 原则：原子写（tmp+rename）、写前 .bak 备份、未知字段保留、绝不存密钥到 Piggy 配置。
 
+use crate::config::paths::{self, agent_dir};
 use std::path::{Path, PathBuf};
 
-pub fn expand_home(p: &str) -> PathBuf {
-    if p == "~" {
-        return std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    }
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(p)
+/// pi 的会话目录环境变量（`config.ts:509` 的 `ENV_SESSION_DIR`，
+/// 生效点在 `main.ts:675-679`）。
+pub const ENV_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
+
+/// 生效会话根是从哪来的（设置页要显示它，排查时才分得清"默认值坏了"还是"自定义值被吞了"）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionsRootSource {
+    Default,
+    Env,
+    Settings,
 }
 
-/// 会话根目录：settings.json 的 `sessionDir`（绝对/~ 路径）优先，
-/// 否则默认 `~/.pi/agent/sessions`（docs/02 §6.1；相对路径 pi 语义为"随项目 cwd"，
-/// 扫描器无法枚举，M1 回退默认并注明）。
+impl SessionsRootSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Env => "env",
+            Self::Settings => "settings",
+        }
+    }
+}
+
+/// 生效会话根 + 它的来源（**唯一**实现，读写两侧都走这里）。
+///
+/// 照 pi `main.ts:675-679` 的优先级（从高到低）：`--session-dir` 旗标、
+/// `PI_CODING_AGENT_SESSION_DIR`、settings.json 的 `sessionDir`、
+/// 默认 `<agent>/sessions`。Piggy 不用旗标（它总是显式 `--session <文件>`），
+/// 所以这里管后三条。
+///
+/// **只认绝对路径**（含 `~` 展开后绝对）：相对路径在 pi 那边是"随项目 cwd"，
+/// 扫描器无法枚举，于是回退默认值并在 UI 里标成默认（docs/02 §6.1、docs/15 缺口）。
+///
+/// 返回值里的来源还决定**布局**：默认根按 cwd 分子目录，自定义根平铺
+/// （见 [`sessions_root_spec`]）。
+pub fn effective_sessions_root(
+    default: PathBuf,
+    env_dir: Option<&str>,
+    setting: Option<&str>,
+) -> (PathBuf, SessionsRootSource) {
+    for (raw, source) in [(env_dir, SessionsRootSource::Env), (setting, SessionsRootSource::Settings)] {
+        let Some(t) = raw.map(str::trim).filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        let expanded = paths::expand_home(t);
+        if expanded.is_absolute() {
+            return (expanded, source);
+        }
+    }
+    (default, SessionsRootSource::Default)
+}
+
+/// 会话根目录（生产入口）。
 pub fn sessions_root() -> PathBuf {
-    let default = agent_dir().join("sessions");
-    let Ok(raw) = std::fs::read_to_string(agent_dir().join("settings.json")) else {
-        return default;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return default;
-    };
-    match v.get("sessionDir").and_then(|x| x.as_str()) {
-        Some(s) if !s.trim().is_empty() => {
-            let expanded = expand_home(s.trim());
-            if expanded.is_absolute() {
-                expanded
-            } else {
-                default // 相对路径：pi 侧随项目 cwd 落盘，扫描器回退默认
-            }
-        }
-        _ => default,
-    }
+    sessions_root_spec().0
 }
 
-/// 当前生效会话目录（GUI 展示用）：{ dir, isCustom, raw }。
+/// 会话根目录 + **是否自定义**（`true` = 来自 `PI_CODING_AGENT_SESSION_DIR` 或
+/// `settings.json` 的 `sessionDir`）。
+///
+/// 为什么要连"是不是自定义"一起给：pi 对这两种会话根的**布局规则不同**——
+/// 默认根下按 cwd 分子目录（`--<cwd 编码>--`），自定义根则**平铺**（自定义值被当叶子目录用，
+/// 列举走 `listSessionsFromDir`，只读该目录下的 `*.jsonl`）。写会话的人（`precreate_session_file`）
+/// 必须按同一规则落点，否则终端 pi 的会话选择器看不见 Piggy 建的会话。
+pub fn sessions_root_spec() -> (PathBuf, bool) {
+    let (root, source) = effective_sessions_root(
+        agent_dir().join("sessions"),
+        env_session_dir().as_deref(),
+        setting_session_dir().as_deref(),
+    );
+    (root, source != SessionsRootSource::Default)
+}
+
+/// `PI_CODING_AGENT_SESSION_DIR` 的值（空串视为未设置）。
+fn env_session_dir() -> Option<String> {
+    std::env::var(ENV_SESSION_DIR)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// settings.json 的 `sessionDir`（读不到/不是字符串 → None）。
+fn setting_session_dir() -> Option<String> {
+    std::fs::read_to_string(agent_dir().join("settings.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("sessionDir").and_then(|x| x.as_str()).map(String::from))
+}
+
+/// 当前生效会话目录（GUI 展示用）：{ dir, isCustom, raw, source }。
+///
+/// `source` 是这次新加的：Windows 事故里"默认地址变成 `.pi/agent\sessions`"
+/// 光看 `dir` 分不清是默认值坏了还是自定义值被吞了，标明来源才好排查。
 pub fn session_dir_effective() -> Result<serde_json::Value, String> {
     let settings = read_json(&agent_dir().join("settings.json"))?;
-    let raw = settings
+    let setting = settings
         .get("sessionDir")
         .and_then(|x| x.as_str())
         .map(String::from);
-    let dir = sessions_root();
+    let env = env_session_dir();
+    // 复用同一条优先级规则（不自己再判一遍 is_absolute，否则两处会漂移）
+    let (dir, source) = effective_sessions_root(
+        agent_dir().join("sessions"),
+        env.as_deref(),
+        setting.as_deref(),
+    );
     Ok(serde_json::json!({
         "dir": dir.to_string_lossy(),
-        "isCustom": raw.is_some(),
-        "raw": raw,
+        "isCustom": source != SessionsRootSource::Default,
+        "raw": if source == SessionsRootSource::Env { env.clone() } else { setting.clone() },
+        "source": source.as_str(),
     }))
-}
-
-pub(crate) fn agent_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".pi/agent")
 }
 
 pub(crate) fn read_json(path: &PathBuf) -> Result<serde_json::Value, String> {
@@ -278,5 +333,80 @@ mod auth_shape_tests {
         assert_eq!(v["b"]["key"], "sk-b", "删 a 把 b 也删了");
         // 备份文件也要有（原子写契约）
         assert!(agent.join("auth.json.bak").exists());
+    }
+}
+
+/* ---------------- 会话根目录优先级（pi main.ts:675-679） ---------------- */
+
+#[cfg(test)]
+mod session_root_tests {
+    use super::{agent_dir, effective_sessions_root, paths, SessionsRootSource};
+    use std::path::PathBuf;
+
+    fn default_root() -> PathBuf {
+        PathBuf::from("/h/u").join(".pi").join("agent").join("sessions")
+    }
+
+    #[test]
+    fn sessions_root_prefers_env_over_settings() {
+        // pi：env（PI_CODING_AGENT_SESSION_DIR）优先于 settings.json 的 sessionDir
+        let (got, source) = effective_sessions_root(
+            default_root(),
+            Some("/tmp/env-sessions"),
+            Some("/tmp/set-sessions"),
+        );
+        assert_eq!(got, PathBuf::from("/tmp/env-sessions"));
+        assert_eq!(source, SessionsRootSource::Env);
+    }
+
+    #[test]
+    fn sessions_root_uses_settings_when_env_absent() {
+        let (got, source) = effective_sessions_root(default_root(), None, Some("~/sess"));
+        let home = paths::home_dir().expect("真机/CI 都有主目录");
+        assert_eq!(got, home.join("sess"));
+        assert_eq!(source, SessionsRootSource::Settings);
+    }
+
+    #[test]
+    fn sessions_root_ignores_relative_and_empty() {
+        // 相对路径在 pi 那边随项目 cwd，扫描器枚举不了 → 回退默认（docs/15 缺口）
+        let cases: [(Option<&str>, Option<&str>); 6] = [
+            (Some("rel/dir"), None),
+            (None, Some("rel/dir")),
+            (Some("   "), None),
+            (Some(""), Some("  ")),
+            (None, None),
+            (Some("dir/./x"), Some("..")), // 都是相对
+        ];
+        for (env, setting) in cases {
+            let (got, source) = effective_sessions_root(default_root(), env, setting);
+            assert_eq!(got, default_root(), "env={env:?} setting={setting:?}");
+            assert_eq!(source, SessionsRootSource::Default);
+        }
+    }
+
+    /// `~` 展开后绝对 → 算自定义（pi 也是这么认的：expandTildePath 之后才 join）
+    #[test]
+    fn sessions_root_expands_tilde_before_deciding() {
+        let (got, source) = effective_sessions_root(default_root(), None, Some("~/x"));
+        let home = paths::home_dir().expect("真机/CI 都有主目录");
+        assert_eq!(got, home.join("x"));
+        assert_eq!(source, SessionsRootSource::Settings);
+    }
+
+    #[test]
+    fn sessions_root_result_is_absolute_and_well_formed() {
+        // Windows 事故的回归位：默认根必须是**绝对**路径，且由 join 逐段拼出。
+        let dir = agent_dir().join("sessions");
+        assert!(dir.is_absolute(), "默认会话根必须是绝对路径: {}", dir.display());
+        assert!(dir.ends_with(".pi/agent/sessions") || std::env::var_os(paths::ENV_AGENT_DIR).is_some());
+        // 混合分隔符（`.pi/agent\sessions`）只在 Windows 上看得出来，
+        // 所以这条断言就只在 Windows 上生效——它正是用户那台机器上的验收条件。
+        #[cfg(windows)]
+        assert!(
+            !dir.to_string_lossy().contains('/'),
+            "路径里混了正斜杠: {}",
+            dir.display()
+        );
     }
 }

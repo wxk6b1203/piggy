@@ -269,7 +269,7 @@ pub fn xdg_data_directories(facts: &Facts) -> Vec<PathBuf> {
     let data_home = facts
         .var("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| facts.home.join(".local/share"));
+        .unwrap_or_else(|| facts.home.join(".local").join("share"));
     let data_dirs = facts.var("XDG_DATA_DIRS").unwrap_or("/usr/local/share:/usr/share");
     let mut dirs = vec![data_home];
     dirs.extend(
@@ -646,7 +646,7 @@ fn locate(
             for version in versions {
                 let dir = root.join(version);
                 let executable = dir.join("GitHubDesktop.exe");
-                let cli = dir.join("resources/app/cli.js");
+                let cli = dir.join("resources").join("app").join("cli.js");
                 if host.is_file(&executable) && host.is_file(&cli) {
                     let cli_arg = cli.to_string_lossy().into_owned();
                     let mut spec = argv(executable.to_string_lossy().into_owned(), &[cli_arg.as_str(), "open"]);

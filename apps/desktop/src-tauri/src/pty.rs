@@ -46,7 +46,11 @@ pub fn open_pty(
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("PTY 打开失败: {e}"))?;
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| cwd.to_string());
+    // 登录终端落在用户主目录（拿不到就退调用方给的 cwd）。老代码只看 HOME，
+    // Windows 上会拿不到 → 直接落到 cwd，行为上"看起来没问题"但和 macOS 不一致。
+    let home = crate::config::paths::home_dir()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_string());
     let (prog, args) = build_login_shell();
     let mut cmd = CommandBuilder::new(prog);
     cmd.args(args);

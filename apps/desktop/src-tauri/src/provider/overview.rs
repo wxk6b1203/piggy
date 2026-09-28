@@ -16,6 +16,7 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::catalog;
+use crate::config::paths;
 use crate::config::pi_files;
 
 /// 密钥来源（顺序即 pi 的解析优先级）。
@@ -246,7 +247,7 @@ pub fn overview_with(agent: &Path, env: EnvLookup<'_>) -> Result<Value, String> 
 
 /// 生产入口：用真实的 `~/.pi/agent`。
 pub fn overview() -> Result<Value, String> {
-    overview_at(&pi_files::agent_dir())
+    overview_at(&paths::agent_dir())
 }
 
 /// 只保留 `providers` 这一层，给「高级」里的原始 JSON 编辑器做差异展示用。

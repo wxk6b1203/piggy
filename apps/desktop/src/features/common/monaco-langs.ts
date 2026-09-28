@@ -186,11 +186,11 @@ export const FILE_LANG: Record<string, string> = {
 };
 
 const PLAINTEXT = 'plaintext';
+import { baseName } from '@/lib/paths';
 
 /** 路径 → Monaco 语言 id。认不出 = `plaintext`（不加载任何语言 chunk）。 */
 export function langForPath(path: string): string {
-  const cut = path.lastIndexOf('/');
-  const base = (cut < 0 ? path : path.slice(cut + 1)).toLowerCase();
+  const base = baseName(path).toLowerCase();
   const byName = FILE_LANG[base];
   if (byName) return byName;
   const dot = base.lastIndexOf('.');

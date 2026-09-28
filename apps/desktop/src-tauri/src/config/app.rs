@@ -2,11 +2,16 @@
 //! M1：工作区布局持久化（~/.piggy/layout.json，原子写）。
 //! M2：性能配置 config.json（maxWorkers / idleTimeoutMin，05 §4.1–4.2）。
 
+use crate::config::paths;
 use std::path::PathBuf;
 
+/// Piggy 自己的配置目录 `~/.piggy`。
+///
+/// 主目录走 [`paths::home_dir_or_temp`]：老代码只看 `HOME`，Windows 上（默认不设）
+/// 解析成**空路径** → `~/.piggy` 退化成**相对路径**，layout.json / config.json
+/// 于是落到进程 cwd（装在 Program Files 下通常还没写权限）——设置存不下来。
 fn config_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".piggy")
+    paths::home_dir_or_temp().join(".piggy")
 }
 
 fn layout_path() -> PathBuf {

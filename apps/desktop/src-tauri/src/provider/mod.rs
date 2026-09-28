@@ -21,6 +21,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::config::paths;
 use crate::config::pi_files;
 
 /// 密钥的存放处。
@@ -38,7 +39,7 @@ pub async fn provider_overview() -> Result<Value, String> {
 /// 新建/更新一个提供商。`patch` 里出现的键才写，空串 = 删键（回落 pi 目录默认值）。
 #[tauri::command]
 pub async fn provider_save(provider: String, patch: Value) -> Result<Value, String> {
-    let agent = pi_files::agent_dir();
+    let agent = paths::agent_dir();
     tokio::task::spawn_blocking(move || edit::save_at(&agent, &provider, &patch))
         .await
         .map_err(|e| e.to_string())?
@@ -52,7 +53,7 @@ pub async fn provider_save(provider: String, patch: Value) -> Result<Value, Stri
 /// `models.json` 的 `apiKey`（中转站/cc-switch 那类工具的习惯写法，明文）。
 #[tauri::command]
 pub async fn provider_set_key(provider: String, api_key: String, store: Option<String>) -> Result<(), String> {
-    let agent = pi_files::agent_dir();
+    let agent = paths::agent_dir();
     let store = store.unwrap_or_else(|| STORE_AUTH.to_string());
     tokio::task::spawn_blocking(move || match store.as_str() {
         STORE_MODELS => edit::set_inline_key_at(&agent, &provider, &api_key),
@@ -65,7 +66,7 @@ pub async fn provider_set_key(provider: String, api_key: String, store: Option<S
 /// 删 API 密钥。`store` = `auth` / `models` / `both`。
 #[tauri::command]
 pub async fn provider_remove_key(provider: String, store: Option<String>) -> Result<(), String> {
-    let agent = pi_files::agent_dir();
+    let agent = paths::agent_dir();
     let store = store.unwrap_or_else(|| "both".to_string());
     tokio::task::spawn_blocking(move || {
         if store == STORE_AUTH || store == "both" {
@@ -84,7 +85,7 @@ pub async fn provider_remove_key(provider: String, store: Option<String>) -> Res
 /// 界面上必须先确认（配置和密钥一起没了）。
 #[tauri::command]
 pub async fn provider_remove(provider: String) -> Result<(), String> {
-    let agent = pi_files::agent_dir();
+    let agent = paths::agent_dir();
     tokio::task::spawn_blocking(move || {
         edit::remove_at(&agent, &provider)?;
         pi_files::auth_remove_at(&agent, &provider)
@@ -144,7 +145,7 @@ pub async fn provider_discover(
     api: String,
     api_key: Option<String>,
 ) -> Result<Value, String> {
-    let agent = pi_files::agent_dir();
+    let agent = paths::agent_dir();
     let typed = api_key.unwrap_or_default();
     let probe = {
         let agent = agent.clone();

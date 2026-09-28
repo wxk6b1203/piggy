@@ -579,7 +579,8 @@ packages/coding-agent/src/main.ts:678 		(envSessionDir ? expandTildePath(envSess
 packages/coding-agent/src/main.ts:679 		startupSettingsManager.getSessionDir();
 ```
 
-i.e. `--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `settings.sessionDir`. Similarly
+i.e. `--session-dir` > `PI_CODING_AGENT_SESSION_DIR` > `settings.sessionDir`. Piggy 侧实现见 03 §2.18（`pi_files::resolve_sessions_root`，只认绝对路径；
+自定义值在 pi 那边是**叶子**目录 → 会话平铺在根下，扫描器两种布局都认）。Similarly
 `--offline` OR `PI_OFFLINE` both enable offline (`main.ts:569`), and `--trust`/`--no-trust`
 short-circuit trust resolution before the store and prompt (`project-trust.ts:47-49`,
 wired at `main.ts:748  trustOverride: parsed.projectTrustOverride,`).

@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::config::paths;
 use crate::config::pi_files;
 
 /// 条目类型（决定图标、可做的操作）。
@@ -193,22 +194,6 @@ impl ScopeDirs {
     }
 }
 
-/// 全局 agent 目录：`PI_CODING_AGENT_DIR` 优先，否则 `~/.pi/agent`。
-///
-/// pi 自己的名字是 `PI_CODING_AGENT_DIR`（`config.ts:502-508`：
-/// `ENV_AGENT_DIR = ${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`）。
-/// 注意 `config/pi_files.rs` 目前只看 `$HOME`——那边管的是 models/auth，
-/// 这里管插件，两边对"agent 目录在哪"必须给同一个答案，所以本模块自己解析。
-pub fn agent_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
-        let p = PathBuf::from(dir);
-        if !p.as_os_str().is_empty() {
-            return p;
-        }
-    }
-    pi_files::agent_dir()
-}
-
 pub fn read_settings(dirs: &ScopeDirs, scope: Scope) -> Result<Value, String> {
     pi_files::read_json(&dirs.settings_path(scope))
 }
@@ -278,7 +263,7 @@ pub fn classify(source: &str) -> SourceKind {
 /// 实测：`pi install /Users/…/pi-guardrails` 进 settings.json 的是相对 agent 目录的
 /// `../../../../../Users/…/pi-guardrails`。
 pub fn resolve_local(source: &str, base_dir: &Path) -> PathBuf {
-    let p = pi_files::expand_home(source.trim());
+    let p = paths::expand_home(source.trim());
     if p.is_absolute() {
         normalize(&p)
     } else {
@@ -1138,7 +1123,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_machine_overview_reads_the_live_agent_dir() {
-        let agent = agent_dir();
+        let agent = paths::agent_dir();
         let cwd = std::env::current_dir().unwrap();
         println!("agentDir = {}", agent.display());
         println!("cwd      = {}", cwd.display());
@@ -1173,8 +1158,8 @@ mod tests {
     fn agent_dir_env_override_is_honored() {
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("PI_CODING_AGENT_DIR", tmp.path());
-        assert_eq!(agent_dir(), tmp.path());
+        assert_eq!(paths::agent_dir(), tmp.path());
         std::env::remove_var("PI_CODING_AGENT_DIR");
-        assert!(agent_dir().ends_with(".pi/agent"));
+        assert!(paths::agent_dir().ends_with(".pi/agent"));
     }
 }

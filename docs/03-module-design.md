@@ -141,8 +141,16 @@ pub struct TabDescriptor {
 
 ### 2.8 `sessions/list.rs` — 会话列表
 
-- 扫描 `~/.pi/agent/sessions/**.jsonl` 首行 header + stat（02 §6.2）；按项目分组；
-- `notify` watcher（debounce 500ms）→ `session-list-changed` 事件；
+- 扫描生效会话根下的 `*.jsonl` 首行 header + stat（02 §6.2）；按项目分组；
+- **两种布局都认，写的时候也按同一条规则**（Windows 事故当口查出来的）：默认布局
+  `<root>/--<cwd 编码>--/<文件>.jsonl`，自定义 `sessionDir` 则是**平铺**在根下的
+  （pi 把自定义值当叶子目录用：落盘 `session-manager.ts:1752-1756`、列举
+  `listSessionsFromDir` `:941-953` 只读该目录下的 `*.jsonl` 不下钻）。老代码只扫一层子目录，
+  且预创建**永远**建 `--<cwd>--` 子目录 → 设了自定义目录的机器上，侧栏空白，
+  而 Piggy 建的会话**终端 pi 也看不见**（本机实测：`sessionDir` 指到 `…/tmp/session`，
+  根下 88 个 pi 写的平铺文件，`--Users-wxk--/` 子目录里 39 个 Piggy 写的会话）；
+  `precreate_dir`（纯函数）+ `sessions_root_spec()` 现在共同保证"写哪儿"与"读哪儿"一致；
+- `notify` watcher（debounce 500ms）→ `session-list-changed` 事件；监听根见 §2.18；
 - 解析器容错：header 损坏/超旧的 v1 文件 → 仍列出，标记 `legacy`，打开交由 pi 迁移（pi 自动迁移到 v3）。
 
 ### 2.9 `sessions/tree.rs` — 树与考古
@@ -153,10 +161,11 @@ pub struct TabDescriptor {
 
 | 子模块 | 文件 | 提供能力 |
 |---|---|---|
+| `paths.rs` | —（只算路径） | **主目录 / pi 目录的唯一口径**（§2.18）：`home_dir` / `agent_dir` / `expand_home` / `is_under` |
 | `auth.rs` | `~/.pi/agent/auth.json` | 按 provider 读写 API Key / OAuth 凭据（呈现时脱敏）；删除 = logout |
 | `models.rs` | `~/.pi/agent/models.json` | 自定义 provider/模型表单化编辑（baseUrl/api/compat/cost…），保留未知字段 |
 | `settings.rs` | `~/.pi/agent/settings.json` + `<cwd>/.pi/settings.json` | 表单化常用项 + 原始 JSON 编辑器；读时合并视图、写时明确目标层级（pi 规则：项目覆盖全局） |
-| `app.rs` | Piggy 自有配置（Tauri store） | 键位、外观、worker 上限、空闲回收时长、piPath 等（**绝不存密钥**） |
+| `app.rs` | `~/.piggy/layout.json` · `config.json` | 工作区布局、键位、外观、worker 上限、空闲回收时长、piPath 等（**绝不存密钥**） |
 
 - 全部**原子写**（tmp + rename），写前备份 `.bak`；JSON 解析失败时进入只读模式 + 提示（保护用户手编内容）；
 - OAuth 订阅登录（Claude/ChatGPT/Copilot 等 `/login` 流程）：**M1 阶段**由 GUI 检测 `auth.json` 变化自动刷新状态，登录动作引导用户在终端跑一次 `pi`；**M4** 内嵌 PTY 终端页签（xterm.js）直接在 GUI 内执行 `pi /login`（01 §3.6）。
@@ -447,7 +456,56 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 |---|---|
 | `legal_notices` | 返回版权 / 无担保 / 许可名 / **GPLv3 全文** / 第三方表；版本号取自 `package_info()`（= Cargo.toml，不是前端写死的那个） |
 
+### 2.18 `config/paths.rs` — 主目录 / pi 目录的唯一口径
+
+**它为什么存在**：Windows 默认**不设 `HOME`**（只有 Git Bash/MSYS 会设）。老代码十几处
+各自 `var_os("HOME")`，于是同一台机器上一起炸出四种毛病：
+
+| 症状 | 机制 |
+|---|---|
+| 默认会话目录变成 `.pi/agent\sessions`（用户报的） | `HOME` 缺失 → `unwrap_or_default()` 得到**空路径** → `join(".pi/agent")` 退化成**相对路径**，且字面量里的 `/` 与 `join` 补的 `\` 混在一起 |
+| 新建会话报「无法确定 cwd」 | `tab_create` 的 cwd 回退只看 `HOME` → 拿不到目录 → 直接报错 |
+| 设置/布局存不下来 | `~/.piggy` 同样退化成**相对路径**，落到进程 cwd（装在 Program Files 下还没写权限） |
+| 文件预览**沙箱失效** | `starts_with("")` **恒为真**（实测 `Path::new("/etc/passwd").starts_with("") == true`）→ 任意文件可读 |
+
+现在的规则（全部对齐 pi 自己：`getAgentDir()` 走 Node `os.homedir()`）：
+
+- **主目录**：Windows `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH` → `HOME`（Git Bash 兜底）；
+  其它平台 `HOME` → `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH`。空串/纯空白一律当**未设置**
+  （`set USERPROFILE=` 这类残留必须与"没设"同义）；
+- **agent 目录**：`PI_CODING_AGENT_DIR` 优先（`config.ts:528-534`，支持 `~`），否则 `<home>/.pi/agent`；
+- **`~` 展开**：只认 `~` 与 `~/…`，Windows 上多认 `~\…`（`utils/paths.ts:88-95`）；
+  主目录未知时**原样返回**（宁可让 `is_dir()` 报错，也不要展开成空路径=当前目录）；
+- **分隔符纪律**：跨平台路径**只准用 `Path::join` 拼**，字面量里不许写分隔符。
+  这条在 macOS/Linux 上**测不出来**（`join(".pi/agent")` 与 `join(".pi").join("agent")`
+  在 Unix 上产生完全相同的字符串），所以由 `tests/path_separators.rs` 静态守：
+  扫 `src/**/*.rs`，注释、`join("/")` 归一化、含空格的显示分隔符、`#[cfg(test)]` 之后的
+  夹具都豁免；
+- **主目录未知 = 拒绝服务而不是降级**：`fs_preview_read` 直接报错（沙箱不能"看不见就当没限制"），
+  `agent_dir` 给相对 `.pi/agent` 并打一行警告。
+
+**会话根的优先级**（`pi_files::resolve_sessions_root`，逐条照 `main.ts:675-679`）：
+`--session-dir` 旗标（Piggy 不用，它总是显式 `--session <文件>`）→
+`PI_CODING_AGENT_SESSION_DIR` → `settings.json` 的 `sessionDir` → 默认 `<agent>/sessions`。
+**只认绝对路径**：相对值在 pi 那边随项目 cwd，扫描器枚举不了，于是回退默认并在 UI 标成默认。
+设置页「当前生效」现在同时给出 `source`（`default` / `settings` / `env`）——
+这次事故里光看 `dir` 分不清"默认值坏了"还是"自定义值被吞了"。
+
+守卫清单（都能在 macOS 上跑）：`home_from` 的四条环境形状、`agent_dir` 的环境覆盖、
+`~` 展开的六种输入、`is_under` 的空 home 拒绝、`resolve_sessions_root` 的四条分支、
+以及一个**端到端探针**——起子进程抹掉 `HOME` 只留 `USERPROFILE`，跑真正的
+`agent_dir()` / `sessions_root()`，断言默认目录仍是绝对路径（红检时它如实打印出
+`probe sessions=.pi/agent/sessions`，就是用户看到的那一幕）。
+
 ## 3. 前端侧模块（`src/`）
+
+### 3.0 `lib/paths.ts` — 路径字符串（前端半边）
+
+Rust 侧给界面的路径是**平台原生**的（`to_string_lossy()`，Windows 上就是 `C:\Users\x\proj`），
+而界面过去到处 `split('/')`，于是 Windows 上项目分组标题、标签页标题、右栏根名一律显示
+**整条路径**，Monaco 也认不出 `Makefile`（`lastIndexOf('/')` 返回 -1）。现在统一走
+`baseName` / `splitPath` / `lastSeparator`（`/` 与 `\` 都算分隔符）；
+`src/test/paths.test.ts` 用 Windows、POSIX、混合分隔符、UNC、末尾分隔符五组输入锁住。
 
 ### 3.1 `lib/ipc.ts`
 

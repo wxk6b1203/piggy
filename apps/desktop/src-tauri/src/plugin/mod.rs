@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, State};
 
 use crate::commands::AppState;
+use crate::config::paths;
 use crate::config::pi_files;
 use crate::events::{EventSink, TauriSink};
 use crate::pi::discovery;
@@ -43,7 +44,7 @@ use inventory::{Scope, ScopeDirs};
 pub async fn plugin_overview(project_dir: Option<String>) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
         let cwd = project_dir.map(PathBuf::from);
-        inventory::overview(&inventory::agent_dir(), cwd.as_deref())
+        inventory::overview(&paths::agent_dir(), cwd.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -108,7 +109,7 @@ pub async fn plugin_job_cancel(job_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn plugin_project_trust(project_dir: String) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
-        let trust = pi_files::read_json(&inventory::agent_dir().join("trust.json"))?;
+        let trust = pi_files::read_json(&paths::agent_dir().join("trust.json"))?;
         let dir = PathBuf::from(&project_dir);
         let mut trusted = false;
         let mut matched: Option<String> = None;
@@ -124,7 +125,7 @@ pub async fn plugin_project_trust(project_dir: String) -> Result<Value, String> 
             "trusted": trusted,
             "matched": matched,
             "dir": dir.to_string_lossy(),
-            "trustFile": inventory::agent_dir().join("trust.json").to_string_lossy(),
+            "trustFile": paths::agent_dir().join("trust.json").to_string_lossy(),
         }))
     })
     .await
@@ -133,7 +134,7 @@ pub async fn plugin_project_trust(project_dir: String) -> Result<Value, String> 
 
 fn same_dir(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
-        let p = pi_files::expand_home(s);
+        let p = paths::expand_home(s);
         std::fs::canonicalize(&p).unwrap_or(p).to_string_lossy().into_owned()
     };
     norm(a) == norm(b)
@@ -196,7 +197,7 @@ pub async fn plugin_set_enabled(
     project_dir: Option<String>,
 ) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
-        set_enabled_at(&inventory::agent_dir(), &key, enabled, project_dir.as_deref())
+        set_enabled_at(&paths::agent_dir(), &key, enabled, project_dir.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -204,7 +205,7 @@ pub async fn plugin_set_enabled(
 
 /// 与命令同一份逻辑，但 **agent 目录显式传入**。
 ///
-/// 命令层传 `inventory::agent_dir()`；测试直接传临时目录。
+/// 命令层传 `paths::agent_dir()`；测试直接传临时目录。
 /// 不这么做的话测试只能靠改 `PI_CODING_AGENT_DIR` 环境变量，
 /// 而 Rust 的测试线程共享进程环境——并行跑会互相把对方的目录指走
 /// （这不是假想：第一版就这么写，5 个用例里挂了 2 个）。
@@ -381,7 +382,7 @@ pub async fn plugin_add_path(
     project_dir: Option<String>,
 ) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
-        add_path_at(&inventory::agent_dir(), &path, &scope, project_dir.as_deref())
+        add_path_at(&paths::agent_dir(), &path, &scope, project_dir.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -440,7 +441,7 @@ pub async fn plugin_remove_path(
     project_dir: Option<String>,
 ) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
-        remove_path_at(&inventory::agent_dir(), &entry, &scope, project_dir.as_deref())
+        remove_path_at(&paths::agent_dir(), &entry, &scope, project_dir.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -500,7 +501,7 @@ pub async fn plugin_delete_discovered(key: String) -> Result<Value, String> {
         // 只允许删发现目录**里面**的东西，且必须真的是扩展——两道闸都是防止
         // 一个拼错的 key 把用户随便什么目录丢进回收站。
         let cwd = std::env::current_dir().unwrap_or_default();
-        let dirs = ScopeDirs::new(inventory::agent_dir(), cwd);
+        let dirs = ScopeDirs::new(paths::agent_dir(), cwd);
         let root = dirs.discovery_dir(scope);
         let canon_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let canon = std::fs::canonicalize(&path).unwrap_or(path.clone());
