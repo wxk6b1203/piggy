@@ -72,15 +72,47 @@ const page = (from: number, to: number, hasMore: boolean, hasNewer = false) => (
  */
 function fakeGeometry(el: HTMLElement, scrollHeight = 2000, clientHeight = 400) {
   let top = 0;
+  let sets = 0;
   Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true });
   Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true });
   Object.defineProperty(el, 'scrollTop', {
     configurable: true,
     get: () => top,
+    // 钳制要读**当前**的 scrollHeight/clientHeight：写死闭包里的初始值，
+    // 后面再改几何（模拟"流式长高"）就会按旧高度钳制，测试于是假绿。
     set: (v: number) => {
-      top = Math.max(0, Math.min(v, scrollHeight - clientHeight));
+      sets += 1;
+      const h = (el as unknown as { scrollHeight: number }).scrollHeight;
+      const c = (el as unknown as { clientHeight: number }).clientHeight;
+      top = Math.max(0, Math.min(v, h - c));
     },
   });
+  // 记录"我们程序化改了几次 scrollTop"：贴底是否幂等就看它
+  (el as unknown as { __sets: () => number }).__sets = () => sets;
+  (el as unknown as { __resetSets: () => void }).__resetSets = () => {
+    sets = 0;
+  };
+}
+
+/** 攒下 ResizeObserver 的回调，测试里手动触发（jsdom 不会自己触发）。 */
+function captureResizeObservers(): { callbacks: Array<() => void>; restore: () => void } {
+  const callbacks: Array<() => void> = [];
+  const Real = globalThis.ResizeObserver;
+  class Spy {
+    constructor(cb: ResizeObserverCallback) {
+      callbacks.push(() => cb([], this as unknown as ResizeObserver));
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  (globalThis as Record<string, unknown>).ResizeObserver = Spy as never;
+  return {
+    callbacks,
+    restore: () => {
+      (globalThis as Record<string, unknown>).ResizeObserver = Real;
+    },
+  };
 }
 
 function scroller(): HTMLDivElement {
@@ -390,5 +422,47 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
 
     await scrollTo(el, 100); // 位置变了 = 读者滚的
     expect(q('[data-to-bottom]')).toBeTruthy();
+  });
+});
+
+describe('贴底是幂等的（否则 ResizeObserver 会自循环）', () => {
+  it('已经贴着底时，内容变高的通知不再改 scrollTop', async () => {
+    seed(12);
+    const spy = captureResizeObservers();
+    try {
+      mountDom(<Transcript tabId={TAB} />);
+      const el = scroller();
+      fakeGeometry(el, 2000, 400);
+      await flush();
+      await act(async () => {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      });
+      // 组件贴底：pinnedTopRef = 1600
+      expect(el.scrollTop).toBe(1600);
+
+      const sets = (el as unknown as { __sets: () => number }).__sets;
+      const reset = (el as unknown as { __resetSets: () => void }).__resetSets;
+      reset();
+      // 内容继续长高（流式），通知照样来：已经在底部 → 一次都不该再写 scrollTop
+      for (const cb of spy.callbacks) cb();
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(sets(), '已经贴底还去写 scrollTop —— 会与虚拟化器的测量互相触发').toBe(0);
+
+      // 真的出现缝隙（内容长高后没贴住）→ 这次必须贴
+      reset();
+      Object.defineProperty(el, 'scrollHeight', { value: 2400, configurable: true });
+      for (const cb of spy.callbacks) cb();
+      await act(async () => {
+        // 贴底是 rAF 合并的：等两帧再断言
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(sets(), '内容长高后没贴住').toBeGreaterThan(0);
+      expect(el.scrollTop).toBe(2000);
+    } finally {
+      spy.restore();
+    }
   });
 });

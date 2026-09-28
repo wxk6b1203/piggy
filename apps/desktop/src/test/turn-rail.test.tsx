@@ -420,3 +420,38 @@ describe('轮廓 + 已载入的行 → 刻度（"预览全部、展示部分"）
     expect(findRowIndexByOffset(rowsTail, 999)).toBeNull();
   });
 });
+
+describe('梯子量的是转录带，绝不量自己（自触发 ResizeObserver 循环）', () => {
+  it('被 observe 的是 .pg-transcript-wrap，而不是 .pg-rail', async () => {
+    const observed: Element[] = [];
+    const Real = globalThis.ResizeObserver;
+    class Spy {
+      constructor(_cb: ResizeObserverCallback) {}
+      observe(el: Element) {
+        observed.push(el);
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    (globalThis as Record<string, unknown>).ResizeObserver = Spy as never;
+    try {
+      mountDom(
+        <div className="pg-transcript-wrap">
+          <TurnRail
+            items={buildRailItems(rows(turn(1), turn(2), turn(3)))}
+            activeTurn={2}
+            placement="right"
+            onJump={vi.fn()}
+          />
+        </div>,
+      );
+      await flush();
+    } finally {
+      (globalThis as Record<string, unknown>).ResizeObserver = Real;
+    }
+    // 量自己 = bandH 由自己算出来的高度决定 = 无限自触发（浏览器直接报
+    // `ResizeObserver loop completed with undelivered notifications`，用户日志里三条）
+    expect(observed.some((el) => el.classList.contains('pg-rail'))).toBe(false);
+    expect(observed.some((el) => el.classList.contains('pg-transcript-wrap'))).toBe(true);
+  });
+});

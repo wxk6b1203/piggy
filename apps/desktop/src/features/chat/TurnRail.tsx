@@ -70,11 +70,25 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
     getItemKey: (i) => items[i]?.turn ?? i,
   });
 
-  // 梯子的高度跟着转录可视高度走（带高 - 64，并封顶 420）
+  /**
+   * 梯子的高度跟着**转录可视带**的高度走（带高 - 64，并封顶 420）。
+   *
+   * ⚠️ 必须量转录带（`.pg-transcript-wrap`），**不能量 `.pg-rail` 自己**：
+   * `.pg-rail` 的高度正是由这里的 `bandH` 算出来的，量自己 = 自触发循环 ——
+   * bandH 420 → 高度 356 → bandH 356 → 高度 292 → … → 0 → 420 → …
+   * 浏览器会直接报 `ResizeObserver loop completed with undelivered notifications`
+   * （用户 2026-09-23 贴的日志里连着三条），而副作用是**梯子高度与可滚范围不停变**，
+   * 于是"没人滚，梯子自己在动"（用户多次截图的刻度位置都不一样）。
+   *
+   * 另外只在新值真的不同时 setState：观察者回调里做无谓的 set 会白跑一轮渲染。
+   */
   useEffect(() => {
-    const el = railRef.current?.parentElement;
+    const el = railRef.current?.closest('.pg-transcript-wrap');
     if (!el) return;
-    const apply = () => setBandH(el.clientHeight);
+    const apply = () => {
+      const h = el.clientHeight;
+      setBandH((prev) => (prev === h ? prev : h));
+    };
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);

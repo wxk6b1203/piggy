@@ -447,6 +447,19 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
    守卫：jsdom 两条（钳制 scrollTop 才能造出那一幕——第一版假几何不钳制，红检时
    在错实现下照样绿）+ 浏览器门禁按帧采样断言（当前刻度倒退 0 次、跟随丢 0 次、
    梯子自己滚 ≤1 次、离底 ≤25px、实时文本长度单调不减）。
+5. **两个 ResizeObserver 都不许"量自己"**（用户第三轮截图：多次截图里梯子位置都不一样，
+   但他没滚；控制台连着三条 `ResizeObserver loop completed with undelivered notifications`）。
+   根因两处，都是"观察者的回调会改变被观察元素的大小"：
+   · **梯子量的是自己**：`railRef.current.parentElement` 就是 `.pg-rail`，而它的高度正是
+     由量出来的 `bandH` 算的 —— bandH 420 → 高 356 → bandH 356 → 高 292 → … → 0 → 420，
+     一个极限环。副作用是**梯子高度与可滚范围每帧都在变**，于是"没人滚它自己在动"。
+     改成量转录带（`.pg-transcript-wrap`），并在回调里只在与当前值不同时 setState；
+   · **贴底不幂等**：贴底会改变滚动位置 → 虚拟化器渲染新行 → 行高被测量 → 内容高度又变 →
+     观察者再触发 → 再贴底。改成"已经贴着底（差 ≤1px）就什么都不做"+ 每帧最多一次（rAF 合并），
+     循环自然终止。
+   守卫：两条 jsdom 用例（一条断言被 observe 的是转录带而不是 `.pg-rail`；一条用可计数的
+   `scrollTop` setter 断言"已贴底时再收到通知一次都不写"），外加门禁里对
+   `ResizeObserver loop` 这条错误单独点名。
 
 ## 3. 状态管理细则
 

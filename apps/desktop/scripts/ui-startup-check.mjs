@@ -2832,7 +2832,13 @@ if (!sc.liveMonotonic) {
   bad.push(`分页：流式文本长度不是单调增长（${sc.liveLen?.join(' → ')}）—— 实时块被反复重置 ★`);
 }
 
+/* 页面错误一条都不许有。其中 `ResizeObserver loop completed with undelivered notifications`
+   单独点名：它是"量自己 → 自己变 → 再量"的自触发循环（用户 2026-09-23 贴的日志里连着三条），
+   表现是"没人滚，梯子自己在动"。门禁里若出现，直接指向两侧观察者（梯子的 band / 转录的贴底）。 */
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
+if (pageErrors.some((e) => /ResizeObserver loop/.test(e))) {
+  bad.push('页面错误里出现 ResizeObserver 自触发循环（量了自己）★');
+}
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');
 process.exit(bad.length ? 1 : 0);

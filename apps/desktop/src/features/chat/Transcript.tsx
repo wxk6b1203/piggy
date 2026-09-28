@@ -159,8 +159,25 @@ export function Transcript({ tabId }: { tabId: string }) {
     const el = scrollRef.current;
     const inner = innerRef.current;
     if (!el) return;
+    /**
+     * 内容变高 → 贴底。两条纪律缺一不可：
+     *  ① **幂等**：已经贴着底就什么都不做。否则"贴底 → 虚拟化器渲染新行 → 行高被测量 →
+     *     内容高度又变 → 观察者再触发 → 再贴底"会自成一个循环，
+     *     浏览器报 `ResizeObserver loop completed with undelivered notifications`；
+     *  ② **每帧最多一次**（rAF 合并）：一帧里连来几批通知也只贴一次。
+     */
+    let scheduled = false;
+    const pinIfNeeded = () => {
+      scheduled = false;
+      if (!followingRef.current || hasNewerRef.current) return;
+      const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
+      if (gap <= 1) return; // 已经在底部：不做任何事，循环到此为止
+      pinToBottom();
+    };
     const ro = new ResizeObserver(() => {
-      if (followingRef.current && !hasNewerRef.current) pinToBottom();
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(pinIfNeeded);
     });
     if (inner) ro.observe(inner);
     if (liveRef.current) ro.observe(liveRef.current);
