@@ -126,7 +126,12 @@ pub fn notices(version: &str) -> Value {
 pub fn build_app_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::menu::Menu<R>, String> {
-    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+    use tauri::menu::{Menu, MenuItem};
+    // `MenuItemKind` 只在 macOS 那一支用到 —— **条件导入**是必须的：
+    // 无条件导入时，非 macOS 编译会报 `unused import`（我在 Windows 上真机编译才看到，
+    // 因为 macOS 这边这一支是编进去的）。
+    #[cfg(target_os = "macos")]
+    use tauri::menu::MenuItemKind;
 
     let menu = Menu::default(app).map_err(|e| e.to_string())?;
     let legal = MenuItem::with_id(app, MENU_ID_LEGAL, MENU_LABEL_LEGAL, true, None::<&str>)

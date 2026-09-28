@@ -49,6 +49,24 @@ pub fn check_compat(v: &Version) -> Compatibility;   // Ok / Warn / Block
 
 - 顺序：设置 → `PI_BIN` → **内置 resources**（M2 起，08 §7.1）→ PATH（02 §2.1）；缓存结果，设置变更时重验。
 
+**PATH 里"有 pi"≠"能执行 pi"（Windows 上真机踩到）**：npm/pnpm 在 Windows 的 bin 目录里
+**同时**放 `pi`（给 Git Bash 的 POSIX shell 脚本）与 `pi.cmd`（cmd/PowerShell 的垫片）。
+老代码先试无扩展名的 `pi` 并把它当结果返回，而**绝对路径 Rust 不会再补 `.exe`**
+（见 `std::process::Command` 的平台说明），于是 `CreateProcess` 报
+`os error 193（不是有效的 Win32 应用程序）`，界面上就是"pi 未找到——可 pi 明明在 PATH 里"。
+现在的规则（`exec_names` / `first_pi_in`）：
+
+- Unix：候选就是 `pi`；
+- Windows：按 **`PATHEXT`** 生成候选（默认 `.COM;.EXE;.BAT;.CMD` → `pi.com/pi.exe/pi.bat/pi.cmd`），
+  **无扩展名的 `pi` 排最后**，且只在它真的是 PE（`MZ` 头）时才接受——这样 shell 垫片
+  永远不会被交给 `CreateProcess`，而"有人把 `pi.exe` 改名成 `pi`"的极端情况仍可用；
+- 兜底目录分平台：Windows 是 `%LOCALAPPDATA%\pnpm` / `%APPDATA%\npm` / `~/.local/bin` /
+  `~/scoop/shims`，Unix 是原来那五个（老代码只列了 Unix 路径，Windows 上等于没兜底）；
+  home 在 Windows 上取 `USERPROFILE`（那里一般不设 `HOME`）。
+
+五条纯函数/夹具测试覆盖这些规则（`exec_names_*`、`windows_prefers_the_cmd_shim_*`、
+`windows_ignores_a_lone_posix_shim`、`windows_well_known_dirs_*`），在 macOS 上就能跑。
+
 ### 2.2 `pi/codec.rs` — JSONL 分帧器
 
 ```rust

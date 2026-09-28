@@ -505,6 +505,31 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
        拿掉行高 → 单元测试报"找不到含 line-height 的规则"、门禁报
        "内容 102px 超过容器高度"；把 `--pg-lh-12` 改成 24px → 报"内容 116px 超过容器 100px"。
 
+
+49. **“PATH 里有它”不等于“能执行它”——Windows 上 npm/pnpm 放的是无扩展名的 shell 脚本。**
+    真机（Windows debug run）报的是 `pi --version 失败: %1 不是有效的 Win32 应用程序 (os error 193)`，
+    紧接着一句“pi 未找到”，而 pi 明明在 PATH 里。根因：`which_pi` 的候选顺序是
+    `["pi", "pi.exe", "pi.cmd"]`，Windows 的 bin 目录里那个无扩展名的 `pi` 是**给 Git Bash 的
+    POSIX shell 脚本**，`is_file()` 为真就被当成结果返回；而**绝对路径 Rust 不会再补 `.exe`**
+    （`std::process::Command` 的平台说明：只有“省略扩展名的可执行文件”才补），
+    于是 `CreateProcess` 直接吃了一个 shell 脚本 → 193。
+    修法两层，互相独立（反证时各自都能单独拦住）：
+    ① **候选名**按 `PATHEXT` 生成、无扩展名排**最后**；
+    ② **内容筛子**：无扩展名的候选只在其头两字节是 `MZ`（PE）时才接受。
+    顺带修掉同一来源的另一处：兜底目录以前只有 Unix 路径（且用 `HOME`，Windows 上一般是
+    `USERPROFILE`），所以 Windows 上 PATH 未命中时**连试都没试**。
+    教训：这类“平台语义差异”要在**纯函数 + 夹具**层面测（`exec_names(windows,…)`、
+    `first_pi_in(dir, names, windows)`），否则本机是 macOS 就永远测不到；
+    被验证的是“选哪个名字/哪个文件”，不需要真的执行它。
+
+50. **`#[cfg]` 分支里的 `use` 必须条件导入，否则只有别的平台会报 `unused_imports`。**
+    `legal.rs` 里 `MenuItemKind` 只在 macOS 那一支用到，我写成无条件导入 → macOS 编译干净，
+    **Windows 上冒出一条 warning**（用户在 Windows debug run 里看到的）。
+    改成 `#[cfg(target_os = "macos")] use tauri::menu::MenuItemKind;` 后，
+    两种 cfg 组合下都不可能 unused（按构造成立，不必真去编译另一个平台）。
+    这也是本机验证不了的点：`rustup target add x86_64-pc-windows-msvc` 在本机镜像上 404
+    （Tsinghua 镜像没有该组件），所以 **Windows 的编译与运行只有用户那台机器能确认**。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -513,6 +538,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 会话**没有“加载更早”分页** | DSH 的长会话会用分页折叠早期历史（刻度上有“未加载”锚点，点了先翻页）。Piggy 目前**一次性把整段会话读进 store** 并全部虚拟化渲染，所以预览滚动条天然覆盖整段历史，但也意味着几千轮的会话会在打开时一次性拉全部 entries（渲染是虚拟化的，代价在 IPC 与内存）。要做分页的话，`RailItem` 要加 `anchor: loaded / unloaded`，跳未加载的刻度先翻页 |
 | 预览滚动条的**窄窗口行为** | DSH 在转录容器 < 900px 时直接**隐藏**滚动条（`@container`）。Piggy 没做这条：转录因为侧栏 + 右栏通常只有 530–700px，照搬会让功能在多数窗口下“看起来是坏的”。现在由用户的开关决定，代价是窄窗口下两侧各 44px 留白会挤压正文。要改成自适应得先定“多窄算窄”，而 Piggy 的转录宽度与 DSH 不是一个量级 |
 | 预览滚动条只在 **Chrome** 里量过 | 刻度几何、跟随、预览框、居中都在 Playwright/Chromium 下量的（门禁）。WebKit（Tauri 在 macOS 用的引擎）与 Windows/Linux **未跑过**——`mask-image` 渐隐在 WebKit 的差异未验证 |
+| **Windows 上的 pi 发现：本轮修了，但只在我这边做了纯函数验证** | `exec_names` / `first_pi_in` / `well_known_candidates` 都是纯函数，5 条测试在 macOS 上跑（覆盖 `PATHEXT`、shell 垫片、PE 筛子、两套兜底目录）。但**本机无法给 Windows 交叉编译**（`rustup target add x86_64-pc-windows-msvc` 在配置的镜像上 404），所以“在 Windows 上真的能找到 pi.cmd 并跑起来”要靠用户那台机器确认。下一次 Windows debug run 应该看到实际的 pi 版本，而不是 os error 193 |
 | **M3 剩余** | ①在 GUI 里对真实仓库点一次 `parallel-review`（需人开 `tauri dev`）；②dockview lane 分列监控 / 模板自定义编辑 |
 | **发布门禁 G1（updater）** | 注意：这个 G1 是 docs/14 §7 的**发布门禁**编号，跟 docs/00 目标表里那个 G1（完整对话体验）同名但无关。`tauri.conf.json` 仍指向 `updates.piggy.invalid` + 空 pubkey。需产品决策（更新源 + 签名密钥）。**不能只删配置块**——`tauri_plugin_updater` 已在 `lib.rs` 注册，删了会复现历史 panic |
 | 主题外壳颜色 | 目前只复用了 VS Code 的 `tokenColors`；整套主题还要先做"注册表默认值层"（docs/13 E4） |

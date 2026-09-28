@@ -188,33 +188,147 @@ fn is_on_path(p: &Path) -> bool {
     std::env::split_paths(&dirs).any(|d| d == parent)
 }
 
+/// 可执行文件名的候选，**按优先级**。
+///
+/// ## 为什么不能只写 `["pi", "pi.exe", "pi.cmd"]`（Windows 上真实踩到的 bug）
+///
+/// npm / pnpm 在 Windows 的 bin 目录里**同时**放两份东西：
+///   * `pi`      —— 给 Git Bash / MSYS 用的 **POSIX shell 脚本**；
+///   * `pi.cmd`  —— 给 cmd/PowerShell 用的批处理垫片（`pi.exe` 则出现在 standalone 版）。
+///
+/// 老代码先试无扩展名的 `pi`，`is_file()` 为真就返回它，然后把这个绝对路径交给
+/// `CreateProcess`——**绝对路径 Rust 不会再补 `.exe`**（见 std::process::Command 的平台说明：
+/// 只有"不带扩展名的可执行文件"会补 .exe，而这里给的是一个真实存在的文件），
+/// 于是 Windows 报 `os error 193（不是有效的 Win32 应用程序）`，
+/// 整个发现流程失败，界面上就是"pi 未找到——可 pi 明明在 PATH 里"。
+///
+/// 规则：**Windows 上按 `PATHEXT` 生成候选（默认 .COM;.EXE;.BAT;.CMD），无扩展名的 `pi`
+/// 排在最后**，且只在它真的是个 PE（`MZ` 头）时才接受（见 [`first_pi_in`]）。
+/// 这样 shell 垫片永远不会被交给 `CreateProcess`，而"有人把 pi.exe 改名成 pi"的
+/// 极端情况仍然能用。
+pub fn exec_names(windows: bool, pathext: Option<&str>) -> Vec<String> {
+    if !windows {
+        return vec!["pi".to_string()];
+    }
+    const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+    let raw = pathext.filter(|s| !s.trim().is_empty()).unwrap_or(DEFAULT_PATHEXT);
+    let mut out: Vec<String> = Vec::new();
+    for ext in raw.split(';') {
+        // PATHEXT 里通常写 ".EXE"，也有人写 "*.EXE"；统一成小写、去掉通配符
+        let ext = ext.trim().trim_start_matches('*').to_ascii_lowercase();
+        if ext.is_empty() {
+            continue;
+        }
+        let name = format!("pi{ext}");
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    // 最后再考虑无扩展名（只可能是"改名过的 PE"或不可执行的垫片，由调用方验内容）
+    out.push("pi".to_string());
+    out
+}
+
+/// 这个文件看起来是不是 Windows 可执行文件（PE：`MZ` 头）。
+///
+/// 只是个**便宜的筛子**，不是完整校验——真正的校验是后面跑 `--version`。
+/// 用途：拒绝把 npm/pnpm 的 POSIX shell 垫片交给 `CreateProcess`。
+fn looks_like_pe(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut magic = [0u8; 2];
+    f.read_exact(&mut magic).is_ok() && &magic == b"MZ"
+}
+
+/// 在单个目录里按候选名找 pi。
+///
+/// `windows=true` 时，**无扩展名**的候选额外要求"真的是 PE"（理由见 [`exec_names`]）。
+fn first_pi_in(dir: &Path, names: &[String], windows: bool) -> Option<PathBuf> {
+    for name in names {
+        let cand = dir.join(name);
+        if !cand.is_file() {
+            continue;
+        }
+        if windows && name == "pi" && !looks_like_pe(&cand) {
+            // 这是那个 shell 垫片：跳过，继续看后面的目录/候选
+            continue;
+        }
+        return Some(cand);
+    }
+    None
+}
+
 /// PATH 扫描 → 常见安装位置兜底。都没有返回 `None`。
 fn which_pi() -> Option<PathBuf> {
+    let windows = cfg!(windows);
+    let names = exec_names(windows, std::env::var("PATHEXT").ok().as_deref());
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
-            for name in ["pi", "pi.exe", "pi.cmd"] {
-                let cand = dir.join(name);
-                if cand.is_file() {
-                    return Some(cand);
-                }
+            if let Some(p) = first_pi_in(&dir, &names, windows) {
+                return Some(p);
             }
         }
     }
-    // PATH 未命中（GUI 从 Finder 启动时 PATH 极简）：探测常见安装位置
-    probe_well_known()
+    // PATH 未命中（GUI 启动时 PATH 极简，或 Windows 上只装了垫片）：探测常见安装位置
+    let env = WellKnownEnv::from_process();
+    well_known_candidates(&env, windows, &names)
+        .into_iter()
+        .find(|c| c.is_file() && !(windows && c.file_name().is_some_and(|n| n == "pi") && !looks_like_pe(c)))
 }
 
-/// 常见安装位置（pi.dev 安装脚本 / pnpm / cargo 风格目录）。
-fn probe_well_known() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let candidates = [
-        home.join(".local/bin/pi"),
-        PathBuf::from("/usr/local/bin/pi"),
-        PathBuf::from("/opt/homebrew/bin/pi"),
-        home.join("Library/pnpm/bin/pi"),
-        home.join(".cargo/bin/pi"),
-    ];
-    candidates.into_iter().find(|c| c.is_file())
+/// 探测常见安装位置需要的环境（结构体是为了**可测**：不依赖真实环境变量）。
+pub struct WellKnownEnv {
+    pub home: Option<PathBuf>,
+    pub appdata: Option<PathBuf>,
+    pub localappdata: Option<PathBuf>,
+}
+
+impl WellKnownEnv {
+    fn from_process() -> Self {
+        let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        Self {
+            // Windows 一般不设 HOME（Git Bash 才设），所以 USERPROFILE 是主力
+            home: var("HOME").or_else(|| var("USERPROFILE")),
+            appdata: var("APPDATA"),
+            localappdata: var("LOCALAPPDATA"),
+        }
+    }
+}
+
+/// 常见安装位置（pi.dev 安装脚本 / pnpm / npm / cargo 风格目录）。
+///
+/// Windows 与 Unix 的目录**完全不同**：老代码只列了 Unix 路径，于是 Windows 上
+/// PATH 未命中时这里必然返回 `None`（连试都没试）。
+pub fn well_known_candidates(env: &WellKnownEnv, windows: bool, names: &[String]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if windows {
+        // pnpm 的全局 bin（Windows 上是 %LOCALAPPDATA%\pnpm）、npm 的前缀、安装脚本目录
+        if let Some(d) = &env.localappdata {
+            dirs.push(d.join("pnpm"));
+        }
+        if let Some(d) = &env.appdata {
+            dirs.push(d.join("npm"));
+        }
+        if let Some(h) = &env.home {
+            dirs.push(h.join(".local").join("bin"));
+            dirs.push(h.join("scoop").join("shims"));
+        }
+    } else {
+        if let Some(h) = &env.home {
+            dirs.push(h.join(".local/bin"));
+            dirs.push(h.join("Library/pnpm/bin"));
+            dirs.push(h.join(".cargo/bin"));
+        }
+        dirs.push(PathBuf::from("/usr/local/bin"));
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    }
+    let mut out = Vec::new();
+    for dir in dirs {
+        for name in names {
+            out.push(dir.join(name));
+        }
+    }
+    out
 }
 
 /// 计算 pi 来源的变更计划。
@@ -362,6 +476,112 @@ mod tests {
     fn bundled_without_builtin_says_so() {
         let e = discover(PiSource::Bundled, None, None).unwrap_err();
         assert!(matches!(e, DiscoveryError::BuiltinMissing), "got {e:?}");
+    }
+
+    /* ---- Windows 上的 pi 发现（用户真机踩到的 os error 193） ----
+       全部是纯函数/文件系统夹具，所以在 macOS 上也能跑：
+       被验证的是"**选哪个名字**"，而不是"能不能执行"。 */
+
+    fn names_of(v: Vec<String>) -> Vec<String> {
+        v
+    }
+
+    #[test]
+    fn exec_names_unix_is_just_pi() {
+        assert_eq!(exec_names(false, None), vec!["pi"]);
+        // Unix 上 PATHEXT 无关
+        assert_eq!(exec_names(false, Some(".EXE")), vec!["pi"]);
+    }
+
+    #[test]
+    fn exec_names_windows_follows_pathext_and_puts_bare_pi_last() {
+        let n = exec_names(true, None);
+        assert_eq!(names_of(n), vec!["pi.com", "pi.exe", "pi.bat", "pi.cmd", "pi"]);
+        // 无扩展名必须是**最后一个**候选：npm/pnpm 的 shell 垫片就叫 `pi`
+        assert_eq!(names_of(exec_names(true, None)).last().unwrap(), "pi");
+        // 自定义 PATHEXT：大小写与 `*.EXE` 写法都要认，且要按用户给的环境变量顺序
+        assert_eq!(
+            names_of(exec_names(true, Some("*.EXE;.CMD"))),
+            vec!["pi.exe", "pi.cmd", "pi"]
+        );
+        assert_eq!(names_of(exec_names(true, Some(""))), names_of(exec_names(true, None)));
+        // 去重
+        assert_eq!(names_of(exec_names(true, Some(".CMD;.CMD"))), vec!["pi.cmd", "pi"]);
+    }
+
+    /// **这是那个 bug 的回归测试**：同一个目录里既有 shell 垫片 `pi` 又有 `pi.cmd`，
+    /// Windows 语义下必须选 `pi.cmd`；老代码会选 `pi` → `os error 193`。
+    #[test]
+    fn windows_prefers_the_cmd_shim_over_the_posix_shell_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("pi"), "#!/bin/sh\nexec node \"$0/../pi.js\" \"$@\"\n").unwrap();
+        std::fs::write(dir.join("pi.cmd"), "@echo off\r\nnode \"%~dp0\\pi.js\" %*\r\n").unwrap();
+
+        let names = exec_names(true, None);
+        let picked = first_pi_in(dir, &names, true).expect("应该选中 pi.cmd");
+        assert_eq!(picked.file_name().unwrap(), "pi.cmd", "选中了 shell 垫片 → Windows 会报 os error 193");
+
+        // Unix 语义下同一个目录选 `pi`（那边它才是对的）
+        let picked_unix = first_pi_in(dir, &exec_names(false, None), false).unwrap();
+        assert_eq!(picked_unix.file_name().unwrap(), "pi");
+    }
+
+    /// 只有 shell 垫片时**宁可报"未找到"**，也不要把脚本交给 CreateProcess
+    /// （用户看到的 `%1 不是有效的 Win32 应用程序` 就是这么来的）。
+    #[test]
+    fn windows_ignores_a_lone_posix_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pi"), "#!/bin/sh\npi \"$@\"\n").unwrap();
+        assert_eq!(first_pi_in(tmp.path(), &exec_names(true, None), true), None);
+
+        // 但它要是真的 PE（有人把 pi.exe 改名成 pi），仍然接受
+        std::fs::write(tmp.path().join("pi"), b"MZ\x90\x00fake-pe").unwrap();
+        let picked = first_pi_in(tmp.path(), &exec_names(true, None), true).unwrap();
+        assert_eq!(picked.file_name().unwrap(), "pi");
+    }
+
+    #[test]
+    fn windows_well_known_dirs_are_windows_dirs() {
+        let env = WellKnownEnv {
+            home: Some(PathBuf::from(r"C:\Users\wxk")),
+            appdata: Some(PathBuf::from(r"C:\Users\wxk\AppData\Roaming")),
+            localappdata: Some(PathBuf::from(r"C:\Users\wxk\AppData\Local")),
+        };
+        let names = exec_names(true, None);
+        let cands = well_known_candidates(&env, true, &names);
+        let shown: Vec<String> = cands.iter().map(|c| c.display().to_string()).collect();
+        // pnpm 的全局 bin 与 npm 的前缀（Windows 上真正放 pi.cmd 的地方）
+        assert!(
+            shown.iter().any(|c| c.contains("AppData\\Local") && c.contains("pnpm") && c.ends_with("pi.cmd")),
+            "没有 pnpm 目录：{shown:?}"
+        );
+        assert!(
+            shown.iter().any(|c| c.contains("AppData\\Roaming") && c.contains("npm")),
+            "没有 npm 目录：{shown:?}"
+        );
+        // 不能把 Unix 路径混进来
+        assert!(!shown.iter().any(|c| c.contains("/usr/local/bin")), "{shown:?}");
+
+        // Unix 侧保持原样（含 Homebrew 与 pnpm 的 macOS 路径）
+        let unix_env = WellKnownEnv {
+            home: Some(PathBuf::from("/Users/wxk")),
+            appdata: None,
+            localappdata: None,
+        };
+        let unix: Vec<String> = well_known_candidates(&unix_env, false, &exec_names(false, None))
+            .iter()
+            .map(|c| c.display().to_string())
+            .collect();
+        for want in [
+            "/Users/wxk/.local/bin/pi",
+            "/usr/local/bin/pi",
+            "/opt/homebrew/bin/pi",
+            "/Users/wxk/Library/pnpm/bin/pi",
+            "/Users/wxk/.cargo/bin/pi",
+        ] {
+            assert!(unix.contains(&want.to_string()), "缺 {want}：{unix:?}");
+        }
     }
 
     /* ---- 来源矩阵（纯函数，脱离 PATH/HOME/文件系统） ---- */

@@ -85,13 +85,18 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 
 | 来源 | 取值顺序 | 适用 |
 |------|----------|------|
-| **`system`（默认）** | `PATH` → 常见安装位置（`~/.local/bin`、`/usr/local/bin`、`/opt/homebrew/bin`、`~/Library/pnpm/bin`、`~/.cargo/bin`）→ **回退到捆绑** | 本机已装 pi，跟着 `pi update` 走 |
+| **`system`（默认）** | `PATH`（Windows 上按 `PATHEXT` 试 `pi.exe/pi.cmd/…`，见下）→ 常见安装位置（macOS/Linux：`~/.local/bin`、`/usr/local/bin`、`/opt/homebrew/bin`、`~/Library/pnpm/bin`、`~/.cargo/bin`；Windows：`%LOCALAPPDATA%\pnpm`、`%APPDATA%\npm`、`~/.local/bin`、`~/scoop/shims`）→ **回退到捆绑** | 本机已装 pi，跟着 `pi update` 走 |
 | `bundled` | 应用包内 `resources/pi/pi` | 用打包进来的自定义 pi |
 | `custom` | 设置里填的绝对路径 | fork 出来的 pi，放在任意位置 |
 
 **默认必须是系统 pi**：安装包虽然捆绑自定义 pi，但不该劫持用户机器上已有的安装。
 反过来，`system` 档在系统没装 pi 时会**回退**到捆绑（并如实把来源报成 `bundled`），
 免得"装了个包却完全用不了"。
+
+**Windows 上"PATH 里有 pi"不等于"能执行 pi"**：npm/pnpm 会同时放一个无扩展名的 `pi`
+（POSIX shell 脚本，给 Git Bash 用）和一个 `pi.cmd`。若把前者交给 `CreateProcess`，
+报的是 `os error 193（不是有效的 Win32 应用程序）`——看起来像"pi 没装"，其实是选错了文件。
+所以 Windows 上按 `PATHEXT` 生成候选、**无扩展名排最后且必须是真 PE**（详见 docs/03 §2.1）。
 
 `PI_BIN` 环境变量**永远优先于以上三者**（运维/CI 的显式指令不该被界面默认值覆盖）；
 生效时设置页会明确提示"被环境变量覆盖，界面选择当前不生效"。
