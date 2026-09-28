@@ -223,9 +223,78 @@ body {
 .pg-role { display: inline-flex; align-items: center; gap: var(--pg-sp-2); font-size: var(--pg-fs-11); color: var(--pg-fg-caption); margin-bottom: var(--pg-sp-2); }
 /* 助手正文（DSH AssistantMarkdown）：整宽、块间距 16px */
 .pg-assistant-body { display: flex; flex-direction: column; gap: var(--pg-sp-6); }
-.pg-assistant .pg-text { margin: var(--pg-sp-6) 0; white-space: pre-wrap; word-break: break-word; }
 .pg-assistant-body > :first-child { margin-top: 0; }
 .pg-assistant-body > :last-child { margin-bottom: 0; }
+
+/* ── Markdown（助手正文 / 思考 / 压缩摘要）：docs/12 §5 的字号阶梯 ──────────────
+   数字取自 DSH `ui-primitives/src/markdown/MarkdownText.module.css` + 令牌表
+   （`--dsw-font-markdown-*`）：h1 700 21/30、h2 700 19/28、h3 700 18/26、
+   h4 600 14/24、正文 14/24、strong 600、表格 13/22（表头 500）、行内 code 12/19、
+   块间距 16px（标题 32/16）、hr 0.5px、引用左线 2px + padding-left 14px、
+   列表 padding-left 18px、li 间距 6px、三级以下标题接列表压到 8px。 */
+.pg-md {
+  min-width: 0; overflow-wrap: anywhere;
+  font-size: var(--pg-fs-base); line-height: var(--pg-lh-base);
+  color: var(--pg-fg);
+}
+.pg-md > :first-child { margin-top: 0; }
+.pg-md > :last-child { margin-bottom: 0; }
+.pg-md p { margin: 16px 0; white-space: pre-wrap; word-break: break-word; }
+.pg-md strong { font-weight: 600; }
+.pg-md h1 { font-size: 21px; line-height: 30px; font-weight: 700; margin: 32px 0 16px; }
+.pg-md h2 { font-size: 19px; line-height: 28px; font-weight: 700; margin: 32px 0 16px; }
+.pg-md h3 { font-size: 18px; line-height: 26px; font-weight: 700; margin: 32px 0 16px; }
+.pg-md h4 { font-size: var(--pg-fs-base); line-height: 24px; font-weight: 600; margin: 16px 0; }
+.pg-md h5, .pg-md h6 { font-size: var(--pg-fs-base); line-height: 24px; font-weight: 600; margin: 16px 0; }
+.pg-md :where(h1, h2, h3, h4, h5, h6) strong { font-weight: inherit; }
+.pg-md :where(h1, h2, h3, h4, h5, h6) code { font: inherit; font-family: var(--pg-mono); }
+/* 三级以下标题紧接列表时收成 8px（DSH 的设计取值） */
+.pg-md :where(h4, h5, h6):has(+ :where(ul, ol)) { margin-bottom: 8px; }
+.pg-md :where(h4, h5, h6) + :where(ul, ol) { margin-top: 8px; }
+.pg-md :where(ul, ol) { margin: 16px 0; padding-left: 18px; }
+.pg-md li:not(:first-child) { margin-top: 6px; }
+.pg-md li > :where(ul, ol) { margin-top: 4px; }
+.pg-md :where(ul, ol) ol { list-style-position: inside; padding-left: 0; }
+.pg-md li::marker { line-height: 24px; color: var(--pg-fg-secondary); }
+.pg-md li.pg-md-task { list-style: none; margin-left: -18px; }
+.pg-md input[type='checkbox'] { margin: 0 8px 0 0; accent-color: var(--pg-fg-secondary); }
+.pg-md hr { display: block; border: none; height: 0.5px; margin: 32px 0; background: var(--pg-border-l2); }
+.pg-md blockquote {
+  border-left: 2px solid var(--pg-fg-caption); margin: 16px 0 0; padding-left: 14px;
+  color: var(--pg-fg-secondary);
+}
+.pg-md a.pg-md-link {
+  color: var(--pg-accent, var(--pg-fg)); font-weight: 500; text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+.pg-md a.pg-md-link:hover, .pg-md a.pg-md-link:focus-visible { text-decoration: underline dotted; text-underline-offset: 3px; }
+/* 不在白名单里的链接/图片：显示成纯文本 + 原地址（不制造"点了没反应"） */
+.pg-md .pg-md-unsafe { color: var(--pg-fg-dim); }
+.pg-md .pg-md-unsafe-url { font-family: var(--pg-mono); font-size: 0.875em; }
+.pg-md .pg-md-html { color: var(--pg-fg-dim); font-family: var(--pg-mono); font-size: 0.875em; }
+.pg-md .pg-md-img { max-width: 100%; border-radius: var(--pg-r-md); }
+.pg-md .pg-md-footnote, .pg-md .pg-md-footnote-def { color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-md :not(pre) > code {
+  display: inline-flex; align-items: center; box-sizing: border-box;
+  font-family: var(--pg-mono); font-size: 0.875em;
+  background: var(--pg-inline-code); border: 0.5px solid var(--pg-border-l1);
+  border-radius: var(--pg-r-md); padding: 0 5px;
+}
+.pg-md .pg-codeblock { margin: 16px 0; }
+.pg-md-tablewrap { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; margin: 16px 0; }
+.pg-md-tablewrap table { border-collapse: collapse; font-size: var(--pg-fs-secondary); line-height: 22px; }
+.pg-md-tablewrap th, .pg-md-tablewrap td {
+  border: 0.5px solid var(--pg-border-l2); padding: 4px 10px; text-align: left;
+}
+.pg-md-tablewrap th { font-weight: 500; color: var(--pg-fg-secondary); background: var(--pg-bg-sidebar); }
+/* 紧凑变体（思考正文 / 压缩摘要）：13px/20px、块间距减半（DSH 的 compact 档） */
+.pg-md-compact { font-size: var(--pg-fs-secondary); line-height: var(--pg-lh-secondary); color: var(--pg-fg-dim); }
+.pg-md-compact p { margin: 8px 0; }
+.pg-md-compact :where(ul, ol) { margin: 8px 0; }
+.pg-md-compact h1, .pg-md-compact h2, .pg-md-compact h3, .pg-md-compact h4 {
+  font-size: var(--pg-fs-13); line-height: 20px; margin: 12px 0 6px;
+}
+.pg-md-compact hr { margin: 16px 0; }
 /* 失败/中断回合卡片。
    没有它时，pi 的失败回合（content 为空 + stopReason/errorMessage）渲染出来是一片空白。 */
 .pg-turn-failure {

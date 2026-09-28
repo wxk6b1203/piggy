@@ -50,6 +50,9 @@ importers:
       immer:
         specifier: ^10.1.0
         version: 10.2.0
+      marked:
+        specifier: ^18.0.11
+        version: 18.0.11
       monaco-editor:
         specifier: ^0.56.0
         version: 0.56.0
@@ -110,7 +113,7 @@ importers:
         version: 7.3.6(@types/node@24.13.6)(jiti@2.7.0)(yaml@2.9.0)
       vitest:
         specifier: ^3.0.0
-        version: 3.2.7(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
 
   packages/pi-protocol:
     dependencies:
@@ -126,7 +129,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.7(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
 
   packages/piggy-bridge:
     devDependencies:
@@ -141,7 +144,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.7(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0)
 
 packages:
 
@@ -1481,6 +1484,9 @@ packages:
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
 
+  '@types/debug@4.1.13':
+    resolution: {integrity: sha512-KSVgmQmzMwPlmtljOomayoR89W4FynCAi3E8PPs7vmDVPe84hT+vGPKkJfThkmXs0x0jAaa9U8uW8bbfyS2fWw==}
+
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
 
@@ -1498,6 +1504,9 @@ packages:
 
   '@types/mdast@4.0.4':
     resolution: {integrity: sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==}
+
+  '@types/ms@2.1.0':
+    resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
 
   '@types/node@24.13.6':
     resolution: {integrity: sha512-SGrw/h3KPFshy3OE6ZL53LMBG5vGQQ8/gIpiqz/kRZhPJ7HgwCEs8LBuNtWLa8dvGZVpSF7+Bf+c11HUrCb/yg==}
@@ -4055,6 +4064,11 @@ snapshots:
       '@types/deep-eql': 4.0.2
       assertion-error: 2.0.1
 
+  '@types/debug@4.1.13':
+    dependencies:
+      '@types/ms': 2.1.0
+    optional: true
+
   '@types/deep-eql@4.0.2': {}
 
   '@types/esrecurse@4.3.1': {}
@@ -4070,6 +4084,9 @@ snapshots:
   '@types/mdast@4.0.4':
     dependencies:
       '@types/unist': 3.0.3
+
+  '@types/ms@2.1.0':
+    optional: true
 
   '@types/node@24.13.6':
     dependencies:
@@ -5298,7 +5315,7 @@ snapshots:
       jiti: 2.7.0
       yaml: 2.9.0
 
-  vitest@3.2.7(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0):
+  vitest@3.2.7(@types/debug@4.1.13)(@types/node@24.13.6)(jiti@2.7.0)(jsdom@27.4.0)(yaml@2.9.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
@@ -5324,6 +5341,7 @@ snapshots:
       vite-node: 3.2.4(@types/node@24.13.6)(jiti@2.7.0)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
+      '@types/debug': 4.1.13
       '@types/node': 24.13.6
       jsdom: 27.4.0
     transitivePeerDependencies:

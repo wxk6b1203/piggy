@@ -99,7 +99,7 @@ piggy/
 | 静态纪律 | 跨平台路径不许在 `join` 字面量里写分隔符（macOS 上测不出，只能扫源码） | `tests/path_separators.rs` |
 | 前端单测 | store reducer（commit 批量应用）、视图模型转换、键位解析、Windows 路径取末段 | vitest |
 | 组件/集成 | 转录虚拟化 + 实时块转正、Composer 流式态、palette 导航 | vitest + @testing-library/react（jsdom 下无 Tauri，mock `lib/ipc`） |
-| 真布局门禁 | 转录分页（打开即贴底 / 翻页不跳 / 回到底部 / 继续往下）、刻度梯几何、斜杠列表真滚动、Monaco 高亮、**百分比数字口径**（环标签整数 + title/右栏 3 位小数）、**压缩细节**（对话行字段完整且不含 systemMessage、轨迹行可展开、实时三事件合成一行、失败/中断改口） | `ui:startup`（Playwright + Chrome，跑在 mock IPC 上） |
+| 真布局门禁 | 转录分页（打开即贴底 / 翻页不跳 / 回到底部 / 继续往下）、刻度梯几何、斜杠列表真滚动、Monaco 高亮、**百分比数字口径**（环标签整数 + title/右栏 3 位小数）、**压缩细节**（对话行字段完整且不含 systemMessage、轨迹行可展开、实时三事件合成一行、失败/中断改口）、**Markdown 渲染**（标记变成元素 + 原始 HTML 不进 DOM + 链接白名单） | `ui:startup`（Playwright + Chrome，跑在 mock IPC 上） |
 | 真机探针 | 会话文件尾页读取的成本对照、真实会话形状、插件发现 | `cargo test -- --ignored`（需要本机真实环境） |
 | E2E | 关键旅程（00 §4 的 1/2/3） | tauri-driver（WebDriver）+ WebdriverIO；性能场景走 §6 |
 | 性能 | 05 §6 场景库 S1–S6 | nightly 工作流 + 预算断言 |

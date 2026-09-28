@@ -61,13 +61,16 @@ describe('对话里的压缩行', () => {
     expect(usage).toContain('$0.1234');
   });
 
-  it('摘要折在 `<details>` 里（默认不铺开，但内容在 DOM 里）', () => {
+  it('摘要折在 `<details>` 里（默认不铺开），正文按 **markdown** 渲染', () => {
     mountDom(<MessageView view={ROW as never} />);
     const root = domContainer();
     const details = root.querySelector('.pg-compaction-summary') as HTMLDetailsElement;
     expect(details).not.toBeNull();
     expect(details.open).toBe(false);
-    expect(details.textContent).toContain('## Goal');
+    // 摘要本身是 markdown（pi 写的就是 `## Goal` 这种结构），转正后按标题/列表渲染：
+    expect(details.querySelector('.pg-md h2')!.textContent).toBe('Goal');
+    expect(details.querySelectorAll('.pg-md li').length).toBeGreaterThan(0);
+    expect(details.textContent).not.toContain('##');
   });
 
   it('systemMessage 不许漏到界面（Rust 刻意不转，谁把它加回来这条就红）', () => {

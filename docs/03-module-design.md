@@ -738,6 +738,23 @@ appendPage / 实时 `message_end` 都经过它）—— 在注册助手消息时
 （`bash.command`、`read.path`、`grep.pattern`、`ls.path`…）。取不到参数时退到结果首行，
 并把来源标进 DOM（`data-summary-source="result"`）——**宁可显示"结果首行"，也不编一个命令**。
 
+### 3.0h `features/chat/markdown.tsx` + `lib/externalLink.ts` — 助手正文的 Markdown 渲染
+
+用户报"输出好像没有渲染成 markdown"：`MessageView` 的 text 分支此前只做 `splitFences()`
+（围栏 → 代码卡片），`## 标题`、`**粗体**`、`---` 全是原样文本 —— docs/04 §5 写着
+"Markdown 只在转正时解析一次"，那个 parser 一直没落地。
+
+现在：`marked.lexer()` 出 token 树，**自己走一遍出 React 元素**（不用
+`marked.parse()` + `dangerouslySetInnerHTML`）。安全三条：原始 HTML 当纯文本、
+URL 白名单、外链走宿主命令。为什么这么选、代价多少（解析 12× 快、包小 10 KB gz）
+写在 04 §5.1。
+
+`lib/externalLink.ts` 是外链的唯一出口：前端 `isExternalUrlAllowed` 先挡一道，
+宿主 `open_external_url`（Rust `validate_external_url`）再挡一道 —— 两侧白名单
+由 `src/test/markdown.test.tsx` 的"读 Rust 源码核对"用例钉住（改一处就红）。
+「关于 Piggy 与许可」里的许可原文链接也改走这条路（原先 `<a target="_blank">`
+在 Tauri 里可能什么都不发生，或把应用界面导航走）。
+
 ### 3.1 `lib/ipc.ts`
 
 - `invoke` 包装：统一错误形态（Rust 侧 `Result<T, AppError>` → TS discriminated union）；

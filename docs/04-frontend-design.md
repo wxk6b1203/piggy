@@ -584,8 +584,35 @@ pi:frame:{tabId}（≤60Hz）
 
 ### 5.1 双阶段策略
 
-- **流式阶段（LiveBlock）**：纯文本 + 极轻量内联格式（粗体/行内代码的正则级高亮，可选）。不做完整 Markdown 解析——流式中间态的 Markdown 是非法文法，解析必然抖动且浪费 CPU；
-- **转正阶段（MessageView）**：完整 unified 管线：`remark-parse → remark-gfm → rehype-sanitize → 结构 DOM`。渲染按块（段落/代码块/列表）拆分为独立子组件，React Compiler 跳过未变块。
+- **流式阶段（LiveBlock）**：纯文本直写。**不做 Markdown 解析**——流式中间态的 Markdown 是
+  非法文法（半截的 `**`、没闭合的围栏），每个 delta 跑一遍 parser 必然抖动且浪费 CPU；
+- **转正阶段（`features/chat/markdown.tsx`）**：`marked.lexer()` → **token 树 → React 元素**。
+  按块拆成独立元素，`memo` 住（文本不变就不重解析；虚拟化下只有可见行会 parse）。
+
+**为什么是 marked，且只当 parser 用**（2026-09-23 用户："直接用 marked，micromark 太小众了"）：
+
+| | 做法 | 代价 |
+|---|---|---|
+| ❌ 常见写法 | `marked.parse()` 出 HTML 串 → `dangerouslySetInnerHTML` | marked 自己 README 第一条警告就是"**不 sanitize 输出 HTML**，请配 DOMPurify"（`marked/README.md:54`）→ 多一个 sanitizer 依赖 + 一条 `innerHTML` 信任边界；而且**挂不上我们的东西**：围栏没法直接换成 `CodeBlock`、链接只能事件委托 |
+| ✅ 本仓 | `marked.lexer()` → 走 token 树，逐节点出 React | 自己写 ~150 行映射（本文件下面的规则），换来：**全仓无 `dangerouslySetInnerHTML`**、原始 HTML 只当文本、围栏直接进代码卡片、外链走宿主命令 |
+
+语法覆盖 = marked 的 **GFM**（表格 / 任务列表 / 删除线 / autolink 全开）。四条硬规则：
+
+1. **原始 HTML 不进 DOM**：`html` token 按纯文本渲染（`<script>`、`<img onerror>` 都只是字面量）；
+2. **URL 白名单**：链接只认 `http:` / `https:` / `mailto:`，图片只认 `http:` / `https:`；
+   其余（`javascript:` / `data:` / `file:` / 锚点 / 相对路径）**降级成纯文本并显示原地址**；
+3. **链接点击不导航 webview**：`e.preventDefault()` → 宿主命令 `open_external_url`
+   （Rust 侧 `validate_external_url` 再校验一次 scheme，前端被绕过也没用）；
+4. 围栏 → 我们自己那块代码卡片（§5.2：shiki 按需高亮 / 折叠 / 复制 / 行数）。
+
+数字（本机实测，同一样本 7 KB 的长回答）：marked 解析 **0.43 ms**，
+micromark+mdast 是 **5.19 ms**（12×）；打包后 parser 栈 min+gzip
+**12.9 KB vs 23.1 KB**。这也解释了为什么最终换成 marked。
+
+> ⚠️ 加了新依赖之后，**正在跑的 Vite dev server 必须重启**（并清 `node_modules/.vite`）：
+> 预打包缓存会拿着旧版本树继续服务，运行期报出 `this.getData is not a function`
+> 这种版本错配，而 vitest（走 SSR transform）全绿 —— 又是一次"单测绿、真机红"。
+> 2026-09-23 换 parser 时踩过（缓存比依赖修复早 19 秒生成）。
 
 ### 5.2 代码块
 

@@ -284,6 +284,57 @@ pub fn describe_all() -> Vec<String> {
     resolved_apps().iter().map(describe_launch).collect()
 }
 
+/// 允许交给系统打开的 scheme。
+///
+/// **白名单而不是黑名单**：`javascript:` / `data:` / `file:` / `vbscript:` 这些
+/// 一旦被交出去就是本机任意程序/文件打开面，而 markdown 里的链接来自**模型输出**
+/// （不完全可信），所以只放行这三个。改这里要同时改前端
+/// `lib/externalLink.ts` 的 `EXTERNAL_URL_SCHEMES`（两处一致由测试钉住，
+/// 见 `src/test/external-link.test.ts`）。
+const EXTERNAL_URL_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+
+/// 校验一个外部 URL：必须是绝对 URL，且 scheme 在白名单里。
+///
+/// @param url - 前端传来的原始 URL
+/// @returns 规范化后的 URL；不合法时返回**给用户看的**原因
+pub fn validate_external_url(url: &str) -> Result<String, String> {
+    let raw = url.trim();
+    if raw.is_empty() {
+        return Err("URL 是空的".to_string());
+    }
+    // 只认 `scheme://rest` / `mailto:addr`：没有 scheme 的相对路径在桌面应用里无处可跳
+    let Some((scheme, _rest)) = raw.split_once(':') else {
+        return Err(format!("不是绝对 URL（缺 scheme）: {raw}"));
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !EXTERNAL_URL_SCHEMES.contains(&scheme.as_str()) {
+        return Err(format!(
+            "不打开这个协议的链接（只允许 http / https / mailto）: {scheme}:"
+        ));
+    }
+    // 控制字符会破坏 argv（换行能塞进第二个参数），直接拒
+    if raw.chars().any(|c| c.is_control()) {
+        return Err("URL 里有控制字符".to_string());
+    }
+    Ok(raw.to_string())
+}
+
+/// 用系统默认程序打开一个外部 URL（markdown 链接、许可原文…）。
+///
+/// 与 `open_path_open` 分开的理由：那条走的是"工作区路径"的守卫
+/// （`validate_path` / `validate_directory`），URL 既不该也不需要过那套校验；
+/// 混在一起会让守卫的语义变模糊。
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let url = validate_external_url(&url)?;
+    // macOS/Windows 用 `open`，Linux 用 `xdg-open` —— 与 `LaunchSpec::ShellOpen` 同一套
+    let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
+    match host::spawn_watched(opener, &[url], Duration::from_millis(1500), &HashMap::new(), &[]) {
+        LaunchOutcome::Launched => Ok(()),
+        other => Err(format!("交不出给系统打开器（{opener}）：{other:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +406,36 @@ mod tests {
     fn open_rejects_unknown_app_ids_even_with_a_valid_directory() {
         let err = open_in_app_open("nope".into(), "/tmp".into()).unwrap_err();
         assert!(err.contains("不可用"), "{err}");
+    }
+    /// 外部 URL 的 scheme 白名单：放行三个、拦下其余（拦的是**模型输出**里的链接）。
+    #[test]
+    fn external_url_only_allows_the_three_schemes() {
+        for ok in [
+            "https://example.com/a?b=1",
+            "http://localhost:8080/x",
+            "mailto:someone@example.com",
+            "HTTPS://Example.com", // scheme 大小写不敏感
+        ] {
+            assert!(validate_external_url(ok).is_ok(), "应当放行：{ok}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "file:///etc/passwd",
+            "vbscript:msgbox(1)",
+            "/Users/x/notes.md", // 相对/裸路径：桌面应用里没有"当前页"可跳
+            "",
+            "https://example.com/a\nb", // 控制字符能塞进 argv
+        ] {
+            assert!(validate_external_url(bad).is_err(), "应当拦下：{bad}");
+        }
+    }
+
+    /// 报错文本要说清"为什么不开"，而不是一句"失败"（用户看不懂的黑箱最糟）。
+    #[test]
+    fn external_url_error_names_the_scheme() {
+        let err = validate_external_url("javascript:alert(1)").unwrap_err();
+        assert!(err.contains("javascript"), "{err}");
+        assert!(err.contains("http"), "报错里要给出允许的范围：{err}");
     }
 }

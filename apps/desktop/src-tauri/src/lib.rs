@@ -368,6 +368,7 @@ pub fn run() {
             open_in_app::open_path_available,
             open_in_app::open_path_applications,
             open_in_app::open_path_open,
+            open_in_app::open_external_url,
             commands::fs_list_dir,
             commands::fs_write_edit,
             commands::pi_export_html,

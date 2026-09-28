@@ -12,8 +12,8 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **524/524**：apps/desktop **457**（48 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 56 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
-| `cargo test` | **308 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
+| `vitest` | **541/541**：apps/desktop **474**（49 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）+ `packages/piggy-bridge` **37**（含产物新鲜度门禁 + 5 条自动激活判据）+ `packages/pi-protocol` **30** |
+| `cargo test` | **310 + 3 + 19 + 2**（另有 7 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮**没动产品代码**：只把 `--all-targets` 才看得见的 5 处 clippy 提示清掉（见下一行），测试代码语义未变 |
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
@@ -21,6 +21,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + *
 | `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
 | `ui:startup` 压缩细节（本轮新增） | **压缩行必须看得见细节**：对话行（分页从会话文件读出来那行）断言此前 token / 保留边界 `firstKeptEntryId` / 涉及文件计数 / 摘要调用用量 / 可展开摘要，并断言分页行里**没有** `systemMessage`；轨迹行断言「已压缩」行**可展开**、点开后有保留边界与摘要全文；实时路径断言 `start`+`entry_appended`+`compaction_end(result)` **只多一行**且带 `estimatedTokensAfter`；失败态断言写「压缩失败：…」+ `data-failed`、中断态断言不再留「正在压缩…」。红检实测：把轨迹行改回不可展开 + 对话行去掉两行细节 → 门禁逐条点名（含「点不开 —— 用户报的就是这条」） |
 | `ui:startup` 工具窄行（本轮新增） | **空间利用率**变成可断言的真几何：行高 ≤26（实测 24）、连续三行 ≤76（实测 72）、标题/摘要逐条核对（`读取 · src/module1.ts`、`运行命令 · pnpm test -- --grep boundary-1`，且 `data-summary-source=args`）、折叠时正文**仍在 DOM 里**且 `display:none`、点开出现代码卡片（182px）再点收起。红检实测：把工具行改回默认展开 / 摘要不读参数 / 折叠时卸载正文 / 去掉 `toolCalls` 索引 → 单测与门禁逐条点名 |
+| `ui:startup` Markdown（本轮新增） | **记号必须真的变成元素**：h1/h2/strong/行内 code/列表/引用/hr/表格单元格/围栏卡片（含行数条）逐条断言，正常链接 href 正确；安全两条在真浏览器里量——原始 HTML **不进 DOM**（`document.querySelectorAll('.pg-md img, .pg-md script')` 为 0、`window.__pwned` 未被写）且 `javascript:` 链接降级成纯文本；最后断言正文里**没有 `##`/`**`/``` 残留**。红检实测：白名单失效 / 围栏不走代码卡片 / 链接点击不交宿主 → 单测逐条点名 |
 | `ui:startup` 第 5 段 | **文件预览真高亮**：README.md 语言条 `markdown` + 4 种 token 类 / 3 种颜色（标题 `rgb(86,156,214)`）；main.go 9 种颜色（注释绿/关键字蓝/字符串橙）；`notes.zzz` 老实 `plaintext` 只有 1 色；外加**按需门**（开了 2 个文件只许下 `markdown`/`go` 两门语言定义，多一门就红） |
 | `ui:startup` 第 6 段 | **折叠侧栏不许进死胡同**：关掉全部标签 → 收起侧栏 → 断言图标轨恒 56px + 展开按钮 36×36 + 三个按钮都有可访问名 → 点回来 → 侧栏 254px、图标轨消失、标签数不变；连做 2 轮 |
 | `ui:startup` 第 7 段 | **空编辑区占位**：关光标签 → 水印 🐷（opacity ≤0.15）+ ≥5 条快捷键（逐条与**应用自己那份命令注册表**核标题与键位）+ ≥3 个中央入口；每个入口做 `elementFromPoint` 命中判定（防被 dockview 的 `.dv-watermark-container` 盖住）+ 真点一下建出标签 + 再关光后占位回来 |
@@ -850,6 +851,31 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     工具行一折叠，代码块探针量到的 `clientHeight` 全是 0 → "没有溢出/没有显示更多/静默失败"
     集体假红。修法是**先点开再量**（顺带把"点得开"也验了）；而且点击必须等 React 落地
     （`hydrate` 同步写 store，DOM 不是同步更新的——第一版点了空集，一段断言全红）。
+
+91. **"输出没渲染成 markdown"这类 bug，先查"有没有那一层"，再查"那层对不对"。**
+    用户截图里 `## 标题`、`**粗体**`、`---` 全是原样文本 —— 不是渲染错了，是
+    **根本没有 markdown 渲染层**：`MessageView` 的 text 分支只做了围栏切分，
+    而 docs/04 §5 早就写着"转正时解析一次"。文档里写着的机制没落地，比机制写错更难发现
+    （读文档的人以为有）。
+
+92. **用别人的 parser，也**别**用它的输出格式。**
+    marked 的默认用法是 `marked.parse()` → HTML 串 → `innerHTML`，而它 README 第一条警告
+    就是"不 sanitize，请配 DOMPurify"。我们只用 `marked.lexer()` 拿 token 树、自己出
+    React 元素：于是全仓没有 `dangerouslySetInnerHTML`、原始 HTML 只当文本、
+    围栏能直接换成我们那块代码卡片、外链能挂 onClick（HTML 串里只能事件委托）。
+    结论：**"用哪个 parser"和"用什么格式交给渲染层"是两个决定**，别捆在一起接受。
+
+93. **依赖一换，正在跑的 Vite dev server 就是脏的。**
+    换 parser 后真机报 `this.getData is not a function`（两个 markdown 包的版本树错配），
+    而 vitest 全绿 —— 因为 vitest 走 SSR transform，浏览器走 `node_modules/.vite/deps`
+    的**预打包缓存**。实测缓存文件比依赖修复早 19 秒生成，所以它拿着旧版本树继续服务。
+    规矩：**改完依赖 → `rm -rf node_modules/.vite` → 重启 dev server**；排查这类
+    "单测绿、真机红"时，第一步是确认缓存时间戳与依赖时间戳的先后。
+
+94. **换 parser 之前先把渲染层的契约冻住，换起来就是换一行 import。**
+    这次先写了 17 条 DOM 契约测试（h1/h2/strong/li/table/code 卡片/白名单/原始 HTML…），
+    然后从 micromark 换到 marked：**一条断言都没改**，全绿。反过来说，
+    如果测试是断言"解析出来的 AST 长什么样"，这次换 parser 就得重写全部测试。
 
 ## 4. 未完成 / 待决策
 

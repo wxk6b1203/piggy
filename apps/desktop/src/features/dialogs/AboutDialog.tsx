@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Modal } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
+import { openExternalUrl } from '@/lib/externalLink';
 import { useUi } from '@/stores/ui';
 
 /** 一条第三方组件（与 Rust `legal::ThirdParty` 的线格式一致）。 */
@@ -198,7 +199,15 @@ export function AboutDialog() {
           <p>
             本程序按 <strong>{info.licenseName}</strong>（<code>{info.spdx}</code>）发布。
             {' '}
-            <a href={info.licenseUrl} target="_blank" rel="noreferrer">
+            {/* 走宿主命令打开（`<a target="_blank">` 在 Tauri 里可能什么都不发生，
+                也可能把应用界面导航走——两种情况用户都读成"点了没反应"） */}
+            <a
+              href={info.licenseUrl}
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl(info.licenseUrl);
+              }}
+            >
               查看许可原文（gnu.org）
             </a>
           </p>

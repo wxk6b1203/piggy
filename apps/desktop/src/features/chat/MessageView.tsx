@@ -12,11 +12,12 @@ import { useMemo, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { MessageView } from '@/stores/messages';
 import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
-import { CodeBlock, splitFences } from './CodeBlock';
+import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
+import { Markdown } from './markdown';
 import { ToolRow } from './ToolRow';
 import { firstLine } from './toolRowModel';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
@@ -145,7 +146,9 @@ export function MessageView({
         {cm.summary ? (
           <details className="pg-compaction-summary">
             <summary>压缩摘要</summary>
-            <div className="pg-thinking-body">{cm.summary}</div>
+            <div className="pg-thinking-body">
+              <Markdown text={cm.summary} compact />
+            </div>
           </details>
         ) : null}
       </div>
@@ -179,7 +182,9 @@ function ThinkingRow({ text }: { text: string }) {
           ) : null
         }
       >
-        <div className="pg-thinking-body">{text}</div>
+        <div className="pg-thinking-body">
+          <Markdown text={text} compact />
+        </div>
       </DisclosureRow>
     </div>
   );
@@ -250,23 +255,13 @@ function Block({ block }: { block: ContentBlock }) {
     path?: string;
   };
   switch (b.type) {
-    case 'text': {
-      // 转正阶段（04 §5.2）：围栏代码块 → Shiki 按需高亮，其余保持纯文本
-      const segs = splitFences(b.text ?? '');
-      return (
-        <>
-          {segs.map((s, i) =>
-            s.kind === 'code' ? (
-              <CodeBlock key={i} code={s.code} lang={s.lang} />
-            ) : (
-              <p key={i} className="pg-text">
-                {s.text}
-              </p>
-            ),
-          )}
-        </>
-      );
-    }
+    case 'text':
+      /* 转正阶段渲染 **Markdown**（04 §5）。
+         用户 2026-09-23 的截图：`## 🔴 严重缺陷`、`**默认配置受影响**`、`---` 全是原样文本。
+         核实：这一支此前只做 `splitFences()`（围栏 → 代码卡片），其余当纯文本 ——
+         docs/04 §5 早就写着"Markdown 只在转正时解析一次"，但那个 parser 一直没落地。
+         流式阶段**不变**（仍是纯文本直写：流式中间态的 markdown 是非法文法，逐帧 parse 只会抖）。 */
+      return <Markdown key="text" text={b.text ?? ''} />;
     case 'thinking':
       // 思考行也是**窄行**（DSH `DisclosureRow` + `message.think`）：标题「思考」+ 首行摘要，
       // 展开看全文。旧版是 `<details><summary>思考</summary>`——几何与工具行不齐，

@@ -386,6 +386,63 @@ const fleet = await page.evaluate(async () => {
     };
   })();
 
+  /* Markdown 渲染（用户 2026-09-23 截图：助手回答里的 `## 🔴 严重缺陷`、`**默认配置受影响**`、
+     `---` 全是原样文本）。jsdom 能测语法，这里量的是**真浏览器里真的成了元素**：
+     标题/粗体/列表/表格/分隔线/围栏卡片都在，而且**没有任何 markdown 记号残留**；
+     同时钉住安全两条：原始 HTML 不进 DOM、`javascript:` 链接不做成可点链接。 */
+  const markdown = await (async () => {
+    const src = [
+      '# 一级标题',
+      '',
+      '正文 **粗体** 与 `code` 和 [官网](https://example.com/x)、[坏的](javascript:alert(1))。',
+      '',
+      '## 二级标题',
+      '',
+      '- 列表一',
+      '- 列表二',
+      '',
+      '> 引用',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '',
+      '---',
+      '',
+      '```ts',
+      'const a: number = 1',
+      '```',
+      '',
+      '原始 HTML：<img src=x onerror="window.__pwned=1">',
+    ].join(String.fromCharCode(10));
+    stores.useMessages.getState().hydrate(tabId, [
+      { role: 'user', content: [{ type: 'text', text: '渲染 markdown' }] },
+      { role: 'assistant', content: [{ type: 'text', text: src }] },
+    ]);
+    await new Promise((r) => setTimeout(r, 2500));
+    const scope = [...document.querySelectorAll('.pg-md')].find((el) => !el.closest('[data-thinking-row]'));
+    if (!scope) return { error: '找不到助手正文的 .pg-md' };
+    const text = scope.textContent ?? '';
+    return {
+      h1: scope.querySelector('h1')?.textContent ?? null,
+      h2: scope.querySelector('h2')?.textContent ?? null,
+      strong: scope.querySelector('strong')?.textContent ?? null,
+      inlineCode: scope.querySelector(':not(pre) > code')?.textContent ?? null,
+      listItems: scope.querySelectorAll('ul > li').length,
+      quote: scope.querySelector('blockquote')?.textContent ?? null,
+      hr: scope.querySelectorAll('hr').length,
+      tableCells: scope.querySelectorAll('th, td').length,
+      fenceCard: !!scope.querySelector('.pg-codeblock'),
+      fenceLines: scope.querySelector('.pg-codeblock-lines')?.textContent ?? null,
+      linkHref: scope.querySelector('a.pg-md-link')?.getAttribute('href') ?? null,
+      unsafeLinks: scope.querySelectorAll('.pg-md-unsafe').length,
+      htmlAsText: scope.querySelector('.pg-md-html')?.textContent ?? null,
+      injected: document.querySelectorAll('.pg-md img, .pg-md script').length,
+      pwned: globalThis.__pwned ?? null,
+      rawMarkers: /(^|\s)(##|\*\*|```)/.test(text),
+    };
+  })();
+
   return {
     tabId,
     aLaneBlocks,
@@ -395,6 +452,7 @@ const fleet = await page.evaluate(async () => {
     slash,
     code,
     compact,
+    markdown,
     bridged: stores.useFleet.getState().bridge.installed,
     synced: document.querySelector('.pg-fleet-synced')?.textContent ?? '',
   };
@@ -2508,6 +2566,33 @@ if (cp2.headH == null) {
     bad.push(`工具窄行：再点一次没有收回去（hidden=${String(cp2.reCollapsed)}）★`);
   }
   if (!cp2.hasCardInDom) bad.push('工具窄行：一个代码卡片都不在 DOM 里（内容被吞了）★');
+}
+
+/* Markdown 渲染：助手回答里的记号必须真的变成元素。
+   用户截图里 `## 严重缺陷` / `**默认配置受影响**` / `---` 全是原样文本 —— 修好之后这里逐条钉住，
+   顺便把"原始 HTML 不进 DOM""`javascript:` 不做成链接"两条安全断言也放在真浏览器里量。 */
+const mdp = fleet.markdown ?? {};
+if (mdp.error) bad.push(`Markdown：${mdp.error} ★`);
+else {
+  if (mdp.h1 !== '一级标题' || mdp.h2 !== '二级标题') {
+    bad.push(`Markdown：标题没成元素（h1=${JSON.stringify(mdp.h1)} h2=${JSON.stringify(mdp.h2)}）★`);
+  }
+  if (mdp.strong !== '粗体') bad.push(`Markdown：粗体没成 <strong>（读到 ${JSON.stringify(mdp.strong)}）★`);
+  if (mdp.inlineCode !== 'code') bad.push(`Markdown：行内代码没成 <code> ★`);
+  if (mdp.listItems < 2) bad.push(`Markdown：列表只出了 ${mdp.listItems} 项 ★`);
+  if (mdp.quote !== '引用') bad.push('Markdown：引用没成 <blockquote> ★');
+  if (mdp.hr < 1) bad.push('Markdown：分隔线没成 <hr> ★');
+  if (mdp.tableCells !== 4) bad.push(`Markdown：表格单元格 ${mdp.tableCells} 个（应为 4）★`);
+  if (!mdp.fenceCard) bad.push('Markdown：围栏没走代码卡片（高亮/行数/复制都没了）★');
+  if (!/1 行/.test(mdp.fenceLines ?? '')) bad.push('Markdown：围栏卡片的行数条没了 ★');
+  if (mdp.linkHref !== 'https://example.com/x') {
+    bad.push(`Markdown：正常链接的 href 不对（${JSON.stringify(mdp.linkHref)}）★`);
+  }
+  if (mdp.unsafeLinks < 1) bad.push('Markdown：`javascript:` 链接没有降级成纯文本（做成了可点链接？）★');
+  if (!/onerror/.test(mdp.htmlAsText ?? '')) bad.push('Markdown：原始 HTML 没有按纯文本显示 ★');
+  if (mdp.injected !== 0) bad.push(`Markdown：DOM 里出现了 ${mdp.injected} 个来自 markdown 的 img/script（原始 HTML 进 DOM 了）★`);
+  if (mdp.pwned != null) bad.push('Markdown：原始 HTML 里的 onerror 被执行了 ★');
+  if (mdp.rawMarkers) bad.push('Markdown：正文里还残留 `##` / `**` / ``` 记号（没渲染）★');
 }
 
 if (!preview.markdown?.mounted) bad.push('预览：markdown 文件连 Monaco 都没挂上（core chunk 没加载？）★');

@@ -292,6 +292,7 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 | 右栏 | 文档/代码预览面板 | 统计 KV 列表 | ✅ 默认文件树 + DSH 式 38px 文档预览 |
 | 对话里的**工具行** | 一行 24px：`DisclosureRow`（16px 前导框 + 标题 13/24）+ 2×2 圆点 + 摘要 `flex:1` 省略号，点开才是卡片（`ui-tool/.../ToolRow.module.css`、`ui-primitives/.../DisclosureRow.module.css`） | 每个工具结果是**整块卡片**（6 行 `read` = 258px、3 行 `bash` = 201px，另带 16px 上下外边距） | ✅ 已对齐（04 §5.2）。两处**有意差异**：① 折叠正文用 `hidden="until-found"` 留在 DOM 里（Ctrl+F 可搜），DSH 在分组层用 `useSearchableHidden` 达到同一目的；② DSH 的完成回合整段"过程"还能再折成一行（`TurnProcessNodeView`，33px「已完成工作 / 用时 X」），Piggy **没做**这一层（见 docs/15 §4 待决策） |
 | 「本轮文件改动」 | 已是 `ChangedFiles` **卡片**（C1） | 不存在 | ⬜ 待做 |
+| Markdown 渲染 | 助手正文按 **markdown** 渲染：DSH 用 `micromark + mdast → 直接出 React`（`ui-primitives/src/markdown/render.tsx`，弃用 react-markdown/remark-rehype 是为了流式缓存冻结块） | 只做围栏切分，`##`/`**` 原样显示（用户 2026-09-23 截图） | ✅ 已对齐**呈现**、有意偏离**实现**：Piggy 用 `marked.lexer()` → token → React（用户裁定"micromark 太小众"）。两者都不产生 HTML 字符串；差异只在 parser：marked 解析快 12×、栈小 10 KB gz，但**没有** KaTeX 数学、脚注、增量（流式）解析这三档 —— 前两档 Piggy 目前不用，第三档 Piggy 的流式阶段本来就是纯文本（04 §5.1） |
 
 ## 5. 改造原则（已执行）
 
