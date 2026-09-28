@@ -312,13 +312,23 @@ export function SessionsSidebar() {
           <div className="pg-fg-dim pg-sidebar-pad">无会话（点「新会话」新建；终端 pi 建的会话首个回合后出现）</div>
         )}
         {sidebar.map((g) => {
-          const collapsed = !!collapsedGroups[g.cwd];
+          // 「已删除的项目目录」是汇总组：默认收起、不能在里面新建会话
+          // （cwd 已经不存在，tab_create 会直接报 SESSION_CWD_MISSING）
+          const collapsed = g.missingRoot ? !expandedGroups[g.cwd] : !!collapsedGroups[g.cwd];
+          const toggle = () =>
+            g.missingRoot
+              ? setExpandedGroups((s) => ({ ...s, [g.cwd]: !s[g.cwd] }))
+              : setCollapsedGroups((s) => ({ ...s, [g.cwd]: !collapsed }));
           return (
-            <div key={g.cwd} className="pg-group">
+            <div key={g.cwd} className={`pg-group${g.missingRoot ? ' pg-group-missing' : ''}`}>
               <div
                 className="pg-group-head"
-                title={g.cwd}
-                onClick={() => setCollapsedGroups((s) => ({ ...s, [g.cwd]: !collapsed }))}
+                title={
+                  g.missingRoot
+                    ? '这些会话的项目目录已经不存在了（多为 pi 自己在临时目录跑出来的）。会话文件都还在，展开可以看到并导出'
+                    : g.cwd
+                }
+                onClick={toggle}
               >
                 <span className="pg-group-caret">
                   <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={12} />
@@ -328,17 +338,22 @@ export function SessionsSidebar() {
                 </span>
                 <span className="pg-group-label">{g.label}</span>
                 <span className="pg-group-count">{g.sessions.length}</span>
-                <button
-                  className="pg-group-new"
-                  title={`在 ${g.label} 新建会话`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void newSession(g.cwd);
-                  }}
-                >
-                  <Icon name="add" size={13} />
-                </button>
+                {!g.missingRoot && (
+                  <button
+                    className="pg-group-new"
+                    title={`在 ${g.label} 新建会话`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void newSession(g.cwd);
+                    }}
+                  >
+                    <Icon name="add" size={13} />
+                  </button>
+                )}
               </div>
+              {g.missingRoot && !collapsed && (
+                <div className="pg-group-hint">目录已不存在，打开可能失败；会话文件仍在会话目录里</div>
+              )}
               {!collapsed &&
                 g.visible.map((m) => {
                   const active = m.path === activeSessionFile;
@@ -419,7 +434,11 @@ export function SessionsSidebar() {
                   className="pg-group-more"
                   onClick={() => setExpandedGroups((s) => ({ ...s, [g.cwd]: !s[g.cwd] }))}
                 >
-                  {expandedGroups[g.cwd] ? '收起' : `展开其余 ${g.hiddenCount} 个会话`}
+                  {expandedGroups[g.cwd]
+                    ? '收起'
+                    : g.missingRoot
+                      ? `展开 ${g.hiddenCount} 个已删除项目的会话`
+                      : `展开其余 ${g.hiddenCount} 个会话`}
                 </button>
               )}
             </div>

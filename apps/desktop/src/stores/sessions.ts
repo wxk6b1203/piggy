@@ -118,41 +118,91 @@ export interface SessionGroupView {
   visible: SessionMeta[];
   /** 折叠/收起后未展示的会话数 */
   hiddenCount: number;
+  /** 「已删除的项目目录」汇总组：默认收起、永远排在最后（见 buildSidebar 注释） */
+  missingRoot?: boolean;
 }
 
 export const PREVIEW_LIMIT = 3;
 
+/** 「已删除的项目目录」汇总组的键（不是真 cwd，只用于折叠/展开状态）。 */
+export const MISSING_CWD_KEY = '\u0000missing-cwd';
+
 /**
  * 侧栏分组视图（docs/09 DSH 参考）：组与组内会话一律按**创建时间**降序（稳定，不随写入跳动）；
  * collapsedGroups 整组收起；expandedGroups 超过 PREVIEW_LIMIT 时展开全部，否则显示前 3 + 折叠计数。
+ *
+ * **目录已不存在的分组要沉底并合并成一个**（真机踩到）：自定义 `sessionDir` 下，
+ * pi 自己会把每次 `pi -p`（含它自己的测试跑）的会话平铺写进同一个目录，于是侧栏里
+ * 一次多出几十个 `/private/tmp/...`、`/var/folders/...` 分组——每个只挂 1 个会话，
+ * 却因为"按最新排序"把用户真正的项目挤到第 16、27 位，看起来就像"原来的会话没了"。
+ * 这些会话本身不能丢（pi 的 `--resume` 也能看到它们），所以合并成一个默认收起的
+ * 汇总组放在最后，而不是过滤掉。判据用后端已经给出的 `cwd_missing`（逐会话），
+ * 一个分组只要还有会话的目录存在，就仍按普通项目排。
  */
 export function buildSidebar(
   groups: SessionGroup[],
   collapsedGroups: Record<string, boolean>,
   expandedGroups: Record<string, boolean>,
 ): SessionGroupView[] {
-  const sorted = [...groups]
-    .map((g) => ({
-      ...g,
-      sessions: [...g.sessions].sort((a, b) => createdMs(b) - createdMs(a)),
-    }))
+  const normalized = [...groups].map((g) => ({
+    ...g,
+    sessions: [...g.sessions].sort((a, b) => createdMs(b) - createdMs(a)),
+  }));
+  // 目录还在的项目组：按最新会话降序（原逻辑）
+  const alive = normalized
+    .filter((g) => g.sessions.some((m) => !m.cwd_missing))
     .sort((a, b) => {
       const am = a.sessions[0] ? createdMs(a.sessions[0]) : 0;
       const bm = b.sessions[0] ? createdMs(b.sessions[0]) : 0;
       return bm - am;
     });
-  return sorted.map((g) => {
-    if (collapsedGroups[g.cwd]) {
-      return { cwd: g.cwd, label: g.label, sessions: g.sessions, visible: [], hiddenCount: g.sessions.length };
-    }
-    const expanded = expandedGroups[g.cwd];
-    const visible = expanded ? g.sessions : g.sessions.slice(0, PREVIEW_LIMIT);
+  // 目录全没了的会话：合并成一个汇总组
+  const missing = normalized
+    .filter((g) => g.sessions.length > 0 && g.sessions.every((m) => m.cwd_missing))
+    .flatMap((g) => g.sessions)
+    .sort((a, b) => createdMs(b) - createdMs(a));
+
+  const views = alive.map((g) => viewOf(g, collapsedGroups, expandedGroups));
+  if (missing.length > 0) {
+    views.push(
+      viewOf(
+        { cwd: MISSING_CWD_KEY, label: '已删除的项目目录', sessions: missing },
+        collapsedGroups,
+        expandedGroups,
+        true,
+      ),
+    );
+  }
+  return views;
+}
+
+function viewOf(
+  g: SessionGroup,
+  collapsedGroups: Record<string, boolean>,
+  expandedGroups: Record<string, boolean>,
+  missingRoot = false,
+): SessionGroupView {
+  // 只有汇总组才带 missingRoot 标记，普通分组不带（别让调用方以为"false 也算标记"）
+  const mark = missingRoot ? { missingRoot: true as const } : {};
+  const expanded = expandedGroups[g.cwd];
+  // 汇总组默认收起（用户没明确展开过就不铺开）
+  if (missingRoot ? !expanded : collapsedGroups[g.cwd]) {
     return {
       cwd: g.cwd,
       label: g.label,
       sessions: g.sessions,
-      visible,
-      hiddenCount: g.sessions.length - visible.length,
+      visible: [],
+      hiddenCount: g.sessions.length,
+      ...mark,
     };
-  });
+  }
+  const visible = expanded ? g.sessions : g.sessions.slice(0, PREVIEW_LIMIT);
+  return {
+    cwd: g.cwd,
+    label: g.label,
+    sessions: g.sessions,
+    visible,
+    hiddenCount: g.sessions.length - visible.length,
+    ...mark,
+  };
 }
