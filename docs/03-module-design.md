@@ -770,9 +770,29 @@ Piggy 不重复实现）；**只有认得的才拦**（用户真的可能发一�
 **别把"文件读不到"变成"会话空白"**。
 
 `transcriptScroll.ts` 是纯函数（`distanceFromBottom` / `isAtTail` / `nextFollowing` /
-`scrollTopAfterPrepend`），阈值 25px 取自 DSH 的 `useScrollFollow(state.followingTail, 25)`。
-"打开即贴底""往上滚才停止跟随""翻页不跳"三条都是几何判断，而 jsdom 里
+`nextFollowingFromSample` / `scrollTopAfterPrepend` / `readerAnchorOf` / `readerTopFrom`），
+阈值 25px 取自 DSH 的 `useScrollFollow(state.followingTail, 25)`。
+"打开即贴底""往上滚才停止跟随""翻页不跳""读者读到哪"四条都是几何判断，而 jsdom 里
 `clientHeight` 恒为 0 —— 所以判断留在纯函数里单测，真几何交给浏览器门禁量。
+
+`readerAnchorOf` / `readerTopFrom` 是**读者位置的锚点**（口径照抄 DSH 的 `ChatScrollPosition`：
+行键 + 行顶到视口顶的距离，裸像素只作兜底）。它存在的前提是一条浏览器事实：
+dockview 把非活动面板的内容**摘出文档**（不是 `display:none`），而被摘出的元素
+**不保留滚动位置** —— 实测 Chrome `removeChild` → `appendChild` 之后 `scrollTop`
+从 300 掉到 0（只有 `display:none` 才保留 250）。所以"切到别的标签再切回来"
+必须由我们自己把位置记回来，而且记**行**不记像素：隐藏期间上面的行完全可能变高。
+
+### 3.0d2 `lib/rowMemory.ts` — 行内展开态的记忆（虚拟化会卸载行）
+
+转录是虚拟化的：滚出窗口（视口 + overscan）的行会被**卸载**，行里的 `useState` 跟着丢。
+"展开的长思考/工具行看完，往上滚一点再滚回来又折上了"（用户 2026-09-23 报）就是它。
+所以"用户开过没开过"活在行组件**外面**：键 = `tabId \0 行键 \0 插槽 \0 开关名`。
+
+四条边界：只记**布尔意图**（不记测量结果，那随布局变）；只写用户真的切过的键
+（条目数 = 手动展开过的行数，仍然设 LRU 上限兜底）；**不落盘**（视图状态，重启后行键
+本来就是新的）；没有行身份时（轨迹视图那种孤立渲染）退化为组件内 `state`。
+关标签（`EditorArea`）与休眠（`lib/sleep.ts`）时 `forgetRowTab(tabId)` —— 休眠后唤醒
+是**新的行 id**，旧记忆再也对不上，留着就是垃圾。
 
 ### 3.0e `lib/resizeWatch.ts` + `lib/resizeProbe.ts` — 全应用一个尺寸订阅（+ 谁建的它）
 

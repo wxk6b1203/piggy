@@ -1104,6 +1104,19 @@ section.root[data-turn-trigger]
 
 **轮次分组靠数据属性，不靠包裹元素**：每个座位输出 `data-chat-flow-key`、`data-chat-anchor-key`、`data-chat-flow-kind={kind}`、`data-chat-turn={turn}`、`data-chat-group-part`（`ChatNodeSeat.tsx:146-160`），轮次轨道/视口靠读 `data-chat-turn` 定位（`chat/use-chat-viewport.ts:233,262`）。
 
+**读到哪记到哪 = 行锚点，不是裸像素**（Piggy 2026-09-23 对齐）：DSH 的阅读位置是
+`ChatScrollPosition = { anchorKey, anchorTop, scrollTop }` —— 视口顶端那一行的
+`data-chat-anchor-key` + 它到视口顶的距离，裸 `scrollTop` 只作兜底
+（`chat/use-chat-viewport.ts:166-200` 的 `capturePosition`：先用 `elementsFromPoint`
+取顶部那一行，退化时用二分找第一行，返回 `{anchorKey, anchorTop, scrollTop}`）。
+打开会话时 `ChatReading.restore()` 先读这份记忆，**没有记忆才贴底**
+（`chat/use-chat-reading.ts:82-95`：`const saved = this.store.read(); if (saved === null) { this.followTail(); return }`）。
+跟随意图与读者采样在 `chat/use-scroll-follow.ts`（`ScrollFollow.sample/settle/jump/toBottom`，
+`sampledTop` 用来把"程序化滚动"排除在读者意图之外），容差 `FOLLOW_THRESHOLD = 24`
+（`use-chat-reading.ts:9`；Piggy 用 25，见 04 §2.1.1）。
+Piggy 的对应实现：`readerAnchorOf` / `readerTopFrom`（`features/chat/transcriptScroll.ts`），
+锚点按虚拟化器的 **`getItemKey`（行键）** 找回，找不到那一行才退回裸位置。
+
 ---
 
 ## 4. 轨迹视图（Trajectory）
