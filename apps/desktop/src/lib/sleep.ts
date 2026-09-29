@@ -11,6 +11,7 @@ import { useTabs } from '@/stores/tabs';
 import { useTrajectory } from '@/stores/trajectory';
 import { useBash } from '@/stores/bash';
 import { loadTail } from '@/lib/transcriptPage';
+import { forgetRowTab } from '@/lib/rowMemory';
 
 const sleeping = new Set<string>();
 
@@ -29,6 +30,8 @@ export async function sleepTab(tabId: string): Promise<void> {
   await cmd('tab_sleep', { tabId });
   markSleeping(tabId);
   useMessages.getState().remove(tabId);
+  // 唤醒时行是**新的 id**（`stores/messages.ts` 的 nextId），旧记忆再也对不上
+  forgetRowTab(tabId);
   useTrajectory.getState().clear(tabId);
   useBash.getState().clear(tabId);
 }

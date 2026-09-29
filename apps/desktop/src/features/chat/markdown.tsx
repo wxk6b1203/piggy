@@ -157,17 +157,17 @@ function inlineToken(token: Tokens.Generic, key: string): ReactNode {
 
 /* ── 块 ──────────────────────────────────────────────────────────────── */
 
-function blocks(tokens: Tokens.Generic[], keyPrefix: string): ReactNode[] {
-  return tokens.map((t, i) => blockToken(t, `${keyPrefix}-${i}`));
+function blocks(tokens: Tokens.Generic[], keyPrefix: string, memoryKey: string | null): ReactNode[] {
+  return tokens.map((t, i) => blockToken(t, `${keyPrefix}-${i}`, memoryKey));
 }
 
-function listItem(item: Tokens.ListItem, key: string): ReactNode {
+function listItem(item: Tokens.ListItem, key: string, memoryKey: string | null): ReactNode {
   const checked = item.task ? item.checked : null;
   // 列表项里的**单个 text 段**不再包 <p>（行距才不会被撑开），多块结构照常
   const inner =
     item.tokens.length === 1 && item.tokens[0]!.type === 'text'
       ? nested(item.tokens[0] as Tokens.Generic, `${key}-p`)
-      : blocks(item.tokens as Tokens.Generic[], key);
+      : blocks(item.tokens as Tokens.Generic[], key, memoryKey);
   return (
     <li key={key} className={item.task ? 'pg-md-task' : undefined}>
       {checked == null ? null : (
@@ -184,7 +184,7 @@ function listItem(item: Tokens.ListItem, key: string): ReactNode {
   );
 }
 
-function blockToken(token: Tokens.Generic, key: string): ReactNode {
+function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null): ReactNode {
   switch (token.type) {
     case 'space':
     case 'def':
@@ -205,7 +205,7 @@ function blockToken(token: Tokens.Generic, key: string): ReactNode {
           key={key}
           start={t.ordered && t.start !== '' && Number(t.start) !== 1 ? Number(t.start) : undefined}
         >
-          {t.items.map((item, i) => listItem(item, `${key}-${i}`))}
+          {t.items.map((item, i) => listItem(item, `${key}-${i}`, memoryKey))}
         </Tag>
       );
     }
@@ -215,7 +215,7 @@ function blockToken(token: Tokens.Generic, key: string): ReactNode {
       const hasBlocks = t.tokens.some((x) => x.type !== 'paragraph' && x.type !== 'text');
       return (
         <blockquote key={key}>
-          {hasBlocks ? blocks(t.tokens, key) : <p>{nested(t, key)}</p>}
+          {hasBlocks ? blocks(t.tokens, key, memoryKey) : <p>{nested(t, key)}</p>}
         </blockquote>
       );
     }
@@ -226,7 +226,17 @@ function blockToken(token: Tokens.Generic, key: string): ReactNode {
       const t = token as Tokens.Code;
       const lang = (t.lang ?? '').trim();
       // 没有语言标签的围栏走 `text`（纯文本、不报"未收录此语言"）
-      return <CodeBlock key={key} code={t.text} lang={lang || 'text'} title={lang || undefined} />;
+      return (
+        <CodeBlock
+          key={key}
+          code={t.text}
+          lang={lang || 'text'}
+          title={lang || undefined}
+          // 同一个键在同一个位置永远算出同一个值（marked 的 token 顺序是确定的），
+          // 所以"卸载再挂载"能找回用户上一次的折叠状态（见 lib/rowMemory）
+          memoryKey={memoryKey ? `${memoryKey}:${key}` : null}
+        />
+      );
     }
     case 'table': {
       const t = token as Tokens.Table;
@@ -282,16 +292,25 @@ marked.use({ gfm: true, breaks: false, async: false });
  *
  * @param props.text - markdown 原文（转正后的稳定文本）
  * @param props.compact - 紧凑变体（思考正文用：13px/20px、块间距减半）
+ * @param props.memoryKey - 围栏代码块的折叠态记忆前缀（`lib/rowMemory`；缺省不记忆）
  */
-export const Markdown = memo(function Markdown({ text, compact = false }: { text: string; compact?: boolean }) {
+export const Markdown = memo(function Markdown({
+  text,
+  compact = false,
+  memoryKey = null,
+}: {
+  text: string;
+  compact?: boolean;
+  memoryKey?: string | null;
+}) {
   const nodes = useMemo(() => {
     try {
       const tokens = marked.lexer(text) as TokensList;
-      return blocks(tokens as unknown as Tokens.Generic[], 'md');
+      return blocks(tokens as unknown as Tokens.Generic[], 'md', memoryKey);
     } catch {
       // 解析失败（畸形 markdown）**不能白屏**：退回纯文本，与流式阶段一致
       return [<p key="fallback">{text}</p>];
     }
-  }, [text]);
+  }, [text, memoryKey]);
   return <div className={`pg-md${compact ? ' pg-md-compact' : ''}`}>{nodes}</div>;
 });

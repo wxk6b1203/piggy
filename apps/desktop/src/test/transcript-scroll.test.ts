@@ -11,6 +11,8 @@ import {
   isAtTail,
   nextFollowing,
   nextFollowingFromSample,
+  readerAnchorOf,
+  readerTopFrom,
   scrollTopAfterPrepend,
 } from '@/features/chat/transcriptScroll';
 
@@ -123,5 +125,45 @@ describe('跟随意图（问"这段距离是谁造成的"）', () => {
     expect(
       nextFollowingFromSample({ ...base, metrics: geo(1700, 2000), lastScrollHeight: 2000 }),
     ).toBe(true);
+  });
+});
+
+/**
+ * 读者位置的锚点（用户 2026-09-23："切到另一个会话，不是在最低位，而是在当前页的高位"）。
+ *
+ * 前提是浏览器**不保留**被摘出文档的元素的滚动位置（实测 Chrome：`removeChild` →
+ * `appendChild` 之后 `scrollTop` 从 300 掉到 0；只有 `display:none` 才保留）——
+ * dockview 走的正是前者，所以位置必须由我们自己记回来。
+ */
+describe('读者位置锚点', () => {
+  /** 三行，各 100px：0-99 / 100-199 / 200-299。 */
+  const rows = [
+    { key: 'r0', start: 0, size: 100 },
+    { key: 'r1', start: 100, size: 100 },
+    { key: 'r2', start: 200, size: 100 },
+  ];
+
+  it('锚在"底边越过视口顶"的那一行上，记的是行顶到视口顶的距离', () => {
+    expect(readerAnchorOf(rows, 0)).toEqual({ key: 'r0', delta: 0, top: 0 });
+    expect(readerAnchorOf(rows, 150)).toEqual({ key: 'r1', delta: 50, top: 150 });
+    // 恰好落在行边界上：算它自己那一行（`>` 而不是 `>=`）
+    expect(readerAnchorOf(rows, 200)).toEqual({ key: 'r2', delta: 0, top: 200 });
+  });
+
+  it('一行都没有（还没有布局）时没有锚点', () => {
+    expect(readerAnchorOf([], 100)).toBeNull();
+  });
+
+  it('还原：锚点行还在 → 按它现在的位置算（行高变了也不会跑到别的行上）', () => {
+    const anchor = readerAnchorOf(rows, 150)!;
+    // 上面插进来一行 80px 高的内容：同一行现在从 180 开始 → 位置应当是 230
+    expect(readerTopFrom(anchor, 180, 10_000)).toBe(230);
+  });
+
+  it('还原：锚点行没了（换窗）→ 退回裸位置；两种都钳进可滚范围', () => {
+    const anchor = readerAnchorOf(rows, 150)!;
+    expect(readerTopFrom(anchor, null, 10_000)).toBe(150);
+    expect(readerTopFrom(anchor, 180, 200)).toBe(200); // 超出可滚范围
+    expect(readerTopFrom({ key: 'r0', delta: -30, top: 0 }, null, 500)).toBe(0); // 不许为负
   });
 });

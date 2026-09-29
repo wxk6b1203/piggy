@@ -17,8 +17,8 @@
  * 正文用 `DisclosureRow` 的 `hidden="until-found"`：折叠不等于不渲染 —— Ctrl+F 能搜到、
  * 读屏与复制拿得到（本仓纪律，DSH 在分组层做同一件事）。
  */
-import { useState } from 'react';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
+import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
 import { Icon, type IconName } from '@/features/common/Icon';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
@@ -43,10 +43,14 @@ export interface ToolRowProps {
   isError: boolean;
   /** 结果正文（摘要兜底与错误行要用） */
   text: string;
+  /** 这一行的身份：展开态记忆（见 lib/rowMemory；缺省 = 不记忆） */
+  memory?: RowMemory | undefined;
 }
 
-export function ToolRow({ toolName, toolCallId, args, isError, text }: ToolRowProps) {
-  const [open, setOpen] = useState(false);
+export function ToolRow({ toolName, toolCallId, args, isError, text, memory }: ToolRowProps) {
+  /* 展开态记忆在行外：滚出虚拟窗口的行会被卸载，行内 useState 会跟着丢
+     （用户报："工具行展开看完，滚上去再滚回底部又折回去了"）。 */
+  const [open, setOpen] = useRowFlag(slotKey(memory, 'tool'), 'open');
   const model = toolRowModel(toolName, args, text, isError);
   const { lang } = inferToolLang(toolName, text);
 
@@ -87,7 +91,13 @@ export function ToolRow({ toolName, toolCallId, args, isError, text }: ToolRowPr
         }
       >
         {/* 正文照旧是那块代码卡片：折叠/高亮/行数/复制都在 */}
-        <CodeBlock code={text} lang={lang} title={toolName ?? 'tool'} collapsible />
+        <CodeBlock
+          code={text}
+          lang={lang}
+          title={toolName ?? 'tool'}
+          collapsible
+          memoryKey={slotKey(memory, 'tool:body')}
+        />
       </DisclosureRow>
     </div>
   );

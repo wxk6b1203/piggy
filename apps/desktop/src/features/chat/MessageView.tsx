@@ -25,17 +25,24 @@ import type { TodoItem } from '@/lib/todoModel';
 import { firstLine } from './toolRowModel';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 import { formatExactTokens } from '@/lib/tokenFormat';
+import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
 
 export function MessageView({
   view,
   call,
   baseline,
+  memory,
 }: {
   view: MessageView;
   /** 该行的工具调用参数（`toolCalls[toolCallId]`，见 stores/messages.ts） */
   call?: { name: string; args?: Record<string, unknown> } | undefined;
   /** todo_write 行的**上一份**清单（差异对比；见 lib/todoModel 的 `todoBaselines`） */
   baseline?: TodoItem[] | undefined;
+  /**
+   * 这一行的身份（tab + 行 id）：行内展开态靠它跨"虚拟化卸载"活下来
+   * （见 `lib/rowMemory`；没有它 —— 轨迹视图那种孤立渲染 —— 退化为组件内 state）。
+   */
+  memory?: RowMemory | undefined;
 }) {
   const todoOn = useTodoSupported();
   const m = view.message as AgentMessage & { content?: unknown };
@@ -58,7 +65,7 @@ export function MessageView({
       <div className="pg-message pg-assistant">
         <div className="pg-assistant-body">
           {blocks.map((b, i) => (
-            <Block key={i} block={b} />
+            <Block key={i} block={b} blockKey={String(i)} memory={memory} />
           ))}
         </div>
         {/* 失败/中断回合：pi 用普通 assistant 消息表达（content 为空 + stopReason/errorMessage）。
@@ -88,6 +95,7 @@ export function MessageView({
           text={text}
           isError={rm.isError === true}
           baseline={baseline}
+          memory={memory}
         />
       );
     }
@@ -98,6 +106,7 @@ export function MessageView({
         args={call?.args}
         isError={rm.isError === true}
         text={text}
+        memory={memory}
       />
     );
   }
@@ -179,8 +188,10 @@ export function MessageView({
 }
 
 /** 思考行的窄行包装：受控展开 + 首行摘要（DSH `message.think`）。 */
-function ThinkingRow({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+function ThinkingRow({ text, memory, slot }: { text: string; memory?: RowMemory | undefined; slot: string }) {
+  /* 展开态**记忆在行外**：这条行滚出虚拟窗口就被卸载，`useState` 会跟着丢
+     —— 用户报的"展开看完、滚上去再滚回底部就看不清过程"就是它（见 lib/rowMemory）。 */
+  const [open, setOpen] = useRowFlag(slotKey(memory, slot), 'open');
   const summary = text ? firstLine(text) : '';
   return (
     <div className="pg-thinkrow" data-thinking-row data-open={open || undefined}>
@@ -204,7 +215,7 @@ function ThinkingRow({ text }: { text: string }) {
         }
       >
         <div className="pg-thinking-body">
-          <Markdown text={text} compact />
+          <Markdown text={text} compact memoryKey={slotKey(memory, `${slot}:md`)} />
         </div>
       </DisclosureRow>
     </div>
@@ -264,7 +275,7 @@ function MessageActions({ text, message }: { text: string; message: AgentMessage
   );
 }
 
-function Block({ block }: { block: ContentBlock }) {
+function Block({ block, blockKey, memory }: { block: ContentBlock; blockKey: string; memory?: RowMemory | undefined }) {
   const b = block as {
     type?: string;
     text?: string;
@@ -282,12 +293,13 @@ function Block({ block }: { block: ContentBlock }) {
          核实：这一支此前只做 `splitFences()`（围栏 → 代码卡片），其余当纯文本 ——
          docs/04 §5 早就写着"Markdown 只在转正时解析一次"，但那个 parser 一直没落地。
          流式阶段**不变**（仍是纯文本直写：流式中间态的 markdown 是非法文法，逐帧 parse 只会抖）。 */
-      return <Markdown key="text" text={b.text ?? ''} />;
+      return <Markdown key="text" text={b.text ?? ''} memoryKey={slotKey(memory, `text:${blockKey}:md`)} />;
     case 'thinking':
       // 思考行也是**窄行**（DSH `DisclosureRow` + `message.think`）：标题「思考」+ 首行摘要，
       // 展开看全文。旧版是 `<details><summary>思考</summary>`——几何与工具行不齐，
       // 而且摘要不显示"想了什么"，一行 24px 的信息量被浪费掉了。
-      return <ThinkingRow text={b.thinking ?? ''} />;
+      // 一条消息里可能有多个思考块（`blockKey` = 块下标），所以插槽要带下标。
+      return <ThinkingRow text={b.thinking ?? ''} memory={memory} slot={`think:${blockKey}`} />;
     case 'toolCall':
       // DSH `AssistantMarkdown` 分派：tool-call **不在正文层渲染**——它归「工具行」
       // （对话里由 toolResult 行表达，全量明细在轨迹视图）。docs/12 §3.3。

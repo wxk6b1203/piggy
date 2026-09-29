@@ -24,6 +24,7 @@ import { windowEvents } from '@/lib/windowEvents';
 import { shouldApplyLayout, shouldCloseTabOnPanelRemoved } from '@/lib/layoutLifecycle';
 import { disposeTabListeners } from '@/lib/tabEvents';
 import { disposeLive } from '@/lib/live';
+import { forgetRowTab } from '@/lib/rowMemory';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
@@ -187,6 +188,8 @@ function onReady(e: DockviewReadyEvent) {
     disposeLive(tabId);
     useTabs.getState().removeTab(tabId);
     useMessages.getState().remove(tabId);
+    // 行的展开态记忆跟着行一起走（`lib/rowMemory`）：留着就是拿不到的垃圾
+    forgetRowTab(tabId);
     persist();
   });
   e.api.onDidAddPanel(() => persist());

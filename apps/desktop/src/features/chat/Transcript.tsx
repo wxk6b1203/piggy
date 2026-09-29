@@ -41,7 +41,14 @@ import {
   type RailSourceRow,
 } from './turnRailItems';
 import { TurnRail } from './TurnRail';
-import { isAtTail, nextFollowingFromSample, scrollTopAfterPrepend } from './transcriptScroll';
+import {
+  isAtTail,
+  nextFollowingFromSample,
+  readerAnchorOf,
+  readerTopFrom,
+  scrollTopAfterPrepend,
+  type ReaderAnchor,
+} from './transcriptScroll';
 
 const LIVE_ID = '__live__';
 
@@ -73,8 +80,13 @@ export function Transcript({ tabId }: { tabId: string }) {
   const hasNewer = useTabMsg(tabId, (t) => t.hasNewer);
   const loadingNewer = useTabMsg(tabId, (t) => t.loadingNewer);
   const hydrated = useTabMsg(tabId, (t) => t.hydrated);
-  // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置
-  const rowIds = streaming && !hasNewer ? [...ids, LIVE_ID] : ids;
+  // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置。
+  // 用 `useMemo` 稳住身份：读者锚点的还原要按行键在它里面找下标（`indexOf`），
+  // 而每次渲染新建一个数组会让下面那些以它作依赖的回调每帧换新。
+  const rowIds = useMemo(
+    () => (streaming && !hasNewer ? [...ids, LIVE_ID] : ids),
+    [streaming, hasNewer, ids],
+  );
   const todoOn = useTodoSupported();
   /**
    * 每一条 `todo_write` 的**上一份清单**（差异对比的基线，DSH 的 `todoHistory`）。
@@ -138,15 +150,34 @@ export function Transcript({ tabId }: { tabId: string }) {
   const pinnedHeightRef = useRef<number | null>(null);
 
   /**
+   * 读者接管之后"读到哪了"（见 `transcriptScroll.ReaderAnchor` 的说明）。
+   *
+   * dockview 把非活动面板摘出 DOM，而**浏览器不保留被摘出元素的滚动位置**
+   * （实测：`removeChild` → `appendChild` 之后 `scrollTop` 从 300 掉到 0；
+   * 只有 `display:none` 才是保留的）。所以读者本来在读的位置，必须由我们自己记回来，
+   * 否则每次切标签都回到那一页的高位 —— 用户报的正是这一条。
+   */
+  const readerAnchorRef = useRef<ReaderAnchor | null>(null);
+
+  /**
    * 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。
    *
    * **幂等**：已经贴着底（差 ≤1px）就只刷新记录、不写 `scrollTop`。
    * 写了也不会怎样，但"内容变 → 写位置 → 布局变 → 内容变"这种没必要的写
    * 正是历史上那两次 ResizeObserver 自循环的燃料，能省则省。
+   *
+   * **没有布局时直接返回**（`clientHeight === 0`）：dockview 把非活动面板的内容
+   * 摘出 DOM（`EditorArea` 的注释与门禁实测都确认了这条），此时 `scrollHeight` /
+   * `clientHeight` / `scrollTop` 三个都是 0 → `gap = 0` 会被误读成"已经贴着底"，
+   * 于是把 `pinnedTop/pinnedHeight` 记成一对 0。那一对 0 是**假基线**：
+   * 面板重新可见后第一次采样会因为"没有可靠基线"直接把跟随意图判死
+   * （`nextFollowingFromSample` 的口径），用户看到的就是"切回来的会话停在半空、
+   * 而且再也不跟着走了"。
    */
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    if (el.clientHeight <= 0) return; // 摘出 DOM / 还没布局：贴底是空操作
     const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
     if (gap <= 1) {
       pinnedTopRef.current = el.scrollTop;
@@ -247,24 +278,51 @@ export function Transcript({ tabId }: { tabId: string }) {
     if (gap <= 240 || !canScroll) void loadNewer(tabId);
   }, [tabId]);
 
+  /**
+   * 把读者的位置还给他（面板重新可见时用）。
+   *
+   * 先用**行键**把锚点行找回来（`getOffsetForIndex` 取它现在的起始像素），
+   * 找不到（换窗把窗口换掉了）就退回裸位置 —— 两种都钳进可滚范围。
+   */
+  const restoreReaderAnchor = useCallback(() => {
+    const el = scrollRef.current;
+    const anchor = readerAnchorRef.current;
+    if (!el || !anchor || el.clientHeight <= 0) return;
+    const index = rowIds.indexOf(anchor.key);
+    const resolved = index >= 0 ? (virtualizer.getOffsetForIndex(index, 'start')?.[0] ?? null) : null;
+    const target = readerTopFrom(anchor, resolved, el.scrollHeight - el.clientHeight);
+    if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
+  }, [rowIds, virtualizer]);
+
   /** 阅读线所在行 → 当前轮次。滚动/新增消息时重算。 */
   const [activeTurn, setActiveTurn] = useState<number | null>(null);
   const recomputeActive = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）。
-    // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
     const metrics = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
-    // 跟随意图：判据是"这段距离是谁造成的"（内容长高/换页 ≠ 读者滚动），见
-    // `nextFollowingFromSample` 的说明 —— 只看"位置对不对得上"会被滚动锚定骗到。
-    setFollowing(
-      nextFollowingFromSample({
-        metrics,
-        pinnedTop: pinnedTopRef.current,
-        lastScrollHeight: pinnedHeightRef.current,
-        following: followingRef.current,
-      }),
-    );
+    /* 跟随意图：**没有布局时一个字都不改**（`clientHeight === 0` = 面板被 dockview 摘出
+       DOM，组件还活着但三个读数全是 0）。拿这对 0 去判"读者滚上去了"，就会把跟随意图
+       判死，切回来时既不贴底也不跟随 —— 用户看到的是"停在这一页的高位，而且不跟了"。
+       （`nextFollowingFromSample` 那条"没有可靠基线就按几何判"的兜底也救不了这里：
+       0 位置配上旧的钉住位置，方向恰好是"往上滚了"。） */
+    if (el.clientHeight > 0) {
+      // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）。
+      // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
+      // 判据是"这段距离是谁造成的"（内容长高/换页 ≠ 读者滚动），见
+      // `nextFollowingFromSample` 的说明 —— 只看"位置对不对得上"会被滚动锚定骗到。
+      setFollowing(
+        nextFollowingFromSample({
+          metrics,
+          pinnedTop: pinnedTopRef.current,
+          lastScrollHeight: pinnedHeightRef.current,
+          following: followingRef.current,
+        }),
+      );
+      // 位置归读者 → 记住他读到哪一行；贴底时清掉（下一次贴底才是权威位置）
+      readerAnchorRef.current = followingRef.current
+        ? null
+        : readerAnchorOf(virtualizer.getVirtualItems(), el.scrollTop);
+    }
     // ⚠️ "当前是哪一轮"用**跟随意图**而不是瞬时几何：流式时内容在两帧之间长高，
     //    等这次 scroll 事件被处理时 `scrollHeight` 已经变了，`isAtTail` 会瞬间为假 ——
     //    于是当前轮次在"最新那轮"与"阅读线那轮"之间逐帧来回翻，梯子上的亮条疯狂闪动
@@ -282,6 +340,40 @@ export function Transcript({ tabId }: { tabId: string }) {
     }
     setActiveTurn(activeTurnOf(railItems, readingRow, atTailForTurn));
   }, [maybeLoadNewer, setFollowing, virtualizer, railItems]);
+
+  /**
+   * 滚动容器**重新有了真实布局** → 还在跟随就贴底。
+   *
+   * 这条补的是"面板不在前台时内容已经长好了"这一类：dockview 会把非活动面板的
+   * 内容摘出 DOM（组件不卸载），此时几何全是 0 —— 打开会话那一次 rAF 贴底、
+   * 以及"总高变化"那条布局 effect，都可能正好落在**没有布局**的时刻变成空操作。
+   * 等用户切回这个标签时，什么都不会再触发，视图就停在那一页的**高位**
+   * （用户 2026-09-23 报："从一个正在运行的会话切到另一个会话，不是在最低位，
+   * 而是在当前页的高位，而且有时候滚动位置怪怪的"）。
+   *
+   * 信号取自虚拟化器自己的 `scrollRect`（它内部就是一个挂在滚动容器上的
+   * ResizeObserver）——实测摘出 DOM 时它报 0、回来时报真实高度（622→0→622），
+   * 每次变化都会让虚拟化器重渲染，所以这个 effect 一定跑得到。
+   * **不**再自己挂一个观察者：`docs/04 §2.1` 记着那条纪律（观察者回调里写布局
+   * 正是 `ResizeObserver loop` 的经典成因），这里只是"读一个已经存在的测量值"。
+   */
+  const scrollerHeight = virtualizer.scrollRect?.height ?? 0;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || scrollerHeight <= 0) return; // 还没有布局：见 pinToBottom 的说明
+    if (hasNewerRef.current) return; // 换窗态：窗口不在尾部，位置由换窗逻辑负责
+    const settle = () => {
+      if (followingRef.current) pinToBottom();
+      else restoreReaderAnchor(); // 读者接管过：把位置还给他（见 anchor 的说明）
+      // 刻度梯的"当前轮次"也要重算：隐藏期间几何是 0，阅读线算不出来（也没意义）
+      recomputeActive();
+    };
+    settle();
+    // 再补一帧：行的实测高度往往在这一次布局**之后**才落地（估计值 → 实测值），
+    // 只做一次会残留几十像素（门禁实测贴底差 20px、还原差一行）。
+    const raf = requestAnimationFrame(settle);
+    return () => cancelAnimationFrame(raf);
+  }, [scrollerHeight, pinToBottom, recomputeActive, restoreReaderAnchor]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -510,5 +602,8 @@ function Row({
      所以 `todo-transcript.test.tsx` 专门端到端跑了两行写入来钉它。 */
   const baseline = callId ? baselines?.get(callId) : undefined;
   if (!view) return null;
-  return <MessageView view={view} call={call} baseline={baseline} />;
+  /* 行身份给"展开态记忆"（`lib/rowMemory`）：行滚出窗口会被卸载，
+     行里的 `useState` 会跟着丢 —— 展开过的思考/工具行必须活过这一次卸载。 */
+  const memory = { tabId, rowKey: id };
+  return <MessageView view={view} call={call} baseline={baseline} memory={memory} />;
 }

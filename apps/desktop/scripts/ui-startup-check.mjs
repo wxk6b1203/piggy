@@ -2059,7 +2059,9 @@ const paging = await page.evaluate(async () => {
   // 往上滚：离开底部 → 「回到底部」必须出现
   tr.scrollTop = 0;
   await sleep(250);
-  const afterScrollUp = { ...geom(), toBottom: !!tr.querySelector('[data-to-bottom]') };
+  // ⚠️ 「回到底部」是 `.pg-transcript` 的**兄弟**（挂在 `.pg-transcript-wrap` 上）：
+  //    用 `tr.querySelector` 永远读到 null —— 这条核对曾经因此完全空转（点击也是空转）。
+  const afterScrollUp = { ...geom(), toBottom: !!wrap.querySelector('[data-to-bottom]') };
   const beforePage = anchor();
 
   // 点「加载更早」：内容必须变多，而**阅读位置不许跳**
@@ -2186,9 +2188,9 @@ const pagingTail = await page.evaluate(async () => {
   };
 
   // 回到底部（若还显示着）
-  tr.querySelector('[data-to-bottom]')?.click();
+  wrap.querySelector('[data-to-bottom]')?.click();
   await sleep(300);
-  const afterToBottom = { ...geom(), toBottom: !!tr.querySelector('[data-to-bottom]') };
+  const afterToBottom = { ...geom(), toBottom: !!wrap.querySelector('[data-to-bottom]') };
 
   /* ── 流式稳定性：用户报的"疯狂闪动"就是这个 ──
      贴在结尾时内容每帧都在长高，而"这一帧离底多远"是拿旧 scrollTop 与新 scrollHeight 比的
@@ -2201,7 +2203,7 @@ const pagingTail = await page.evaluate(async () => {
       const live = tr.querySelector('.pg-live');
       streams.push({
         active: wrap.querySelector('[data-rail-mark].is-active')?.getAttribute('data-rail-mark') ?? '-',
-        bottom: tr.querySelector('[data-to-bottom]') ? 1 : 0,
+        bottom: wrap.querySelector('[data-to-bottom]') ? 1 : 0,
         railTop: Math.round(railScroll?.scrollTop ?? -1),
         gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
         liveLen: live ? (live.textContent ?? '').length : -1,
@@ -2593,6 +2595,205 @@ if (gateOff.genericRows < 1) {
   bad.push('能力闸门：没插件时该退回通用工具行，却一行都没有 ★');
 }
 
+/* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
+ *
+ * 两条都是**只有真浏览器能量**的几何/生命周期问题：
+ *
+ * ① "像思考、工具这样的，如果思考很长，先向上滚动，然后滚到最低，就无法看到过程"
+ *    —— 行滚出虚拟窗口会被**卸载**，行里的 `useState` 跟着丢；展开过的行必须以
+ *    "用户开过"为准活过这一次卸载（`lib/rowMemory`）。
+ * ② "从一个正在运行的会话切换到另外一个会话，不是在最低位，而是在当前页的高位，
+ *    而且有时候滚动位置怪怪的" —— dockview 把非活动面板的内容**摘出 DOM**
+ *    （组件不卸载），此时 `scrollTop/scrollHeight/clientHeight` 全是 0：打开会话那次
+ *    rAF 贴底、以及"总高变化"那条布局 effect 都会变成空操作；更坏的是那对 0 会被
+ *    记成基线，把跟随意图判死。切回来时既不贴底、也不再跟随。
+ *
+ * 前置：本节自己灌 mock 转录并**重载**一次页面（前一段把能力开关写进了 init script，
+ * 重载后 mock 的转录会回到内置那几行，所以必须重新灌）。
+ */
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.pg-composer', { timeout: 15000 });
+await page.waitForTimeout(900);
+
+const scrollMemory = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const mock = globalThis.__piggyMock;
+  const stores = globalThis.__piggyStores;
+
+  // 30 轮对话 + 尾部一条**超长思考**（要展开才看得见正文）
+  const rows = [];
+  for (let i = 1; i <= 30; i += 1) {
+    rows.push({
+      role: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: `第 ${i} 轮的问题` }], timestamp: 1_700_000_000_000 + i * 1000 },
+    });
+    rows.push({
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `第 ${i} 轮的回答：${'这里是用来撑出行高的正文。'.repeat(4)}` }],
+        timestamp: 1_700_000_000_500 + i * 1000,
+      },
+    });
+  }
+  rows.push({
+    role: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: `先量几何再决定要不要贴底。${'这一段把思考行撑得很高，展开与折叠的高度差必须一眼看得出来。'.repeat(120)}` },
+        { type: 'text', text: '思考结束后的正文。' },
+      ],
+      timestamp: 1_700_000_100_000,
+    },
+  });
+  mock.mockSetTranscriptRows(rows);
+
+  const activate = (tabId) => {
+    globalThis.__piggyDock.panels.find((p) => p.params?.tabId === tabId)?.api.setActive();
+  };
+  const geom = (tr) => ({
+    top: Math.round(tr.scrollTop),
+    sh: Math.round(tr.scrollHeight),
+    ch: Math.round(tr.clientHeight),
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+  });
+
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelectorAll('.pg-session-row')[0]?.click();
+  await sleep(1800);
+  const tabA = stores.useTabs.getState().activeTabId;
+  const wrapA = document.querySelector(`[data-tab-id="${tabA}"]`);
+  const trA = wrapA?.querySelector('.pg-transcript');
+  if (!trA) return { error: '找不到转录区' };
+
+  /* ── ① 展开长思考 → 滚到顶（行被卸载）→ 滚回底部：还必须是展开的 ── */
+  trA.scrollTop = trA.scrollHeight;
+  await sleep(400);
+  const thinkRows = () => [...trA.querySelectorAll('[data-thinking-row]')];
+  const last = thinkRows().at(-1);
+  const foldedHeight = Math.round(last?.getBoundingClientRect().height ?? -1);
+  last?.querySelector('[data-disclosure-row]')?.click();
+  await sleep(400);
+  const expandedHeight = Math.round(thinkRows().at(-1)?.getBoundingClientRect().height ?? -1);
+  const openedNow = thinkRows().at(-1)?.hasAttribute('data-open') === true;
+
+  trA.scrollTop = 0; // 滚出虚拟窗口 → 这一行会被卸载
+  await sleep(700);
+  const mountedWhileAway = thinkRows().length; // 0 = 真的被卸载了（否则这条核对失去意义）
+  trA.scrollTop = trA.scrollHeight;
+  await sleep(700);
+  const back = thinkRows().at(-1) ?? null;
+  const expand = {
+    foldedHeight,
+    expandedHeight,
+    openedNow,
+    mountedWhileAway,
+    stillOpen: back?.hasAttribute('data-open') === true,
+    heightAfterReturn: Math.round(back?.getBoundingClientRect().height ?? -1),
+    gapBack: geom(trA).gap,
+  };
+
+  /* ── ② 后台（面板被摘出 DOM）里内容继续长：切回来必须贴底 ── */
+  // 先在 A 可见时记一笔（下一个标签打开之后它就量不到了）
+  const beforeHidden = geom(trA);
+  document.querySelectorAll('.pg-session-row')[1]?.click();
+  await sleep(1600);
+  const tabB = stores.useTabs.getState().activeTabId;
+  // 此刻 A 的面板被摘出 DOM：三个读数应当全是 0（`trA` 这个 JS 引用仍然有效）
+  const hiddenGeom = {
+    top: Math.round(trA.scrollTop),
+    sh: Math.round(trA.scrollHeight),
+    ch: Math.round(trA.clientHeight),
+    connected: trA.isConnected,
+  };
+  // A 在后台继续跑（真流式：走 pi:frame/commit 那条真实路径）
+  await mock.mockInvoke('pi_prompt', { tabId: tabA, message: '门禁：后台流式' });
+  await sleep(5200);
+  activate(tabA);
+  await sleep(1400);
+  // 按钮挂在 `.pg-transcript-wrap` 上（`.pg-transcript` 的兄弟），不在转录容器里面
+  const afterReturn = { ...geom(trA), toBottom: !!wrapA.querySelector('[data-to-bottom]') };
+
+  /* ── ③ 读者自己滚上去过：切走再切回**不许**把他拽到底部 ── */
+  trA.scrollTop = 400;
+  await sleep(500);
+  const readerTop = Math.round(trA.scrollTop);
+  activate(tabB);
+  await sleep(800);
+  activate(tabA);
+  await sleep(1200);
+  const readerKept = {
+    top: Math.round(trA.scrollTop),
+    expect: readerTop,
+    kept: Math.abs(Math.round(trA.scrollTop) - readerTop) <= 2,
+    toBottom: !!wrapA.querySelector('[data-to-bottom]'),
+  };
+
+  return { tabA, tabB, expand, beforeHidden, hiddenGeom, afterReturn, readerKept };
+});
+
+if (scrollMemory.error) bad.push(`滚动记忆：${scrollMemory.error} ★`);
+else {
+  const ex = scrollMemory.expand ?? {};
+  if (!(ex.foldedHeight > 0 && ex.expandedHeight > ex.foldedHeight * 3)) {
+    bad.push(`展开态：长思考行展开前后高度没拉开（折叠 ${ex.foldedHeight} → 展开 ${ex.expandedHeight}），这条核对失去意义`);
+  }
+  if (ex.openedNow !== true) bad.push('展开态：点了「思考」行却没有展开 ★');
+  if (ex.mountedWhileAway !== 0) {
+    bad.push(`展开态：滚到顶部时那一行还在 DOM 里（${ex.mountedWhileAway} 行），虚拟化卸载没发生 —— 这条核对失去意义`);
+  }
+  if (ex.stillOpen !== true) {
+    bad.push('展开态：滚回来之后思考行又折上了（用户报的"看不到过程"）★');
+  }
+  if (!(ex.heightAfterReturn > ex.foldedHeight * 3)) {
+    bad.push(`展开态：滚回来之后高度只剩 ${ex.heightAfterReturn}px（折叠态是 ${ex.foldedHeight}px）—— 展开态没保住 ★`);
+  }
+  const hg = scrollMemory.hiddenGeom ?? {};
+  if (!(hg.connected === false || (hg.ch === 0 && hg.sh === 0))) {
+    bad.push(`面板隐藏：A 被切到后台后几何仍是 ${JSON.stringify(hg)}（应被摘出 DOM / 读数为 0）`);
+  }
+  const ar = scrollMemory.afterReturn ?? {};
+  if (!(ar.gap >= 0 && ar.gap <= 25)) {
+    bad.push(`切回正在跑的会话：没贴到底（gap=${ar.gap}px，scrollTop=${ar.top}/scrollHeight=${ar.sh}）★`);
+  }
+  if (ar.toBottom) bad.push('切回正在跑的会话：贴到底了却还显示「回到底部」（跟随意图被判死了）★');
+  const rk = scrollMemory.readerKept ?? {};
+  if (rk.kept !== true) {
+    bad.push(`读者位置：切走再切回被拽动了（${rk.top}，切走前是 ${rk.expect}）★`);
+  }
+  if (rk.toBottom !== true) bad.push('读者位置：读者滚上去过，切回来后「回到底部」不见了 ★');
+}
+
+/* ── ④ 重载（启动恢复）之后：恢复出来的会话也必须贴在结尾 ──
+   这一条正是"打开会话即贴底"最容易漏的时序：面板与内容谁先就位取决于恢复过程，
+   内容先到、面板后到（或反过来）都不能让视图停在这一页的高位。 */
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.pg-composer', { timeout: 15000 });
+await page.waitForTimeout(3000);
+const restoredScroll = await page.evaluate(() => {
+  const wrap = document.querySelector('[data-tab-id]');
+  const tr = wrap?.querySelector('.pg-transcript');
+  if (!tr) return { error: '恢复后找不到转录区' };
+  return {
+    top: Math.round(tr.scrollTop),
+    sh: Math.round(tr.scrollHeight),
+    ch: Math.round(tr.clientHeight),
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+    rows: wrap.querySelectorAll('.pg-vrow').length,
+    toBottom: !!wrap.querySelector('[data-to-bottom]'),
+  };
+});
+if (restoredScroll.error) bad.push(`启动恢复：${restoredScroll.error} ★`);
+else {
+  if (restoredScroll.sh <= restoredScroll.ch) {
+    bad.push('启动恢复：恢复出来的转录不足一屏，这条核对失去意义');
+  } else if (restoredScroll.gap > 25) {
+    bad.push(`启动恢复：恢复出来的会话停在离底 ${restoredScroll.gap}px 处（"当前页的高位"）★`);
+  }
+}
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -2602,6 +2803,7 @@ console.log(
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
       sessionTitle, menuProbe, cornerProbe, titleRun, numbers, compactionProbe,
+      scrollMemory, restoredScroll,
     },
     null,
     1,
@@ -3642,6 +3844,9 @@ if (!pagingTail.backToLatest.last.includes('第 100 轮')) {
 }
 if (pagingTail.backToLatest.gap > 25) {
   bad.push(`分页：回到最新之后没贴在结尾（距底 ${pagingTail.backToLatest.gap}px）★`);
+}
+if (!paging.afterScrollUp.toBottom) {
+  bad.push('分页：往上滚离开底部之后「回到底部」没有出现（按钮查询口径要挂在 .pg-transcript-wrap 上）★');
 }
 if (pagingTail.afterToBottom.gap > 25 || pagingTail.afterToBottom.toBottom) {
   bad.push(

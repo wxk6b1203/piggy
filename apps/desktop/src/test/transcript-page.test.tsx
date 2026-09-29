@@ -14,10 +14,26 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act } from 'react';
 
-const { invokeMock, scrollToIndex } = vi.hoisted(() => ({
-  invokeMock: vi.fn(),
-  scrollToIndex: vi.fn(),
-}));
+const { invokeMock, scrollToIndex, scrollerSize } = vi.hoisted(() => {
+  /* 滚动容器的实测高度（真机由虚拟化器**内部**那个 ResizeObserver 报：
+     面板被 dockview 摘出 DOM 时 0，回到前台时 622 —— 门禁实测 622→0→622）。
+     这里复刻"RO 报新尺寸 → 虚拟化器重渲染"这一步，测试用 `setScrollerSize` 驱动。 */
+  const listeners = new Set<() => void>();
+  const size = {
+    height: 0,
+    subscribe(l: () => void) {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    set(h: number) {
+      size.height = h;
+      for (const l of [...listeners]) l();
+    },
+  };
+  return { invokeMock: vi.fn(), scrollToIndex: vi.fn(), scrollerSize: size };
+});
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
@@ -26,17 +42,42 @@ vi.mock('@/lib/feedback', () => ({
   FeedbackBridge: () => null,
   confirm: vi.fn(),
 }));
-vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: (i: number) => number }) => ({
-    getTotalSize: () => count * estimateSize(0),
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, index) => ({
-        index, key: index, start: index * estimateSize(index), size: estimateSize(index),
-      })),
-    measureElement: () => {},
-    scrollToIndex,
-  }),
-}));
+vi.mock('@tanstack/react-virtual', async () => {
+  const React = await import('react');
+  return {
+    useVirtualizer: ({
+      count,
+      estimateSize,
+      getItemKey,
+    }: {
+      count: number;
+      estimateSize: (i: number) => number;
+      getItemKey: (i: number) => string | number;
+    }) => {
+      // 订阅实测高度：变了就重渲染（真虚拟化器走 `onChange` → rerender，同义）
+      const height = React.useSyncExternalStore(scrollerSize.subscribe, () => scrollerSize.height);
+      const startOf = (index: number) =>
+        Array.from({ length: index }, (_, i) => estimateSize(i)).reduce((a, b) => a + b, 0);
+      return {
+        getTotalSize: () => count * estimateSize(0),
+        // `key` 必须是**行键**（组件把 `getItemKey` 传进来了）：读者锚点按行键找回下标，
+        // mock 里若拿下标当键，那条路径就永远走不到（假绿）。
+        getVirtualItems: () =>
+          Array.from({ length: count }, (_, index) => ({
+            index,
+            key: getItemKey(index),
+            start: startOf(index),
+            size: estimateSize(index),
+          })),
+        getOffsetForIndex: (index: number) => [startOf(index)] as const,
+        measureElement: () => {},
+        measure: () => {},
+        scrollRect: { width: 0, height },
+        scrollToIndex,
+      };
+    },
+  };
+});
 
 import { Transcript } from '@/features/chat/Transcript';
 import { useAppConfig } from '@/stores/appConfig';
@@ -125,6 +166,14 @@ function scroller(): HTMLDivElement {
   return el;
 }
 
+/** 面板可见性：滚动容器有没有真实布局（见 `scrollerSize` 的说明）。 */
+async function setScrollerSize(height: number) {
+  await act(async () => {
+    scrollerSize.set(height);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+}
+
 /** 派发一次滚动（React 的 scroll 监听是非 passive 的普通监听，可直接触发）。 */
 async function scrollTo(el: HTMLElement, top: number) {
   await act(async () => {
@@ -161,6 +210,7 @@ function seedOffsets(
 beforeEach(() => {
   invokeMock.mockReset();
   scrollToIndex.mockReset();
+  scrollerSize.height = 0; // jsdom 没有布局，默认与"面板不在前台"的读数一致
   invokeMock.mockImplementation(async (name: string) => {
     if (name === 'session_page') return page(0, 0, false);
     return {};
@@ -431,6 +481,85 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
 
     await scrollTo(el, 100); // 位置变了 = 读者滚的
     expect(q('[data-to-bottom]')).toBeTruthy();
+  });
+});
+
+describe('面板不在前台（被 dockview 摘出 DOM）时的几何', () => {
+  /**
+   * 用户 2026-09-23 报："从一个正在运行的会话切到另一个会话，不是在最低位，
+   * 而是在当前页的高位，而且有时候滚动位置怪怪的。"
+   *
+   * 现场（门禁实测）：dockview 把非活动面板的内容**摘出 DOM**（组件不卸载），
+   * 此时 `scrollTop / scrollHeight / clientHeight` 三个读数全是 0。于是
+   *   ① 打开会话那一次 rAF 贴底、以及"总高变化"那条布局 effect，都可能落在
+   *      "没有布局"的时刻变成空操作（视图就一直停在那一页的高位）；
+   *   ② 更坏的是"跟随意图"：`gap = 0 - 0 - 0 = 0` 会被读成"已经贴着底"，
+   *      把 `pinnedTop/pinnedHeight` 记成一对 0；等面板回到前台，第一次采样
+   *      因为"没有可靠基线"直接把跟随判死（`nextFollowingFromSample` 的口径），
+   *      于是它**再也不跟着走了**。
+   */
+  it('隐藏期间内容长好：不许写 scrollTop、不许丢掉跟随；回到前台必须贴底', async () => {
+    seed(30);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    // 被摘出 DOM：三个读数都是 0（真机实测），先按这个状态挂载
+    fakeGeometry(el, 0, 0);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '没有布局还去写 scrollTop').toBe(0);
+
+    // 后台继续长（流式/新消息）——真机上这一步会触发重渲染 → 布局 effect 里的贴底
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: '后台长出来的' }], timestamp: 99_001 },
+      } as never);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // 摘出去的那一刻也会来一次滚动事件（位置被浏览器钳成 0）：不许因此交出跟随
+    await scrollTo(el, 0);
+    expect(q('[data-to-bottom]'), '跟随意图被一对 0 的假基线判死了').toBeNull();
+
+    // 回到前台：元素自己保住了位置（0），但内容已经长高 → 必须贴到**新的**底
+    fakeGeometry(el, 2640, 400);
+    await setScrollerSize(400);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '回到前台没有贴底（用户看到的就是"停在当前页高位"）').toBe(2240);
+    expect(q('[data-to-bottom]')).toBeNull();
+  });
+
+  it('读者接管过：面板回来必须把位置还给他（浏览器不会还）', async () => {
+    seed(30);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2640, 400);
+    await flush();
+    await setScrollerSize(400);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '打开即贴底').toBe(2240);
+
+    await scrollTo(el, 300); // 读者往上滚（位置 300，锚在"顶端的行"上）
+    expect(q('[data-to-bottom]')).toBeTruthy();
+
+    // 面板被摘出去（几何全 0）→ 回来。⚠️ 位置**不会**自己回来：实测 Chrome 把摘出
+    // 文档的元素再挂回来时 scrollTop 归 0（只有 display:none 才保留），所以这里
+    // 显式把它按浏览器的行为清掉 —— 组件必须靠自己的锚点记回来。
+    fakeGeometry(el, 0, 0);
+    await setScrollerSize(0);
+    fakeGeometry(el, 2640, 400);
+    el.scrollTop = 0;
+    await setScrollerSize(400);
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '读者接管了还去贴底 = 把他正在读的地方拽走；不还 = 回到这一页的高位').toBe(300);
+    expect(q('[data-to-bottom]'), '回到前台后「回到底部」还得在').toBeTruthy();
   });
 });
 

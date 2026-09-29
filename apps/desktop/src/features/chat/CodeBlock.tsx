@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t, tf } from '@/lib/i18n';
 import { watchSize } from '@/lib/resizeWatch';
+import { useRowFlag } from '@/lib/rowMemory';
 import { Icon } from '@/features/common/Icon';
 import {
   AUTO_COLLAPSE_LINES,
@@ -94,16 +95,25 @@ export interface CodeBlockProps {
   collapsible?: boolean;
   /** 长行是否折行。默认：有高亮的不折（保列对齐），纯文本折。 */
   wrap?: boolean;
+  /**
+   * 折叠类开关的记忆键（`lib/rowMemory` 的 `slotKey`），缺省 `null` = 不记忆。
+   *
+   * 为什么需要：虚拟化会把滚出窗口的整行卸载，`collapsed` / `showAll` / `expanded`
+   * 这三个**用户意图**跟着丢 —— 再滚回来时"长输出默认折叠"会重新折上，
+   * 用户看到的是"我明明展开过"（工具行的正文就是一块 CodeBlock，用户报的正是这一类）。
+   * `overflowing` **不在其列**：那是量出来的几何，记忆它只会在下次挂载时给出错误的高度。
+   */
+  memoryKey?: string | null;
 }
 
-export function CodeBlock({ code, lang, title, collapsible, wrap }: CodeBlockProps) {
+export function CodeBlock({ code, lang, title, collapsible, wrap, memoryKey = null }: CodeBlockProps) {
   const preRef = useRef<HTMLPreElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [collapsed, setCollapsed, hasCollapsed] = useRowFlag(memoryKey, 'collapsed');
+  const [showAll, setShowAll] = useRowFlag(memoryKey, 'showAll');
+  const [expanded, setExpanded] = useRowFlag(memoryKey, 'expanded');
   const [overflowing, setOverflowing] = useState(false);
   const visibleRef = useRef(false);
 
@@ -119,12 +129,13 @@ export function CodeBlock({ code, lang, title, collapsible, wrap }: CodeBlockPro
 
   // 长输出默认折叠：一屏装不下时先只给标题栏 + 行数，让用户决定要不要铺开。
   // 只判定一次 —— 后续由用户掌控，不能因为内容流式增长把用户已经展开的又折回去。
-  const autoDecided = useRef(false);
+  // 记忆里已经有值（用户开过）时**不再自动折**：否则卸载重挂会把他的选择盖掉。
+  const autoDecided = useRef(hasCollapsed);
   useEffect(() => {
     if (autoDecided.current) return;
     autoDecided.current = true;
     if (totalLines > AUTO_COLLAPSE_LINES) setCollapsed(true);
-  }, [totalLines]);
+  }, [totalLines, setCollapsed]);
 
   useEffect(() => {
     const el = preRef.current;

@@ -17,7 +17,7 @@
  * 3. **差异按行配对**：与**这一行之前**的那份清单比（`todoBaselines`），
  *    不是与"当前清单"比 —— 否则往上翻历史时每一行都在说谎。
  */
-import { useState } from 'react';
+import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Icon, type IconName } from '@/features/common/Icon';
 import { Markdown } from './markdown';
@@ -52,10 +52,13 @@ export interface TodoRowProps {
   hasMore?: boolean;
   /** 工具调用 id（门禁与测试用） */
   toolCallId?: string | undefined;
+  /** 这一行的身份：展开态记忆（见 lib/rowMemory；缺省 = 不记忆） */
+  memory?: RowMemory | undefined;
 }
 
-export function TodoRow({ args, text, isError, baseline, hasMore = false, toolCallId }: TodoRowProps) {
-  const [open, setOpen] = useState(false);
+export function TodoRow({ args, text, isError, baseline, hasMore = false, toolCallId, memory }: TodoRowProps) {
+  /* 展开态记忆在行外（同 ToolRow）：清单行也要熬过虚拟化的卸载/重挂。 */
+  const [open, setOpen] = useRowFlag(slotKey(memory, 'todo'), 'open');
   const summary = rowSummary(args?.todos);
   const items = summary === null ? null : (args?.todos as TodoItem[]);
   const diff = items === null ? null : todoDiff(items, baseline ?? null, hasMore);

@@ -114,3 +114,67 @@ export function nextFollowingFromSample(
   if (sample.metrics.scrollTop >= pinnedTop - 0.5) return true; // 没往上走
   return false; // 读者真的往上滚了
 }
+
+/**
+ * 读者接管之后"读到哪了"的锚点。
+ *
+ * 口径照抄 DSH 的 `ChatScrollPosition`（`use-chat-viewport.ts` 的 `capturePosition`）：
+ * **锚在行上**（行键 + 行顶到视口顶的距离），裸像素只作兜底。
+ *
+ * ## 为什么非锚行不可
+ *
+ * dockview 把非活动面板的内容**摘出 DOM**，而浏览器不保留被摘出元素的滚动位置
+ * —— 实测（Chrome，`removeChild` → `appendChild`）：`scrollTop` 从 300 掉到 **0**；
+ * 换成 `display:none` 才是保留的（dockview 的注释只对后者成立）。
+ * 于是"切到别的标签再切回来"这件事本身就会把读者的位置清零，用户看到的是
+ * "回到那一页的高位"。
+ *
+ * 位置必须由我们自己记回来。记**行**而不是记像素，是因为隐藏期间上面的行完全可能
+ * 变高（工具结果到了、代码块展开了）：像素会把读者带到别的行上去。
+ */
+export interface ReaderAnchor {
+  /** 视口顶端那一行的键（虚拟化器的 `getItemKey`）。 */
+  key: string;
+  /** 那一行的顶部到视口顶部的像素距离（= `scrollTop - 行起始`）。 */
+  delta: number;
+  /** 裸位置兜底：锚点行已经不在了（换窗把窗口换掉）时用它。 */
+  top: number;
+}
+
+/** 锚点计算要用到的那几个字段（虚拟化器的 `VirtualItem` 是它的超集：`key` 还可能是 bigint）。 */
+export interface AnchorRow {
+  key: unknown;
+  start: number;
+  size: number;
+}
+
+/**
+ * 从"当前渲染出来的行 + 位置"取出锚点。
+ *
+ * @param items - 虚拟化器当前渲染的行（有序）
+ * @param scrollTop - 当前位置
+ * @returns 锚点；一行都没有（还没有布局）时 `null`
+ */
+export function readerAnchorOf(items: readonly AnchorRow[], scrollTop: number): ReaderAnchor | null {
+  // 顶端那一行 = 第一个**底边越过视口顶**的行；都在视口下方时退回第一行
+  const first = items.find((vi) => vi.start + vi.size > scrollTop) ?? items[0];
+  if (!first) return null;
+  return { key: String(first.key), delta: scrollTop - first.start, top: scrollTop };
+}
+
+/**
+ * 锚点 → 应该设置的 `scrollTop`。
+ *
+ * @param anchor - {@link readerAnchorOf} 存下来的锚点
+ * @param resolvedStart - 锚点行现在的起始像素（找不到那一行时传 `null`）
+ * @param maxTop - 可滚范围（`scrollHeight - clientHeight`）
+ * @returns 钳进 `[0, maxTop]` 的位置
+ */
+export function readerTopFrom(
+  anchor: ReaderAnchor,
+  resolvedStart: number | null,
+  maxTop: number,
+): number {
+  const raw = resolvedStart === null ? anchor.top : resolvedStart + anchor.delta;
+  return Math.max(0, Math.min(raw, Math.max(0, maxTop)));
+}
