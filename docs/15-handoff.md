@@ -887,6 +887,13 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     再用一条 init script 在导航前写进去（脚本开头那条 init script 会清 localStorage，
     所以必须注册在它**之后** —— init script 按注册顺序执行）。
 
+95b. **Piggy 不替用户打开插件里那些"拦人"的开关。**
+    todo 的复杂度闸门在插件里默认关闭（`pi-todo/src/config.ts` 的默认值），而 Piggy
+    **不传任何 `pi-todo` 配置、也不设 `PI_TODO_*`** —— 所以"Piggy 里默认不被拦"是
+    "插件默认值说了算"的自然结果，而不是 Piggy 里埋了一条特例。反过来，用户想在终端里
+    临时试一把闸门，用 `pi --todo-enforce`（只影响那一次运行），Piggy 那边毫无感觉。
+    纪律：**宿主不要替插件决定策略**，否则"终端里关了、GUI 里还开着"这种分叉没人查得出来。
+
 96. **判断"这份 JSONL 是不是线性"时，别在前缀里找 `"id":"`。**
     真机 11.7 MB 的会话里有一个 `web-search-results` 条目，写成
     `{"type":"custom","customType":"…","data":{"id":"…"},"id":"…","parentId":"…"}` ——
@@ -979,7 +986,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | **todo 界面没在真窗口里点过一次** | 已验证的是三段：① 真 pi 在**本仓**跑了一场带清单的会话（`pi -p …` → 会话文件里有 `pi-todo/state` + 8 条 `todo/write`）；② Piggy 的 Rust 投影读那份真会话（`PIGGY_TODO_SESSION=<path> cargo test --release --lib real_machine_todo -- --ignored` → 3 条、来源 `event`、677 µs）；③ 浏览器门禁在真布局里量了行高/面板位置/闸门正反两面（mock IPC，形状由 `ipc_contract` 锁着）。**没做**的是：在真 Tauri 窗口里打开那场会话、用眼睛确认一遍（agent 没有截图权限，见第 4 节） |
 | todo 能力探测的 **Windows/Linux 真机** | 声明式/内容探测、目录入口下探、截断标记、未知能力报错都有单测，真机核对只在 macOS 上跑过（`cargo test --lib real_machine_todo_capability -- --ignored --nocapture` → 命中 `pi-todo`、`pi-web-access/dist/index.js` 超限被如实标出）。Windows 的盘符路径与 CRLF 未验证 |
 | **todo 的安全边界靠约定，不靠机制** | "只显示已启用插件"这条判断读的是 pi 的同一套规则（复用 `plugin/inventory.rs`），但**任何**扩展都能自称提供 `todo` 能力（声明 `pi.piggy.capabilities` 即可）。内容探测（找 `todo_write`）也只是字符串匹配，不做代码审计。界面上不显示"这个插件是谁装的"之外的信任信息 —— 与 pi 本身"扩展=用户权限运行"的立场一致（见上面"插件没有权限模型"那条） |
-| todo 的**复杂度闸门是启发式** | 打分规则可复现、可解释，但会低估"措辞简短、实际多步"的请求（有 `turnToolCalls` 旁证、用户显式要求、`--todo-no-enforce` 三条兜底）。真模型上只跑了两跑（该激活/该拒绝各一），**没有**统计过误判率 |
+| todo 的**复杂度闸门是启发式** | 打分规则可复现、可解释，但会低估"措辞简短、实际多步"的请求 —— 因此**默认关闭**（2026-09-29 用户裁定；要拦得用配置文件 `enforceComplexity:true` / `PI_TODO_ENFORCE_COMPLEXITY=1` / `pi --todo-enforce`）。真模型上只跑了两跑（该激活/该拒绝各一，且那两跑是在"闸门打开"的状态下做的），**没有**统计过误判率 |
 
 ## 5. 验收方式
 
