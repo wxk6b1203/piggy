@@ -256,7 +256,7 @@ Piggy 放在 `.pg-composer-card` 之前——真浏览器门禁按几何断言"�
 
 守卫：`src/test/todo-row.test.tsx`（8 条）、`todo-panel.test.tsx`（9 条）、
 `todo-transcript.test.tsx`（2 条，端到端跑两行写入，钉住基线的配对键）、
-`todo-model.test.ts`（20 条，含与 Rust 状态白名单的跨语言一致性）；
+`todo-model.test.ts`（21 条，含与 Rust 状态白名单的跨语言一致性）；
 真几何由浏览器门禁量（12 项断言 + 能力闸门的 4 项）。
 
 ### 2.3 插件页（PluginsSection）
