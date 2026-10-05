@@ -20,8 +20,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act } from 'react';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, toastError } = vi.hoisted(() => ({ invokeMock: vi.fn(), toastError: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
+/* 报错通道也 mock 掉：用户看到的那条红色 toast 就是这条断言要拦的东西
+   （`openSession` 的 catch 会把 dockview 的 "already exists" 变成 toast）。 */
+vi.mock('@/lib/feedback', () => ({
+  toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), info: vi.fn() },
+  FeedbackBridge: () => null,
+  confirm: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
 
@@ -73,12 +80,50 @@ function stubDockWithPanel(tabId: string) {
   };
 }
 
+/**
+ * 更完整的 dockview 假面：**重复 id 就抛**，与真 dockview 同款
+ * （`_doAddPanel`：`dockview-core:17360` 的 `panel with id … already exists`）。
+ *
+ * 为什么必须有这一层：只给一个 `panels` 数组的话，`api()?.addPanel(...)` 是
+ * **可选链上空**、根本不执行 —— "连点两次会不会加两个面板"这条在 jsdom 里
+ * 永远假绿。用户报的那条报错就是从这里来的。
+ */
+function stubDock() {
+  const panels: { id: string; params: Record<string, unknown>; focus: () => void; focused: () => boolean }[] =
+    [];
+  const adds: string[] = [];
+  let focusedId: string | null = null;
+  const api = {
+    panels,
+    addPanel(opts: { id: string; params?: Record<string, unknown> }) {
+      if (panels.some((p) => p.id === opts.id)) {
+        throw new Error(`dockview: panel with id ${opts.id} already exists`);
+      }
+      adds.push(opts.id);
+      const panel = {
+        id: opts.id,
+        params: opts.params ?? {},
+        focus: () => {
+          focusedId = opts.id;
+        },
+        focused: () => focusedId === opts.id,
+      };
+      panels.push(panel);
+      return panel;
+    },
+    getPanel: (id: string) => panels.find((p) => p.id === id),
+  };
+  (globalThis as Record<string, unknown>).__piggyDock = api;
+  return { api, adds, panels, focused: () => focusedId };
+}
+
 let seq = 0;
 beforeEach(() => {
   seq = 0;
   __resetCreateTabCache(); // 模块级缓存跨用例残留会互相干扰
   (globalThis as Record<string, unknown>).__piggyDock = undefined;
   invokeMock.mockReset();
+  toastError.mockReset();
   useTabs.setState({ tabs: {}, activeTabId: null });
   useSessions.setState({ groups: [], loaded: true });
   invokeMock.mockImplementation(async (cmdName: string) => {
@@ -211,5 +256,64 @@ describe('侧栏：同一会话文件不许并发建两个 worker', () => {
     // 不能把用户正在用的标签关掉
     const closed = invokeMock.mock.calls.filter((c) => c[0] === 'tab_close');
     expect(closed).toEqual([]);
+  });
+});
+
+/**
+ * 同一会话连点两次：**只许有一个面板**（用户 2026-09-23 报：
+ * `Error: dockview: panel with id session:<uuid> already exists`）。
+ *
+ * 去重（`createTabGuarded`）让两次点击拿到同一个快照，于是两次都会去 `addPanel` ——
+ * 上面那条用例只断言了"只发一次 tab_create"，**漏掉的正是这一步**：面板加两次。
+ */
+describe('连点两次：只许有一个面板', () => {
+  it('双击一行：addPanel 只调一次，第二次是聚焦', async () => {
+    useSessions.setState({ groups: [{ cwd: SESSION.cwd, label: 'proj', sessions: [SESSION] }] });
+    const dock = stubDock();
+    mountDom(<SessionsSidebar />);
+
+    await clickTwice(rowOf());
+
+    expect(tabCreateCalls()).toBe(1);
+    expect(dock.adds, '同一个 tabId 加了两次面板 —— 真 dockview 会抛 already exists').toEqual([
+      'session:tab-1',
+    ]);
+    expect(toastError, `用户不该看到报错（收到：${String(toastError.mock.calls[0]?.[0] ?? '')}）`).not.toHaveBeenCalled();
+    // 第二次点击必须**把已经开着的那个标签聚焦**，而不是静默什么都不做
+    expect(dock.focused()).toBe('session:tab-1');
+  });
+
+  it('同一快照连开两次（面板已存在）→ 只聚焦，不再 addPanel', async () => {
+    const { openSessionTab } = await import('@/features/workspace/EditorArea');
+    const dock = stubDock();
+    const snap = {
+      tab_id: 'tab-x',
+      session_file: SESSION.path,
+      session_id: 'sess-A',
+      session_name: null,
+      cwd: SESSION.cwd,
+      permission: 'full',
+      worker_state: 'ready',
+      state: {},
+    } as never;
+
+    await act(async () => {
+      await openSessionTab(snap, '会话 A');
+      await openSessionTab(snap, '会话 A');
+      await new Promise((r) => setTimeout(r, 60));
+    });
+
+    expect(dock.adds).toEqual(['session:tab-x']);
+  });
+
+  it('双击只读**一次**尾页（第二次不许把转录洗一遍）', async () => {
+    useSessions.setState({ groups: [{ cwd: SESSION.cwd, label: 'proj', sessions: [SESSION] }] });
+    stubDock();
+    mountDom(<SessionsSidebar />);
+
+    await clickTwice(rowOf());
+
+    const pages = invokeMock.mock.calls.filter((c) => c[0] === 'session_page').length;
+    expect(pages, '同一个标签被装了两遍（hydratePage 会重置消息）').toBe(1);
   });
 });

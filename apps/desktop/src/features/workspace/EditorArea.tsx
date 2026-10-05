@@ -266,10 +266,16 @@ function createTabForRestore(sessionFile: string, cwd: string): Promise<TabSnaps
 
 function ensureTab(snap: TabSnapshot) {
   const t = useTabs.getState();
+  const known = !!t.tabs[snap.tab_id];
   t.addTab(snap);
   void import('@/lib/tabEvents').then(({ ensureTabListeners }) => ensureTabListeners(snap.tab_id));
-  // 转录**分页**装载（docs/03 §2.19）：先读会话文件尾部一页，不等 pi 把整段历史搬过来。
-  // 文件读不到时 loadTail 自己会退回 pi_get_messages（lib/transcriptPage.ts）。
+  /* 转录**分页**装载（docs/03 §2.19）：先读会话文件尾部一页，不等 pi 把整段历史搬过来。
+     文件读不到时 loadTail 自己会退回 pi_get_messages（lib/transcriptPage.ts）。
+
+     ⚠️ 已经装过的标签**不要再读一遍**：`loadTail` 走 `hydratePage`，它会**重置**这个 tab
+     的消息（清空 `byId`/`ids` 再灌）。双击的第二次调用（同一个快照）若也读一遍，
+     刚渲染出来的转录会被无谓地洗一次 —— 那正是"快速点两下"的另一半副作用。 */
+  if (known) return;
   void loadTail(snap.tab_id, snap.session_file).catch(() => {});
 }
 
@@ -338,8 +344,34 @@ export async function restore() {
 
 /* ---------------- 对外打开 API（sidebar / palette 调用） ---------------- */
 
+/**
+ * 打开（或聚焦）一个会话标签。
+ *
+ * ## 幂等（用户 2026-09-23 报：快速点两下同一个会话就报错）
+ *
+ * ```text
+ * Error: dockview: panel with id session:045df709-… already exists
+ * ```
+ *
+ * 双击 / 手快连点两次时，两次点击**都落在 `createTabGuarded` 的同一个 await 窗口里**
+ * （`findTabBySession` 那时还查不到 —— store 要等 IPC 回来才更新），去重让它们拿到
+ * **同一个快照**（同一个 `tab_id`），于是两次都会走到这里。真 dockview 的
+ * `addPanel` 见到重复 id 是**直接抛**（`_doAddPanel`，dockview-core:17360），
+ * 于是用户看到一条红色 toast，而标签其实早就开好了。
+ *
+ * 面板 id 就是 `session:<tabId>`，所以"已经有一个 `params.tabId` 相同的面板"
+ * 等价于"这个会话已经开着了" —— 聚焦它、直接返回。
+ *
+ * ⚠️ 按 `params.tabId` 找、**不拼面板 id**：布局恢复后面板 id 与 tabId 会分叉
+ * （见 `findSessionPanel` 的说明），拼字符串在恢复过的会话上会找不到。
+ */
 export async function openSessionTab(snap: TabSnapshot, title: string) {
   ensureTab(snap);
+  const existing = findSessionPanel(snap.tab_id);
+  if (existing) {
+    existing.focus();
+    return;
+  }
   api()?.addPanel({
     id: `session:${snap.tab_id}`,
     component: 'session',
