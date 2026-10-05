@@ -485,6 +485,15 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 于是 `.rs`/`.java`/`.toml`/`Dockerfile` 这类**语言表里明明有**的文件在界面上是"语言条写着 plaintext、
 正文一行不上色"（docs/15 规矩 25 那类静默降级）。加语言 = 改 `monaco-langs.ts` 一处。
 
+**打开会话标签是幂等的**（`EditorArea.openSessionTab`）：面板 id 就是 `session:<tabId>`，
+所以"已经有一个 `params.tabId` 相同的面板"等价于"这个会话开着" → 聚焦返回，不再 `addPanel`。
+为什么非在**这里**挡：`createTabGuarded` 的去重会让快速连点两次的调用拿到**同一个快照**
+（同一个 tab_id），两次都会走到这里 —— 而 dockview 的 `addPanel` 见到重复 id 是直接抛
+（`dockview-core:17360`），用户看到的是
+`dockview: panel with id session:<uuid> already exists`（2026-09-23 报）。
+按 `params.tabId` 找而**不拼面板 id**：布局恢复后面板 id 与 tabId 会分叉。
+`ensureTab` 里同理 —— "装过就不再装"（`loadTail` → `hydratePage` 会重置该标签的消息）。
+
 **antd 边界铁律**（01 §3.4）：`Transcript` 子树（除横幅类一次性组件）、`TabStrip`、`ViewRail`、`StatusBar`、`CommandPalette` 禁止引入 antd 组件；代码评审以 lint 规则固化（`no-restricted-imports` 按目录白名单，08 §4）。
 ### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
 

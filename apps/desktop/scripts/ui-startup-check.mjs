@@ -2643,6 +2643,71 @@ if (gateOff.genericRows < 1) {
   bad.push('能力闸门：没插件时该退回通用工具行，却一行都没有 ★');
 }
 
+/* ---------- 18. 同一会话连点两次：只许有一个面板（用户 2026-09-23 报）
+ *
+ * 现场：快速点两下同一个会话行 →
+ *   Error: dockview: panel with id session:<uuid> already exists
+ *
+ * 根因是"去重只做了一半"：`createTabGuarded` 按会话文件去重（那次修的是"建两个
+ * worker"），双击的两次点击因此拿到**同一个快照**（同一个 tab_id），于是两次都走到
+ * `openSessionTab` 的 `addPanel` —— 而 dockview 见到重复 id 是直接抛。
+ *
+ * 这一条只有真浏览器能量到两件事：① 真 dockview 的 `addPanel` 是**真会抛**的
+ * （jsdom 里那个假面必须自己实现"重复就抛"，否则 `api()?.addPanel` 在可选链上空转，
+ * 用例假绿）；② 双击是两个真实 click 事件。 */
+const dblClickOpen = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+
+  // 记 addPanel 调用（`__piggyDock` 就是应用自己那个 api 实例）
+  const dock = globalThis.__piggyDock;
+  const adds = [];
+  const errors = [];
+  const orig = dock.addPanel.bind(dock);
+  dock.addPanel = (opts) => {
+    adds.push(opts.id);
+    try {
+      return orig(opts);
+    } catch (e) {
+      errors.push(String(e));
+      throw e;
+    }
+  };
+  // 报错通道也看着（`openSession` 的 catch 会把它变成一条红色 toast）
+  const toasts = [];
+  const mo = new MutationObserver((records) => {
+    for (const r of records) {
+      for (const n of r.addedNodes) {
+        const t = (n.textContent ?? '').trim();
+        if (t && /already exists|失败|Error/.test(t)) toasts.push(t.slice(0, 120));
+      }
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  const row = document.querySelector('.pg-session-row');
+  const box = row?.getBoundingClientRect();
+  if (!box) return { error: '找不到会话行' };
+  const x = Math.round(box.x + 60);
+  const y = Math.round(box.y + box.height / 2);
+  // 两次点击**同一个 tick 级别**的间隔（双击就是这么来的）
+  row.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+  row.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+  await sleep(2600);
+  mo.disconnect();
+  dock.addPanel = orig;
+  return {
+    adds,
+    dupAdds: adds.length - new Set(adds).size,
+    errors,
+    toasts,
+    panels: dock.panels.map((p) => p.id),
+    dvTabs: [...document.querySelectorAll('.dv-tab .dv-default-tab-content')].map((e) => (e.textContent ?? '').trim()),
+    transcripts: document.querySelectorAll('.pg-transcript').length,
+  };
+});
+
 /* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
  *
  * 两条都是**只有真浏览器能量**的几何/生命周期问题：
@@ -2850,7 +2915,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
-      sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, numbers, compactionProbe,
+      sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
       scrollMemory, restoredScroll,
     },
     null,
@@ -3331,6 +3396,26 @@ else {
       bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
     }
     if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+
+  // 18：双击只许有一个面板
+  const dc = dblClickOpen ?? {};
+  if (dc.error) bad.push(`连点两次：${dc.error} ★`);
+  else if ((dc.adds ?? []).length === 0) {
+    bad.push('连点两次：双击之后一次 addPanel 都没有（这一段是空转）★');
+  } else {
+    if (dc.dupAdds > 0) {
+      bad.push(`连点两次：同一个面板 id 被加了 ${dc.dupAdds + 1} 次（${JSON.stringify(dc.adds)}）★`);
+    }
+    if ((dc.errors ?? []).length) {
+      bad.push(`连点两次：addPanel 抛了 ${JSON.stringify(dc.errors.slice(0, 1))} —— 用户报的就是这条 ★`);
+    }
+    if ((dc.toasts ?? []).length) {
+      bad.push(`连点两次：界面上冒出了报错提示 ${JSON.stringify(dc.toasts.slice(0, 1))} ★`);
+    }
+    if ((dc.transcripts ?? 0) > 1) {
+      bad.push(`连点两次：同一个会话装了 ${dc.transcripts} 份转录（loadTail 洗了两遍）★`);
+    }
   }
 
   // 14b：改名要**三处一致**（侧栏 / 上方标题 / 标签页标题）
