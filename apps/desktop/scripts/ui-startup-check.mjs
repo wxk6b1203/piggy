@@ -1397,6 +1397,54 @@ if (sessionTitle.firstRect) {
   titleRun.clicked = clicked;
 }
 
+/* 14b. 改名之后**上方标题与标签页标题**也要跟着变（用户 2026-09-23 报：
+ *      "点击重新生成标题之后，上方的标题也要更新"）。
+ *
+ * 为什么只有真浏览器能量：会话头部与标签页标题是两个不同的渲染点 ——
+ * 头部读 tabs store 的 `sessionName`，标签页标题是 dockview 面板自己的 `title`
+ * （我们靠 `PgTab` 里的 `api.setTitle` 推过去）。侧栏那一行读的是 `session_list`，
+ * 三者**各有各的来源**，只测侧栏就会漏掉"左边变了、上面还是旧的"。
+ *
+ * 走用户那条原路：点行上的图标（悬停出现的那颗），而不是右键菜单。 */
+const titleSync = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const rowTitle = () => (document.querySelector('.pg-session-row .pg-session-title')?.textContent ?? '').trim();
+  const headTitle = () => (document.querySelector('.pg-session-head-title')?.textContent ?? '').trim();
+  // 活动标签页的标题：dockview 给活动那一格加 `dv-active-tab`
+  const tabTitle = () =>
+    (document.querySelector('.dv-tab.dv-active-tab .dv-default-tab-content')?.textContent ?? '').trim();
+
+  // 先把这一行的会话打开（已经开着就只是聚焦）——没有打开的标签就没有"上方标题"可量
+  const row = document.querySelector('.pg-session-row');
+  row?.querySelector('.pg-session-title')?.click();
+  await sleep(1800);
+  const before = { row: rowTitle(), head: headTitle(), tab: tabTitle(), headExists: !!document.querySelector('.pg-session-head-title') };
+
+  const icon = row?.querySelector('.pg-session-titlegen');
+  if (!icon) return { before, error: '这一行没有生成标题的图标' };
+  icon.click();
+  await sleep(2000);
+  const after = { row: rowTitle(), head: headTitle(), tab: tabTitle() };
+
+  /* 把设置页重新激活再走：下面几段要在设置页里导航，而 dockview 会把**非活动面板
+     的内容摘出 DOM** —— 刚被我点开并聚焦的会话标签把设置页挤到后台，
+     `.pg-settings-navitem` 就查不到了（实测：这一段跑完下一段直接抛
+     "找不到设置节：通用设置"）。 */
+  globalThis.__piggyDock?.getPanel('settings')?.focus();
+  await sleep(700);
+
+  return {
+    before,
+    after,
+    label: icon.getAttribute('aria-label'),
+    // 三处必须**一致**：名字只有一个真相（会话文件里的 session_info）
+    agree: after.row === after.head && after.head === after.tab,
+    rowChanged: after.row !== before.row,
+    headChanged: after.head !== before.head,
+    tabChanged: after.tab !== before.tab,
+  };
+});
+
 /* 通用设置里的「标题模型 / 思考强度」下拉（docs/04 §2.2）。
  *
  * 这里量的是三件**只有真浏览器 + 真点击**才成立的事：
@@ -2802,7 +2850,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
-      sessionTitle, menuProbe, cornerProbe, titleRun, numbers, compactionProbe,
+      sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, numbers, compactionProbe,
       scrollMemory, restoredScroll,
     },
     null,
@@ -3283,6 +3331,24 @@ else {
       bad.push(`会话标题：生成完侧栏那一行还是「${tr.titleAfter}」——没有重新拉列表或没写回名字 ★`);
     }
     if (!tr.menuClosed) bad.push('会话标题：点了菜单项之后菜单还开着 ★');
+  }
+
+  // 14b：改名要**三处一致**（侧栏 / 上方标题 / 标签页标题）
+  const ts = titleSync ?? {};
+  if (ts.error) bad.push(`会话标题：${ts.error} ★`);
+  else if (!ts.before?.headExists) {
+    bad.push('会话标题：打开会话之后没有会话头部，这一条核对失去意义');
+  } else {
+    if (!ts.rowChanged) bad.push(`会话标题：行上图标点完侧栏那一行还是「${ts.after?.row}」★`);
+    if (!ts.headChanged) {
+      bad.push(`会话标题：改名之后**上方的标题**还是「${ts.after?.head}」（用户报的就是这条）★`);
+    }
+    if (!ts.tabChanged) bad.push(`会话标题：改名之后标签页标题还是「${ts.after?.tab}」★`);
+    if (!ts.agree) {
+      bad.push(
+        `会话标题：三处标题不一致（侧栏「${ts.after?.row}」/ 上方「${ts.after?.head}」/ 标签页「${ts.after?.tab}」）★`,
+      );
+    }
   }
 }
 

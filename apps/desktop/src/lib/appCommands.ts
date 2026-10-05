@@ -11,7 +11,7 @@ import {
   openSessionTab,
   openSettingsTab,
 } from '@/features/workspace/EditorArea';
-import { createTab } from '@/stores/tabs';
+import { applySessionName, createTab } from '@/stores/tabs';
 import { windowEvents } from '@/lib/windowEvents';
 import { toast } from '@/lib/feedback';
 import { describeRun, generateTitle } from '@/lib/sessionTitle';
@@ -32,7 +32,9 @@ export async function generateTitleForActiveTab(): Promise<void> {
   }
   try {
     const r = await generateTitle(path);
-    // 侧栏显示的是 session_list 的结果，生成完必须重新拉一次
+    // 开着的标签要立刻改口（头部 + 标签页标题读的是 tabs store）；侧栏读的是
+    // session_list，还得重新拉一次 —— 两处都要，只做一处就是"上面/左边不一致"。
+    if (r.applied) applySessionName(path, r.title);
     await useSessions.getState().load();
     toast.success(`标题已更新为「${r.title}」（${describeRun(r)}）`);
   } catch (e) {

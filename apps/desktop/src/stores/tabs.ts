@@ -141,6 +141,33 @@ export const useTabs = create<TabsState>()(
   },
   }))
 );
+/**
+ * 会话名变了（生成/重新生成标题、重命名）→ 把**已经打开的标签**同步过来。
+ *
+ * 为什么必须有这一步：侧栏显示的是 `session_list` 的结果，改完名 `load()` 一拉就新了；
+ * 而**上方的会话头部与标签页标题读的是这里（tabs store 的 `sessionName`）** ——
+ * 不推过来的话，用户看到的是"侧栏那一行变了、上面还是旧标题"
+ * （2026-09-23 报："点击重新生成标题之后，上方的标题也要更新"）。
+ *
+ * 改名的两条入口（生成标题、重命名）与 `/name` 都必须走**同一个漏斗**：
+ * 分头各写一遍，迟早有一条忘了推。
+ *
+ * @param sessionPath - 会话文件（tabs store 里的 `sessionFile`）
+ * @param name - 新名字；`null`/空串 = 这个名字被清掉了
+ * @returns 被更新的 tabId（单测与门禁据此断言"推到了哪些标签"）
+ */
+export function applySessionName(sessionPath: string, name: string | null): string[] {
+  const trimmed = name?.trim() ? name.trim() : null;
+  const { tabs, patch } = useTabs.getState();
+  const hit: string[] = [];
+  for (const t of Object.values(tabs)) {
+    if (t.sessionFile !== sessionPath) continue;
+    patch(t.tabId, { sessionName: trimmed });
+    hit.push(t.tabId);
+  }
+  return hit;
+}
+
 /** 创建 tab（含初始化）；失败抛出由调用方呈现。
  * 注意：Tauri v2 命令参数按 camelCase 匹配（Rust session_path ← JS sessionPath），
  * 发 snake_case 会被静默丢弃 → 打会话变成新建会话。

@@ -7,7 +7,7 @@ import { cmd } from '@/lib/ipc';
 import { pickDirectory } from '@/lib/picker';
 import { baseName } from '@/lib/paths';
 import { createTabGuarded, findTabBySession } from '@/lib/tabCreate';
-import { createTab, useTabs, type TabSnapshot } from '@/stores/tabs';
+import { applySessionName, createTab, useTabs, type TabSnapshot } from '@/stores/tabs';
 import {
   useSessions,
   sessionTitle,
@@ -78,6 +78,9 @@ export function SessionsSidebar() {
       setTitling(m.path);
       try {
         const r = await generateTitle(m.path);
+        // 已经打开着的标签也要跟着改：上方的会话头部与标签页标题读的是 tabs store，
+        // 只刷新侧栏列表的话，用户看到的是"侧栏变了、上面还是旧标题"。
+        if (r.applied) applySessionName(m.path, r.title);
         // 生成完重新拉列表：界面显示的必须就是磁盘上的（不做本地合并）
         await load();
         toast.success(`标题已更新为「${r.title}」（${describeRun(r)}）`);
@@ -158,6 +161,8 @@ export function SessionsSidebar() {
     if (!renaming) return;
     try {
       await cmd('session_rename', { path: renaming.path, name: renameText });
+      // 同一条漏斗：改名之后开着的标签的上方标题与标签页标题一起变
+      applySessionName(renaming.path, renameText);
       toast.success('已重命名');
       setRenaming(null);
       void load();

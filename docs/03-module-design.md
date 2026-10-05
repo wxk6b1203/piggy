@@ -313,6 +313,13 @@ RPC 没有对应命令，所以改动对**新开的会话**生效——界面明
 
 pi **没有**标题生成：`set_session_name` 只负责把名字写进会话文件
 （`{"type":"session_info","name":…}`，`session-manager.ts:1316`），谁决定叫什么名字是客户端的事。
+
+**名字有两个来源，按优先级取**（`sessions/registry.rs::session_name_of`）：
+调用方建 tab 时给的那一份（新会话的临时名、`/name` 写回来的），以及 pi 的
+`get_state.sessionName` —— 后者是 pi 从会话文件里读出来的（最新一条 `session_info`，
+`session-manager.js:926-935`），才是"这个会话叫什么"的真相。少了这条兜底，
+打开一个**已命名**的会话拿到的是 `null`，上方标题退回第一条用户消息、与侧栏对不上。
+前端拿到名字之后的三个显示点见 04 §2.4。
 所以侧栏此前显示的是回落链（`name` → `first_message` → 文件名）——长会话的第一条消息
 往往是一整段话，在 220px 宽的侧栏里被省略号截得没法看。
 

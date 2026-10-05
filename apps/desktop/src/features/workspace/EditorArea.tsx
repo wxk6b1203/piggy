@@ -113,6 +113,21 @@ function PgTab(props: IDockviewPanelHeaderProps) {
   const tabId = (props.params as SessionParams | undefined)?.tabId ?? null;
   const unread = useStore(useTabs, (s) => (tabId ? !!s.unread[tabId] : false));
   const busy = useStore(useTabs, (s) => (tabId ? s.tabs[tabId]?.workerState === 'busy' : false));
+  const named = useStore(useTabs, (s) => (tabId ? s.tabs[tabId]?.sessionName ?? null : null));
+  /**
+   * 标签页标题**跟着会话名走**。
+   *
+   * `openSessionTab` 给的只是"打开那一刻"的标题（有名字时是名字，没有时是首条消息 /
+   * 目录名）—— 之后任何改名（重新生成标题、重命名、`/name`）都必须在这一格上看得见，
+   * 否则用户点完"重新生成标题"只看到侧栏变了、标签页与上方标题还是旧的（2026-09-23 报）。
+   *
+   * 放在**这里**而不是每个改名入口各写一遍 `setTitle`：这是唯一一处订阅会话名的标签
+   * 渲染点，一处就兜住所有路径（含将来新增的）。名字被清空时保留原标题 ——
+   * 退回一个我们编不出来的标签，不如留着上一条。
+   */
+  useEffect(() => {
+    if (named && props.api.title !== named) props.api.setTitle(named);
+  }, [named, props.api]);
   return (
     <DockviewDefaultTab
       {...props}

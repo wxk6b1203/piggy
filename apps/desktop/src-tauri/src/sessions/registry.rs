@@ -378,18 +378,38 @@ impl Registry {
     }
 }
 
+/// 会话名的两个来源，按优先级取（用户 2026-09-23 报："点击重新生成标题之后，
+/// 上方的标题也要更新"）。
+///
+/// 1. `tab.session_name`：建 tab 时调用方给的名字（新会话的临时名），
+///    以及 `/name` / `pi_set_session_name` 写回来的那个；
+/// 2. pi 的 `get_state.sessionName`：**pi 从会话文件里读出来的**（最新一条
+///    `session_info` 条目，pi `session-manager.js:926-935`）。
+///
+/// 第 2 条是"这个会话叫什么"的真相。少了它，打开一个**已命名**的会话时前端拿到的
+/// 是 `null`，上方标题就退回"第一条用户消息"——与侧栏那一行（读 `session_list`
+/// 的 `name`）对不上。刚被 `session_title_generate` / `session_rename` 改过名的
+/// 会话更是直接显示旧名字。
+fn session_name_of(tab: &Tab, state: &Value) -> Option<String> {
+    tab.session_name
+        .clone()
+        .or_else(|| state.get("sessionName").and_then(Value::as_str).map(str::to_string))
+        .filter(|n| !n.trim().is_empty())
+}
+
 fn snapshot_of(tab: &Tab, state: &Value) -> TabSnapshot {
     TabSnapshot {
         tab_id: tab.tab_id.clone(),
         cwd: tab.cwd.to_string_lossy().into_owned(),
         session_id: tab.session_id.clone(),
         session_file: tab.session_file.clone(),
-        session_name: tab.session_name.clone(),
+        session_name: session_name_of(tab, state),
         worker_state: tab.worker_state(),
         permission: tab.permission,
         state: state.clone(),
     }
 }
+
 
 /// 崩溃复活（docs/02 §7.5、01 §2.3）：spawn → 握手 → （必要时）switch_session
 /// → get_entries(since=cursor) 游标补齐 → 发 resync 事件。
@@ -511,4 +531,50 @@ pub fn spawn_tab_watcher(shared: SharedRegistry, sink: Arc<dyn EventSink>, tab_i
 fn normalize_path(p: &str) -> String {
     // M0：字符串规范化（去尾部斜杠）；M1 换 canonicalize
     p.trim_end_matches('/').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pi::permission::PermissionMode;
+
+    fn tab_with_name(name: Option<&str>) -> Tab {
+        Tab {
+            tab_id: "t1".into(),
+            cwd: PathBuf::from("/tmp"),
+            session_file: Some("/tmp/s.jsonl".into()),
+            session_id: None,
+            session_name: name.map(str::to_string),
+            last_cursor: None,
+            worker: None,
+            restarts: 0,
+            deliberate: false,
+            permission: PermissionMode::Workspace,
+            last_activity: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn session_name_falls_back_to_pi_state() {
+        // 打开一个**已命名**的会话：调用方没给名字，名字在会话文件里（pi 读出来了）
+        let tab = tab_with_name(None);
+        let state = json!({ "sessionName": "项目严重缺陷排查" });
+        assert_eq!(session_name_of(&tab, &state).as_deref(), Some("项目严重缺陷排查"));
+    }
+
+    #[test]
+    fn explicit_tab_name_wins_over_pi_state() {
+        // `/name` 之后 tab 上那一份是**刚写下去**的，pi 的 state 可能还是连接时的旧值
+        let tab = tab_with_name(Some("新名字"));
+        let state = json!({ "sessionName": "旧名字" });
+        assert_eq!(session_name_of(&tab, &state).as_deref(), Some("新名字"));
+    }
+
+    #[test]
+    fn blank_names_are_treated_as_absent() {
+        // 新会话：pi 还没给名字（`undefined` / 空串），别把空串当名字传给前端
+        assert_eq!(session_name_of(&tab_with_name(None), &json!({})), None);
+        assert_eq!(session_name_of(&tab_with_name(None), &json!({ "sessionName": "" })), None);
+        assert_eq!(session_name_of(&tab_with_name(Some("   ")), &json!({})), None);
+    }
 }

@@ -177,7 +177,25 @@ function persistTabs(): void {
   }
 }
 
-function snapshot() {
+/**
+ * tab 快照（形状 = Rust `TabSnapshot`，`sessions/registry.rs`）。
+ *
+ * `session_name` 显式写成 `string | null`：真机那是 `Option<String>` ——
+ * 打开一个**没名字**的会话时它就是 `null`（前端据此退回第一条用户消息）。
+ * 类型收紧成 `string` 会让 mock 只能编一个名字出来，那正是"mock 比真机宽松"的老毛病。
+ */
+interface MockTabSnapshot {
+  tab_id: string;
+  cwd: string;
+  session_id: string;
+  session_file: string;
+  session_name: string | null;
+  worker_state: string;
+  permission: typeof state.permission;
+  state: { model: typeof state.model; thinkingLevel: string; isStreaming: boolean; sessionName?: string | null };
+}
+
+function snapshot(): MockTabSnapshot {
   return {
     // 每次 tab_create 给一个新的 tab_id：以前恒为 'mock-tab-1'，
     // 于是连点「新会话」不会产生第二个标签（dockview 面板 id 相同会去重），
@@ -855,9 +873,19 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   tab_create: async (a) => {
     await new Promise((r) => setTimeout(r, 250));
     const s = snapshot();
-    if (a?.sessionPath ?? a?.session_path) {
-      s.session_file = String(a.sessionPath ?? a.session_path);
-      s.session_name = '恢复的会话';
+    const path = a?.sessionPath ?? a?.session_path;
+    if (path) {
+      s.session_file = String(path);
+      /* 会话名**照抄宿主**：真机这里是 Rust 的 `session_name_of`
+         （`sessions/registry.rs`）—— 调用方没给名字时取 pi 的 `get_state.sessionName`，
+         而 pi 是从会话文件最新一条 `session_info` 读出来的（`session-manager.js:926-935`）。
+         mock 里"文件里的名字"就是这张覆盖表（`session_title_generate` / `session_rename`
+         往里写）。以前这里硬写 `'恢复的会话'`，**比真机宽松**：真机打开一个没名字的会话
+         拿到的是 null（上方标题退回第一条用户消息），mock 却给了一个名字 ——
+         于是"打开已命名会话，上方标题对不对"这条在 mock 下永远看不出来。 */
+      const name = mockSessionNames.get(String(path)) ?? null;
+      s.session_name = name;
+      s.state = { ...s.state, sessionName: name };
     }
     if (a?.permission) s.permission = String(a.permission) as typeof s.permission;
     liveTabs.add(s.tab_id);
