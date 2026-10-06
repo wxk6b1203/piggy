@@ -72,6 +72,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+      # 真机插件探针（docs/17 §2.2b）：核对外面那三条只有真 pi 才能验的事
+      # （能加载 / `--tools` 会过滤插件工具 / 两份同名插件会让 pi 不进会话）。
+      - run: node apps/desktop/scripts/pi-plugin-probe.mjs
       - name: 契约测试（C9/e2e 消耗最小 token；provider 缺失时允许跳过）
         run: cd apps/desktop/src-tauri && cargo test --features contract --test contract -- --test-threads=2
         env:

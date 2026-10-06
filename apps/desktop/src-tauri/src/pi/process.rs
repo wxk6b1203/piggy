@@ -47,6 +47,12 @@ pub struct SpawnArgs {
     pub envs: Vec<(String, String)>,
     /// 子代理委派策略文件（`piggy-subagent-policy.md`）。`Some` = 开关已打开。
     pub subagent_policy: Option<PathBuf>,
+    /// **捆绑的 pi 插件目录**（`resources/pi-plugins/<name>/`，docs/06 §7）。
+    ///
+    /// 与 `guard_script`/`bridge_script` 的区别：那些是单文件脚本、写死用途；这里是
+    /// 通用功能插件（结构化提问、计划模式……），由配置 `bundled_plugins` 决定装哪几个。
+    /// 每个都以 `pi --extension <dir>` 注入（pi 的 `-e` 接受文件**或**目录）。
+    pub bundled_extensions: Vec<PathBuf>,
 }
 
 /// 组装 pi 的 argv（不含二进制本身）。
@@ -68,11 +74,25 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push("--name".into());
         out.push(n.into());
     }
-    // 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
-    // 不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
+    /* 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
+       不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
+
+       ⚠️ pi 的帮助原话："Applies to built-in, extension, and custom tools"。也就是说
+       **`--tools` 会把捆绑插件的工具一起过滤掉**（真机验证：`--tools read,grep,find,ls`
+       之下 `pi.getAllTools()` 只剩这 4 个）。要让插件在限制档位下仍然可用，就得把它申报的
+       工具名**加进白名单**（名字来自插件的 `piggy-plugin.json`，见 `pi/plugins.rs`）。
+       只加"这次真的注入了的"那些插件申报的名字 —— 插件没注入却把名字写进白名单，
+       等于告诉模型"你有这个工具"，而它并不存在。 */
     if let Some(list) = args.permission.tool_allowlist() {
+        let mut names: Vec<String> = list.split(',').map(|s| s.trim().to_string()).collect();
+        let extra = crate::pi::plugins::plugin_tools_for(&args.bundled_extensions);
+        for t in extra {
+            if !names.iter().any(|n| n == &t) {
+                names.push(t);
+            }
+        }
         out.push("--tools".into());
-        out.push(list.into());
+        out.push(names.join(",").into());
     }
     // 路径守卫（pi `-e`）：只有「工作区内修改」需要。
     // 脚本缺失时**必须报错而不是静默降级**——否则用户以为修改被限制在 cwd 内、实际没有，
@@ -93,6 +113,16 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
     if let Some(bridge) = args.bridge_script.as_ref().filter(|p| p.is_file()) {
         out.push("--extension".into());
         out.push(bridge.into());
+    }
+    /* 捆绑的 pi 插件（docs/06 §7）：目录形式注入，pi 的 `-e` 接受目录。
+       ⚠️ 与 `--tools` 的关系：pi 的帮助写得很清楚 —— `--tools` 是"内置、扩展与自定义工具"
+       的总白名单。限制档位（`tool_allowlist()` 为 Some）之下**插件工具名不在白名单里，
+       所以插件的工具会被整个过滤掉**（真机验证见 docs/15 规矩 8 那条）。这里仍然注入
+       （不注入的话连"插件在不在"都看不出来），但**上层必须据此提示用户**：
+       想用插件工具就得用「完全权限」档，或者把工具名加进白名单。 */
+    for ext in args.bundled_extensions.iter().filter(|p| p.is_dir()) {
+        out.push("--extension".into());
+        out.push(ext.into());
     }
     // 子代理委派策略（docs/06 §6）：`--append-system-prompt` 落到系统提示词的 addendum 段，
     // 位置在所有其它段落之后 —— 它要正面对冲 pi-subagents 写在 rules 段里的
@@ -126,6 +156,15 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
 /// 打开子代理委派时注入的环境变量名（桥接扩展 `packages/piggy-bridge` 里同名常量）。
 pub const DELEGATION_ENV: &str = "PIGGY_SUBAGENT_DELEGATION";
 
+/// 告诉 pi 扩展"宿主是谁"（`pi-ask` 用它决定走提问卡还是降级成逐个对话框）。
+///
+/// 值就是宿主名 `piggy`；扩展只判"有没有这个变量"，不依赖版本号 ——
+/// 需要版本协商时再看信封前缀（`piggy:ask:v1:`）那一层。
+pub const HOST_ENV: &str = "PIGGY_HOST";
+
+/// `PIGGY_HOST` 的值。
+pub const HOST_NAME: &str = "piggy";
+
 /// 子代理委派此刻是否**真的**生效（开关打开 **且** 档位能让扩展工具存在）。
 ///
 /// 抽出来是为了让「界面显示的开关状态」与「进程实际拿到的能力」用同一个判据——
@@ -139,6 +178,10 @@ pub fn subagent_delegation_active(args: &SpawnArgs) -> bool {
 /// 单独成函数（而不是塞进 `spawn_worker`）是为了让"开关打开时到底传了什么"可被单测覆盖。
 pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
     let mut envs = args.envs.clone();
+    // 宿主标识：让捆绑的插件能分辨"在 Piggy 里跑"还是"在 pi TUI 里跑"（见 HOST_ENV）
+    if !envs.iter().any(|(k, _)| k == HOST_ENV) {
+        envs.push((HOST_ENV.to_string(), HOST_NAME.to_string()));
+    }
     if subagent_delegation_active(args) {
         // 桥接扩展据此在首个模型请求前激活 `subagent`，
         // 省掉模型自己调 `subagents_enable` 的那一轮。
@@ -413,6 +456,7 @@ mod tests {
             bridge_script: None,
             envs: Vec::new(),
             subagent_policy: None,
+            bundled_extensions: Vec::new(),
         }
     }
 
@@ -448,6 +492,24 @@ mod tests {
     #[test]
     fn restricted_modes_carry_the_allowlist() {
         assert!(argv(&args(PermissionMode::ReadOnly)).contains(&"read,grep,find,ls".to_string()));
+        /* 插件的工具名要**加进**白名单（否则 `--tools` 把它们整个过滤掉，
+           插件等于没注入）。名字来自插件的 `piggy-plugin.json`。 */
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pi-ask");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("piggy-plugin.json"),
+            r#"{"name":"pi-ask","entry":"index.js","tools":["ask_user_question","exit_plan_mode"]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("index.js"), "// x\n").unwrap();
+        let mut a = args(PermissionMode::ReadOnly);
+        a.bundled_extensions = vec![dir];
+        let with_plugin = argv(&a);
+        assert!(
+            with_plugin.contains(&"read,grep,find,ls,ask_user_question,exit_plan_mode".to_string()),
+            "插件工具没进白名单：{with_plugin:?}"
+        );
         // Workspace 档必须有守卫才允许组装 argv（缺守卫是硬错误，见下一个测试）
         let mut a = args(PermissionMode::Workspace);
         a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
@@ -495,6 +557,42 @@ mod tests {
         a.bridge_script = Some(tmp_file("piggy-test-bridge2.js"));
         let v = argv(&a);
         assert_eq!(v.iter().filter(|x| *x == "--extension").count(), 2, "{v:?}");
+    }
+
+    /// 捆绑插件：目录形式注入（pi 的 `-e` 接受目录），缺失的目录不注入也不报错。
+    #[test]
+    fn bundled_plugin_dirs_are_injected_and_missing_ones_are_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pi-ask");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.js"), "export default () => {}\n").unwrap();
+        let mut a = args(PermissionMode::Full);
+        a.bundled_extensions = vec![dir.clone(), tmp.path().join("does-not-exist")];
+        let argv = cli_args(&a).unwrap();
+        let rendered: Vec<String> = argv.iter().map(|s| s.to_string_lossy().to_string()).collect();
+        // 出现的次数：一次是 `--extension`，紧跟其后是目录本身
+        let ext_uses = rendered
+            .windows(2)
+            .filter(|w| w[0] == "--extension" && w[1] == dir.to_string_lossy())
+            .count();
+        assert_eq!(ext_uses, 1, "插件目录没有被 -e 注入：{rendered:?}");
+        assert!(
+            !rendered.iter().any(|s| s.contains("does-not-exist")),
+            "不存在的插件目录不该出现在 argv 里：{rendered:?}"
+        );
+    }
+
+    /// 限制档位下插件**照样注入**（工具会不会被 `--tools` 过滤掉是另一件事，
+    /// 见 `plugins.rs` 顶部与 docs/15 规矩 8；但"注入了什么"必须能从 argv 看出来）。
+    #[test]
+    fn bundled_plugins_are_injected_in_restricted_modes_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pi-ask");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = args(PermissionMode::ReadOnly);
+        a.bundled_extensions = vec![dir.clone()];
+        let argv = cli_args(&a).unwrap();
+        assert!(argv.iter().any(|s| s == &std::ffi::OsString::from(&dir)));
     }
 
     #[test]
@@ -594,6 +692,20 @@ mod tests {
         assert!(err.starts_with("SUBAGENT_POLICY_MISSING"), "{err}");
     }
 
+    /// 宿主标识不许覆盖调用方显式传进来的值（契约测试可能自己指定宿主）。
+    #[test]
+    fn host_env_is_not_clobbered() {
+        let mut a = args(PermissionMode::Full);
+        a.envs = vec![(HOST_ENV.into(), "custom".into())];
+        let envs = spawn_envs(&a);
+        assert_eq!(
+            envs.iter().filter(|(k, _)| k == HOST_ENV).count(),
+            1,
+            "PIGGY_HOST 只许出现一次"
+        );
+        assert!(envs.iter().any(|(k, v)| k == HOST_ENV && v == "custom"));
+    }
+
     #[test]
     fn delegation_env_does_not_clobber_existing_envs() {
         // 契约测试用 envs 隔离 PI_CODING_AGENT_DIR；两个都要在
@@ -606,6 +718,8 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "PI_CODING_AGENT_DIR" && v == "/tmp/empty"));
         assert!(envs.iter().any(|(k, _)| k == DELEGATION_ENV));
-        assert_eq!(envs.len(), 2);
+        // 宿主标识也一定在（插件靠它分辨"在 Piggy 里跑"还是"在 pi TUI 里跑"）
+        assert!(envs.iter().any(|(k, v)| k == HOST_ENV && v == HOST_NAME));
+        assert_eq!(envs.len(), 3);
     }
 }

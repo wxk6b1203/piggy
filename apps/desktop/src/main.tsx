@@ -37,7 +37,9 @@ if (import.meta.env.DEV) {
     import('@/features/common/monaco-pool'),
     // 界面配置（预览滚动条位置、工作步骤展示档位）：门禁要能改它来量不同档位下的几何
     import('@/stores/appConfig'),
-  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool, appConfig]) => {
+    // 提问卡的待答请求：门禁要核对"提交之后请求被结算了"
+    import('@/stores/questions'),
+  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool, appConfig, questions]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
@@ -45,6 +47,7 @@ if (import.meta.env.DEV) {
       useFleet: fleet.useFleet,
       useTodo: todo.useTodo,
       useAppConfig: appConfig.useAppConfig,
+      useQuestions: questions.useQuestions,
     };
     (globalThis as Record<string, unknown>).__piggyCommands = commands;
     // 预览相关（ui:startup 第 5/9 段与 Monaco 资源核对用）；另 import 一份会拿到另一个实例

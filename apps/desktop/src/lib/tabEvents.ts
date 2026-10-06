@@ -11,6 +11,7 @@ import { useMessages } from '@/stores/messages';
 import { useTodo } from '@/stores/todo';
 import { useTabs } from '@/stores/tabs';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
+import { useQuestions } from '@/stores/questions';
 import { handleFireAndForget } from '@/features/dialogs/DialogRouter';
 import { windowEvents } from '@/lib/windowEvents';
 import { useTrajectory } from '@/stores/trajectory';
@@ -60,6 +61,9 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
           useBash.getState().append(tabId, b.delta ?? '');
         }
         if (ev.type === 'agent_settled') {
+          /* 这一轮结束了：还挂着的待答提问已经没有去处（插件的 select 早被 pi 关掉），
+             清掉它们 —— 否则卡片会一直停在"等你回答"，点了提交只得到沉默的失败。 */
+          useQuestions.getState().clearTab(tabId);
           /* 一轮落定时**还挂着流式行** = 那个 `message_end` 没来（用户中断、pi 出错后直接
              收尾、扩展把消息吞了……）。落地成「已中止」，别让它永远转圈。
              ⚠️ 顺序：先落地（要读 `pendingId`），再走下面那些"落定之后"的事。 */
@@ -96,6 +100,16 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
                 : 'pi 进程被回收休眠（本轮已中断，已生成的内容保留在上面）',
             );
         }
+        /* pi **启动就失败**的情况（今天最现实的一种：扩展工具名冲突 —— 用户自己装过一份
+           同名插件，pi 会打印 "Tool "x" conflicts with …" 然后根本不进会话）。
+           Rust 侧把 stderr 尾部随 `pi:state` 发过来了，但前端此前**一个字段都没读**，
+           于是用户只看到"worker 崩溃"却没有任何原因。把它作为会话内的一行说出来。 */
+        if ((st.state === 'crashed' || st.state === 'stopped') && typeof st.stderrTail === 'string') {
+          const line = st.stderrTail.trim();
+          if (line !== '') {
+            useMessages.getState().extensionError(tabId, 'pi 启动/运行失败', line);
+          }
+        }
         useTabs
           .getState()
           .setWorkerState(tabId, (st.state ?? 'ready') as never, st);
@@ -103,6 +117,9 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     );
     un.push(
       await on(`pi:ui-req:${tabId}`, (req: UiRequest) => {
+        /* 提问卡（docs/06 §7）：pi-ask 的 select 标题里带信封 —— 那种请求**不弹普通
+           选择框**（问题与选项在转录的工具行里），只登记待答请求，等卡片来回答。 */
+        if (req.method === 'select' && useQuestions.getState().accept(req, tabId)) return;
         if (DIALOG_METHODS.has(req.method)) useDialogs.getState().push(req);
         else handleFireAndForget(req, tabId);
       }),

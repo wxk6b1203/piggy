@@ -52,6 +52,12 @@ pub struct Registry {
     /// `Some` = `~/.piggy/config.json` 里开关打开；是否**真的**生效还要看档位
     /// （见 `pi/process.rs::subagent_delegation_active`）。setup 时填充。
     pub subagent_policy: Option<PathBuf>,
+    /// **捆绑的 pi 插件候选目录**（`pi/resources.rs::bundled_plugin_dir`，docs/06 §7）。
+    ///
+    /// 存"候选"而不是"最终路径"：装不装由 `~/.piggy/config.json` 的 `bundled_plugins`
+    /// 与"用户是不是自己装过同名扩展"两件事在 spawn 时决定
+    /// （重复加载会让 pi 因工具名冲突直接退出，见 `pi/plugins.rs`）。
+    pub bundled_plugins: Vec<PathBuf>,
     /// 新建标签页的默认档位（持久化在 ~/.piggy/config.json）
     pub default_permission: PermissionMode,
     /// tab_id → Tab（docs/03 §2.7）
@@ -82,6 +88,7 @@ impl Registry {
             pi_source: PiSource::default(),
             pi_custom_path: None,
             guard_script: None,
+            bundled_plugins: Vec::new(),
             bridge_script: None,
             subagent_policy: None,
             default_permission: PermissionMode::default(),
@@ -177,6 +184,10 @@ impl Registry {
         let guard = self.guard_script.clone();
         let bridge = self.bridge_script.clone();
         let policy = self.subagent_policy.clone();
+        /* 捆绑插件：按当前配置过滤一遍（设置页关掉的不注入）。
+           放到 spawn 时算而不是 setup 时算：`bundled_plugins` 是用户能改的开关，
+           改完新建标签页就该生效，不必重启应用。 */
+        let plugins = crate::pi::plugins::enabled_plugin_dirs(&self.bundled_plugins);
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),
             pi_bin,
@@ -186,6 +197,7 @@ impl Registry {
             guard_script: guard.clone(),
             bridge_script: bridge.clone(),
             subagent_policy: policy.clone(),
+            bundled_extensions: plugins.clone(),
             envs: Vec::new(),
         };
         let args = build(self.resolve_bin()?);

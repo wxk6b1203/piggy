@@ -75,6 +75,26 @@ fn subagent_policy_for(state: &AppState, resource_dir: Option<&std::path::Path>)
     crate::pi::resources::subagent_policy_path(resource_dir)
 }
 
+/// 随包的 pi 插件候选目录（`resources/pi-plugins/<name>/`，docs/06 §7）。
+///
+/// 名字清单来自 `config/app.rs::default_bundled_plugins`（+ 配置里可能多出来的名字）：
+/// 只有**明确列出来**的才作为候选，避免往 resources 里丢个文件就悄悄改变模型能用的工具。
+///
+/// @param resource_dir - Tauri 资源目录（拿不到时回落源码树）
+/// @returns 存在的插件目录
+fn bundled_plugin_dirs(resource_dir: Option<&std::path::Path>) -> Vec<PathBuf> {
+    let mut names = crate::config::app::default_bundled_plugins();
+    for n in crate::config::app::perf_config_load().bundled_plugins {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    names
+        .iter()
+        .filter_map(|n| crate::pi::resources::bundled_plugin_dir(resource_dir, n))
+        .collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook(); // M4：崩溃安全
@@ -194,6 +214,8 @@ pub fn run() {
                     reg.guard_script = crate::pi::permission::guard_script_path(resource_dir.as_deref());
                     // 桥接扩展（docs/06 §4）：缺失只让 Fleet 面板显示"未安装"，不影响会话
                     reg.bridge_script = crate::pi::resources::bridge_script_path(resource_dir.as_deref());
+                    // 捆绑的 pi 插件（docs/06 §7）：候选目录，装不装在 spawn 时按配置决定
+                    reg.bundled_plugins = bundled_plugin_dirs(resource_dir.as_deref());
                     // 子代理委派策略（docs/06 §6）：只在开关打开时记录。是否**真的**注入
                     // 还要看档位（限制档位下扩展工具不存在，注入等于让模型调不存在的工具）。
                     reg.subagent_policy = subagent_policy_for(&state, resource_dir.as_deref());
@@ -208,6 +230,10 @@ pub fn run() {
                         Some(p) => eprintln!("[piggy] 子代理桥接扩展: {}", p.display()),
                         None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
                     }
+                    match bundled_plugin_dirs(resource_dir.as_deref()).len() {
+                        0 => eprintln!("[piggy] 捆绑插件目录缺失：结构化提问/计划模式不可用"),
+                        n => eprintln!("[piggy] 捆绑插件候选 {n} 个（装不装看设置与是否重复）"),
+                    }
                     if let Some(p) = &reg.subagent_policy {
                         eprintln!("[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}", p.display());
                     }
@@ -218,6 +244,7 @@ pub fn run() {
                     let mut reg = state.registry.lock().await;
                     reg.guard_script = crate::pi::permission::guard_script_path(None);
                     reg.bridge_script = crate::pi::resources::bridge_script_path(None);
+                    reg.bundled_plugins = bundled_plugin_dirs(None);
                     reg.subagent_policy = subagent_policy_for(&state, None);
                     reg.default_permission = state.perf.read().map(|p| p.permission_mode).unwrap_or_default();
                     eprintln!(
@@ -363,6 +390,7 @@ pub fn run() {
             provider::provider_discover,
             plugin::plugin_overview,
             plugin::plugin_capability,
+            commands::plugin_bundled,
             plugin::plugin_run,
             plugin::plugin_jobs,
             plugin::plugin_job_cancel,

@@ -16,6 +16,7 @@ import { cmd } from '@/lib/ipc';
 import { loadTitleModels, type ModelOption } from '@/lib/sessionTitle';
 import { thinkingOptions } from '@/lib/thinking';
 import { useAppConfig, type RailPlacement, type TranscriptDetail } from '@/stores/appConfig';
+import { BundledPluginsRow } from './BundledPluginsRow';
 
 interface PiSourceOption {
   id: 'system' | 'bundled' | 'custom';
@@ -548,6 +549,11 @@ export function GeneralSection() {
           正在跑的那一轮与中止/失败的回合**永远摊开**。
         </span>
       </div>
+
+      {/* 随包带的 pi 插件（docs/06 §7）：可见性 + 开关。
+          `-e` 注入的扩展在"插件"页里看不见（那页扫的是 pi 自己的发现目录），
+          所以在这里单列一块，免得用户找不到"我那个提问插件到底在不在"。 */}
+      <BundledPluginsRow onChanged={reload} />
 
       <div className="pg-settings-row">
         <span className="pg-settings-label">子代理委派</span>

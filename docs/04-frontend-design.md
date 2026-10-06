@@ -611,6 +611,37 @@ DSH `FileDiff.tsx` 与 `DiffBlock.tsx`）：
 **`write` 没有 diff**（pi 的 write 结果 `details` 是 `undefined`，覆盖写看不出"原先是什么"，
 硬凑"全部新增"会骗人）。
 
+### 2.1.8 提问卡与计划模式（2026-09-25）
+
+对标 DSH 的 `ask_user_question`（`packages/interaction/user-questions` + 提问行）。
+Piggy 这边分两半：**能力在插件里、呈现与通道在宿主里**。
+
+**通道（没有扩展协议）**：pi 在 RPC 模式下只把 `select/confirm/input/notify/...` 发给宿主
+（`custom()` 直接返回 undefined），所以"一张卡问多个问题"靠宿主认信封：
+
+```
+插件 → 宿主：{ method: 'select', title: 'piggy:ask:v1:<toolCallId>', options: ['提交'] }
+宿主 → 插件：{ type:'extension_ui_response', value: '{"answers":[{id,selected,custom}]}' }
+```
+
+工具调用 id 写在标题里是为了**不用猜**（一个回合可能有多次提问）。`lib/tabEvents.ts` 见到前缀
+就登记到 `stores/questions.ts`，**不弹**普通选择框；`features/chat/QuestionCard.tsx` 在
+**工具行的位置**上画卡片（问题、选项、多选、自由文本、提交）。别的宿主不认前缀 → 插件
+降级成逐个问题弹原生对话框（那条路只用 pi 的公开能力）。
+
+**为什么长在工具行里**：提问的参数就是问题、工具结果就是用户的回答 —— 这一问一答本来就在
+转录里。再弹一个 modal 只会把内容从会话里撕出去（滚回去看不见"当时问了什么、答了什么"）。
+答完卡片变只读记录。
+
+**四种状态都要想清楚**：① 未答可交互；② 答完只读（显示回答）；③ 请求没了（中断/超时/
+一轮落定）→ 退回只读并写明"回答无处可去"，**不留一个点了没反应的提交按钮**；
+④ `exit_plan_mode`（计划审批）= 同一张卡 + 方案全文（纯文本 `<pre>`，不引 markdown 渲染器）。
+
+**计划模式**（`/plan`）由插件提供：只读（`tool_call` 事件拦下 `edit`/`write`）、
+每条用户输入前注入计划说明（`input` 事件的 `transform`）、激活 `exit_plan_mode`；
+模型提交方案 → 同一张卡问"批准 / 继续规划" → 批准则关模式并把方案交回执行。
+Piggy 侧不需要任何新协议：`/plan` 就是 pi 的斜杠命令，自动出现在 Composer 的补全里。
+
 ### 2.1.7 跨重启记住阅读位置（2026-09-25）
 
 用户要求："跨重启记住阅读位置"。开着会话时"读到哪"由 `TranscriptReading` 拿在内存里

@@ -120,6 +120,40 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 内置路径由 `resource_dir()` 决定，布局见 `src-tauri/TAURI_FULL_SKU.md`。
 打完包后在设置页选「捆绑 pi」即可启用。
 
+### 2.2b 捆绑的 **pi 插件**（功能插件，和 pi 本身分开）
+
+`resources/pi/` 装的是 **pi 自己**；`resources/pi-plugins/<name>/` 装的是**给模型用的功能插件**
+（今天有一个：`pi-ask` 结构化提问 + `/plan` 计划模式）。区别与理由：
+
+| | `piggy-guard.js` / `piggy-bridge.js` | `pi-plugins/<name>/` |
+|---|---|---|
+| 是什么 | Piggy 的基础设施（权限守卫、Fleet 数据面） | 可选功能，用户能关 |
+| 形态 | 单文件脚本 | 目录（`piggy-plugin.json` + `index.js` + `lib.js`） |
+| 注入 | `--extension <file>` | `--extension <dir>`（pi 的 `-e` 接受目录） |
+
+**为什么捆绑而不是让用户 `pi install`**：目标机器上很可能**没有 node/npm**，而 pi 的包管理器
+是 spawn 系统 `npm` 来装的（`package-manager.js`）。捆绑 + `-e` 不需要任何包管理器，
+插件目录就是最终产物（plain ESM JS，不需要构建，也没有 npm 依赖）。
+
+三条纪律（都有真机证据，`node scripts/pi-plugin-probe.mjs` 可复现）：
+
+1. **重复加载会让 pi 直接不进会话**：同名工具从两个不同路径注册时，pi 打印
+   `Tool "ask_user_question" conflicts with …` 并**根本不建立会话**（同一个路径传两次
+   pi 会自己去重，所以只需要挡"另一个路径的同名插件"）。
+   因此 `pi/plugins.rs::resolve` 在注入前扫 pi 的发现目录（`~/.pi/agent/extensions`、
+   `<cwd>/.pi/extensions`，含软链的 realpath 比较），发现同名就**不注入**并把原因报给界面
+   （设置 › 通用 › 内置插件）。
+2. **`--tools` 会把插件工具一起过滤掉**：pi 的帮助写着 "Applies to built-in, extension, and
+   custom tools"，真机实测 `--tools read` 之下 `getAllTools()` 只剩 `["read"]`
+   （插件的两个工具都没了）。所以限制档位拼白名单时，要把**这次真的注入了的**插件在
+   `piggy-plugin.json` 里申报的工具名加进去（`pi/process.rs::cli_args`）。
+3. **清单缺失/入口不存在就不注入**：pi 对"加载失败的扩展"的处理是报诊断并退出 ——
+   宁可少一个功能，也不能让用户开不了会话。
+
+设置页那一块（`features/settings/BundledPluginsRow.tsx`）显示每个内置插件的名字、说明、
+申报的工具与命令、许可证、目录，以及**这次装不装 / 为什么不装**。它不在 pi 自己的
+"插件"页里，因为那一页扫的是 pi 的发现目录，`-e` 注入的东西天然不在其中。
+
 ### 2.3 必须保持的契约
 
 自定义 pi 只要满足这些，Piggy 就能驱动它（除此之外**没有任何版本协商**）：

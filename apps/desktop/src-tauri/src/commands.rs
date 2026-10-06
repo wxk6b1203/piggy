@@ -351,6 +351,42 @@ pub async fn perf_config_load() -> Result<Value, String> {
 /// 合并成一个 patch 结构体当然更"优雅"，但那是**线格式变更**：前端、mock、契约测试
 /// 都要跟着改，而收益只是少一个 lint。这里显式放行并留痕，好过为了让 lint 闭嘴
 /// 去动一个"存错就静默丢设置"的路径。
+/// 随包带的 pi 插件全貌（docs/06 §7）：名字、说明、申报的工具/命令、**这次装不装**。
+///
+/// `skipped` 那一栏是这一层最要紧的东西：用户自己装过同名扩展时 Piggy 会主动不注入
+/// （两份同名扩展会让 pi 因为工具名冲突直接不进会话），但"为什么我的插件没生效"
+/// 必须能从界面上读到，而不是让人去翻日志。
+#[tauri::command]
+pub async fn plugin_bundled(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let reg = state.registry.lock().await;
+    let enabled = crate::config::app::perf_config_load().bundled_plugins;
+    let resolved = crate::pi::plugins::resolve(
+        &reg.bundled_plugins,
+        &enabled,
+        crate::pi::plugins::home_dir().as_deref(),
+        None,
+    );
+    let items: Vec<serde_json::Value> = resolved
+        .into_iter()
+        .map(|p| {
+            let m = crate::pi::plugins::read_manifest(&p.dir).unwrap_or_default();
+            serde_json::json!({
+                "name": p.name,
+                "title": if m.title.is_empty() { p.name.clone() } else { m.title },
+                "description": m.description,
+                "license": m.license,
+                "tools": m.tools,
+                "commands": m.commands,
+                "dir": p.dir.to_string_lossy(),
+                "bundled": true,
+                "inject": p.inject,
+                "skipped": p.skipped,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "plugins": items }))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn perf_config_save(
@@ -374,6 +410,8 @@ pub async fn perf_config_save(
     // 工作步骤展示档位（compact / standard / detailed / verbose，docs/04 §2.1.6）。
     // 不传 = 保持既有值。
     transcript_detail: Option<String>,
+    // 要注入哪些捆绑插件（docs/06 §7）。不传 = 保持既有值。
+    bundled_plugins: Option<Vec<String>>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -413,6 +451,12 @@ pub async fn perf_config_save(
     }
     if let Some(d) = transcript_detail.as_deref() {
         cfg.transcript_detail = crate::config::app::TranscriptDetail::parse(d)?;
+    }
+    if let Some(list) = bundled_plugins {
+        // 只认随包带的那些名字：写进来一个不存在的插件名没有意义（而且会让界面显示一条
+        // "已启用"却什么都不发生的东西）
+        let known = crate::config::app::default_bundled_plugins();
+        cfg.bundled_plugins = list.into_iter().filter(|n| known.contains(n)).collect();
     }
 
     // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）
@@ -770,6 +814,8 @@ async fn set_session_name_via_worker(
                 envs: Vec::new(),
                 // 只读档位，本来就不会走到委派（cli_args 里档位判定也会拦下）
                 subagent_policy: None,
+                // 改名的临时 worker 不需要任何插件
+                bundled_extensions: Vec::new(),
             },
             sink(app),
         )

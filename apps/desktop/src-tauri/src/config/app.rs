@@ -183,6 +183,21 @@ pub struct PerfConfig {
     /// 工作步骤展示档位（docs/04 §2.1.6）：`compact` / `standard`（默认）/ `detailed` / `verbose`。
     #[serde(default)]
     pub transcript_detail: TranscriptDetail,
+    /// 要注入哪些**捆绑的 pi 插件**（docs/06 §7）。
+    ///
+    /// 默认全开（`default_bundled_plugins()`）：它们是随包带的功能，用户没理由先去设置里找开关。
+    /// ⚠️ 用 `serde(default = ...)` 而不是 `#[serde(default)]`：后者对**已经存在的** config.json
+    /// 会给出空清单 —— 老用户升级之后插件一个都不开，而且从界面上看不出为什么。
+    #[serde(default = "default_bundled_plugins")]
+    pub bundled_plugins: Vec<String>,
+}
+
+/// 默认注入的捆绑插件（目录名）。
+///
+/// 写死在这里而不是"扫目录全都开"：随包多带一个插件就意味着模型多看见一个工具，
+/// 这件事应当是一个**明确的**决定（改这里 + 加测试），不是目录里多放一个文件就自动生效。
+pub fn default_bundled_plugins() -> Vec<String> {
+    vec!["pi-ask".to_string()]
 }
 
 fn default_title_max_chars() -> u32 {
@@ -225,6 +240,7 @@ impl Default for PerfConfig {
             title_thinking: None,
             transcript_rail: RailPlacement::default(),
             transcript_detail: TranscriptDetail::default(),
+            bundled_plugins: default_bundled_plugins(),
         }
     }
 }
@@ -289,6 +305,13 @@ mod tests {
     /// 预览滚动条的三态：默认右、能解析、**认不出的值收回默认**（而不是整份配置失败）。
     #[test]
     fn rail_placement_parses_and_falls_back() {
+        // 默认注入哪些插件是**显式**决定（不是"目录里有啥就开啥"）
+        let cfg = PerfConfig::default();
+        assert_eq!(cfg.bundled_plugins, vec!["pi-ask".to_string()]);
+        // 老配置里没有这个字段 → 拿到默认（插件照常开）
+        let cfg: PerfConfig = serde_json::from_str(r#"{"max_workers":3}"#).unwrap();
+        assert_eq!(cfg.bundled_plugins, default_bundled_plugins());
+
         assert_eq!(TranscriptDetail::default(), TranscriptDetail::Standard);
         assert_eq!(TranscriptDetail::parse("compact").unwrap(), TranscriptDetail::Compact);
         assert_eq!(TranscriptDetail::parse(" verbose ").unwrap(), TranscriptDetail::Verbose);

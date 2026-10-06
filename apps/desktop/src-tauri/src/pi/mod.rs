@@ -3,6 +3,7 @@ pub mod coalesce;
 pub mod codec;
 pub mod discovery;
 pub mod permission;
+pub mod plugins;
 pub mod process;
 pub mod protocol;
 pub mod resources;

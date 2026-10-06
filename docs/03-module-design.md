@@ -913,6 +913,7 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 | `fleetStore` | 舰队 run/lane 状态 | `fleet:event` |
 | `uiStore` | 弹窗队列、工作区布局（视图开合/尺寸/活动视图，04 §1.8）、视图注册表、键位注册表 | 本地 + Extension UI |
 | `turnFoldStore` | 回合折叠的**手动开合记忆**（键 = 会话文件偏移，跨载入稳定） | 用户点击（04 §2.1.6） |
+| `questionsStore` | 提问卡的**待答请求**（键 = 工具调用 id；请求来自 `pi:ui-req`） | pi 的 `ui.select` 信封（04 §2.1.8、17 §2.2b） |
 
 原则：**store 存结构态、索引与"还没落定的内容"**（04 §3.2/§4）。
 
@@ -937,6 +938,7 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
   阅读意图、DOM 与几何、跟随控制器，各管一件事（分工见 04 §2.1.0）；
 - 流式的那一行**就是转录里的那一行**（`live` 槽位），没有单独的 `LiveBlock` 通道（04 §3.2）；
 - `ToolCard`：工具调用卡片（参数摘要、累积输出、diff/图片/文件路径特化渲染）；
+- `QuestionCard`：提问卡（`ask_user_question` / `exit_plan_mode`）—— 未答可交互、答完只读（04 §2.1.8）；
 - `Composer`：多行输入、图片拖拽/粘贴、斜杠命令自动补全（数据 `get_commands`）、队列 chips、steer/followUp 选择（流式中）。
 
 ### 3.4 `features/sessions/`

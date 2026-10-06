@@ -299,6 +299,13 @@ interface MessagesState {
    * 画出「已中止 + 原因」，不需要另造一套 UI。已流出的字**一个字都不丢**。
    */
   interruptTurn(tabId: string, reason: string): void;
+  /**
+   * 记一条**扩展报错行**（`extension_error`、以及 pi 启动失败时 stderr 里那句真话）。
+   *
+   * 抽成入口是因为触发点有两个：pi 的 `extension_error` 事件，与"worker 崩了、
+   * stderr 尾部有 Error"——两处都该在转录里留下同一形状的一行（同源事故同一呈现）。
+   */
+  extensionError(tabId: string, source: string, text: string): void;
   remove(tabId: string): void;
 }
 
@@ -437,6 +444,16 @@ function pushNotice(tab: TabMessages, notice: NoticeView): void {
     notice,
   };
   tab.ids.push(id);
+}
+
+/**
+ * 建/累加一条**扩展报错行**（`extension_error` 与"pi 启动失败"共用）。
+ *
+ * 抽成模块级函数是为了能在 immer 生产者里直接用（生产者里再 `set` 会被静默吞掉）。
+ */
+function pushExtensionNotice(tab: TabMessages, source: string, text: string): void {
+  const prev = tab.byId[noticeId({ kind: 'extension', source })]?.notice;
+  pushNotice(tab, { kind: 'extension', source, text, count: (prev?.count ?? 0) + 1 });
 }
 
 /** 撤掉一条提示行（结束/成功/取消都走这里：它只表示"正在…"）。 */
@@ -800,19 +817,16 @@ export const useMessages = create<MessagesState>()(
              同一个扩展连报多次只累计计数、不刷屏；`agent_settled` 也**不**撤它
              （见那条注释：撤的只有 retry/compaction 两种"正在…"）。 */
           case 'extension_error': {
-            const err = e as unknown as { extensionPath?: string; error?: string; event?: string };
+            const err = e as unknown as { extensionPath?: string; error?: string };
             /* 显示名取**目录名**而不是文件名：扩展入口多是 `index.ts`/`index.js`，
                只显示 `index.ts` 等于没说清是谁报的。取不到就退回文件名。 */
             const parts = (err.extensionPath ?? '').split(/[\\/]/).filter(Boolean);
             const base = parts.pop() ?? '扩展';
             const source = /^index\.[cm]?[jt]s$/.test(base) ? parts.pop() ?? base : base;
-            const prev = tab.byId[noticeId({ kind: 'extension', source })]?.notice;
-            pushNotice(tab, {
-              kind: 'extension',
-              source,
-              text: err.error ?? '未知错误',
-              count: (prev?.count ?? 0) + 1,
-            });
+            /* ⚠️ 用的是模块级函数而**不是** `get().extensionError(...)`：这里已经在
+               `applyCommit` 的 immer 生产者里面，再调一次 `set` 会被静默吞掉
+               （实测：`extension_error` 那一行又不见了）。 */
+            pushExtensionNotice(tab, source, err.error ?? '未知错误');
             break;
           }
           case 'piggy:resync': {
@@ -833,6 +847,13 @@ export const useMessages = create<MessagesState>()(
           default:
             break;
         }
+      });
+    },
+
+    extensionError(tabId, source, text) {
+      set((s) => {
+        const tab = s.tabs[tabId];
+        if (tab) pushExtensionNotice(tab, source, text);
       });
     },
 

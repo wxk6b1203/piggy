@@ -27,6 +27,7 @@ import { useTodoSupported } from '@/stores/todo';
 import type { TodoItem } from '@/lib/todoModel';
 import type { RowMemory } from '@/lib/rowMemory';
 import { ToolRow } from './ToolRow';
+import { QuestionCard } from './QuestionCard';
 import { TodoRow } from './TodoRow';
 
 export interface ToolCallRowProps {
@@ -53,6 +54,12 @@ export function ToolCallRow({ tabId, callId, toolName, args, baseline, memory }:
      不在跑又没结果（中断/崩溃）：老实当普通行显示（不假装还在跑）。 */
   const running = result === undefined && streaming;
 
+  /* 结构化提问（`ask_user_question` / `exit_plan_mode`，docs/06 §7）：
+     参数里就是问题与选项、结果里是用户的回答 —— 本来就该长在转录里，
+     所以这里换成提问卡（未答可交互，答完只读）。 */
+  if (toolName === 'ask_user_question' || toolName === 'exit_plan_mode') {
+    return <QuestionCard tabId={tabId} callId={callId} toolName={toolName} args={args} result={result} />;
+  }
   /* 任务清单（`todo_write`）不是普通工具调用：它是一份**计划**，渲染成清单行
      （DSH `TodoRow`）。能力没探测到就退回通用工具行 —— 与本仓其它地方同一口径。 */
   if (todoOn && toolName === 'todo_write') {

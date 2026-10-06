@@ -531,6 +531,81 @@ body {
 .pg-todo-panel-item[data-status='in_progress'] .pg-todo-panel-content { color: var(--pg-fg); }
 .pg-todo-panel-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 内置插件（设置 › 通用，docs/06 §7）：一条一个小卡，跳过原因要显眼 */
+.pg-bundled-list { display: flex; flex-direction: column; gap: var(--pg-sp-4); }
+.pg-bundled {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--pg-sp-4); border: 0.5px solid var(--pg-border-l1); border-radius: var(--pg-r-md);
+  background: var(--pg-bg-layer-1);
+}
+.pg-bundled[data-inject] { border-color: var(--pg-accent); }
+.pg-bundled-head { display: flex; align-items: center; gap: var(--pg-sp-3); cursor: pointer; }
+.pg-bundled-title { font-size: var(--pg-fs-13); font-weight: 500; }
+.pg-bundled-name, .pg-bundled-license {
+  padding: 0 6px; border-radius: var(--pg-r-pill); background: var(--pg-bg-layer-3);
+  color: var(--pg-fg-dim); font-family: var(--pg-mono); font-size: var(--pg-fs-11);
+}
+.pg-bundled-license { margin-left: auto; }
+.pg-bundled-desc { color: var(--pg-fg-secondary); font-size: var(--pg-fs-12); }
+.pg-bundled-meta, .pg-bundled-dir { color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
+.pg-bundled-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--pg-mono); }
+.pg-bundled-skip { display: inline-flex; align-items: center; gap: 4px; color: var(--pg-error); font-size: var(--pg-fs-12); }
+
+/* ── 提问卡（docs/06 §7）────────────────────────────────────────────────────
+   它长在工具行的位置上：未答时可交互（选项按钮 + 自由文本 + 提交），答完变只读记录。
+   视觉上刻意与工具行区分：左侧一条强调色竖线 + 标题行，一眼看出"这是要你回话的"。 */
+.pg-qcard {
+  border-left: 2px solid var(--pg-accent);
+  border-radius: var(--pg-r-md);
+  background: var(--pg-bg-layer-2);
+  margin: 4px 0; padding: var(--pg-sp-4) var(--pg-sp-5);
+  display: flex; flex-direction: column; gap: var(--pg-sp-4);
+}
+.pg-qcard-head { display: flex; align-items: center; gap: var(--pg-sp-3); color: var(--pg-fg-secondary); }
+.pg-qcard-title { font-size: var(--pg-fs-13); font-weight: 500; }
+.pg-qcard-count, .pg-qcard-multi {
+  padding: 0 6px; border-radius: var(--pg-r-pill);
+  background: var(--pg-bg-layer-3); color: var(--pg-fg-dim); font-size: var(--pg-fs-11);
+}
+.pg-qcard-done { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
+.pg-qcard-plan > summary { cursor: pointer; color: var(--pg-fg-secondary); font-size: var(--pg-fs-12); }
+.pg-qcard-plan-body {
+  margin: 4px 0 0; padding: var(--pg-sp-4);
+  background: var(--pg-bg-layer-1); border-radius: var(--pg-r-md);
+  font-family: var(--pg-mono); font-size: var(--pg-fs-12); line-height: var(--pg-lh-12);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;
+}
+.pg-qcard-q { display: flex; flex-direction: column; gap: var(--pg-sp-3); }
+.pg-qcard-label { display: flex; align-items: baseline; gap: var(--pg-sp-3); flex-wrap: wrap; }
+.pg-qcard-header { color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
+.pg-qcard-text { font-size: var(--pg-fs-13); }
+.pg-qcard-opts { display: flex; flex-direction: column; gap: var(--pg-sp-2); }
+.pg-qcard-opt {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  box-sizing: border-box; width: 100%; padding: 6px 10px;
+  border: 0.5px solid var(--pg-border-l1); border-radius: var(--pg-r-md);
+  background: var(--pg-bg-layer-1); color: var(--pg-fg);
+  font: inherit; font-size: var(--pg-fs-13); text-align: left; cursor: pointer;
+}
+.pg-qcard-opt:hover:not(:disabled) { border-color: var(--pg-border-l2); background: var(--pg-bg-layer-3); }
+.pg-qcard-opt[data-selected] { border-color: var(--pg-accent); background: color-mix(in srgb, var(--pg-accent) 14%, transparent); }
+.pg-qcard-opt:disabled { cursor: default; opacity: 0.75; }
+.pg-qcard-opt-label { font-weight: 500; }
+.pg-qcard-opt-desc { color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-qcard-custom {
+  box-sizing: border-box; width: 100%; padding: 6px 10px;
+  border: 0.5px solid var(--pg-border-l1); border-radius: var(--pg-r-md);
+  background: var(--pg-bg-layer-1); color: var(--pg-fg); font: inherit; font-size: var(--pg-fs-13);
+}
+.pg-qcard-custom:focus { outline: none; border-color: var(--pg-accent); }
+.pg-qcard-actions { display: flex; gap: var(--pg-sp-3); }
+.pg-qcard-stale { color: var(--pg-fg-dim); font-size: var(--pg-fs-12); }
+.pg-qcard-result {
+  padding-top: var(--pg-sp-3); border-top: 0.5px solid var(--pg-border-l1);
+  color: var(--pg-fg-secondary); font-size: var(--pg-fs-12); line-height: var(--pg-lh-12);
+  white-space: pre-wrap;
+}
+
 /* ── 回合折叠行（DSH `TurnProcessNodeView`，docs/04 §2.1.6）────────────────────
    33px 高 + 0.5px 下边框；标题 13px/500，右侧耗时等宽数字且小一档。
    它同时也是"这一轮到哪儿了"的分隔线，所以那一根横线（`.pg-turnfold-rule`）

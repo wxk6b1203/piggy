@@ -164,6 +164,21 @@ describe('worker 崩/休眠：这一轮当场落地', () => {
   });
 });
 
+describe('pi 启动就失败：stderr 里那句真话要看得见', () => {
+  it('crashed + stderrTail → 转录里有一行（此前前端一个字段都不读）', async () => {
+    await mount();
+    await state({
+      state: 'crashed',
+      exitCode: 1,
+      stderrTail: 'Error: Failed to load extension "/tmp/piask-copy": Tool "ask_user_question" conflicts with …',
+    });
+    const row = rows('[data-notice="extension"]');
+    expect(row, '启动失败的原因没有出现在转录里').toHaveLength(1);
+    expect(text(row[0])).toContain('pi 启动/运行失败');
+    expect(text(row[0]), '没有把 pi 说的那句真话带出来').toContain('conflicts with');
+  });
+});
+
 describe('resync：中断行先丢再灌（不与文件里的真身重复）', () => {
   it('权威条目回来时，中断行被丢掉', async () => {
     await mount();

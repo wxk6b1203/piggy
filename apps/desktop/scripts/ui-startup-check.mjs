@@ -4000,6 +4000,131 @@ reading.bottom = await page.evaluate(async (sessionFile) => {
   };
 }, readingSetup.sessionFile ?? null);
 
+/* ---------- 27. 提问卡（docs/06 §7）：信封 select → 转录里的卡 → ui_reply 带回回答 --------
+ * 这一段走的全是真通道：mock 发的是**与 pi-ask 插件一字不差**的那个 select
+ * （`piggy:ask:v1:<toolCallId>` + 单一提交项），宿主必须：不弹普通选择框、
+ * 在工具行的位置上画出卡片、提交后按契约回 `ui_reply`。
+ * 另外核对计划审批那一张（`exit_plan_mode`：同一张卡 + 方案全文）。 */
+const askCard = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const mock = globalThis.__piggyMock;
+  const rows = [
+    { role: 'user', message: { role: 'user', content: [{ type: 'text', text: '帮我改一下' }], timestamp: 1 } },
+    {
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'toolCall',
+            id: 'ask-call-1',
+            name: 'ask_user_question',
+            arguments: {
+              questions: [
+                {
+                  id: 'db',
+                  header: '数据来源',
+                  question: '用哪个库？',
+                  options: [{ label: '生产库', description: '真实数据，只读' }, { label: '测试库' }],
+                },
+                { id: 'files', question: '还要改哪些文件？', multiSelect: true, options: [{ label: 'src/a.ts' }, { label: 'src/b.ts' }] },
+              ],
+            },
+          },
+        ],
+        timestamp: 2,
+      },
+    },
+  ];
+  mock.mockSetTranscriptRows(rows);
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelector('.pg-session-row')?.click();
+  let tabId = '';
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(150);
+    tabId = stores.useTabs.getState().activeTabId;
+    const t = stores.useMessages.getState().tabs[tabId];
+    if (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`) && t?.hydrated) break;
+  }
+  await sleep(400);
+
+  /* 插件发的那个请求（真通道：pi:ui-req）。`mockAskUserQuestion` 与 `streamFor`/`mockCrash`
+     一样挂在 `__piggyPerf` 上，**不是** mock 模块的导出。 */
+  globalThis.__piggyPerf.mockAskUserQuestion(tabId, 'ask-call-1');
+  await sleep(500);
+  const wrap = document.querySelector(`[data-tab-id="${tabId}"]`);
+  const card = wrap.querySelector('[data-question-card]');
+  const dialog = document.querySelector('.ant-modal-content');
+  const collected = {
+    tabId,
+    card: !!card,
+    // 弹了普通选择框就是错的
+    dialog: !!dialog,
+    questions: wrap.querySelectorAll('[data-question]').length,
+    options: wrap.querySelectorAll('[data-question="db"] [data-option]').length,
+    multi: wrap.querySelector('[data-question="files"] .pg-qcard-multi')?.textContent?.trim() ?? '',
+    hasCustom: !!wrap.querySelector('[data-question-custom="db"]'),
+    submit: !!wrap.querySelector('.pg-qcard-actions .pg-btn'),
+  };
+
+  // 选一个 + 勾两个 + 填自由文本 → 提交
+  wrap.querySelector('[data-question="db"] [data-option="生产库"]')?.click();
+  wrap.querySelector('[data-question="files"] [data-option="src/a.ts"]')?.click();
+  wrap.querySelector('[data-question="files"] [data-option="src/b.ts"]')?.click();
+  const input = wrap.querySelector('[data-question-custom="db"]');
+  if (input) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '只看不改');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  await sleep(120);
+  wrap.querySelector('.pg-qcard-actions .pg-btn')?.click();
+  await sleep(600);
+
+  const replies = (globalThis.__piggyMock?.uiReplies ?? []).slice();
+  return { ...collected, replies, pendingLeft: Object.keys(stores.useQuestions.getState().pending).length };
+});
+
+/* ---------- 28. 内置插件的可见性与开关（docs/06 §7，设置 › 通用）-------------------
+ * `-e` 注入的插件在 pi 自己的"插件"页里看不见（那页扫的是发现目录），所以设置页单列一块。
+ * 这一段走真路径：打开设置 → 通用 → 读到 pi-ask 这一条 → 关掉它 → **mock 那份配置真的变了**
+ * → 界面上出现"这次没有注入：设置里关掉了" → 再打开还原。 */
+const bundledUI = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const mock = globalThis.__piggyMock;
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(900);
+  [...document.querySelectorAll('.pg-settings-navitem')].find((b) => b.textContent === '通用设置')?.click();
+  await sleep(500);
+  const row = document.querySelector('[data-bundled="pi-ask"]');
+  if (!row) return { error: '设置页里找不到内置插件那一条' };
+  const before = {
+    inject: row.hasAttribute('data-inject'),
+    title: row.querySelector('.pg-bundled-title')?.textContent ?? '',
+    license: row.querySelector('.pg-bundled-license')?.textContent ?? '',
+    meta: row.querySelector('.pg-bundled-meta')?.textContent ?? '',
+    enabledInConfig: [...(mock.mockTitleCfg.bundled ?? [])],
+  };
+  row.querySelector('[data-bundled-toggle="pi-ask"]')?.click();
+  await sleep(700);
+  const offRow = document.querySelector('[data-bundled="pi-ask"]');
+  const off = {
+    inject: offRow?.hasAttribute('data-inject') ?? null,
+    skip: offRow?.querySelector('[data-bundled-skip]')?.textContent?.trim() ?? null,
+    enabledInConfig: [...(mock.mockTitleCfg.bundled ?? [])],
+  };
+  offRow?.querySelector('[data-bundled-toggle="pi-ask"]')?.click();
+  await sleep(700);
+  const back = {
+    inject: document.querySelector('[data-bundled="pi-ask"]')?.hasAttribute('data-inject') ?? null,
+    enabledInConfig: [...(mock.mockTitleCfg.bundled ?? [])],
+  };
+  globalThis.__piggyEditor.closeAllTabs();
+  return { before, off, back };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -5665,6 +5790,70 @@ if (turnFolding.standard?.folds !== 2) {
   }
   // 收尾：把这条记录删掉，免得影响人工复跑
   void z;
+}
+
+{
+  const a = askCard ?? {};
+  if (!a.card) {
+    bad.push('提问卡：信封 select 之后转录里没有出现卡片 ★');
+  } else {
+    if (a.dialog) bad.push('提问卡：不该再弹一个只有「提交」的普通选择框 ★');
+    if (a.questions !== 2) bad.push(`提问卡：问题数不对（读到 ${a.questions}）★`);
+    if (a.options !== 2) bad.push(`提问卡：选项数不对（读到 ${a.options}）★`);
+    if (a.multi !== '可多选') bad.push(`提问卡：多选标记丢了（读到 ${JSON.stringify(a.multi)}）★`);
+    if (!a.hasCustom) bad.push('提问卡：没有自由文本输入框 ★');
+    if (!a.submit) bad.push('提问卡：没有提交按钮 ★');
+  }
+  const reply = (a.replies ?? []).find((r) => r && r.id);
+  if (!reply) {
+    bad.push('提问卡：提交之后没有发出 ui_reply（回答送不回去）★');
+  } else {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(reply.value);
+    } catch {
+      bad.push(`提问卡：ui_reply 的 value 不是 JSON（读到 ${JSON.stringify(reply.value)?.slice(0, 80)}）★`);
+    }
+    const answers = parsed?.answers ?? [];
+    if (answers.length !== 2) {
+      bad.push(`提问卡：回答条数不对（读到 ${answers.length}）★`);
+    } else {
+      if (answers[0].id !== 'db' || answers[0].selected?.[0] !== '生产库' || answers[0].custom !== '只看不改') {
+        bad.push(`提问卡：第一题的回答不对（读到 ${JSON.stringify(answers[0])}）★`);
+      }
+      if (answers[1].id !== 'files' || (answers[1].selected ?? []).length !== 2) {
+        bad.push(`提问卡：多选题没有把两个选项都带上（读到 ${JSON.stringify(answers[1])}）★`);
+      }
+    }
+  }
+  if (a.pendingLeft !== 0) {
+    bad.push(`提问卡：提交之后还挂着 ${a.pendingLeft} 个待答请求（卡片会一直可点）★`);
+  }
+}
+
+{
+  const b = bundledUI.before ?? {};
+  const o = bundledUI.off ?? {};
+  const k = bundledUI.back ?? {};
+  if (bundledUI.error) {
+    bad.push(`内置插件：${bundledUI.error} ★`);
+  } else {
+    if (!b.inject) bad.push('内置插件：默认应当是"已注入"（随包带的功能没理由先去设置里找）★');
+    if (!/结构化提问/.test(b.title)) bad.push(`内置插件：标题不对（读到 ${JSON.stringify(b.title)}）★`);
+    if (!/GPL/.test(b.license)) bad.push(`内置插件：许可证没显示（读到 ${JSON.stringify(b.license)}）★`);
+    if (!/ask_user_question/.test(b.meta)) bad.push(`内置插件：没显示它提供哪些工具（读到 ${JSON.stringify(b.meta)}）★`);
+    if (o.inject !== false) bad.push('内置插件：关掉之后界面上还是"已注入"★');
+    if ((o.enabledInConfig ?? []).length !== 0) {
+      bad.push(`内置插件：关掉之后配置里还留着（读到 ${JSON.stringify(o.enabledInConfig)}）★`);
+    }
+    if (!/关掉/.test(o.skip ?? '')) {
+      bad.push(`内置插件：没说清这次为什么不注入（读到 ${JSON.stringify(o.skip)}）★`);
+    }
+    if (k.inject !== true) bad.push('内置插件：再打开之后没有回到"已注入"★');
+    if (!(k.enabledInConfig ?? []).includes('pi-ask')) {
+      bad.push(`内置插件：再打开之后配置里没有 pi-ask（读到 ${JSON.stringify(k.enabledInConfig)}）★`);
+    }
+  }
 }
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

@@ -113,6 +113,10 @@ M1 修正记录（实现期发现）：
 | 万条消息打开（05 §2 预算 <1.5s） | messagesStore 去重 O(n²)→Set（05 §4.4 纪律）：10k hydrate 8960ms → **24.7ms**（perf S3 实测） | ✅ |
 | 场景库 S1–S6（05 §6.2） | `apps/desktop/scripts/perf-run.mjs`：S1 流式帧率/长任务、S2 8tab、S3 万条打开、S4 100 工具并发、S5 崩溃 resync、S6 空载 heap 漂移；预算断言不过 exit 1，结果写 perf-results/*.json | ✅ |
 | CI（05 §6.3） | `ci.yml` 增 perf-lite（S1/S3 缩短版，PR 必跑）；`perf-nightly.yml` 全场景 + 产物留存 30 天 | ✅ |
+| 一轮的落地信号（2026-09-25） | `stores/messages.ts::interruptTurn`：崩/休眠/`agent_settled` 时把实时块转正成「已中止」的消息并落地 `streaming`（04 §2.1.5） | ✅ |
+| 回合级过程折叠 + 四档密度（2026-09-25） | `lib/turnFold.ts` + `TurnFoldRow` + `PerfConfig.transcript_detail`（简洁/标准/详细/完全展开），设置 → 通用 › 工作步骤展示（04 §2.1.6） | ✅ |
+| 跨重启记住阅读位置（2026-09-25） | `lib/readingPosition.ts`（会话文件 + 行字节偏移）+ `TranscriptReading` 的还位置路径（04 §2.1.7） | ✅ |
+| 结构化提问 + 计划模式（2026-09-25） | 捆绑插件 `resources/pi-plugins/pi-ask`（`ask_user_question` / `exit_plan_mode` / `/plan`）+ 转录里的提问卡 + 设置里的内置插件开关（04 §2.1.8、17 §2.2b） | ✅ |
 | 独立发布（08 §7.1） | `scripts/fetch-pi-standalone.mjs`（GitHub Releases 下载 + SHA256 强校验 + tar 解包 → `src-tauri/resources/pi/`）；`tauri.full.conf.json`（full SKU bundle.resources）；发现链插入内置档（显式 > PI_BIN > 内置 > PATH，02 §2.1）；lite=默认 conf 不捆绑 | ✅（脚本+接线；release 资产直链需发布时按实际资产名核对 URL 模板） |
 | M1 顺延：Monaco schema 校验 | `monaco-setup.registerPiggySchemas`（pi settings/models 双 schema）+ MonacoHost 显式模型 URI | ✅ |
 

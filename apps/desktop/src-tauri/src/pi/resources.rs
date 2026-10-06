@@ -32,6 +32,32 @@ pub fn extension_script(resource_dir: Option<&Path>, filename: &str) -> Option<P
     dev.is_file().then_some(dev)
 }
 
+/// Piggy **捆绑的 pi 插件**目录（`resources/pi-plugins/<name>/`）。
+///
+/// 与上面两个脚本的区别：那些是 Piggy 自己的基础设施（守卫/桥接），这里是**给模型用的功能**
+/// （结构化提问、计划模式……），每个是一个普通 pi 扩展目录，以 `pi --extension <dir>` 注入。
+///
+/// 为什么捆绑而不是让用户 `pi install`：目标机器上很可能**没有 node/npm**，而 pi 的包管理器
+/// 是 spawn 系统 `npm` 来装的（`package-manager.js`）。捆绑 + `-e` 不需要任何包管理器。
+///
+/// @param resource_dir - Tauri 的资源目录（拿不到时回落源码树）
+/// @param name - 插件目录名（例如 `pi-ask`）
+/// @returns 目录路径；不存在返回 None（由调用方决定是警告还是忽略）
+pub fn bundled_plugin_dir(resource_dir: Option<&Path>, name: &str) -> Option<PathBuf> {
+    // 目录判定用 `is_dir`（上面两个是单文件脚本，用 is_file）
+    let candidates = [
+        resource_dir.map(|rd| rd.join("resources").join("pi-plugins").join(name)),
+        resource_dir.map(|rd| rd.join("pi-plugins").join(name)),
+        Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("pi-plugins")
+                .join(name),
+        ),
+    ];
+    candidates.into_iter().flatten().find(|p| p.is_dir())
+}
+
 /// 权限守卫扩展（`piggy-guard.js`）。缺失 → 「工作区内修改」档拒绝启动（fail-closed）。
 pub fn guard_script_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
     extension_script(resource_dir, "piggy-guard.js")

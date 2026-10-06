@@ -1,0 +1,16 @@
+{
+  "name": "pi-ask",
+  "title": "结构化提问",
+  "description": "让模型用一张卡问你 1–6 个问题（选项/多选/自由文本），并带 /plan 计划模式。",
+  "license": "GPL-3.0-or-later",
+  "entry": "index.js",
+  "tools": [
+    "ask_user_question",
+    "exit_plan_mode"
+  ],
+  "commands": [
+    "plan",
+    "plan-off"
+  ],
+  "homepage": "https://github.com/（本仓）"
+}

@@ -56,6 +56,14 @@ export const pathCalls: { path: string; action: string; application: string | nu
  */
 export const providerOps: { name: string; args: Record<string, unknown> }[] = [];
 
+/** mock 里"捆绑插件开着吗"（`perf_config_save` 会真的改它，界面据此显示注入/跳过）。 */
+function mockBundledEnabled(): boolean {
+  return mockTitleCfg.bundled.includes('pi-ask');
+}
+
+/** `ui_reply` 的记录（门禁第 27 段核对提问卡的答案真的送回去了）。 */
+export const uiReplies: Array<{ id: string; value: unknown; cancelled: boolean }> = [];
+
 /** 外部链接的打开记录（门禁核对"markdown 里的链接点击真的交给宿主了"）。 */
 export const externalOpenCalls: string[] = [];
 
@@ -520,6 +528,8 @@ export const mockTitleCfg = {
   thinking: '' as string,
   /** 预览滚动条位置（与 Rust `PerfConfig.transcript_rail` 同义，默认右） */
   rail: 'right' as string,
+  /** 注入哪些捆绑插件（与 Rust `PerfConfig.bundled_plugins` 同义，默认全开）。 */
+  bundled: ['pi-ask'] as string[],
   /* 工作步骤展示档位（与 Rust `PerfConfig.transcript_detail` 同义，默认 standard）。
      ⚠️ 初值从 localStorage 读：浏览器门禁的**行级**核对（工具行、清单行、分页锚点…）
      需要关掉折叠才能量到行，而门禁中间会重载页面 —— 只改内存里的值会在重载后丢。
@@ -945,6 +955,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     title_thinking: mockTitleCfg.thinking || null,
     transcript_rail: mockTitleCfg.rail,
     transcript_detail: mockTitleCfg.detail,
+    bundled_plugins: [...mockTitleCfg.bundled],
   }),
   perf_config_save: (a) => {
     appCfg.max_workers = Number(a.maxWorkers ?? appCfg.max_workers);
@@ -962,6 +973,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (a.titleModel !== undefined) mockTitleCfg.model = String(a.titleModel ?? '');
     if (a.titleThinking !== undefined) mockTitleCfg.thinking = String(a.titleThinking ?? '');
     if (a.transcriptRail !== undefined) mockTitleCfg.rail = String(a.transcriptRail);
+    if (Array.isArray(a.bundledPlugins)) mockTitleCfg.bundled = a.bundledPlugins.map(String);
     if (a.transcriptDetail !== undefined) {
       mockTitleCfg.detail = String(a.transcriptDetail);
       // 存一份：门禁切档之后重载页面还要是这一档（见 `mockTitleCfg.detail` 的注释）
@@ -1225,8 +1237,38 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     emit(`pi:commit:${tabId}`, { type: 'queue_update', steering: [], followUp: [] });
     return { steering: [], followUp: [] };
   },
-  /** 扩展 UI 应答（DialogRouter 用的就是它）：mock 只回一个"收到"。 */
-  ui_reply: () => null,
+  /**
+   * 扩展 UI 应答（DialogRouter 与提问卡用的就是它）。
+   *
+   * mock 除了回一个"收到"，还把内容记进 {@link uiReplies} —— 门禁要核对
+   * "提问卡的答案真的按契约送回去了"（`{id, value}` 里 value 是回答 JSON）。
+   */
+  /** 随包带的插件（真机由 Rust 读清单；mock 里照抄 `pi-ask` 的清单形状）。 */
+  plugin_bundled: () => ({
+    plugins: [
+      {
+        name: 'pi-ask',
+        title: '结构化提问',
+        description: '让模型用一张卡问你 1–6 个问题（选项/多选/自由文本），并带 /plan 计划模式。',
+        license: 'GPL-3.0-or-later',
+        tools: ['ask_user_question', 'exit_plan_mode'],
+        commands: ['plan', 'plan-off'],
+        dir: '/mock/resources/pi-plugins/pi-ask',
+        bundled: true,
+        inject: mockBundledEnabled(),
+        skipped: mockBundledEnabled() ? null : '设置里关掉了',
+      },
+    ],
+  }),
+  ui_reply: (a) => {
+    const r = (a.response ?? {}) as Record<string, unknown>;
+    uiReplies.push({
+      id: String(r.id ?? ''),
+      value: r.value,
+      cancelled: r.cancelled === true,
+    });
+    return null;
+  },
   /**
    * 会话改名（`pi_set_session_name`）。
    *
@@ -2020,6 +2062,28 @@ if (typeof window !== 'undefined' && isMock) {
      */
     mockCrash(tabId = TAB): void {
       emit(`pi:state:${tabId}`, { state: 'crashed' });
+    },
+    /**
+     * 模拟一次**提问卡**（docs/06 §7）：走真实的 `pi:ui-req` 通道发那个"信封 select"。
+     *
+     * 门禁与单测要的是"和 pi-ask 插件发出的东西一模一样"：标题前缀 + 单一提交选项，
+     * 问题本体在**工具调用参数**里（所以调用方要自己把工具行灌进转录）。
+     *
+     * @param tabId - 目标标签页
+     * @param toolCallId - 提问工具调用的 id（宿主按它对上号）
+     * @param title - 覆盖标题（用来核对"不是信封就不该被认领"）
+     * @returns 宿主侧的请求 id（回答时要用它）
+     */
+    mockAskUserQuestion(tabId: string, toolCallId: string, title?: string): string {
+      const id = `mock-ask-${now()}`;
+      emit(`pi:ui-req:${tabId}`, {
+        type: 'extension_ui_request',
+        id,
+        method: 'select',
+        title: title ?? `piggy:ask:v1:${toolCallId}`,
+        options: ['提交'],
+      });
+      return id;
     },
     /** worker 醒来：按会话文件补齐上下文（`piggy:resync`）并把状态改回 ready。 */
     mockRevive(tabId = TAB): void {
