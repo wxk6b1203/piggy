@@ -152,7 +152,11 @@ pub async fn pick_pi_binary(app: AppHandle, start: Option<String>) -> Result<Opt
     if let Some(s) = start {
         let pb = PathBuf::from(&s);
         // 传进来的可能是文件本身（重新选择时）→ 取它所在目录作为起点
-        let dir = if pb.is_dir() { Some(pb) } else { pb.parent().map(Path::to_path_buf) };
+        let dir = if pb.is_dir() {
+            Some(pb)
+        } else {
+            pb.parent().map(Path::to_path_buf)
+        };
         if let Some(d) = dir.filter(|d| d.is_dir()) {
             builder = builder.set_directory(d);
         }
@@ -232,11 +236,7 @@ pub async fn tab_create(
     // 初始游标在后台补（`get_entries` 不带 since 会把整段会话发回来，长会话实测 73ms，
     // 不该压在打开路径上 —— 见 `sessions::registry::spawn_cursor_init` 的说明）
     crate::sessions::registry::spawn_cursor_init(state.registry.clone(), snapshot.tab_id.clone());
-    spawn_tab_watcher(
-        state.registry.clone(),
-        sink(&app),
-        snapshot.tab_id.clone(),
-    );
+    spawn_tab_watcher(state.registry.clone(), sink(&app), snapshot.tab_id.clone());
     Ok(snapshot)
 }
 
@@ -266,10 +266,7 @@ pub async fn pi_set_permission_mode(
 /// 与 `pi_set_permission_mode` 的区别：那个是"切这个标签页的档位"（要重启它的 worker），
 /// 这个是"以后新开的会话默认用哪一档"。设置页里传 `tabId: ''` 去调前者会直接报错。
 #[tauri::command]
-pub async fn pi_set_default_permission(
-    state: State<'_, AppState>,
-    mode: String,
-) -> Result<Value, String> {
+pub async fn pi_set_default_permission(state: State<'_, AppState>, mode: String) -> Result<Value, String> {
     let parsed = PermissionMode::parse(&mode)?;
     {
         let mut reg = state.registry.lock().await;
@@ -282,19 +279,22 @@ pub async fn pi_set_default_permission(
 /// 各档位的能力矩阵（前端渲染选择器用，避免 UI 文案与后端行为漂移）。
 #[tauri::command]
 pub fn permission_modes() -> Value {
-    let modes: Vec<Value> =
-        [PermissionMode::ReadOnly, PermissionMode::Workspace, PermissionMode::Full]
-            .into_iter()
-            .map(|m| {
-                serde_json::json!({
-                    "id": m.as_str(),
-                    "label": m.label(),
-                    "tools": m.tool_allowlist(),
-                    "unrestricted": m.tool_allowlist().is_none(),
-                    "pathGuard": m.needs_path_guard(),
-                })
-            })
-            .collect();
+    let modes: Vec<Value> = [
+        PermissionMode::ReadOnly,
+        PermissionMode::Workspace,
+        PermissionMode::Full,
+    ]
+    .into_iter()
+    .map(|m| {
+        serde_json::json!({
+            "id": m.as_str(),
+            "label": m.label(),
+            "tools": m.tool_allowlist(),
+            "unrestricted": m.tool_allowlist().is_none(),
+            "pathGuard": m.needs_path_guard(),
+        })
+    })
+    .collect();
     serde_json::json!({ "modes": modes })
 }
 
@@ -317,11 +317,7 @@ fn save_default_permission(state: &State<'_, AppState>, mode: PermissionMode) {
 }
 
 #[tauri::command]
-pub async fn tab_close(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<(), String> {
+pub async fn tab_close(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<(), String> {
     let mut reg = state.registry.lock().await;
     reg.close_tab(&sink(&app), &tab_id).await
 }
@@ -330,11 +326,7 @@ pub async fn tab_close(
 
 /// 休眠标签（05 §4.3）：回收 worker，保留 tab 与游标；再交互自动复活。
 #[tauri::command]
-pub async fn tab_sleep(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<(), String> {
+pub async fn tab_sleep(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<(), String> {
     let mut reg = state.registry.lock().await;
     reg.sleep_tab(&sink(&app), &tab_id).await
 }
@@ -431,12 +423,8 @@ pub async fn perf_config_save(
     //    之后每次建会话都失败，而界面上因为命令抛错没走到 reload，看起来只是"点了没反应"。
     if let Some((next_source, next_path)) = &plan {
         let builtin = state.registry.lock().await.builtin.clone();
-        discover(
-            *next_source,
-            next_path.as_deref().map(Path::new),
-            builtin.as_deref(),
-        )
-        .map_err(|e| format!("「{}」当前不可用，配置未改动：{e}", next_source.label()))?;
+        discover(*next_source, next_path.as_deref().map(Path::new), builtin.as_deref())
+            .map_err(|e| format!("「{}」当前不可用，配置未改动：{e}", next_source.label()))?;
     }
 
     // 3) 验证通过才落盘 + 更新内存
@@ -460,8 +448,7 @@ pub async fn perf_config_save(
         cfg.subagent_delegation = on;
     }
     cfg.clamp();
-    app::perf_config_save(&cfg)
-        .map_err(|e| format!("config.json 写入失败: {e}"))?;
+    app::perf_config_save(&cfg).map_err(|e| format!("config.json 写入失败: {e}"))?;
     if let Ok(mut p) = state.perf.write() {
         *p = cfg.clone();
     }
@@ -469,7 +456,8 @@ pub async fn perf_config_save(
     // 4) 同步到 registry 并让缓存路径失效（已在跑的 worker 仍持旧二进制，直到被重启）
     {
         let mut reg = state.registry.lock().await;
-        let changed = reg.pi_source != cfg.pi_source || reg.pi_custom_path.as_deref() != cfg.pi_path.as_deref().map(Path::new);
+        let changed =
+            reg.pi_source != cfg.pi_source || reg.pi_custom_path.as_deref() != cfg.pi_path.as_deref().map(Path::new);
         reg.pi_source = cfg.pi_source;
         reg.pi_custom_path = cfg.pi_path.as_ref().map(PathBuf::from);
         if changed {
@@ -490,12 +478,15 @@ pub async fn perf_config_save(
 pub async fn pi_source_options(state: State<'_, AppState>) -> Result<Value, String> {
     let (source, custom, builtin, resolved) = {
         let reg = state.registry.lock().await;
-        (reg.pi_source, reg.pi_custom_path.clone(), reg.builtin.clone(), reg.pi_bin.clone())
+        (
+            reg.pi_source,
+            reg.pi_custom_path.clone(),
+            reg.builtin.clone(),
+            reg.pi_bin.clone(),
+        )
     };
     let builtin_available = builtin.as_ref().map(|b| b.is_file()).unwrap_or(false);
-    let current = resolved.or_else(|| {
-        discover(source, custom.as_deref(), builtin.as_deref()).ok()
-    });
+    let current = resolved.or_else(|| discover(source, custom.as_deref(), builtin.as_deref()).ok());
     // 注意：不能把 `[..].into_iter().map(..)` 直接写进 json! 里——
     // 宏的 TT muncher 会把 `[...]` 当 JSON 数组字面量，随后的 `.` 就报 `no rules expected .`。
     let options: Vec<Value> = [PiSource::System, PiSource::Bundled, PiSource::Custom]
@@ -536,51 +527,31 @@ pub async fn pi_prompt(
 }
 
 #[tauri::command]
-pub async fn pi_abort(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<(), String> {
+pub async fn pi_abort(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<(), String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     worker.abort().await.map(|_| ())
 }
 
 #[tauri::command]
-pub async fn pi_clear_queue(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_clear_queue(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     worker.clear_queue().await
 }
 
 #[tauri::command]
-pub async fn pi_get_state(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_state(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     worker.get_state().await
 }
 
 #[tauri::command]
-pub async fn pi_get_messages(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_messages(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     worker.get_messages().await
 }
 
 #[tauri::command]
-pub async fn pi_get_session_stats(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_session_stats(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     worker.get_session_stats().await
 }
@@ -608,11 +579,7 @@ pub async fn pi_get_available_models(
 }
 
 #[tauri::command]
-pub async fn pi_new_session(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_new_session(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     let out = worker.new_session().await?;
     let mut reg = state.registry.lock().await;
@@ -656,11 +623,7 @@ pub async fn ui_reply(
 }
 
 #[tauri::command]
-pub async fn pi_stderr_tail(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_stderr_tail(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
     let tail: Vec<String> = worker.stderr_tail.lock().await.iter().cloned().collect();
     serde_json::to_value(tail).map_err(|e| e.to_string())
@@ -845,9 +808,7 @@ pub async fn session_title_source(path: String) -> Result<Value, String> {
 /// （`ModelRuntime.getAvailable()`），但**不需要会话**——"标题模型"是全局设置，
 /// 打开设置页时可能一个标签页都没有。真机实测 0.6s，所以由界面拉一次即可。
 #[tauri::command]
-pub async fn title_model_options(
-    state: State<'_, AppState>,
-) -> Result<Value, String> {
+pub async fn title_model_options(state: State<'_, AppState>) -> Result<Value, String> {
     let pi_bin = {
         let mut reg = state.registry.lock().await;
         reg.resolve_bin()?
@@ -889,8 +850,7 @@ pub async fn session_title_generate(
 
     // 用哪个模型：设置里指定了就用它，否则**跟会话自己的**（会话文件里最后一次
     // model_change）。会话里也没有（新建还没发过消息）→ 都不传，让 pi 用它自己的默认。
-    let (provider, model_id) =
-        crate::sessions::title::pick_model(cfg.title_model.as_deref(), &source)?;
+    let (provider, model_id) = crate::sessions::title::pick_model(cfg.title_model.as_deref(), &source)?;
     // 会话自己的目录优先（跟着会话的项目配置走）；目录没了或没记录 → 主目录。
     let cwd = source
         .cwd
@@ -980,24 +940,19 @@ pub async fn pi_get_entries(
     tab_id: String,
     since: Option<String>,
 ) -> Result<Value, String> {
-    worker_of(&app, &state, &tab_id).await?.get_entries(since.as_deref()).await
+    worker_of(&app, &state, &tab_id)
+        .await?
+        .get_entries(since.as_deref())
+        .await
 }
 
 #[tauri::command]
-pub async fn pi_get_tree(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_tree(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.get_tree().await
 }
 
 #[tauri::command]
-pub async fn pi_get_fork_messages(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_fork_messages(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.get_fork_messages().await
 }
 
@@ -1012,11 +967,7 @@ pub async fn pi_fork(
 }
 
 #[tauri::command]
-pub async fn pi_clone(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_clone(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.clone_session().await
 }
 
@@ -1036,24 +987,19 @@ pub async fn pi_get_available_thinking_levels(
     state: State<'_, AppState>,
     tab_id: String,
 ) -> Result<Value, String> {
-    worker_of(&app, &state, &tab_id).await?.get_available_thinking_levels().await
+    worker_of(&app, &state, &tab_id)
+        .await?
+        .get_available_thinking_levels()
+        .await
 }
 
 #[tauri::command]
-pub async fn pi_cycle_thinking(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_cycle_thinking(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.cycle_thinking_level().await
 }
 
 #[tauri::command]
-pub async fn pi_get_commands(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_get_commands(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.get_commands().await
 }
 
@@ -1084,8 +1030,7 @@ pub async fn fs_preview_read(path: String) -> Result<Value, String> {
     if md.len() > 5 * 1024 * 1024 {
         return Err("文件超过 5MB，暂不支持预览".into());
     }
-    let body = std::fs::read_to_string(&pb)
-        .map_err(|e| format!("读取失败（二进制文件?）: {e}"))?;
+    let body = std::fs::read_to_string(&pb).map_err(|e| format!("读取失败（二进制文件?）: {e}"))?;
     let mtime_ms = md
         .modified()
         .ok()
@@ -1145,11 +1090,7 @@ pub async fn settings_read() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn settings_write(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    value: Value,
-) -> Result<(), String> {
+pub async fn settings_write(app: AppHandle, state: State<'_, AppState>, value: Value) -> Result<(), String> {
     tokio::task::spawn_blocking(move || pi_files::settings_write(&value))
         .await
         .map_err(|e| e.to_string())??;
@@ -1179,11 +1120,7 @@ pub async fn pi_compact(
 }
 
 #[tauri::command]
-pub async fn pi_abort_bash(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-) -> Result<Value, String> {
+pub async fn pi_abort_bash(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     worker_of(&app, &state, &tab_id).await?.abort_bash().await
 }
 
@@ -1212,7 +1149,10 @@ pub async fn fs_list_dir(root: String, path: String) -> Result<Value, String> {
         }));
     }
     entries.sort_by(|a, b| {
-        let dir = b["isDir"].as_bool().unwrap_or(false).cmp(&a["isDir"].as_bool().unwrap_or(false));
+        let dir = b["isDir"]
+            .as_bool()
+            .unwrap_or(false)
+            .cmp(&a["isDir"].as_bool().unwrap_or(false));
         dir.then(a["name"].as_str().cmp(&b["name"].as_str()))
     });
     Ok(serde_json::json!({ "entries": entries }))
@@ -1237,9 +1177,7 @@ pub async fn fs_write_edit(
         return Err("文件超过 1MB，快捷编辑不适用".into());
     }
     if crate::fs_guard::mtime_conflicted(md.modified(), base_mtime_ms) {
-        return Err(
-            "CONFLICT: 文件已被外部修改（或无法确认修改时间）。请重新打开预览后再编辑。".into(),
-        );
+        return Err("CONFLICT: 文件已被外部修改（或无法确认修改时间）。请重新打开预览后再编辑。".into());
     }
     let bytes = content.as_bytes();
     if bytes.len() as u64 > crate::fs_guard::MAX_EDIT_BYTES {
@@ -1342,11 +1280,16 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
     let mut hit_capacity = false;
     for lane_key in ready {
         let (prompt, cwd) = {
-            let Some(run) = state.fleet.get(run_id) else { return hit_capacity };
-            let Some(lane) = run.lane(&lane_key).cloned() else { continue };
+            let Some(run) = state.fleet.get(run_id) else {
+                return hit_capacity;
+            };
+            let Some(lane) = run.lane(&lane_key).cloned() else {
+                continue;
+            };
             let prompt = crate::fleet::render_prompt(&lane.prompt, &run.task, &run, &lane);
             let cwd = if lane.worktree {
-                match crate::fleet::create_worktree(&run.cwd, &format!("{}-{}", run.id[..8].replace('-', ""), lane_key)) {
+                match crate::fleet::create_worktree(&run.cwd, &format!("{}-{}", run.id[..8].replace('-', ""), lane_key))
+                {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("[fleet] worktree 创建失败（回退主 cwd）: {e}");
@@ -1365,7 +1308,13 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
             // lane 继承当前默认档位：Fleet 是"替用户跑任务"，不该偷偷提权
             let lane_permission = reg.default_permission;
             match reg
-                .create_tab(&sink(app), cwd.clone(), SessionTarget::NoSession, Some(lane_label), lane_permission)
+                .create_tab(
+                    &sink(app),
+                    cwd.clone(),
+                    SessionTarget::NoSession,
+                    Some(lane_label),
+                    lane_permission,
+                )
                 .await
             {
                 Ok(snap) => snap.tab_id,
@@ -1384,7 +1333,13 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
         // 游标同样后台补（lane 的会话是空的，几乎不花时间；保持与 UI 那条路径一致）
         crate::sessions::registry::spawn_cursor_init(state.registry.clone(), tab_id.clone());
         state.fleet.bind_tab(run_id, &lane_key, &tab_id);
-        let worker = state.registry.lock().await.tabs.get(&tab_id).and_then(|t| t.worker.clone());
+        let worker = state
+            .registry
+            .lock()
+            .await
+            .tabs
+            .get(&tab_id)
+            .and_then(|t| t.worker.clone());
         fleet_emit(app, &state);
         if let Some(worker) = worker.clone() {
             watch_lane(app.clone(), run_id.to_string(), tab_id, worker.clone());
@@ -1402,12 +1357,7 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
 ///
 /// 判定逻辑刻意放在 `fleet.rs` 的纯函数里：这里只做 IO（取消息、emit、驱动下游），
 /// 而"什么算跑完"由纯函数定义——两侧都有测试（单测 + 契约测试跑真实 pi）。
-fn watch_lane(
-    app: AppHandle,
-    run_id: String,
-    tab_id: String,
-    worker: crate::pi::client::Worker,
-) {
+fn watch_lane(app: AppHandle, run_id: String, tab_id: String, worker: crate::pi::client::Worker) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let mut rx = worker.subscribe_state();
@@ -1461,13 +1411,7 @@ pub async fn fleet_start(
         return Err("任务描述为空".into());
     }
     let run_id = uuid::Uuid::new_v4().to_string();
-    let run = crate::fleet::build_run(
-        run_id.clone(),
-        &template_id,
-        template,
-        task.trim(),
-        PathBuf::from(&cwd),
-    )?;
+    let run = crate::fleet::build_run(run_id.clone(), &template_id, template, task.trim(), PathBuf::from(&cwd))?;
     state.fleet.insert(run);
     fleet_emit(&app, &state);
     schedule_run(app, run_id.clone()).await;
@@ -1476,7 +1420,10 @@ pub async fn fleet_start(
 
 #[tauri::command]
 pub async fn fleet_abort(app: AppHandle, state: State<'_, AppState>, run_id: String) -> Result<(), String> {
-    let live_tabs = state.fleet.abort(&run_id).ok_or_else(|| format!("run 不存在: {run_id}"))?;
+    let live_tabs = state
+        .fleet
+        .abort(&run_id)
+        .ok_or_else(|| format!("run 不存在: {run_id}"))?;
     {
         let reg = state.registry.lock().await;
         for tab_id in live_tabs {
@@ -1504,10 +1451,7 @@ pub async fn fleet_steer(
         .and_then(|r| r.lane(&lane_key).and_then(|l| l.tab_id.clone()))
         .ok_or_else(|| format!("lane 不存在: {lane_key}"))?;
     let worker = worker_of(&app, &state, &tab_id).await?;
-    let streaming = matches!(
-        worker.state(),
-        crate::pi::client::WorkerState::Busy
-    );
+    let streaming = matches!(worker.state(), crate::pi::client::WorkerState::Busy);
     let behavior = if streaming { Some("steer") } else { None };
     worker.prompt(&message, None, behavior).await?;
     Ok(streaming)
@@ -1536,11 +1480,7 @@ pub async fn fleet_open_lane(
 /* ---------------- M4：登录内嵌终端（pty.rs + 前端 xterm） ---------------- */
 
 #[tauri::command]
-pub async fn pty_open(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    cwd: Option<String>,
-) -> Result<Value, String> {
+pub async fn pty_open(app: AppHandle, state: State<'_, AppState>, cwd: Option<String>) -> Result<Value, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let cwd = cwd
         .map(|s| s.trim().to_string())
@@ -1557,12 +1497,7 @@ pub async fn pty_write(state: State<'_, AppState>, id: String, data: String) -> 
 }
 
 #[tauri::command]
-pub async fn pty_resize(
-    state: State<'_, AppState>,
-    id: String,
-    rows: u16,
-    cols: u16,
-) -> Result<(), String> {
+pub async fn pty_resize(state: State<'_, AppState>, id: String, rows: u16, cols: u16) -> Result<(), String> {
     crate::pty::resize_pty(&state.pty, &id, rows, cols)
 }
 
@@ -1622,10 +1557,7 @@ mod tests {
     fn tab_cwd_none_without_home() {
         assert_eq!(tab_cwd_with(None, None, true), None);
         // 但用户显式给了路径就还能干活
-        assert_eq!(
-            tab_cwd_with(Some("/p"), None, false),
-            Some(PathBuf::from("/p"))
-        );
+        assert_eq!(tab_cwd_with(Some("/p"), None, false), Some(PathBuf::from("/p")));
     }
 
     /// 接线：生产入口必须和 `paths::home_dir()` 同源（两边漂移 = 又回到 HOME-only）。

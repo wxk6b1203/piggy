@@ -88,7 +88,10 @@ fn open_in_app_list_returns_string_ids() {
         // Finder 与 Terminal 随 macOS 发行 → 这两条恒定可解析。
         // 少了它们说明定位链断了（而不是"这台机器没装"）。
         assert!(ids.contains(&"finder".to_string()), "macOS 上必须有 finder: {ids:?}");
-        assert!(ids.contains(&"terminal".to_string()), "macOS 上必须有 terminal: {ids:?}");
+        assert!(
+            ids.contains(&"terminal".to_string()),
+            "macOS 上必须有 terminal: {ids:?}"
+        );
         assert!(ids.len() >= 2, "至少 Finder + Terminal");
     }
     // 宿主给的 id 必须能被前端词典命名，否则菜单里会漏项（前端的 `labelFor` 会丢掉它）
@@ -111,8 +114,8 @@ fn open_in_app_icon_is_a_128px_png_data_url() {
     else {
         return; // 这台机器上一个应用都没有
     };
-    let url = piggy_lib::open_in_app::open_in_app_icon(id.clone())
-        .unwrap_or_else(|| panic!("{id} 已解析出来，却拿不到图标"));
+    let url =
+        piggy_lib::open_in_app::open_in_app_icon(id.clone()).unwrap_or_else(|| panic!("{id} 已解析出来，却拿不到图标"));
     let payload = url
         .strip_prefix("data:image/png;base64,")
         .unwrap_or_else(|| panic!("图标不是 PNG data URL: {}", &url[..40.min(url.len())]));
@@ -157,8 +160,7 @@ fn open_path_applications_shape_on_this_machine() {
     if !std::path::Path::new(file).exists() {
         return;
     }
-    let apps = piggy_lib::open_in_app::open_path_applications(file.to_string())
-        .expect("关联查询应当成功");
+    let apps = piggy_lib::open_in_app::open_path_applications(file.to_string()).expect("关联查询应当成功");
     assert!(!apps.is_empty(), "本机 README.md 应当有处理器");
     let value = serde_json::to_value(&apps).expect("可序列化");
     let array = value.as_array().expect("是数组");
@@ -182,8 +184,7 @@ fn open_path_applications_shape_on_this_machine() {
 /// 所以"打开工作区"走的是固定白名单目录，不是这张关联列表。
 #[test]
 fn open_path_applications_accepts_a_directory_without_error() {
-    let apps = piggy_lib::open_in_app::open_path_applications("/tmp".to_string())
-        .expect("目录查询不该报错");
+    let apps = piggy_lib::open_in_app::open_path_applications("/tmp".to_string()).expect("目录查询不该报错");
     for app in apps {
         assert!(std::path::Path::new(&app.id).is_dir(), "关联到的应用不存在: {}", app.id);
     }
@@ -193,14 +194,11 @@ fn open_path_applications_accepts_a_directory_without_error() {
 #[test]
 fn open_path_open_rejects_bad_requests() {
     let missing =
-        piggy_lib::open_in_app::open_path_open("/definitely/not/here.md".into(), "open".into(), None)
-            .unwrap_err();
+        piggy_lib::open_in_app::open_path_open("/definitely/not/here.md".into(), "open".into(), None).unwrap_err();
     assert!(missing.contains("不存在"), "{missing}");
-    let relative =
-        piggy_lib::open_in_app::open_path_open("rel/x.md".into(), "open".into(), None).unwrap_err();
+    let relative = piggy_lib::open_in_app::open_path_open("rel/x.md".into(), "open".into(), None).unwrap_err();
     assert!(relative.contains("绝对路径"), "{relative}");
-    let bad_action =
-        piggy_lib::open_in_app::open_path_open("/tmp".into(), "delete".into(), None).unwrap_err();
+    let bad_action = piggy_lib::open_in_app::open_path_open("/tmp".into(), "delete".into(), None).unwrap_err();
     assert!(bad_action.contains("未知的打开方式"), "{bad_action}");
     // 未注册的应用：不许执行（前端传什么字符串都进不来）
     let unregistered = piggy_lib::open_in_app::open_path_open(
@@ -240,8 +238,22 @@ fn provider_overview_row_shape() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     for key in [
-        "provider", "name", "declared", "baseUrl", "baseUrlSource", "api", "apiSource", "apis", "envVar",
-        "keySource", "keyMasked", "keyKind", "hasInlineKey", "models", "cachedModels", "isDefault",
+        "provider",
+        "name",
+        "declared",
+        "baseUrl",
+        "baseUrlSource",
+        "api",
+        "apiSource",
+        "apis",
+        "envVar",
+        "keySource",
+        "keyMasked",
+        "keyKind",
+        "hasInlineKey",
+        "models",
+        "cachedModels",
+        "isDefault",
     ] {
         assert!(row.get(key).is_some(), "provider 行缺少字段 {key}：{row}");
     }
@@ -276,7 +288,10 @@ fn provider_overview_row_shape() {
 /// 保存一个提供商：返回值是**存进去的那份**，且落盘内容与之一致。
 #[test]
 fn provider_save_returns_the_saved_entry() {
-    let dir = agent_fixture(r#"{"providers":{"keep":{"name":"Keep Me","custom":"untouched"}}}"#, "{}");
+    let dir = agent_fixture(
+        r#"{"providers":{"keep":{"name":"Keep Me","custom":"untouched"}}}"#,
+        "{}",
+    );
     let saved = piggy_lib::provider::edit::save_at(
         dir.path(),
         "new-one",
@@ -323,12 +338,9 @@ fn provider_writes_reject_unusable_input() {
     let err = piggy_lib::provider::edit::save_at(dir.path(), "a/b", &serde_json::json!({"name":"x"}))
         .expect_err("带斜杠的 id 应该被拒");
     assert!(err.contains('/'), "{err}");
-    let err = piggy_lib::provider::edit::save_at(
-        dir.path(),
-        "ok",
-        &serde_json::json!({"models":[{"id":"m"},{"id":"m"}]}),
-    )
-    .expect_err("重复模型 id 应该被拒");
+    let err =
+        piggy_lib::provider::edit::save_at(dir.path(), "ok", &serde_json::json!({"models":[{"id":"m"},{"id":"m"}]}))
+            .expect_err("重复模型 id 应该被拒");
     assert!(err.contains("重复"), "{err}");
     // 被拒之后文件里**一个提供商都没有**（不许写一半：先校验再落盘）
     let on_disk: serde_json::Value =
@@ -365,7 +377,14 @@ fn plugin_overview_row_shape() {
 
     let out = piggy_lib::plugin::inventory::overview(&agent, Some(&proj)).expect("overview ok");
 
-    for key in ["agentDir", "agentDirFromEnv", "projectDir", "groups", "warnings", "counts"] {
+    for key in [
+        "agentDir",
+        "agentDirFromEnv",
+        "projectDir",
+        "groups",
+        "warnings",
+        "counts",
+    ] {
         assert!(out.get(key).is_some(), "plugin_overview 缺少字段 {key}：{out}");
     }
     let c = &out["counts"];
@@ -384,17 +403,30 @@ fn plugin_overview_row_shape() {
         }
     }
 
-    let rows: Vec<&serde_json::Value> = groups
-        .iter()
-        .flat_map(|g| g["plugins"].as_array().unwrap())
-        .collect();
+    let rows: Vec<&serde_json::Value> = groups.iter().flat_map(|g| g["plugins"].as_array().unwrap()).collect();
     // 1 个项目发现 + 1 个全局发现 + 1 个包 + N 个内置
     assert_eq!(rows.len(), 3 + rows.iter().filter(|r| r["kind"] == "builtin").count());
     for row in &rows {
         for key in [
-            "key", "name", "kind", "kindLabel", "sourceKind", "sourceKindLabel", "scope", "scopeLabel",
-            "source", "path", "exists", "enabled", "enabledBy", "version", "description", "entries",
-            "removable", "updatable", "loadRank",
+            "key",
+            "name",
+            "kind",
+            "kindLabel",
+            "sourceKind",
+            "sourceKindLabel",
+            "scope",
+            "scopeLabel",
+            "source",
+            "path",
+            "exists",
+            "enabled",
+            "enabledBy",
+            "version",
+            "description",
+            "entries",
+            "removable",
+            "updatable",
+            "loadRank",
         ] {
             assert!(row.get(key).is_some(), "插件行缺少字段 {key}：{row}");
         }
@@ -577,8 +609,16 @@ fn title_model_options_payload_is_camel_case() {
 
     let opts = ModelOptions {
         models: vec![
-            ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3-flash".into(), reasoning: true },
-            ModelOption { provider: "local".into(), id: "no-think".into(), reasoning: false },
+            ModelOption {
+                provider: "cc-switch-zhipu-glm".into(),
+                id: "glm-5.3-flash".into(),
+                reasoning: true,
+            },
+            ModelOption {
+                provider: "local".into(),
+                id: "no-think".into(),
+                reasoning: false,
+            },
         ],
         note: None,
         pi_bin: "/usr/local/bin/pi".into(),
@@ -616,7 +656,6 @@ async fn thinking_levels_are_the_pi_ones_and_invalid_ones_are_rejected() {
     }
 }
 
-
 /// 「关于与许可」的载荷形状（docs/03 §2.17）。
 ///
 /// 前端 `normalizeNotices` 读的是 `licenseName / licenseUrl / gplText / thirdParty` 这些
@@ -652,7 +691,10 @@ fn legal_notices_payload_is_camel_case_and_complete() {
     assert!(rows.len() >= 5, "第三方表只剩 {} 条", rows.len());
     for r in rows {
         for k in ["name", "license", "holder", "usage"] {
-            assert!(r[k].is_string() && !r[k].as_str().unwrap().is_empty(), "{r} 的 {k} 缺失");
+            assert!(
+                r[k].is_string() && !r[k].as_str().unwrap().is_empty(),
+                "{r} 的 {k} 缺失"
+            );
         }
     }
 }
@@ -679,10 +721,24 @@ fn plugin_capability_shape_and_detection() {
     std::fs::write(ext.join("index.ts"), "export default () => {}").unwrap();
 
     let out = piggy_lib::plugin::capabilities::status("todo", &agent, None).expect("status ok");
-    for key in ["capability", "label", "markers", "detected", "supported", "enabled", "plugin", "disabled", "considered", "problems"] {
+    for key in [
+        "capability",
+        "label",
+        "markers",
+        "detected",
+        "supported",
+        "enabled",
+        "plugin",
+        "disabled",
+        "considered",
+        "problems",
+    ] {
         assert!(out.get(key).is_some(), "plugin_capability 缺少字段 {key}：{out}");
     }
-    assert_eq!(out["supported"], true, "声明了能力且已启用 → supported 应为 true：{out}");
+    assert_eq!(
+        out["supported"], true,
+        "声明了能力且已启用 → supported 应为 true：{out}"
+    );
     assert_eq!(out["detected"], true);
     assert_eq!(out["plugin"]["name"], "pi-todo");
     assert!(
@@ -693,11 +749,7 @@ fn plugin_capability_shape_and_detection() {
     assert!(out["disabled"].as_array().unwrap().is_empty());
 
     // 停用（pi 的写法：settings 里的 `-` 规则）→ supported=false，但 detected 仍为 true
-    std::fs::write(
-        agent.join("settings.json"),
-        r#"{"extensions":["-extensions/pi-todo"]}"#,
-    )
-    .unwrap();
+    std::fs::write(agent.join("settings.json"), r#"{"extensions":["-extensions/pi-todo"]}"#).unwrap();
     let off = piggy_lib::plugin::capabilities::status("todo", &agent, None).expect("status ok");
     assert_eq!(off["supported"], false, "停用后不该再声称支持：{off}");
     assert_eq!(off["detected"], true, "停用不等于没探测到：{off}");
@@ -728,7 +780,11 @@ fn session_todo_projection_shape() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("s.jsonl");
     let mut f = std::fs::File::create(&path).unwrap();
-    writeln!(f, r#"{{"type":"message","id":"u1","parentId":null,"message":{{"role":"user","content":[]}}}}"#).unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"message","id":"u1","parentId":null,"message":{{"role":"user","content":[]}}}}"#
+    )
+    .unwrap();
     writeln!(
         f,
         r#"{{"type":"custom","id":"e1","parentId":"u1","customType":"todo/write","data":{{"todos":[{{"content":"一","status":"pending"}}]}}}}"#
@@ -738,7 +794,15 @@ fn session_todo_projection_shape() {
 
     let p = piggy_lib::sessions::transcript::todo_projection(&path).expect("projection ok");
     let out = p.to_json();
-    for key in ["todos", "source", "offset", "branchy", "chainBroken", "scannedBytes", "parsedLines"] {
+    for key in [
+        "todos",
+        "source",
+        "offset",
+        "branchy",
+        "chainBroken",
+        "scannedBytes",
+        "parsedLines",
+    ] {
         assert!(out.get(key).is_some(), "session_todo 缺少字段 {key}：{out}");
     }
     assert!(out["todos"].is_array(), "todos 是数组（有清单时）：{out}");
@@ -750,7 +814,11 @@ fn session_todo_projection_shape() {
     assert!(out["scannedBytes"].is_number());
     // 没有清单时必须是 null（不是空数组）：前端据此区分"没有计划"与"空计划"
     let empty = tmp.path().join("empty.jsonl");
-    std::fs::write(&empty, "{\"type\":\"message\",\"id\":\"u1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":[]}}\n").unwrap();
+    std::fs::write(
+        &empty,
+        "{\"type\":\"message\",\"id\":\"u1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":[]}}\n",
+    )
+    .unwrap();
     let p2 = piggy_lib::sessions::transcript::todo_projection(&empty).expect("projection ok");
     assert!(p2.to_json()["todos"].is_null(), "没写过清单 → todos 必须是 null");
 }

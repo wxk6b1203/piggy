@@ -95,10 +95,10 @@ fn merge_models(old: Option<&Value>, new: &[Value]) -> Result<Vec<Value>, String
         }
         seen.push(id.clone());
         // 旧行里同 id 的那些字段，界面没管的照抄回来
-        let merged = match old
-            .and_then(|o| o.as_array())
-            .and_then(|arr| arr.iter().find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
-        {
+        let merged = match old.and_then(|o| o.as_array()).and_then(|arr| {
+            arr.iter()
+                .find(|x| x.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        }) {
             Some(prev) => {
                 let mut base = prev.as_object().cloned().unwrap_or_default();
                 for (k, v) in cleaned.as_object().unwrap() {
@@ -177,7 +177,11 @@ pub fn set_inline_key_at(agent: &Path, provider: &str, key: &str) -> Result<(), 
     let path = agent.join("models.json");
     let mut doc = pi_files::read_json(&path)?;
     let obj = providers_mut(&mut doc)?;
-    let mut entry = obj.get(provider).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let mut entry = obj
+        .get(provider)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
     let trimmed = key.trim();
     if trimmed.is_empty() {
         entry.remove("apiKey");
@@ -238,7 +242,12 @@ mod tests {
                "modelOverrides":{"m":{"reasoning":true}},
                "models":[{"id":"m","name":"M","cost":{"input":1,"output":2},"thinkingLevelMap":{"max":"max"}}]}}}"#,
         );
-        save_at(dir.path(), "a", &json!({"name":"A2","models":[{"id":"m","name":"M2","reasoning":true}]})).unwrap();
+        save_at(
+            dir.path(),
+            "a",
+            &json!({"name":"A2","models":[{"id":"m","name":"M2","reasoning":true}]}),
+        )
+        .unwrap();
         let d = read(&dir);
         assert_eq!(d["providers"]["a"]["name"], "A2");
         assert_eq!(d["providers"]["a"]["compat"]["thinkingFormat"], "deepseek");
@@ -254,11 +263,15 @@ mod tests {
     /// 清空一个字段 = 删键（回落 pi 目录默认值），不能留空串——pi 的 schema 要求 minLength 1。
     #[test]
     fn clearing_a_field_removes_the_key() {
-        let dir = fixture(r#"{"providers":{"a":{"name":"A","baseUrl":"https://x.example","api":"openai-completions"}}}"#);
+        let dir =
+            fixture(r#"{"providers":{"a":{"name":"A","baseUrl":"https://x.example","api":"openai-completions"}}}"#);
         save_at(dir.path(), "a", &json!({"name":"","baseUrl":"  ","api":""})).unwrap();
         let d = read(&dir);
         let p = d["providers"]["a"].as_object().unwrap();
-        assert!(!p.contains_key("name") && !p.contains_key("baseUrl") && !p.contains_key("api"), "{p:?}");
+        assert!(
+            !p.contains_key("name") && !p.contains_key("baseUrl") && !p.contains_key("api"),
+            "{p:?}"
+        );
     }
 
     /// 模型表为空 = 删键（回落到 pi 内置目录），不是留一个空数组。
@@ -266,7 +279,11 @@ mod tests {
     fn empty_models_removes_the_key() {
         let dir = fixture(r#"{"providers":{"a":{"models":[{"id":"m"}]}}}"#);
         save_at(dir.path(), "a", &json!({"models":[]})).unwrap();
-        assert!(read(&dir)["providers"]["a"].as_object().unwrap().get("models").is_none());
+        assert!(read(&dir)["providers"]["a"]
+            .as_object()
+            .unwrap()
+            .get("models")
+            .is_none());
     }
 
     /// 别的提供商不许被动到。
@@ -310,7 +327,11 @@ mod tests {
         set_inline_key_at(dir.path(), "a", "  sk-abc  ").unwrap();
         assert_eq!(read(&dir)["providers"]["a"]["apiKey"], "sk-abc");
         set_inline_key_at(dir.path(), "a", "").unwrap();
-        assert!(read(&dir)["providers"]["a"].as_object().unwrap().get("apiKey").is_none());
+        assert!(read(&dir)["providers"]["a"]
+            .as_object()
+            .unwrap()
+            .get("apiKey")
+            .is_none());
     }
 
     #[test]

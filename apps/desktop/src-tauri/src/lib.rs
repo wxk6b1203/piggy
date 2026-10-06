@@ -29,15 +29,10 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let dir = crate::config::paths::home_dir_or_temp()
-            .join(".piggy")
-            .join("logs");
+        let dir = crate::config::paths::home_dir_or_temp().join(".piggy").join("logs");
         let _ = std::fs::create_dir_all(&dir);
         let ts = now_ms();
-        let msg = format!(
-            "panic @{ts}: {info}\nlocation: {:?}\n---\n",
-            info.location()
-        );
+        let msg = format!("panic @{ts}: {info}\nlocation: {:?}\n---\n", info.location());
         let _ = std::fs::write(dir.join(format!("panic-{ts}.log")), msg);
         default(info);
     }));
@@ -61,22 +56,19 @@ fn builtin_pi_path() -> Option<PathBuf> {
     }
     .join("resources")
     .join("pi");
-    Some(if cfg!(windows) { base.join("pi.exe") } else { base.join("pi") })
+    Some(if cfg!(windows) {
+        base.join("pi.exe")
+    } else {
+        base.join("pi")
+    })
 }
 
 /// 委派开关打开时返回策略文件路径（否则 None）。
 ///
 /// 抽成函数是为了让「两个 resource_dir 分支」用同一套判据 —— 历史上这两处漂移过一次，
 /// 结果是拿不到 resource_dir 的机器上守卫脚本静默为 None（docs/15 规矩 8）。
-fn subagent_policy_for(
-    state: &AppState,
-    resource_dir: Option<&std::path::Path>,
-) -> Option<PathBuf> {
-    let on = state
-        .perf
-        .read()
-        .map(|p| p.subagent_delegation)
-        .unwrap_or(false);
+fn subagent_policy_for(state: &AppState, resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    let on = state.perf.read().map(|p| p.subagent_delegation).unwrap_or(false);
     if !on {
         return None;
     }
@@ -86,9 +78,9 @@ fn subagent_policy_for(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook(); // M4：崩溃安全
-    // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
-    // 启动时按持久化的来源解析（默认 system）；失败不阻断启动，
-    // 由引导横幅 + 每次建 tab 时的重试兜底（02 §2.1）
+                          // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
+                          // 启动时按持久化的来源解析（默认 system）；失败不阻断启动，
+                          // 由引导横幅 + 每次建 tab 时的重试兜底（02 §2.1）
     let boot_cfg = config::app::perf_config_load();
     let pi_bin = match discover(
         boot_cfg.pi_source,
@@ -130,7 +122,11 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_hide, &quit])?;
             TrayIconBuilder::with_id("piggy-tray")
-                .icon(app.default_window_icon().cloned().ok_or_else(|| tauri::Error::AssetNotFound("icon".into()))?)
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .ok_or_else(|| tauri::Error::AssetNotFound("icon".into()))?,
+                )
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -201,11 +197,7 @@ pub fn run() {
                     // 子代理委派策略（docs/06 §6）：只在开关打开时记录。是否**真的**注入
                     // 还要看档位（限制档位下扩展工具不存在，注入等于让模型调不存在的工具）。
                     reg.subagent_policy = subagent_policy_for(&state, resource_dir.as_deref());
-                    reg.default_permission = state
-                        .perf
-                        .read()
-                        .map(|p| p.permission_mode)
-                        .unwrap_or_default();
+                    reg.default_permission = state.perf.read().map(|p| p.permission_mode).unwrap_or_default();
                     match &reg.guard_script {
                         Some(p) => eprintln!("[piggy] 权限守卫: {}", p.display()),
                         None => eprintln!(
@@ -217,10 +209,7 @@ pub fn run() {
                         None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
                     }
                     if let Some(p) = &reg.subagent_policy {
-                        eprintln!(
-                            "[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}",
-                            p.display()
-                        );
+                        eprintln!("[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}", p.display());
                     }
                 } else {
                     // resource_dir 拿不到时也必须初始化守卫与档位：
@@ -230,11 +219,7 @@ pub fn run() {
                     reg.guard_script = crate::pi::permission::guard_script_path(None);
                     reg.bridge_script = crate::pi::resources::bridge_script_path(None);
                     reg.subagent_policy = subagent_policy_for(&state, None);
-                    reg.default_permission = state
-                        .perf
-                        .read()
-                        .map(|p| p.permission_mode)
-                        .unwrap_or_default();
+                    reg.default_permission = state.perf.read().map(|p| p.permission_mode).unwrap_or_default();
                     eprintln!(
                         "[piggy] 权限守卫（resource_dir 回退）: {}",
                         reg.guard_script
@@ -250,13 +235,10 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 let watcher_slot = state.watcher.clone();
                 let handle = app2.clone();
-                match crate::sessions::list::spawn_sessions_watcher(
-                    crate::commands::watcher_roots(),
-                    move || {
-                        use tauri::Emitter;
-                        let _ = handle.emit("sessions:changed", serde_json::json!({ "at": 0 }));
-                    },
-                ) {
+                match crate::sessions::list::spawn_sessions_watcher(crate::commands::watcher_roots(), move || {
+                    use tauri::Emitter;
+                    let _ = handle.emit("sessions:changed", serde_json::json!({ "at": 0 }));
+                }) {
                     Ok(w) => {
                         *watcher_slot.lock().await = Some(w);
                         eprintln!("[piggy] sessions watcher 已启动");

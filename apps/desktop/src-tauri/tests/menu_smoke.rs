@@ -31,7 +31,9 @@ fn main() {
     // （`__tauri_window_menu__` / `__tauri_help_menu__`），App/File/Edit/View 都是
     // muda 自动生成的数字 id（实测 "15"/"18"/"27"/"30"）。所以这里按**标题**找。
     for it in &subs {
-        let tauri::menu::MenuItemKind::Submenu(sub) = it else { continue };
+        let tauri::menu::MenuItemKind::Submenu(sub) = it else {
+            continue;
+        };
         let id = sub.id().as_ref().to_string();
         let title = sub.text().unwrap_or_default();
         submenu_ids.push(format!("{title}({id})"));
@@ -76,14 +78,9 @@ fn main() {
                 placement = kinds.first().cloned().unwrap_or_default();
                 let at_one = items.get(1).map(|i| i.id().as_ref().to_string());
                 if at_one.as_deref() != Some(MENU_ID_LEGAL) {
-                    bad.push(format!(
-                        "许可条目不在「关于」正下方（1 号位是 {at_one:?}）"
-                    ));
+                    bad.push(format!("许可条目不在「关于」正下方（1 号位是 {at_one:?}）"));
                 }
-                let zero_is_predefined = matches!(
-                    items.first(),
-                    Some(tauri::menu::MenuItemKind::Predefined(_))
-                );
+                let zero_is_predefined = matches!(items.first(), Some(tauri::menu::MenuItemKind::Predefined(_)));
                 if !zero_is_predefined {
                     bad.push("App 子菜单 0 号位不是预定义的「关于」".into());
                 }

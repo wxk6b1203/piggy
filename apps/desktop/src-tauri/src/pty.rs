@@ -43,7 +43,12 @@ pub fn open_pty(
 ) -> Result<PtyHandle, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("PTY 打开失败: {e}"))?;
 
     // 登录终端落在用户主目录（拿不到就退调用方给的 cwd）。老代码只看 HOME，
@@ -95,13 +100,20 @@ pub fn open_pty(
         child: Some(child),
     };
     map.lock().map_err(|_| "PTY 表锁失败")?.insert(id.to_string(), session);
-    Ok(PtyHandle { id: id.to_string(), rows, cols })
+    Ok(PtyHandle {
+        id: id.to_string(),
+        rows,
+        cols,
+    })
 }
 
 pub fn write_pty(map: &SharedPtyMap, id: &str, data: &str) -> Result<(), String> {
     let mut m = map.lock().map_err(|_| "PTY 表锁失败")?;
     let session = m.get_mut(id).ok_or_else(|| format!("PTY 不存在: {id}"))?;
-    session.writer.write_all(data.as_bytes()).map_err(|e| format!("PTY 写入失败: {e}"))?;
+    session
+        .writer
+        .write_all(data.as_bytes())
+        .map_err(|e| format!("PTY 写入失败: {e}"))?;
     session.writer.flush().map_err(|e| format!("PTY flush 失败: {e}"))
 }
 
@@ -110,7 +122,12 @@ pub fn resize_pty(map: &SharedPtyMap, id: &str, rows: u16, cols: u16) -> Result<
     let session = m.get(id).ok_or_else(|| format!("PTY 不存在: {id}"))?;
     session
         .master
-        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("PTY resize 失败: {e}"))
 }
 
@@ -145,7 +162,12 @@ mod tests {
         // 真实 PTY 回读（unix 可跑；验证 openpty→spawn→read 管线）
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty");
         let mut cmd = CommandBuilder::new("/bin/echo");
         cmd.arg("piggy-pty-ok");

@@ -7,8 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../packages/pi-protocol/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../packages/pi-protocol/fixtures")
 }
 
 #[test]
@@ -20,8 +19,7 @@ fn all_fixtures_classify() {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let raw: Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).expect("valid json");
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).expect("valid json");
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         if raw["type"] == "response" {
             // 响应类：仅要求可解析为 JSON（client 按回执处理）
@@ -45,10 +43,7 @@ fn known_event_kinds_map_correctly() {
         ("event_extension_ui_request.json", "extension_ui_request"),
     ];
     for (file, expected) in cases {
-        let raw: Value = serde_json::from_str(
-            &fs::read_to_string(fixtures_dir().join(file)).unwrap(),
-        )
-        .unwrap();
+        let raw: Value = serde_json::from_str(&fs::read_to_string(fixtures_dir().join(file)).unwrap()).unwrap();
         assert_eq!(raw["type"], expected, "{file}");
         let _ = classify(&raw);
     }
@@ -56,8 +51,7 @@ fn known_event_kinds_map_correctly() {
 
 #[test]
 fn unknown_event_type_falls_to_other_without_loss() {
-    let raw: Value =
-        serde_json::from_str(r#"{"type":"shiny_new_event_v2","payload":{"a":1}}"#).unwrap();
+    let raw: Value = serde_json::from_str(r#"{"type":"shiny_new_event_v2","payload":{"a":1}}"#).unwrap();
     match classify(&raw) {
         PiEvent::Other { kind } => assert_eq!(kind, "shiny_new_event_v2"),
         _ => panic!("unknown should map to Other"),

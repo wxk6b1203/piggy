@@ -1,0 +1,16 @@
+# Rust 格式化口径（CI 的 `rust` 作业第一步就是 `cargo fmt --check`）。
+#
+# 为什么要有这个文件：仓库里没有它的时候，`cargo fmt --check` 实测有 **497 处**差异
+# （rustfmt 默认 100 列，而这里的代码按 ~120 列手写），于是 CI 的 `rust` 作业
+# **第一步就失败** —— 后面的 `clippy` 与 `cargo test` 从来没有在 CI 里跑过
+# （"CI 里写了" ≠ "CI 跑过"，docs/15 §4）。2026-09-25 定下 120 列并一次性格式化。
+#
+# `use_small_heuristics = "Max"` **刻意不设**：实测它会把差异从 346 涨到 493
+# （现有代码的单行风格更接近"默认启发式 + 120 列"）。
+#
+# ⚠️ 两个**生成物**（`provider/catalog_generated.rs`、`plugin/builtins_generated.rs`）
+# 里的数据 const 打了 `#[rustfmt::skip]`：生成器 `--check` 比对的正是那些**逐行**数据
+# （`gen-provider-catalog.mjs` 的 `C {` 行、`gen-plugin-builtins.mjs` 的 `Builtin {` 行），
+# 被 rustfmt 折成多行之后 `--check` 会**假红**。属性由生成器自己写出（模板里也有一份），
+# 所以重跑生成器之后依然是 fmt-clean 的。
+max_width = 120

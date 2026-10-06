@@ -14,6 +14,7 @@
 use super::CatalogEntry as C;
 
 /// pi 0.87.1 的提供商目录，41 条，顺序 = `builtinProviders()` 的顺序。
+#[rustfmt::skip]
 pub const CATALOG: &[C] = &[
     C { id: "amazon-bedrock", name: "Amazon Bedrock", base_url: "", api: "bedrock-converse-stream", env_var: "", apis: &["bedrock-converse-stream"] },
     C { id: "ant-ling", name: "Ant Ling", base_url: "https://api.ant-ling.com/v1", api: "openai-completions", env_var: "ANT_LING_API_KEY", apis: &["openai-completions"] },
@@ -61,4 +62,5 @@ pub const CATALOG: &[C] = &[
 /// pi 认识的 API 协议（`types.ts` 的 `KnownApi`），10 条。
 /// pi 的 `Api` 类型是 `KnownApi | (string & {})` —— 自定义协议字符串也合法，
 /// 所以这只是"界面默认给哪些选项"，不是白名单。
+#[rustfmt::skip]
 pub const KNOWN_APIS: &[&str] = &["openai-completions", "mistral-conversations", "openai-responses", "azure-openai-responses", "openai-codex-responses", "anthropic-messages", "bedrock-converse-stream", "google-generative-ai", "google-vertex", "pi-messages"];

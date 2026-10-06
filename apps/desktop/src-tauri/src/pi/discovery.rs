@@ -52,9 +52,7 @@ impl PiSource {
             "system" => Ok(Self::System),
             "bundled" => Ok(Self::Bundled),
             "custom" => Ok(Self::Custom),
-            other => Err(format!(
-                "未知 pi 来源 {other:?}（可选：system / bundled / custom）"
-            )),
+            other => Err(format!("未知 pi 来源 {other:?}（可选：system / bundled / custom）")),
         }
     }
 }
@@ -79,9 +77,7 @@ pub struct PiBinary {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
-    #[error(
-        "pi 二进制未找到。可选：在设置里指定路径、安装 pi 到 PATH，或选「捆绑 pi」（需 full SKU 打包）"
-    )]
+    #[error("pi 二进制未找到。可选：在设置里指定路径、安装 pi 到 PATH，或选「捆绑 pi」（需 full SKU 打包）")]
     NotFound,
     #[error("指定的 pi 路径不存在: {0}")]
     CustomPathMissing(String),
@@ -104,8 +100,7 @@ pub(crate) fn pick_source(
     let builtin_ok = builtin.filter(|b| b.is_file());
     match source {
         PiSource::Custom => {
-            let p = custom
-                .ok_or_else(|| DiscoveryError::CustomPathMissing("（未填写路径）".to_string()))?;
+            let p = custom.ok_or_else(|| DiscoveryError::CustomPathMissing("（未填写路径）".to_string()))?;
             if !p.is_file() {
                 return Err(DiscoveryError::CustomPathMissing(p.display().to_string()));
             }
@@ -132,11 +127,7 @@ pub(crate) fn pick_source(
 }
 
 /// 按来源定位 pi 并校验 `--version`。
-pub fn discover(
-    source: PiSource,
-    custom: Option<&Path>,
-    builtin: Option<&Path>,
-) -> Result<PiBinary, DiscoveryError> {
+pub fn discover(source: PiSource, custom: Option<&Path>, builtin: Option<&Path>) -> Result<PiBinary, DiscoveryError> {
     // 1) PI_BIN：显式环境覆盖，永远优先
     if let Some(p) = std::env::var_os("PI_BIN").map(PathBuf::from) {
         if p.is_file() {
@@ -159,12 +150,7 @@ pub fn discover(
     verify(path, resolved, via, false)
 }
 
-fn verify(
-    path: PathBuf,
-    source: PiSource,
-    via: String,
-    from_env: bool,
-) -> Result<PiBinary, DiscoveryError> {
+fn verify(path: PathBuf, source: PiSource, via: String, from_env: bool) -> Result<PiBinary, DiscoveryError> {
     if !path.is_file() {
         return Err(DiscoveryError::CustomPathMissing(path.display().to_string()));
     }
@@ -178,12 +164,20 @@ fn verify(
         ));
     }
     let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(PiBinary { path, version, source, via, from_env })
+    Ok(PiBinary {
+        path,
+        version,
+        source,
+        via,
+        from_env,
+    })
 }
 
 /// 该路径是否来自 PATH（仅用于给用户一句可读的说明）。
 fn is_on_path(p: &Path) -> bool {
-    let Some(dirs) = std::env::var_os("PATH") else { return false };
+    let Some(dirs) = std::env::var_os("PATH") else {
+        return false;
+    };
     let Some(parent) = p.parent() else { return false };
     std::env::split_paths(&dirs).any(|d| d == parent)
 }
@@ -235,7 +229,9 @@ pub fn exec_names(windows: bool, pathext: Option<&str>) -> Vec<String> {
 /// 用途：拒绝把 npm/pnpm 的 POSIX shell 垫片交给 `CreateProcess`。
 fn looks_like_pe(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
     let mut magic = [0u8; 2];
     f.read_exact(&mut magic).is_ok() && &magic == b"MZ"
 }
@@ -367,9 +363,7 @@ pub fn plan_source_change(
 
     // 关键守卫：custom 必须有路径
     if next_source == PiSource::Custom && next_path.is_none() {
-        return Err(
-            "选择「自定义路径」需要先指定 pi 可执行文件；配置未改动（仍用原来的来源）".to_string(),
-        );
+        return Err("选择「自定义路径」需要先指定 pi 可执行文件；配置未改动（仍用原来的来源）".to_string());
     }
     if next_source == current && next_path.as_deref() == current_path {
         return Ok(None);
@@ -415,8 +409,7 @@ mod tests {
         assert!(e2.contains("自定义路径"), "{e2}");
 
         // 已有 custom 路径时，清空它也要拒绝（否则同样落到"无路径的 custom"）
-        let e3 = plan_source_change(PiSource::Custom, Some("/a/pi"), Some("custom"), Some(""))
-            .unwrap_err();
+        let e3 = plan_source_change(PiSource::Custom, Some("/a/pi"), Some("custom"), Some("")).unwrap_err();
         assert!(e3.contains("自定义路径"), "{e3}");
     }
 
@@ -480,8 +473,8 @@ mod tests {
     }
 
     /* ---- Windows 上的 pi 发现（用户真机踩到的 os error 193） ----
-       全部是纯函数/文件系统夹具，所以在 macOS 上也能跑：
-       被验证的是"**选哪个名字**"，而不是"能不能执行"。 */
+    全部是纯函数/文件系统夹具，所以在 macOS 上也能跑：
+    被验证的是"**选哪个名字**"，而不是"能不能执行"。 */
 
     fn names_of(v: Vec<String>) -> Vec<String> {
         v
@@ -521,7 +514,11 @@ mod tests {
 
         let names = exec_names(true, None);
         let picked = first_pi_in(dir, &names, true).expect("应该选中 pi.cmd");
-        assert_eq!(picked.file_name().unwrap(), "pi.cmd", "选中了 shell 垫片 → Windows 会报 os error 193");
+        assert_eq!(
+            picked.file_name().unwrap(),
+            "pi.cmd",
+            "选中了 shell 垫片 → Windows 会报 os error 193"
+        );
 
         // Unix 语义下同一个目录选 `pi`（那边它才是对的）
         let picked_unix = first_pi_in(dir, &exec_names(false, None), false).unwrap();
@@ -554,11 +551,15 @@ mod tests {
         let shown: Vec<String> = cands.iter().map(|c| c.display().to_string()).collect();
         // pnpm 的全局 bin 与 npm 的前缀（Windows 上真正放 pi.cmd 的地方）
         assert!(
-            shown.iter().any(|c| c.contains("AppData\\Local") && c.contains("pnpm") && c.ends_with("pi.cmd")),
+            shown
+                .iter()
+                .any(|c| c.contains("AppData\\Local") && c.contains("pnpm") && c.ends_with("pi.cmd")),
             "没有 pnpm 目录：{shown:?}"
         );
         assert!(
-            shown.iter().any(|c| c.contains("AppData\\Roaming") && c.contains("npm")),
+            shown
+                .iter()
+                .any(|c| c.contains("AppData\\Roaming") && c.contains("npm")),
             "没有 npm 目录：{shown:?}"
         );
         // 不能把 Unix 路径混进来
@@ -601,8 +602,7 @@ mod tests {
     fn system_wins_over_bundled_when_both_exist() {
         let sys = tmpfile("sys-pi");
         let builtin = tmpfile("builtin-pi");
-        let (path, src, _) =
-            pick_source(PiSource::System, None, Some(&builtin), Some(sys.clone())).unwrap();
+        let (path, src, _) = pick_source(PiSource::System, None, Some(&builtin), Some(sys.clone())).unwrap();
         assert_eq!(path, sys);
         assert_eq!(src, PiSource::System);
     }
@@ -631,8 +631,7 @@ mod tests {
     fn bundled_ignores_the_system_binary() {
         let sys = tmpfile("sys-pi");
         let builtin = tmpfile("builtin-pi");
-        let (path, src, _) =
-            pick_source(PiSource::Bundled, None, Some(&builtin), Some(sys)).unwrap();
+        let (path, src, _) = pick_source(PiSource::Bundled, None, Some(&builtin), Some(sys)).unwrap();
         assert_eq!(path, builtin);
         assert_eq!(src, PiSource::Bundled);
     }
@@ -652,13 +651,7 @@ mod tests {
         let sys = tmpfile("sys-pi");
         let builtin = tmpfile("builtin-pi");
         let mine = tmpfile("mine-pi");
-        let (path, src, _) = pick_source(
-            PiSource::Custom,
-            Some(&mine),
-            Some(&builtin),
-            Some(sys),
-        )
-        .unwrap();
+        let (path, src, _) = pick_source(PiSource::Custom, Some(&mine), Some(&builtin), Some(sys)).unwrap();
         assert_eq!(path, mine);
         assert_eq!(src, PiSource::Custom);
     }

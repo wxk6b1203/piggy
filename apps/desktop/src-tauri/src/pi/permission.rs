@@ -71,9 +71,7 @@ impl PermissionMode {
             "read-only" | "readonly" => Ok(Self::ReadOnly),
             "workspace" => Ok(Self::Workspace),
             "full" => Ok(Self::Full),
-            other => Err(format!(
-                "未知权限档位 {other:?}（可选：read-only / workspace / full）"
-            )),
+            other => Err(format!("未知权限档位 {other:?}（可选：read-only / workspace / full）")),
         }
     }
 }

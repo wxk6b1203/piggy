@@ -155,15 +155,10 @@ pub fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    let cwd_missing = header_cwd
-        .as_ref()
-        .map(|c| !Path::new(c).exists())
-        .unwrap_or(true);
+    let cwd_missing = header_cwd.as_ref().map(|c| !Path::new(c).exists()).unwrap_or(true);
     let file_name = path.file_name()?.to_string_lossy().into_owned();
     // 创建时间：头部 -> 文件名 -> mtime（逐级兜底，保证总有值）
-    let created_ms = header_ts
-        .or_else(|| filename_timestamp_ms(&file_name))
-        .unwrap_or(mtime);
+    let created_ms = header_ts.or_else(|| filename_timestamp_ms(&file_name)).unwrap_or(mtime);
     Some(SessionMeta {
         path: path.to_string_lossy().into_owned(),
         file_name,
@@ -227,10 +222,7 @@ fn precreate_dir(spec: &(PathBuf, bool), cwd: &Path) -> PathBuf {
     }
     // pi getDefaultSessionDirPath：去掉一个前导 / 或 \，再把 / \ : 全替换为 -，两侧包 --
     let s = cwd.to_string_lossy();
-    let stripped = s
-        .strip_prefix('/')
-        .or_else(|| s.strip_prefix('\\'))
-        .unwrap_or(&s);
+    let stripped = s.strip_prefix('/').or_else(|| s.strip_prefix('\\')).unwrap_or(&s);
     let safe = stripped.replace(['/', '\\', ':'], "-");
     root.join(format!("--{safe}--"))
 }
@@ -248,11 +240,7 @@ fn precreate_session_file_with(spec: (PathBuf, bool), cwd: &Path) -> Result<Path
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let name = format!(
-        "{}_{}.jsonl",
-        iso_timestamp_filename(now_ms),
-        uuid::Uuid::new_v4()
-    );
+    let name = format!("{}_{}.jsonl", iso_timestamp_filename(now_ms), uuid::Uuid::new_v4());
     let path = dir.join(name);
     // O_EXCL 创建空文件：并发/重试下不覆盖任何已有文件
     std::fs::OpenOptions::new()
@@ -423,8 +411,10 @@ mod tests {
 
     #[test]
     fn parses_header_first_user_and_session_info() {
-        let header = r#"{"type":"session","version":3,"id":"sid-1","timestamp":"2026-09-22T01:00:00.000Z","cwd":"/tmp/proj"}"#;
-        let user = r#"{"type":"message","id":"m1","parentId":null,"message":{"role":"user","content":"帮我修这个 bug"}}"#;
+        let header =
+            r#"{"type":"session","version":3,"id":"sid-1","timestamp":"2026-09-22T01:00:00.000Z","cwd":"/tmp/proj"}"#;
+        let user =
+            r#"{"type":"message","id":"m1","parentId":null,"message":{"role":"user","content":"帮我修这个 bug"}}"#;
         let p = write_tmp_session(&format!("{header}\n{user}\n"));
         let m = parse_session_file(&p).expect("meta");
         assert_eq!(m.session_id.as_deref(), Some("sid-1"));
@@ -436,7 +426,8 @@ mod tests {
 
     #[test]
     fn tail_session_info_wins_as_name() {
-        let header = r#"{"type":"session","version":3,"id":"sid-2","timestamp":"2026-09-22T01:00:00.000Z","cwd":"/tmp/p2"}"#;
+        let header =
+            r#"{"type":"session","version":3,"id":"sid-2","timestamp":"2026-09-22T01:00:00.000Z","cwd":"/tmp/p2"}"#;
         let info = r#"{"type":"session_info","id":"i1","parentId":"x","name":"我的重命名会话"}"#;
         // 中间垫 200KB，保证 info 落在"尾部窗口"
         let pad = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(200_000));
@@ -466,7 +457,8 @@ mod tests {
     #[test]
     fn small_file_session_info_is_parsed() {
         // 临时/空白会话只有几百字节：改名写入的 session_info 必须能读到
-        let header = r#"{"type":"session","version":3,"id":"sid-3","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p3"}"#;
+        let header =
+            r#"{"type":"session","version":3,"id":"sid-3","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p3"}"#;
         let info = r#"{"type":"session_info","id":"i1","parentId":null,"name":"我的新名字"}"#;
         let p = write_tmp_session(&format!("{header}\n{info}\n"));
         let m = parse_session_file(&p).expect("meta");
@@ -476,7 +468,8 @@ mod tests {
 
     #[test]
     fn last_rename_wins() {
-        let header = r#"{"type":"session","version":3,"id":"sid-4","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p4"}"#;
+        let header =
+            r#"{"type":"session","version":3,"id":"sid-4","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p4"}"#;
         let i1 = r#"{"type":"session_info","id":"i1","parentId":null,"name":"第一个名字"}"#;
         let i2 = r#"{"type":"session_info","id":"i2","parentId":null,"name":"第二个名字"}"#;
         let p = write_tmp_session(&format!("{header}\n{i1}\n{i2}\n"));
@@ -518,14 +511,21 @@ mod tests {
         let root = std::env::temp_dir().join(format!("piggy-precreate-flat-{}", std::process::id()));
         let cwd = Path::new("/Users/wxk/proj");
         let p = precreate_session_file_in(&root, cwd, true).expect("precreate");
-        assert_eq!(p.parent().unwrap(), root, "自定义会话根下必须平铺，不能再套 --cwd-- 子目录");
+        assert_eq!(
+            p.parent().unwrap(),
+            root,
+            "自定义会话根下必须平铺，不能再套 --cwd-- 子目录"
+        );
         assert!(p.is_file());
         // 平铺文件必须能被扫描器认出来（读写两条路对同一布局）。
         // 注意：刚预创建的是**空文件**，pi 还没写 header（懒落盘），所以此刻扫不到——
         // 这里补一行 header 模拟 pi 落盘后的样子，再扫。
         assert!(scan_dir(&root).is_empty(), "空文件不该被当成会话列出");
-        std::fs::write(&p, "{\"type\":\"session\",\"version\":3,\"id\":\"flat\",\"cwd\":\"/Users/wxk/proj\"}\n")
-            .unwrap();
+        std::fs::write(
+            &p,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"flat\",\"cwd\":\"/Users/wxk/proj\"}\n",
+        )
+        .unwrap();
         let list = scan_dir(&root);
         assert_eq!(list.len(), 1, "平铺布局的会话没被扫到");
         assert_eq!(list[0].session_id.as_deref(), Some("flat"));
@@ -545,7 +545,11 @@ mod tests {
             assert_eq!(dir, spec.0, "自定义根下写成了子目录");
             assert!(!dir.ends_with("--tmp-piggy-wiring-probe--"));
         } else {
-            assert_eq!(dir, spec.0.join("--tmp-piggy-wiring-probe--"), "默认根下应按 cwd 编码建子目录");
+            assert_eq!(
+                dir,
+                spec.0.join("--tmp-piggy-wiring-probe--"),
+                "默认根下应按 cwd 编码建子目录"
+            );
         }
     }
 }
@@ -581,8 +585,14 @@ mod created_time_tests {
     #[test]
     fn rejects_garbage_without_panicking() {
         for bad in [
-            "", "not-a-date", "2026-09-22", "2026-13-01T00:00:00Z", "2026-09-32T00:00:00Z",
-            "2026-09-22T25:00:00Z", "2026-09-22T00:61:00Z", "2026-09-22X01:00:00Z",
+            "",
+            "not-a-date",
+            "2026-09-22",
+            "2026-13-01T00:00:00Z",
+            "2026-09-32T00:00:00Z",
+            "2026-09-22T25:00:00Z",
+            "2026-09-22T00:61:00Z",
+            "2026-09-22X01:00:00Z",
             "20x6-09-22T01:00:00Z",
         ] {
             assert!(parse_iso8601_ms(bad).is_none(), "不该解析成功: {bad:?}");
@@ -626,24 +636,40 @@ mod created_time_tests {
         let proj = dir.join("--proj--");
         std::fs::create_dir_all(&proj).unwrap();
         let path = proj.join("2019-03-04T05-06-07-008Z_nohdr.jsonl");
-        std::fs::write(&path, "{\"type\":\"session\",\"version\":3,\"id\":\"s2\",\"cwd\":\"/tmp\"}\n").unwrap();
+        std::fs::write(
+            &path,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"s2\",\"cwd\":\"/tmp\"}\n",
+        )
+        .unwrap();
         let m = parse_session_file(&path).expect("应能解析");
-        assert_eq!(m.created_ms, filename_timestamp_ms("2019-03-04T05-06-07-008Z_nohdr.jsonl").unwrap());
+        assert_eq!(
+            m.created_ms,
+            filename_timestamp_ms("2019-03-04T05-06-07-008Z_nohdr.jsonl").unwrap()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 扫描顺序：按创建时间降序，**不受 mtime 影响**。
     #[test]
-    fn scan_sorts_by_created_not_mtime() {        let dir = std::env::temp_dir().join("piggy-created-ms-sort");
+    fn scan_sorts_by_created_not_mtime() {
+        let dir = std::env::temp_dir().join("piggy-created-ms-sort");
         let proj = dir.join("--proj--");
         std::fs::create_dir_all(&proj).unwrap();
         // 先写"创建晚"的，再写"创建早"的 —— 这样创建早的那个 mtime 反而更新，
         // 正好复现用户看到的现象：老会话被写入一次就冒到列表顶部。
         let new = proj.join("2024-01-01T00-00-00-000Z_new.jsonl");
         let old = proj.join("2020-01-01T00-00-00-000Z_old.jsonl");
-        std::fs::write(&new, "{\"type\":\"session\",\"version\":3,\"id\":\"new\",\"cwd\":\"/tmp\"}\n").unwrap();
+        std::fs::write(
+            &new,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"new\",\"cwd\":\"/tmp\"}\n",
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(30));
-        std::fs::write(&old, "{\"type\":\"session\",\"version\":3,\"id\":\"old\",\"cwd\":\"/tmp\"}\n").unwrap();
+        std::fs::write(
+            &old,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"old\",\"cwd\":\"/tmp\"}\n",
+        )
+        .unwrap();
 
         let list = scan_dir(&dir);
         assert_eq!(list.len(), 2, "应扫到 2 个会话");

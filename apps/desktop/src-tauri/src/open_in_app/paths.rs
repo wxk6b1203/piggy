@@ -21,10 +21,10 @@
 //!   前端于是把"显示文件位置"当作默认动作（DSH 在拿不到默认应用时也是这个行为）。
 
 use super::catalog::Platform;
-use super::spec::{LaunchOutcome, LaunchSpec};
 use super::host::{Facts, Host};
 use super::icons::{media_type, theme_icon_bytes};
 use super::resolver::{find_desktop_file, parse_desktop_entry};
+use super::spec::{LaunchOutcome, LaunchSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -185,11 +185,7 @@ fn parse_mac_applications(json: &str) -> Result<Vec<PathApplication>, String> {
         .collect())
 }
 
-fn mac_applications(
-    host: &dyn Host,
-    path: &Path,
-    timeout: Duration,
-) -> Result<Vec<PathApplication>, String> {
+fn mac_applications(host: &dyn Host, path: &Path, timeout: Duration) -> Result<Vec<PathApplication>, String> {
     let out = host
         .run(
             "osascript",
@@ -235,9 +231,7 @@ fn parse_gio_mime(stdout: &str) -> (Option<String>, Vec<String>) {
             continue;
         }
         // 处理器行是缩进的、且以 .desktop 结尾
-        if (line.starts_with(' ') || line.starts_with('\t'))
-            && trimmed.ends_with(".desktop")
-            && !trimmed.contains(' ')
+        if (line.starts_with(' ') || line.starts_with('\t')) && trimmed.ends_with(".desktop") && !trimmed.contains(' ')
         {
             ids.push(trimmed.to_string());
         }
@@ -417,9 +411,7 @@ pub fn action_launch(
         return match platform {
             Platform::Darwin => Ok(argv("open", vec!["-a".into(), app.to_string(), path_str])),
             Platform::Linux => Ok(argv("gio", vec!["launch".into(), app.to_string(), path_str])),
-            Platform::Win32 => Err(
-                "Windows 上暂不支持指定应用打开（处理器枚举需要 COM，见 docs/15）".into(),
-            ),
+            Platform::Win32 => Err("Windows 上暂不支持指定应用打开（处理器枚举需要 COM，见 docs/15）".into()),
         };
     }
     match (platform, action) {
@@ -542,7 +534,10 @@ mod tests {
             fields,
             ..Default::default()
         };
-        assert_eq!(desktop_display_name(&entry, "zh_CN.UTF-8").as_deref(), Some("文本编辑器（简体）"));
+        assert_eq!(
+            desktop_display_name(&entry, "zh_CN.UTF-8").as_deref(),
+            Some("文本编辑器（简体）")
+        );
         assert_eq!(desktop_display_name(&entry, "zh_TW").as_deref(), Some("文本编辑器"));
         assert_eq!(desktop_display_name(&entry, "en_US").as_deref(), Some("Text Editor"));
     }
@@ -663,7 +658,10 @@ mod tests {
         eprintln!(
             "真机文件关联: {} 个处理器，默认 = {}",
             apps.len(),
-            apps.iter().find(|a| a.is_default).map(|a| a.name.as_str()).unwrap_or("(无)")
+            apps.iter()
+                .find(|a| a.is_default)
+                .map(|a| a.name.as_str())
+                .unwrap_or("(无)")
         );
     }
 
@@ -685,7 +683,10 @@ mod tests {
         // 无论关联列表给出什么，"定位到目录"始终可用
         let spec = action_launch(&facts, PathAction::Reveal, Path::new("/tmp"), None).unwrap();
         assert_eq!(spec.describe(), "open -R /tmp");
-        eprintln!("本机 /tmp 的关联应用: {:?}", apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+        eprintln!(
+            "本机 /tmp 的关联应用: {:?}",
+            apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>()
+        );
     }
 
     /// 未注册的应用必须被拒（前端传什么字符串都进不来）。

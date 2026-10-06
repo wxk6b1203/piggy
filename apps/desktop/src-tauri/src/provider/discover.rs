@@ -73,9 +73,7 @@ pub fn parse_listing(body: &Value) -> Result<Vec<Value>, String> {
                 .map(|(k, v)| (Some(k.clone()), v))
                 .collect();
         } else {
-            return Err(
-                "端点的模型清单既没有 data 数组，也没有 models 对象；请手动填写该提供商的模型".into(),
-            );
+            return Err("端点的模型清单既没有 data 数组，也没有 models 对象；请手动填写该提供商的模型".into());
         }
     } else {
         return Err("端点的模型清单既没有 data 数组，也没有 models 对象；请手动填写该提供商的模型".into());
@@ -114,7 +112,13 @@ pub fn parse_listing(body: &Value) -> Result<Vec<Value>, String> {
         let mut row = json!({ "id": id, "name": name });
         let ctx = capacity(
             raw,
-            &["contextWindow", "context_window", "context_length", "max_input_tokens", "limit.context"],
+            &[
+                "contextWindow",
+                "context_window",
+                "context_length",
+                "max_input_tokens",
+                "limit.context",
+            ],
         );
         let max = capacity(
             raw,
@@ -223,8 +227,8 @@ pub async fn fetch(url: &str, api: &str, api_key: &str) -> Result<Vec<Value>, St
         };
         return Err(format!("{url} 返回 HTTP {}{hint}：{}", status.as_u16(), snippet(&body)));
     }
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("{url} 的回复不是 JSON（{e}）：{}", snippet(&body)))?;
+    let parsed: Value =
+        serde_json::from_str(&body).map_err(|e| format!("{url} 的回复不是 JSON（{e}）：{}", snippet(&body)))?;
     parse_listing(&parsed)
 }
 
@@ -232,11 +236,17 @@ pub async fn fetch(url: &str, api: &str, api_key: &str) -> Result<Vec<Value>, St
 async fn read_bounded(mut res: reqwest::Response) -> Result<String, String> {
     if let Some(len) = res.content_length() {
         if len > MAX_RESPONSE_BYTES as u64 {
-            return Err(format!("回复超过 {MAX_RESPONSE_BYTES} 字节上限（声明 {len} 字节），已拒绝"));
+            return Err(format!(
+                "回复超过 {MAX_RESPONSE_BYTES} 字节上限（声明 {len} 字节），已拒绝"
+            ));
         }
     }
     let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| format!("读取回复失败：{}", short_err(&e)))? {
+    while let Some(chunk) = res
+        .chunk()
+        .await
+        .map_err(|e| format!("读取回复失败：{}", short_err(&e)))?
+    {
         if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
             return Err(format!("回复超过 {MAX_RESPONSE_BYTES} 字节上限，已拒绝"));
         }
@@ -301,8 +311,14 @@ mod tests {
 
     #[test]
     fn openai_style_url_and_bearer_header() {
-        assert_eq!(listing_url("https://api.deepseek.com", "openai-completions"), "https://api.deepseek.com/models");
-        assert_eq!(listing_url("https://x.example/v1/", "openai-responses"), "https://x.example/v1/models");
+        assert_eq!(
+            listing_url("https://api.deepseek.com", "openai-completions"),
+            "https://api.deepseek.com/models"
+        );
+        assert_eq!(
+            listing_url("https://x.example/v1/", "openai-responses"),
+            "https://x.example/v1/models"
+        );
         assert_eq!(
             auth_header("openai-completions", "sk-abc"),
             Some(("Authorization", "Bearer sk-abc".to_string()))
@@ -320,7 +336,10 @@ mod tests {
             listing_url("https://gw.example/v1", "anthropic-messages"),
             "https://gw.example/v1/models?limit=1000"
         );
-        assert_eq!(auth_header("anthropic-messages", "sk-ant"), Some(("x-api-key", "sk-ant".to_string())));
+        assert_eq!(
+            auth_header("anthropic-messages", "sk-ant"),
+            Some(("x-api-key", "sk-ant".to_string()))
+        );
     }
 
     #[test]
@@ -332,14 +351,22 @@ mod tests {
     #[test]
     fn fetches_and_parses_over_a_real_socket() {
         let (port, seen) = serve_once(200, r#"{"data":[{"id":"deepseek-flash","context_length":1000000}]}"#);
-        let models = fetch_blocking(&format!("http://127.0.0.1:{port}/v1/models"), "openai-completions", "sk-test").unwrap();
+        let models = fetch_blocking(
+            &format!("http://127.0.0.1:{port}/v1/models"),
+            "openai-completions",
+            "sk-test",
+        )
+        .unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0]["id"], "deepseek-flash");
         assert_eq!(models[0]["name"], "deepseek-flash", "没给名字时用 id 兜底");
         assert_eq!(models[0]["contextWindow"], 1000000, "context_length 别名没认出来");
         let req = seen.lock().unwrap().clone();
         assert!(req.starts_with("GET /v1/models "), "请求行不对：{req}");
-        assert!(req.contains("authorization: Bearer sk-test") || req.contains("Authorization: Bearer sk-test"), "没带鉴权头：{req}");
+        assert!(
+            req.contains("authorization: Bearer sk-test") || req.contains("Authorization: Bearer sk-test"),
+            "没带鉴权头：{req}"
+        );
     }
 
     /// 网关常见的 models 映射写法：键就是 id。
@@ -379,7 +406,10 @@ mod tests {
     fn reports_unrecognized_shape() {
         assert!(parse_listing(&json!({"ok": true})).unwrap_err().contains("手动填写"));
         assert!(parse_listing(&json!({"models": {}})).unwrap().is_empty());
-        assert!(parse_listing(&json!({"models": []})).unwrap().is_empty(), "空数组 = 没有模型，不该报错");
+        assert!(
+            parse_listing(&json!({"models": []})).unwrap().is_empty(),
+            "空数组 = 没有模型，不该报错"
+        );
     }
 
     /// `models` 是数组的写法（Ollama 风格）也要认。
@@ -415,15 +445,20 @@ mod tests {
     #[test]
     #[ignore = "需要网络：cargo test --lib -- --ignored real_network"]
     fn real_network_reports_the_endpoints_own_error() {
-        let err = fetch_blocking("https://api.deepseek.com/models", "openai-completions", "")
-            .expect_err("不带密钥不该成功");
+        let err =
+            fetch_blocking("https://api.deepseek.com/models", "openai-completions", "").expect_err("不带密钥不该成功");
         eprintln!("真机返回：{err}");
         assert!(err.contains("HTTP 401"), "没拿到 401：{err}");
-        assert!(err.to_lowercase().contains("authentication") || err.contains("api key"), "没带上端点原话：{err}");
+        assert!(
+            err.to_lowercase().contains("authentication") || err.contains("api key"),
+            "没带上端点原话：{err}"
+        );
     }
 
     #[test]
     fn rejects_non_http_urls() {
-        assert!(fetch_blocking("ftp://x/models", "openai-completions", "").unwrap_err().contains("http(s)"));
+        assert!(fetch_blocking("ftp://x/models", "openai-completions", "")
+            .unwrap_err()
+            .contains("http(s)"));
     }
 }

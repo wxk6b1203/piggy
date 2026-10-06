@@ -95,6 +95,7 @@ pub struct Builtin {
 }
 
 /// pi ${piVersion} 的 ${entries.length} 个内置扩展。
+#[rustfmt::skip]
 pub const BUILTINS: &[Builtin] = &[
 ${rows}
 ];

@@ -102,7 +102,9 @@ impl FleetRun {
     }
 
     pub fn all_done(&self) -> bool {
-        self.lanes.iter().all(|l| matches!(l.status, LaneStatus::Settled | LaneStatus::Failed))
+        self.lanes
+            .iter()
+            .all(|l| matches!(l.status, LaneStatus::Settled | LaneStatus::Failed))
     }
 
     pub fn lane(&self, key: &str) -> Option<&Lane> {
@@ -120,11 +122,7 @@ pub fn ready_lanes(lanes: &[Lane]) -> Vec<String> {
     lanes
         .iter()
         .filter(|l| l.status == LaneStatus::Pending)
-        .filter(|l| {
-            l.depends_on
-                .iter()
-                .all(|d| status_of(d) == Some(LaneStatus::Settled))
-        })
+        .filter(|l| l.depends_on.iter().all(|d| status_of(d) == Some(LaneStatus::Settled)))
         .map(|l| l.key.clone())
         .collect()
 }
@@ -168,7 +166,14 @@ pub fn build_run(
     if has_cycle(&lanes) {
         return Err("模板依赖存在环".into());
     }
-    Ok(FleetRun { id, template_id: template_id.to_string(), task: task.to_string(), cwd, status: RunStatus::Running, lanes })
+    Ok(FleetRun {
+        id,
+        template_id: template_id.to_string(),
+        task: task.to_string(),
+        cwd,
+        status: RunStatus::Running,
+        lanes,
+    })
 }
 
 fn has_cycle(lanes: &[Lane]) -> bool {
@@ -209,13 +214,17 @@ pub fn render_prompt(template_prompt: &str, task: &str, run: &FleetRun, lane: &L
         .filter_map(|k| run.lane(k))
         .map(|dep| {
             let result = dep.result_text.as_deref().unwrap_or("(无输出)");
-            format!("[{}/{}] {}\n{}", dep.role, dep.key, result.chars().take(4000).collect::<String>(), "")
+            format!(
+                "[{}/{}] {}\n{}",
+                dep.role,
+                dep.key,
+                result.chars().take(4000).collect::<String>(),
+                ""
+            )
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    template_prompt
-        .replace("{task}", task)
-        .replace("{upstream}", &upstream)
+    template_prompt.replace("{task}", task).replace("{upstream}", &upstream)
 }
 
 /* ---------------- lane 生命周期判定（从 IO 胶水里抽出来，可单测 + 契约测试共用） ---------------- */
@@ -249,12 +258,7 @@ pub fn lane_step(was_busy: bool, state: WorkerState) -> (bool, Option<LaneOutcom
 ///
 /// 之前 `MAX_WORKERS` 只是 `continue` 掉——没有任何东西会在额度释放后重新调度，
 /// 于是"当前 tab 数已达上限"时整个 run 会永久停在 Pending（实测死锁）。
-pub fn should_keep_waiting(
-    status: &RunStatus,
-    ready_lanes: usize,
-    waited: Duration,
-    max_wait: Duration,
-) -> bool {
+pub fn should_keep_waiting(status: &RunStatus, ready_lanes: usize, waited: Duration, max_wait: Duration) -> bool {
     *status == RunStatus::Running && ready_lanes > 0 && waited < max_wait
 }
 
@@ -321,11 +325,16 @@ impl Default for FleetManager {
 
 impl FleetManager {
     pub fn new() -> Self {
-        Self { runs: Mutex::new(HashMap::new()) }
+        Self {
+            runs: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn run_ids(&self) -> Vec<String> {
-        self.runs.lock().map(|r| r.keys().cloned().collect()).unwrap_or_default()
+        self.runs
+            .lock()
+            .map(|r| r.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn get(&self, id: &str) -> Option<FleetRun> {
@@ -373,7 +382,9 @@ impl FleetManager {
             Err(_) => return false,
         };
         let Some(run) = runs.get_mut(run_id) else { return false };
-        let Some(lane) = run.lane_mut(lane_key) else { return false };
+        let Some(lane) = run.lane_mut(lane_key) else {
+            return false;
+        };
         if lane.status == LaneStatus::Running || lane.status == LaneStatus::Pending {
             lane.status = LaneStatus::Failed;
             return true;
@@ -388,7 +399,9 @@ impl FleetManager {
             Err(_) => return false,
         };
         let Some(run) = runs.get_mut(run_id) else { return false };
-        let Some(lane) = run.lane_mut(lane_key) else { return false };
+        let Some(lane) = run.lane_mut(lane_key) else {
+            return false;
+        };
         lane.tab_id = Some(tab_id.to_string());
         lane.status = LaneStatus::Running;
         true
@@ -458,7 +471,13 @@ impl FleetManager {
 pub fn worktree_path(repo: &Path, name: &str) -> PathBuf {
     let safe_name: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     repo.join(".piggy-worktrees").join(safe_name)
 }
@@ -524,24 +543,27 @@ mod tests {
             if tid == "custom" {
                 continue; // custom 允许空
             }
-            let run = build_run(
-                "test-run".into(),
-                tid,
-                tpl,
-                "示例任务",
-                PathBuf::from("/tmp"),
-            )
-            .unwrap_or_else(|e| panic!("模板 {tid} 非法: {e}"));
+            let run = build_run("test-run".into(), tid, tpl, "示例任务", PathBuf::from("/tmp"))
+                .unwrap_or_else(|e| panic!("模板 {tid} 非法: {e}"));
             assert!(!run.lanes.is_empty());
             // 就绪集合：初始只含无依赖 lane
             let ready = run.ready_lanes();
-            assert!(run.lanes.iter().filter(|l| l.depends_on.is_empty()).all(|l| ready.contains(&l.key)));
+            assert!(run
+                .lanes
+                .iter()
+                .filter(|l| l.depends_on.is_empty())
+                .all(|l| ready.contains(&l.key)));
         }
     }
 
     #[test]
     fn dag_schedules_in_dependency_order() {
-        let mut lanes = vec![lane("a", &[]), lane("b", &["a"]), lane("c", &["a"]), lane("d", &["b", "c"])];
+        let mut lanes = vec![
+            lane("a", &[]),
+            lane("b", &["a"]),
+            lane("c", &["a"]),
+            lane("d", &["b", "c"]),
+        ];
         let mut run = FleetRun {
             id: "r".into(),
             template_id: "t".into(),
@@ -622,10 +644,16 @@ mod tests {
         run.lanes[1].status = LaneStatus::Running;
         mgr.insert(run);
 
-        assert_eq!(mgr.settle_lane("tab-r1", "结论1").unwrap(), ("run-1".into(), "r1".into()));
+        assert_eq!(
+            mgr.settle_lane("tab-r1", "结论1").unwrap(),
+            ("run-1".into(), "r1".into())
+        );
         assert_eq!(mgr.settle_lane("tab-未知", "x"), None);
         assert!(!mgr.maybe_finish("run-1"));
-        assert_eq!(mgr.settle_lane("tab-r2", "结论2").unwrap(), ("run-1".into(), "r2".into()));
+        assert_eq!(
+            mgr.settle_lane("tab-r2", "结论2").unwrap(),
+            ("run-1".into(), "r2".into())
+        );
         assert!(mgr.maybe_finish("run-1"));
         let snap = mgr.snapshot();
         assert_eq!(snap["runs"][0]["status"], "done");

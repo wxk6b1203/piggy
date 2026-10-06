@@ -19,12 +19,7 @@ use std::time::Duration;
 const HICOLOR_SIZES: [&str; 6] = ["512x512", "256x256", "128x128", "64x64", "48x48", "32x32"];
 
 /// 提取一个应用的图标字节。`None` = 这台机器上拿不到（前端画通用图标）。
-pub fn icon_png(
-    host: &dyn Host,
-    facts: &Facts,
-    source: &IconSource,
-    timeout: Duration,
-) -> Option<Vec<u8>> {
+pub fn icon_png(host: &dyn Host, facts: &Facts, source: &IconSource, timeout: Duration) -> Option<Vec<u8>> {
     match source {
         IconSource::AppBundle(bundle) => bundle_icon_png(host, bundle, timeout),
         IconSource::Desktop(desktop_id) => linux_icon_bytes(host, facts, desktop_id),
@@ -62,10 +57,7 @@ fn bundle_icon_png(host: &dyn Host, bundle: &Path, timeout: Duration) -> Option<
             }
         }
         // Info.plist 没声明（或 plutil 读不动）→ 退到 Resources 里第一个 .icns
-        None => host
-            .read_dir(&resources)?
-            .into_iter()
-            .find(|e| e.ends_with(".icns"))?,
+        None => host.read_dir(&resources)?.into_iter().find(|e| e.ends_with(".icns"))?,
     };
     let icns = resources.join(icon_name);
     if !host.is_file(&icns) {
@@ -119,7 +111,8 @@ pub fn theme_icon_bytes(host: &dyn Host, facts: &Facts, icon: &str) -> Option<Ve
         for size in HICOLOR_SIZES {
             for ext in ["png", "svg"] {
                 let p = dir
-                    .join("icons").join("hicolor")
+                    .join("icons")
+                    .join("hicolor")
                     .join(size)
                     .join("apps")
                     .join(format!("{icon}.{ext}"));
@@ -129,7 +122,10 @@ pub fn theme_icon_bytes(host: &dyn Host, facts: &Facts, icon: &str) -> Option<Ve
             }
         }
         let scalable = dir
-            .join("icons").join("hicolor").join("scalable").join("apps")
+            .join("icons")
+            .join("hicolor")
+            .join("scalable")
+            .join("apps")
             .join(format!("{icon}.svg"));
         if let Some(bytes) = read_icon_file(host, &scalable) {
             return Some(bytes);

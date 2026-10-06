@@ -56,10 +56,7 @@ pub async fn plugin_overview(project_dir: Option<String>) -> Result<Value, Strin
 /// 目前只有 `todo`（任务清单）一个能力。**返回形状由 `tests/ipc_contract.rs` 锁死**：
 /// 前端拿 `supported` 决定要不要显示 todo 界面（`false` 就一点都不显示）。
 #[tauri::command]
-pub async fn plugin_capability(
-    capability: String,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
+pub async fn plugin_capability(capability: String, project_dir: Option<String>) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
         let cwd = project_dir.map(PathBuf::from);
         capabilities::status(&capability, &paths::agent_dir(), cwd.as_deref())
@@ -169,7 +166,11 @@ fn extension_array(settings: &Value) -> Result<Vec<String>, String> {
             for item in a {
                 match item.as_str() {
                     Some(s) => out.push(s.to_string()),
-                    None => return Err("settings.json 的 extensions 里有非字符串项，已停止写入（请先在「高级」里修好）".into()),
+                    None => {
+                        return Err(
+                            "settings.json 的 extensions 里有非字符串项，已停止写入（请先在「高级」里修好）".into(),
+                        )
+                    }
                 }
             }
             Ok(out)
@@ -209,16 +210,10 @@ fn strip_rule(list: &[String], rel: &str, abs: &str) -> Vec<String> {
 ///   启用 = `autoload:true` 且清掉所有 `-`/`!` 规则；
 ///   停用 = `autoload:false` 且清掉所有 `+` 规则（没有 `+` 就什么都不加载）。
 #[tauri::command]
-pub async fn plugin_set_enabled(
-    key: String,
-    enabled: bool,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
-    tokio::task::spawn_blocking(move || {
-        set_enabled_at(&paths::agent_dir(), &key, enabled, project_dir.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn plugin_set_enabled(key: String, enabled: bool, project_dir: Option<String>) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || set_enabled_at(&paths::agent_dir(), &key, enabled, project_dir.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 与命令同一份逻辑，但 **agent 目录显式传入**。
@@ -305,7 +300,9 @@ pub fn set_enabled_at(
             inventory::write_settings(&dirs, scope, &settings)?;
             Ok(json!({ "ok": true, "wrote": settings_path.to_string_lossy(), "settings": settings }))
         }
-        other => Err(format!("这类条目不支持启停：{other}（发现目录里的文件要停用请直接删文件）")),
+        other => Err(format!(
+            "这类条目不支持启停：{other}（发现目录里的文件要停用请直接删文件）"
+        )),
     }
 }
 
@@ -394,16 +391,10 @@ fn relative_posix(base: &std::path::Path, path: &std::path::Path) -> String {
 /// 下载到 `~/.pi/agent/npm|git`）；登记只是"告诉 pi 去这个路径加载"，
 /// 文件留在原地、不进 `pi list`。已经装好的本地目录用登记更轻。
 #[tauri::command]
-pub async fn plugin_add_path(
-    path: String,
-    scope: String,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
-    tokio::task::spawn_blocking(move || {
-        add_path_at(&paths::agent_dir(), &path, &scope, project_dir.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn plugin_add_path(path: String, scope: String, project_dir: Option<String>) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || add_path_at(&paths::agent_dir(), &path, &scope, project_dir.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn add_path_at(
@@ -428,10 +419,7 @@ fn add_path_at(
         let ok = if resolved.is_dir() {
             !inventory::extension_entries(&resolved).is_empty()
         } else {
-            resolved
-                .extension()
-                .map(|e| e == "ts" || e == "js")
-                .unwrap_or(false)
+            resolved.extension().map(|e| e == "ts" || e == "js").unwrap_or(false)
         };
         if !ok {
             return Err(format!(
@@ -453,16 +441,10 @@ fn add_path_at(
 
 /// 从 `extensions[]` 里移除一条登记（**不删文件**，只解除登记）。
 #[tauri::command]
-pub async fn plugin_remove_path(
-    entry: String,
-    scope: String,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
-    tokio::task::spawn_blocking(move || {
-        remove_path_at(&paths::agent_dir(), &entry, &scope, project_dir.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn plugin_remove_path(entry: String, scope: String, project_dir: Option<String>) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || remove_path_at(&paths::agent_dir(), &entry, &scope, project_dir.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn remove_path_at(
@@ -524,7 +506,11 @@ pub async fn plugin_delete_discovered(key: String) -> Result<Value, String> {
         let canon_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let canon = std::fs::canonicalize(&path).unwrap_or(path.clone());
         if !canon.starts_with(&canon_root) || canon == canon_root {
-            return Err(format!("{} 不在发现目录 {} 里，拒绝删除", canon.display(), canon_root.display()));
+            return Err(format!(
+                "{} 不在发现目录 {} 里，拒绝删除",
+                canon.display(),
+                canon_root.display()
+            ));
         }
         let is_dir = canon.is_dir();
         let ok = if is_dir {
@@ -560,10 +546,8 @@ pub async fn plugin_check_source(source: String) -> Result<Value, String> {
         // 裸名字：不带任何路径前缀，且形状像 npm 包名（`foo` / `@scope/foo`）。
         // pi 会把它当**本地路径**去 cwd 下找，实测报的是
         // `Path does not exist: …/@scope/pkg`——用户完全看不出要加 npm: 前缀。
-        let no_path_prefix = !s.starts_with('/')
-            && !s.starts_with('~')
-            && !s.starts_with('.')
-            && !s.starts_with("file:");
+        let no_path_prefix =
+            !s.starts_with('/') && !s.starts_with('~') && !s.starts_with('.') && !s.starts_with("file:");
         let looks_bare = no_path_prefix && (is_plain_package_name(&s) || is_scoped_package_name(&s));
         if looks_bare {
             problem = json!("pi 会把裸名字当本地路径，而不是 npm 包名");
@@ -590,7 +574,10 @@ fn is_plain_package_name(s: &str) -> bool {
     !s.is_empty()
         && !s.contains('/')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || ". _-~".contains(c))
-        && s.chars().next().map(|c| c.is_ascii_lowercase() || c.is_ascii_digit()).unwrap_or(false)
+        && s.chars()
+            .next()
+            .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            .unwrap_or(false)
 }
 
 /// `@scope/foo`：一个 `@`、恰好一个 `/`，两段都非空。
@@ -641,7 +628,10 @@ mod tests {
         let agent = tmp.path().join("agent");
         fs::create_dir_all(agent.join("extensions")).unwrap();
         fs::write(agent.join("extensions/foo.ts"), "export default 1").unwrap();
-        write(&agent.join("settings.json"), &json!({ "extensions": ["-extensions/foo.ts"] }));
+        write(
+            &agent.join("settings.json"),
+            &json!({ "extensions": ["-extensions/foo.ts"] }),
+        );
 
         let key = format!("global:discovered:{}", agent.join("extensions/foo.ts").display());
         let out = set_enabled_at(&agent, &key, true, None).unwrap();

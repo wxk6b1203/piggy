@@ -153,11 +153,7 @@ impl<'a> RegistryView<'a> {
                 continue;
             };
             for (key, values) in parse_registry_dump(&dump) {
-                let exe = key
-                    .rsplit('\\')
-                    .next()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
+                let exe = key.rsplit('\\').next().unwrap_or_default().to_ascii_lowercase();
                 let Some(target) = values.get("(Default)") else {
                     continue;
                 };
@@ -190,12 +186,7 @@ impl<'a> RegistryView<'a> {
 }
 
 /// 卸载记录能反证出来的可执行文件（光有记录不算）。
-fn record_launcher(
-    host: &dyn Host,
-    record: &InstallRecord,
-    rel_launcher: &str,
-    facts: &Facts,
-) -> Option<PathBuf> {
+fn record_launcher(host: &dyn Host, record: &InstallRecord, rel_launcher: &str, facts: &Facts) -> Option<PathBuf> {
     if !rel_launcher.is_empty() {
         if let Some(loc) = record.install_location.as_deref().filter(|s| !s.is_empty()) {
             if let Some(base) = expand_registry_value(loc.trim_matches('"'), facts) {
@@ -272,12 +263,7 @@ pub fn xdg_data_directories(facts: &Facts) -> Vec<PathBuf> {
         .unwrap_or_else(|| facts.home.join(".local").join("share"));
     let data_dirs = facts.var("XDG_DATA_DIRS").unwrap_or("/usr/local/share:/usr/share");
     let mut dirs = vec![data_home];
-    dirs.extend(
-        data_dirs
-            .split(':')
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from),
-    );
+    dirs.extend(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
     dirs
 }
 
@@ -306,13 +292,7 @@ pub fn find_desktop_file(host: &dyn Host, facts: &Facts, desktop_id: &str) -> Op
     None
 }
 
-fn find_desktop_in(
-    host: &dyn Host,
-    root: &Path,
-    dir: &Path,
-    desktop_id: &str,
-    depth: u8,
-) -> Option<PathBuf> {
+fn find_desktop_in(host: &dyn Host, root: &Path, dir: &Path, desktop_id: &str, depth: u8) -> Option<PathBuf> {
     if depth > 3 {
         return None; // 防目录环/无底洞
     }
@@ -320,11 +300,7 @@ fn find_desktop_in(
     for name in &entries {
         let path = dir.join(name);
         if !host.is_dir(&path) {
-            let rel = path
-                .strip_prefix(root)
-                .ok()?
-                .to_string_lossy()
-                .replace('/', "-");
+            let rel = path.strip_prefix(root).ok()?.to_string_lossy().replace('/', "-");
             if rel == format!("{desktop_id}.desktop") {
                 return Some(path);
             }
@@ -460,12 +436,7 @@ pub fn resolve_all(host: &dyn Host, facts: &Facts, timeout: Duration) -> Vec<Res
 }
 
 /// 解析单条（启动时发现可执行文件没了 → 用它重新解析这一条）。
-pub fn resolve_one(
-    host: &dyn Host,
-    facts: &Facts,
-    id: &str,
-    timeout: Duration,
-) -> Option<Resolved> {
+pub fn resolve_one(host: &dyn Host, facts: &Facts, id: &str, timeout: Duration) -> Option<Resolved> {
     let app = CATALOG.iter().find(|a| a.id == id)?;
     let registry = RegistryView::new(host, facts, timeout);
     resolve_entry(host, facts, app, &registry)
@@ -507,12 +478,7 @@ fn argv(command: impl Into<String>, args: &[&str]) -> LaunchSpec {
     }
 }
 
-fn locate(
-    host: &dyn Host,
-    facts: &Facts,
-    locator: &Locator,
-    registry: &RegistryView<'_>,
-) -> Option<Located> {
+fn locate(host: &dyn Host, facts: &Facts, locator: &Locator, registry: &RegistryView<'_>) -> Option<Located> {
     match *locator {
         Locator::Fixed { launch, icon_path } => {
             let launch = match launch {
@@ -675,9 +641,7 @@ fn executable_icon(facts: &Facts, path: &Path) -> Option<IconSource> {
 /// 把目录代入参数：参数里有 `{path}` 就替换，否则追加在末尾（DSH `launchArgs`）。
 pub fn launch_args(args: &[String], path: &str) -> Vec<String> {
     if args.iter().any(|a| a.contains(PATH_TOKEN)) {
-        args.iter()
-            .map(|a| a.replace(PATH_TOKEN, path))
-            .collect::<Vec<_>>()
+        args.iter().map(|a| a.replace(PATH_TOKEN, path)).collect::<Vec<_>>()
     } else {
         let mut out = args.to_vec();
         out.push(path.to_string());
@@ -695,10 +659,7 @@ mod tests {
         Facts {
             platform: Some(platform),
             home: PathBuf::from("/Users/x"),
-            app_roots: vec![
-                PathBuf::from("/Applications"),
-                PathBuf::from("/Users/x/Applications"),
-            ],
+            app_roots: vec![PathBuf::from("/Applications"), PathBuf::from("/Users/x/Applications")],
             ssh: false,
             env: [
                 ("HOME", "/Users/x"),
@@ -843,7 +804,10 @@ mod tests {
         let dump = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Code.exe\r\n    (Default)    REG_SZ    C:\\Users\\x\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe\r\n    Path    REG_SZ    C:\\x\r\n\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\cursor.exe\r\n    (默认)    REG_EXPAND_SZ    %LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe\r\n";
         let keys = parse_registry_dump(dump);
         assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].0, "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Code.exe");
+        assert_eq!(
+            keys[0].0,
+            "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Code.exe"
+        );
         assert!(keys[0].1.get("(Default)").unwrap().ends_with("Code.exe"));
         // 本地化的默认值标记也归一成 (Default)
         assert!(keys[1].1.contains_key("(Default)"));
@@ -856,28 +820,24 @@ mod tests {
         assert_eq!(entry.exec.as_deref(), Some("/usr/bin/code --unity-launch %F"));
         assert_eq!(entry.try_exec.as_deref(), Some("code"));
         assert_eq!(entry.icon.as_deref(), Some("vscode"));
-        assert_eq!(exec_command(entry.exec.as_deref().unwrap()).as_deref(), Some("/usr/bin/code"));
+        assert_eq!(
+            exec_command(entry.exec.as_deref().unwrap()).as_deref(),
+            Some("/usr/bin/code")
+        );
         // 带引号的路径
-        assert_eq!(exec_command("\"/opt/My App/bin/x\" --flag").as_deref(), Some("/opt/My App/bin/x"));
+        assert_eq!(
+            exec_command("\"/opt/My App/bin/x\" --flag").as_deref(),
+            Some("/opt/My App/bin/x")
+        );
     }
 
     #[test]
     fn version_sort_is_numeric_aware_and_descending() {
-        let mut names = vec![
-            "GoLand 2024.1.9",
-            "GoLand 2024.1.10",
-            "GoLand 2023.3",
-            "GoLand 2024.2",
-        ];
+        let mut names = vec!["GoLand 2024.1.9", "GoLand 2024.1.10", "GoLand 2023.3", "GoLand 2024.2"];
         names.sort_by(|a, b| version_cmp_desc(a, b));
         assert_eq!(
             names,
-            vec![
-                "GoLand 2024.2",
-                "GoLand 2024.1.10",
-                "GoLand 2024.1.9",
-                "GoLand 2023.3"
-            ]
+            vec!["GoLand 2024.2", "GoLand 2024.1.10", "GoLand 2024.1.9", "GoLand 2023.3"]
         );
         // 纯字典序会把 "2024.1.9" 排在 "2024.1.10" 前面 —— 这就是必须数值感知的理由
         let mut lexicographic = names.clone();
@@ -945,7 +905,9 @@ mod tests {
         assert_eq!(vscode.launch.describe(), "open -a /Applications/Visual Studio Code.app");
         assert_eq!(
             vscode.icon,
-            Some(IconSource::AppBundle(PathBuf::from("/Applications/Visual Studio Code.app")))
+            Some(IconSource::AppBundle(PathBuf::from(
+                "/Applications/Visual Studio Code.app"
+            )))
         );
         // Xcode 有回退：xed 失败 → open -a
         let xcode = resolved.iter().find(|r| r.id == "xcode").unwrap();
@@ -977,10 +939,7 @@ mod tests {
     #[test]
     fn xcode_ignores_a_developer_dir_outside_a_bundle() {
         let facts = facts_for(Platform::Darwin);
-        let host = FakeHost::default().run_out(
-            "xcode-select -p",
-            "/Library/Developer/CommandLineTools\n",
-        );
+        let host = FakeHost::default().run_out("xcode-select -p", "/Library/Developer/CommandLineTools\n");
         let resolved = resolve_all(&host, &facts, Duration::from_secs(1));
         assert!(!ids(&resolved).contains(&"xcode"));
     }
@@ -1009,7 +968,9 @@ mod tests {
         assert_eq!(finder.launch, LaunchSpec::ShellOpen);
         assert_eq!(
             finder.icon,
-            Some(IconSource::AppBundle(PathBuf::from("/System/Library/CoreServices/Finder.app")))
+            Some(IconSource::AppBundle(PathBuf::from(
+                "/System/Library/CoreServices/Finder.app"
+            )))
         );
         let terminal = resolved.iter().find(|r| r.id == "terminal").unwrap();
         assert_eq!(terminal.launch.describe(), "open -a Terminal");
@@ -1033,10 +994,16 @@ mod tests {
                 "reg.exe query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s",
                 uninstall,
             )
-            .run_out("reg.exe query HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s", "");
+            .run_out(
+                "reg.exe query HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s",
+                "",
+            );
         let resolved = resolve_all(&host, &facts, Duration::from_secs(1));
         let vscode = resolved.iter().find(|r| r.id == "vscode").unwrap();
-        assert_eq!(vscode.launch.describe(), "C:\\Program Files\\Microsoft VS Code\\Code.exe");
+        assert_eq!(
+            vscode.launch.describe(),
+            "C:\\Program Files\\Microsoft VS Code\\Code.exe"
+        );
         let goland = resolved.iter().find(|r| r.id == "goland").unwrap();
         assert!(goland.launch.describe().ends_with("goland64.exe"));
         // 注册表每个根**只读一次**（3 个卸载根 + 2 个 App Paths 根 = 5 条命令）
@@ -1057,10 +1024,22 @@ mod tests {
                 "reg.exe query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s",
                 uninstall,
             )
-            .run_out("reg.exe query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths /s", "")
-            .run_out("reg.exe query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths /s", "")
-            .run_out("reg.exe query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s", "")
-            .run_out("reg.exe query HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s", "");
+            .run_out(
+                "reg.exe query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths /s",
+                "",
+            )
+            .run_out(
+                "reg.exe query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths /s",
+                "",
+            )
+            .run_out(
+                "reg.exe query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s",
+                "",
+            )
+            .run_out(
+                "reg.exe query HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall /s",
+                "",
+            );
         let resolved = resolve_all(&host, &facts, Duration::from_secs(1));
         assert!(!ids(&resolved).contains(&"fork"));
     }
@@ -1090,12 +1069,16 @@ mod tests {
         let mut facts = facts_for(Platform::Linux);
         facts.env.insert("XDG_DATA_DIRS".into(), "/usr/share".into());
         facts.env.insert("DISPLAY".into(), ":0".into());
-        let code_entry = "[Desktop Entry]\nExec=/usr/share/code/code --unity-launch %F\nTryExec=/usr/share/code/code\nIcon=vscode\n";
+        let code_entry =
+            "[Desktop Entry]\nExec=/usr/share/code/code --unity-launch %F\nTryExec=/usr/share/code/code\nIcon=vscode\n";
         let host = FakeHost::default()
             .bin("code", "/usr/bin/code")
             .bin("xdg-open", "/usr/bin/xdg-open")
             .bin("kitty", "/usr/bin/kitty")
-            .text("/usr/share/applications/kitty.desktop", "[Desktop Entry]\nExec=kitty\nIcon=kitty\n")
+            .text(
+                "/usr/share/applications/kitty.desktop",
+                "[Desktop Entry]\nExec=kitty\nIcon=kitty\n",
+            )
             .text("/Users/x/.local/share/applications/code.desktop", code_entry);
         let resolved = resolve_all(&host, &facts, Duration::from_secs(1));
         let got = ids(&resolved);
@@ -1148,17 +1131,23 @@ mod tests {
         ("zed", &["Zed.app", "Zed Preview.app"]),
         ("sublimetext", &["Sublime Text.app"]),
         ("androidstudio", &["Android Studio.app"]),
-        ("intellij", &[
-            "IntelliJ IDEA.app",
-            "IntelliJ IDEA Ultimate.app",
-            "IntelliJ IDEA CE.app",
-        ]),
-        ("pycharm", &[
-            "PyCharm.app",
-            "PyCharm Professional.app",
-            "PyCharm CE.app",
-            "PyCharm Community.app",
-        ]),
+        (
+            "intellij",
+            &[
+                "IntelliJ IDEA.app",
+                "IntelliJ IDEA Ultimate.app",
+                "IntelliJ IDEA CE.app",
+            ],
+        ),
+        (
+            "pycharm",
+            &[
+                "PyCharm.app",
+                "PyCharm Professional.app",
+                "PyCharm CE.app",
+                "PyCharm Community.app",
+            ],
+        ),
         ("webstorm", &["WebStorm.app"]),
         ("phpstorm", &["PhpStorm.app"]),
         ("goland", &["GoLand.app"]),

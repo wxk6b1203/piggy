@@ -276,7 +276,15 @@ pub fn sanitize(raw: &str, max_chars: u32) -> String {
         }
     }
     // 去掉成对的引号/书名号/方括号（模型最常见的包装）
-    for (open, close) in [('"', '"'), ('\'', '\''), ('「', '」'), ('『', '』'), ('《', '》'), ('[', ']'), ('(', ')')] {
+    for (open, close) in [
+        ('"', '"'),
+        ('\'', '\''),
+        ('「', '」'),
+        ('『', '』'),
+        ('《', '》'),
+        ('[', ']'),
+        ('(', ')'),
+    ] {
         if s.starts_with(open) && s.ends_with(close) && s.chars().count() > 2 {
             s = s[open.len_utf8()..s.len() - close.len_utf8()].trim().to_string();
         }
@@ -304,8 +312,7 @@ pub fn build_prompt(source: &TitleSource, strategy: TitleStrategy, max_chars: u3
     // 差别：DSH 用 targetWords/targetCjkCharacters 两个目标，这里只有一个字符上限
     // （用户要的是"一定字数以内"），所以两句话合成一句。
     let system = [
-        "Create a concise title for an AI coding-assistant session from the supplied human messages."
-            .to_string(),
+        "Create a concise title for an AI coding-assistant session from the supplied human messages.".to_string(),
         "Return only the title on one line, in plain text of natural language, with no quotes, \
          prefix, explanation, Markdown, XML, or terminal control codes. No code is allowed."
             .to_string(),
@@ -373,12 +380,7 @@ pub fn generate_args(
     system: &str,
     user: &str,
 ) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "-p".into(),
-        "--no-session".into(),
-        "-nt".into(),
-        "-nc".into(),
-    ];
+    let mut args: Vec<String> = vec!["-p".into(), "--no-session".into(), "-nt".into(), "-nc".into()];
     // provider/model **成对**才传（`pick_model` 已经保证了这一点）
     if let (Some(p), Some(m)) = (provider, model_id) {
         args.push("--provider".into());
@@ -420,7 +422,16 @@ pub struct GenRequest<'a> {
 
 /// 起一个一次性 pi 进程生成标题。**不写任何文件**。
 pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
-    let GenRequest { pi_bin, cwd, provider, model_id, thinking, system, user, max_chars } = req;
+    let GenRequest {
+        pi_bin,
+        cwd,
+        provider,
+        model_id,
+        thinking,
+        system,
+        user,
+        max_chars,
+    } = req;
     let started = std::time::Instant::now();
     let args = generate_args(provider, model_id, thinking, system, user);
 
@@ -462,7 +473,11 @@ pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
         return Err(format!(
             "pi 生成标题失败（退出码 {}）{}",
             status.code().map(|c| c.to_string()).unwrap_or_else(|| "信号".into()),
-            if tail.is_empty() { String::new() } else { format!("：{tail}") }
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!("：{tail}")
+            }
         ));
     }
 
@@ -496,9 +511,7 @@ pub fn pick_model(
         return Ok((Some(p), Some(m)));
     }
     match (source.provider.as_deref(), source.model_id.as_deref()) {
-        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
-            Ok((Some(p.to_string()), Some(m.to_string())))
-        }
+        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => Ok((Some(p.to_string()), Some(m.to_string()))),
         // 会话里只有一半（旧格式/坏数据）→ 宁可都不传，让 pi 用默认，
         // 也不要拼出一个 pi 解析不了的 provider/model 组合
         _ => Ok((None, None)),
@@ -865,7 +878,10 @@ mod tests {
         assert!(!sys.contains("Markdown, XML") || true);
 
         // 素材是 JSON 数组（DSH 的做法）：消息里出现"忽略上面的指示"时边界仍然明确
-        assert!(user.starts_with("Generate the session title from this JSON array"), "{user}");
+        assert!(
+            user.starts_with("Generate the session title from this JSON array"),
+            "{user}"
+        );
         let json_part = user.split_once('\n').unwrap().1;
         let parsed: serde_json::Value = serde_json::from_str(json_part).expect("素材必须是合法 JSON");
         let texts: Vec<&str> = parsed
@@ -880,7 +896,10 @@ mod tests {
         let (_, user) = build_prompt(&s, TitleStrategy::First, 20);
         assert!(user.contains("第一") && !user.contains("最近"), "{user}");
         let (_, user) = build_prompt(&s, TitleStrategy::Recent, 20);
-        assert!(user.contains("最近") && user.contains("第一"), "recent 也要带上第一条（它是最近之一）：{user}");
+        assert!(
+            user.contains("最近") && user.contains("第一"),
+            "recent 也要带上第一条（它是最近之一）：{user}"
+        );
     }
 
     /// 空会话也要能拼出合法 JSON（而不是拼出一个空请求）。
@@ -962,14 +981,13 @@ mod tests {
     #[ignore]
     fn real_machine_lists_models_from_pi() {
         let root = crate::config::paths::agent_dir();
-        let pi = crate::pi::discovery::discover(
-            crate::pi::discovery::PiSource::System,
-            None,
-            None,
-        )
-        .expect("这台机器上应当能找到 pi");
+        let pi = crate::pi::discovery::discover(crate::pi::discovery::PiSource::System, None, None)
+            .expect("这台机器上应当能找到 pi");
         println!("pi = {} ({})", pi.path.display(), pi.version);
-        println!("agent dir = {}（PI_CODING_AGENT_DIR 可覆盖，验证时用得上）", root.display());
+        println!(
+            "agent dir = {}（PI_CODING_AGENT_DIR 可覆盖，验证时用得上）",
+            root.display()
+        );
         let out = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -978,10 +996,7 @@ mod tests {
             .expect("列出模型不该失败");
         println!("耗时 {}ms，共 {} 个模型", out.elapsed_ms, out.models.len());
         for m in out.models.iter().take(20) {
-            println!(
-                "  {}/{}  reasoning={}",
-                m.provider, m.id, m.reasoning
-            );
+            println!("  {}/{}  reasoning={}", m.provider, m.id, m.reasoning);
         }
         if let Some(n) = &out.note {
             println!("note = {n}");
@@ -1091,7 +1106,13 @@ mod tests {
         ] {
             assert!(keys.contains(&k), "素材描述缺少 {k}（实际 {keys:?}）");
         }
-        for bad in ["model_id", "first_message", "recent_messages", "max_chars", "model_used"] {
+        for bad in [
+            "model_id",
+            "first_message",
+            "recent_messages",
+            "max_chars",
+            "model_used",
+        ] {
             assert!(!keys.contains(&bad), "素材描述漏出了 snake_case 键 {bad}");
         }
         // "会用哪个模型"必须是**真正会被用的那个**：有覆盖时会话自己的模型根本不会被调用，
@@ -1118,7 +1139,10 @@ mod tests {
         let v = describe(&src, TitleStrategy::Both, 20, None, None);
         assert_eq!(v["modelUsed"], json!("sess-p/sess-m"));
         assert_eq!(v["modelSource"], json!("session"));
-        assert!(v["thinking"].is_null(), "没设思考强度时应当是 null（= 不传 --thinking）");
+        assert!(
+            v["thinking"].is_null(),
+            "没设思考强度时应当是 null（= 不传 --thinking）"
+        );
         // 空串覆盖 = 没覆盖（config.json 手改成 "" 时不该变成"用一个空模型"）
         let v = describe(&src, TitleStrategy::Both, 20, Some("  "), Some("  "));
         assert_eq!(v["modelSource"], json!("session"));
@@ -1162,8 +1186,20 @@ mod tests {
         assert_eq!(
             a,
             vec![
-                "-p", "--no-session", "-nt", "-nc", "--provider", "p", "--model", "m",
-                "--thinking", "high", "--system-prompt", "SYS", "--", "USER"
+                "-p",
+                "--no-session",
+                "-nt",
+                "-nc",
+                "--provider",
+                "p",
+                "--model",
+                "m",
+                "--thinking",
+                "high",
+                "--system-prompt",
+                "SYS",
+                "--",
+                "USER"
             ]
         );
         // 没设思考强度 → 不传这个开关（传了就等于替用户做了决定）
@@ -1199,9 +1235,21 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ModelOption { provider: "cc-switch-deep-seek".into(), id: "deepseek-flash".into(), reasoning: true },
-                ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3".into(), reasoning: true },
-                ModelOption { provider: "cc-switch-zhipu-glm".into(), id: "glm-5.3-flash".into(), reasoning: true },
+                ModelOption {
+                    provider: "cc-switch-deep-seek".into(),
+                    id: "deepseek-flash".into(),
+                    reasoning: true
+                },
+                ModelOption {
+                    provider: "cc-switch-zhipu-glm".into(),
+                    id: "glm-5.3".into(),
+                    reasoning: true
+                },
+                ModelOption {
+                    provider: "cc-switch-zhipu-glm".into(),
+                    id: "glm-5.3-flash".into(),
+                    reasoning: true
+                },
             ]
         );
         assert_eq!(got.len(), 3, "表头被当成模型了？");
@@ -1292,7 +1340,10 @@ mod tests {
             (Some("cc-switch-zhipu-glm".into()), Some("glm-5.3-flash".into()))
         );
         // 空串 / 空白 = 没覆盖
-        assert_eq!(pick_model(Some("  "), &src).unwrap().0.as_deref(), Some("cc-switch-zhipu-glm"));
+        assert_eq!(
+            pick_model(Some("  "), &src).unwrap().0.as_deref(),
+            Some("cc-switch-zhipu-glm")
+        );
         // 有覆盖 → 用覆盖（想拿便宜模型刷标题）
         assert_eq!(
             pick_model(Some("deepseek/deepseek-v4-flash"), &src).unwrap(),
@@ -1328,4 +1379,3 @@ mod tests {
         assert_eq!(v, TitleStrategy::First);
     }
 }
-

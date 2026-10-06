@@ -54,17 +54,24 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
 async fn make_session(tmp: &Path) -> String {
     let w = spawn(tmp, SessionTarget::New).await;
     w.bash("echo piggy-c1-setup").await.expect("bash append");
-    w.prompt("Reply with exactly: OK", None, None).await.expect("prompt to force flush");
+    w.prompt("Reply with exactly: OK", None, None)
+        .await
+        .expect("prompt to force flush");
     // 等 settled（状态机 Ready）
     for _ in 0..60 {
-        if w.state() == WorkerState::Ready { break; }
+        if w.state() == WorkerState::Ready {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let state = w.get_state().await.expect("state");
     let file = state["sessionFile"].as_str().expect("sessionFile").to_string();
     w.shutdown().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(PathBuf::from(&file).exists(), "session file should exist after first turn: {file}");
+    assert!(
+        PathBuf::from(&file).exists(),
+        "session file should exist after first turn: {file}"
+    );
     file
 }
 
@@ -143,7 +150,9 @@ async fn c3_id_echo() {
     let no_id = responses.iter().find(|v| v.get("id").is_none()).cloned();
     eprintln!(
         "C3: 无 id 命令的 response 形态 = {}",
-        no_id.map(|v| v.to_string()).unwrap_or_else(|| "<未观察到（response 不可见于事件通道——由 client 按 id 路由消耗）>".into())
+        no_id
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<未观察到（response 不可见于事件通道——由 client 按 id 路由消耗）>".into())
     );
     w.shutdown().await;
     w2.shutdown().await;
@@ -160,7 +169,10 @@ async fn c4_double_open() {
         .switch_session(&file)
         .await
         .expect("switch_session on already-open file");
-    eprintln!("C4: 第二进程 switch_session 已打开文件 => success={sw:?} cancelled={}", sw["cancelled"]);
+    eprintln!(
+        "C4: 第二进程 switch_session 已打开文件 => success={sw:?} cancelled={}",
+        sw["cancelled"]
+    );
     // 双方都追加
     let ra = a.bash("echo A").await;
     let rb = b.bash("echo B").await;
@@ -192,9 +204,13 @@ async fn c5_cursor_incremental() {
     a.shutdown().await;
     // 进程 B：追加一个新回合（触发落盘）
     let b = spawn(tmp.path(), SessionTarget::Path(file.clone())).await;
-    b.prompt("Reply with exactly: OK2", None, None).await.expect("append turn");
+    b.prompt("Reply with exactly: OK2", None, None)
+        .await
+        .expect("append turn");
     for _ in 0..60 {
-        if b.state() == WorkerState::Ready { break; }
+        if b.state() == WorkerState::Ready {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     b.shutdown().await;
@@ -212,7 +228,10 @@ async fn c5_cursor_incremental() {
         Err(e) => panic!("C5 FAIL: {e}"),
     }
     let bad = c.get_entries(Some("no-such-entry-id")).await;
-    eprintln!("C5: 非法 since => {:?}", bad.as_ref().err().unwrap_or(&"success:true?!".to_string()));
+    eprintln!(
+        "C5: 非法 since => {:?}",
+        bad.as_ref().err().unwrap_or(&"success:true?!".to_string())
+    );
     assert!(bad.is_err(), "C5: 非法 since 应 success:false");
     c.shutdown().await;
     cleanup_session(&file);
@@ -229,7 +248,10 @@ async fn c6_no_session() {
         st.get("sessionFile").map(|v| v.to_string()),
         st["sessionId"].as_str()
     );
-    assert!(st.get("sessionFile").map(|v| v.is_null()).unwrap_or(true), "C6: --no-session 下 sessionFile 应为 null/缺失");
+    assert!(
+        st.get("sessionFile").map(|v| v.is_null()).unwrap_or(true),
+        "C6: --no-session 下 sessionFile 应为 null/缺失"
+    );
     w.shutdown().await;
 }
 
@@ -257,10 +279,7 @@ async fn c7_megabyte_lines() {
     )
     .await
     .unwrap();
-    let out = w
-        .bash("python3 -c \"print('x'*1_500_000)\"")
-        .await
-        .expect("bash");
+    let out = w.bash("python3 -c \"print('x'*1_500_000)\"").await.expect("bash");
     let truncated = out["truncated"].as_bool().unwrap_or(false);
     eprintln!(
         "C7: 1.5MB bash 输出 => truncated={truncated}, fullOutputPath={:?}",
@@ -352,7 +371,9 @@ async fn e2e_streaming_pipeline() {
     )
     .await
     .unwrap();
-    w.prompt("Reply with exactly: OK", None, None).await.expect("prompt accepted");
+    w.prompt("Reply with exactly: OK", None, None)
+        .await
+        .expect("prompt accepted");
     // 等 settled（状态机轮询）
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -372,12 +393,18 @@ async fn e2e_streaming_pipeline() {
         .filter(|(ch, _)| ch.starts_with("pi:commit:"))
         .map(|(_, v)| v)
         .collect();
-    let has_text_delta = frames.iter().any(|f| !f["text"].as_array().unwrap_or(&vec![]).is_empty());
+    let has_text_delta = frames
+        .iter()
+        .any(|f| !f["text"].as_array().unwrap_or(&vec![]).is_empty());
     let has_message_end = commits.iter().any(|v| v["type"] == "message_end");
     let has_settled = commits.iter().any(|v| v["type"] == "agent_settled");
     eprintln!(
         "E2E: frames={} commits={} text_delta={} message_end={} settled={}",
-        frames.len(), commits.len(), has_text_delta, has_message_end, has_settled
+        frames.len(),
+        commits.len(),
+        has_text_delta,
+        has_message_end,
+        has_settled
     );
     assert!(has_text_delta, "E2E FAIL: 无 text_delta 帧");
     assert!(has_message_end, "E2E FAIL: 无 message_end");
@@ -459,7 +486,10 @@ fn bridge_payloads(sink: &CollectorSink) -> Vec<Value> {
         .filter(|(ch, _)| ch.starts_with("pi:ui-req:"))
         .filter(|(_, v)| v["method"] == "set_editor_text")
         .filter_map(|(_, v)| v["text"].as_str().map(str::to_string))
-        .filter_map(|t| t.strip_prefix("PIGGY:1:").and_then(|j| serde_json::from_str::<Value>(j).ok()))
+        .filter_map(|t| {
+            t.strip_prefix("PIGGY:1:")
+                .and_then(|j| serde_json::from_str::<Value>(j).ok())
+        })
         .collect()
 }
 
@@ -518,10 +548,16 @@ async fn c12_bridge_status_payload_over_rpc() {
 
     w.prompt("/piggy:status", None, None).await.expect("prompt accepted");
     let payloads = wait_payloads(&sink, 1, 40).await;
-    assert!(!payloads.is_empty(), "C12 FAIL: 没有收到 PIGGY:1 载荷（扩展命令未执行？）");
+    assert!(
+        !payloads.is_empty(),
+        "C12 FAIL: 没有收到 PIGGY:1 载荷（扩展命令未执行？）"
+    );
     let payload = &payloads[0];
     assert_eq!(payload["kind"], "status", "C12 FAIL: 载荷 kind 不对: {payload}");
-    assert!(saw_ui_method(&sink, "setWidget"), "C12 FAIL: 未见到舰队状态行（setWidget）");
+    assert!(
+        saw_ui_method(&sink, "setWidget"),
+        "C12 FAIL: 未见到舰队状态行（setWidget）"
+    );
     assert!(saw_ui_method(&sink, "notify"), "C12 FAIL: 未见到人读摘要（notify）");
 
     if payload["ok"] == true {
@@ -531,7 +567,10 @@ async fn c12_bridge_status_payload_over_rpc() {
             "C12 FAIL: ok:true 但没有任何舰队数据: {status}"
         );
         let active = status["fleet"]["totalActive"].as_u64().unwrap_or(0);
-        eprintln!("C12: pi-subagents 在线 → ok:true, totalActive={active}, lanes={}", payload["lanes"]);
+        eprintln!(
+            "C12: pi-subagents 在线 → ok:true, totalActive={active}, lanes={}",
+            payload["lanes"]
+        );
     } else {
         let err = payload["error"].as_str().unwrap_or("");
         assert!(err.contains("未安装"), "C12 FAIL: 降级理由不含「未安装」: {err}");
@@ -591,12 +630,7 @@ async fn c13_bridge_degrades_without_pi_subagents() {
 /// 用的是**同一份判定逻辑**（`fleet::lane_step`）与**同一个结果提取函数**
 /// （`fleet::last_assistant_text`），所以这条测试不仅验证"pi 能跑"，也验证调度器
 /// 赖以成立的两个前提：Busy→Ready 确实是"这一轮结束"，且 `get_messages` 能取到文本。
-async fn run_lane(
-    mgr: &piggy_lib::fleet::FleetManager,
-    run_id: &str,
-    lane_key: &str,
-    cwd: &Path,
-) -> String {
+async fn run_lane(mgr: &piggy_lib::fleet::FleetManager, run_id: &str, lane_key: &str, cwd: &Path) -> String {
     let run = mgr.get(run_id).expect("run 存在");
     let lane = run.lane(lane_key).expect("lane 存在").clone();
     let prompt = piggy_lib::fleet::render_prompt(&lane.prompt, &run.task, &run, &lane);
@@ -649,7 +683,10 @@ async fn run_lane(
         }
     }
     assert!(settled, "lane {lane_key} 未在超时内 settle");
-    assert!(saw_busy, "lane {lane_key} 从未进入 Busy —— 那就不是真跑过，而是被误判完成");
+    assert!(
+        saw_busy,
+        "lane {lane_key} 从未进入 Busy —— 那就不是真跑过，而是被误判完成"
+    );
     let messages = w.get_messages().await.expect("get_messages");
     let text = piggy_lib::fleet::last_assistant_text(&messages).unwrap_or_default();
     mgr.settle_lane(&tab_id, &text);

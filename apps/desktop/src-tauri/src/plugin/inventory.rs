@@ -441,7 +441,10 @@ pub fn glob_match(pat: &str, text: &str) -> bool {
 /// 相对路径 / 文件名 / 绝对路径**三者取或**。
 pub fn matches_any_pattern(file: &Path, patterns: &[String], base_dir: &Path) -> bool {
     let rel = rel_posix(base_dir, file);
-    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let abs = file.to_string_lossy().replace('\\', "/");
     patterns.iter().any(|p| {
         let pat = p.replace('\\', "/");
@@ -650,10 +653,7 @@ fn str_list(v: &Value, key: &str) -> Vec<String> {
 /// 完整盘点。`cwd = None` 表示没有打开项目（只盘全局）。
 pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
     let cwd_owned = cwd.map(|p| p.to_path_buf());
-    let dirs = ScopeDirs::new(
-        agent_dir.to_path_buf(),
-        cwd_owned.clone().unwrap_or_default(),
-    );
+    let dirs = ScopeDirs::new(agent_dir.to_path_buf(), cwd_owned.clone().unwrap_or_default());
     let mut warnings: Vec<String> = Vec::new();
     let mut plugins: Vec<Value> = Vec::new();
 
@@ -671,8 +671,17 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
         if scope == Scope::Project && cwd_owned.is_none() {
             continue;
         }
-        let settings = if scope == Scope::Project { &project_settings } else { &global_settings };
-        for pkg in settings.get("packages").and_then(|p| p.as_array()).cloned().unwrap_or_default() {
+        let settings = if scope == Scope::Project {
+            &project_settings
+        } else {
+            &global_settings
+        };
+        for pkg in settings
+            .get("packages")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
             let (source, _, _) = split_package(&pkg);
             if source.trim().is_empty() {
                 warnings.push(format!("{} 的 packages 里有一条没有 source 的条目", scope.label()));
@@ -680,13 +689,15 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
             }
             let sk = classify(&source);
             let path = package_path(&dirs, scope, &source);
-            let entries = if path.is_dir() { extension_entries(&path) } else { Vec::new() };
+            let entries = if path.is_dir() {
+                extension_entries(&path)
+            } else {
+                Vec::new()
+            };
             // 包可能声明多个入口（`pi.extensions`）：只要有一个启用就算这个包启用，
             // 全被关掉才算停用——界面上"停用"是对整包说的。
-            let mut states: Vec<(bool, String)> = entries
-                .iter()
-                .map(|e| package_entry_enabled(&pkg, e, &path))
-                .collect();
+            let mut states: Vec<(bool, String)> =
+                entries.iter().map(|e| package_entry_enabled(&pkg, e, &path)).collect();
             if states.is_empty() {
                 states.push(package_entry_enabled(&pkg, &path, &path));
             }
@@ -696,7 +707,16 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
                 .find(|(on, _)| *on == enabled)
                 .map(|(_, why)| why.clone())
                 .unwrap_or_else(|| "无扩展入口".to_string());
-            plugins.push(make_entry(Kind::Package, sk, scope, &source, &path, (enabled, by), entries, 4));
+            plugins.push(make_entry(
+                Kind::Package,
+                sk,
+                scope,
+                &source,
+                &path,
+                (enabled, by),
+                entries,
+                4,
+            ));
         }
     }
 
@@ -705,7 +725,11 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
         if scope == Scope::Project && cwd_owned.is_none() {
             continue;
         }
-        let settings = if scope == Scope::Project { &project_settings } else { &global_settings };
+        let settings = if scope == Scope::Project {
+            &project_settings
+        } else {
+            &global_settings
+        };
         let base = dirs.base_dir(scope);
         let raw = str_list(settings, "extensions");
         let overrides = override_patterns(&raw);
@@ -742,7 +766,11 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
         // 发现目录（rank 1 / 3）
         let dir = dirs.discovery_dir(scope);
         for (path, is_dir) in scan_discovery_dir(&dir) {
-            let entries = if is_dir { extension_entries(&path) } else { vec![path.clone()] };
+            let entries = if is_dir {
+                extension_entries(&path)
+            } else {
+                vec![path.clone()]
+            };
             let state = enabled_by_overrides(&path, &overrides, &base);
             plugins.push(make_entry(
                 Kind::Discovered,
@@ -841,10 +869,7 @@ mod tests {
     use std::fs;
 
     fn dirs(tmp: &Path, cwd: Option<&Path>) -> ScopeDirs {
-        ScopeDirs::new(
-            tmp.join("agent"),
-            cwd.map(|c| c.to_path_buf()).unwrap_or_default(),
-        )
+        ScopeDirs::new(tmp.join("agent"), cwd.map(|c| c.to_path_buf()).unwrap_or_default())
     }
 
     /// 来源分类必须与 pi 的 `isLocalPath` 前缀表一致——判错的后果是"装到别处去"。
@@ -962,18 +987,10 @@ mod tests {
         assert!(!on, "glob 排除");
 
         // `+` 压过 `!`，`-` 又压过 `+`
-        let (on, _) = enabled_by_overrides(
-            &f,
-            &["!extensions/*.ts".into(), "+extensions/foo.ts".into()],
-            &base,
-        );
+        let (on, _) = enabled_by_overrides(&f, &["!extensions/*.ts".into(), "+extensions/foo.ts".into()], &base);
         assert!(on, "+ 压过 !");
 
-        let (on, _) = enabled_by_overrides(
-            &f,
-            &["+extensions/foo.ts".into(), "-extensions/foo.ts".into()],
-            &base,
-        );
+        let (on, _) = enabled_by_overrides(&f, &["+extensions/foo.ts".into(), "-extensions/foo.ts".into()], &base);
         assert!(!on, "- 压过 +");
 
         // 精确匹配不认 glob：`-extensions/*.ts` 不该命中
@@ -1058,11 +1075,7 @@ mod tests {
         let agent = tmp.path().join("agent");
         fs::create_dir_all(agent.join("extensions")).unwrap();
         fs::write(agent.join("extensions/foo.ts"), "export default 1").unwrap();
-        fs::write(
-            agent.join("settings.json"),
-            r#"{"extensions":["-extensions/foo.ts"]}"#,
-        )
-        .unwrap();
+        fs::write(agent.join("settings.json"), r#"{"extensions":["-extensions/foo.ts"]}"#).unwrap();
 
         let v = overview(&agent, None).unwrap();
         let g = &v["groups"][0];
@@ -1090,7 +1103,10 @@ mod tests {
 
         let v = overview(&agent, Some(&proj)).unwrap();
         let project = &v["groups"][0]["plugins"][0];
-        assert_eq!(project["path"], json!(proj.join(".pi/extensions/p.ts").to_string_lossy()));
+        assert_eq!(
+            project["path"],
+            json!(proj.join(".pi/extensions/p.ts").to_string_lossy())
+        );
         assert_eq!(project["enabled"], json!(true), "全局规则不该关掉项目文件");
         let global = &v["groups"][1]["plugins"][0];
         assert_eq!(global["enabled"], json!(false));
@@ -1112,7 +1128,10 @@ mod tests {
         assert_eq!(v["counts"]["missing"], json!(1));
         let p = &v["groups"][0]["plugins"][0];
         assert_eq!(p["exists"], json!(false));
-        assert_eq!(p["path"], json!(agent.join("npm/node_modules/@a/never-installed").to_string_lossy()));
+        assert_eq!(
+            p["path"],
+            json!(agent.join("npm/node_modules/@a/never-installed").to_string_lossy())
+        );
     }
 
     /// **真机核对**（`cargo test --lib -- --ignored real_machine --nocapture`）。
@@ -1127,7 +1146,11 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         println!("agentDir = {}", agent.display());
         println!("cwd      = {}", cwd.display());
-        assert!(agent.exists(), "这台机器上没有 {}（pi 还没初始化过？）", agent.display());
+        assert!(
+            agent.exists(),
+            "这台机器上没有 {}（pi 还没初始化过？）",
+            agent.display()
+        );
 
         let v = overview(&agent, Some(&cwd)).unwrap();
         println!("counts   = {}", v["counts"]);

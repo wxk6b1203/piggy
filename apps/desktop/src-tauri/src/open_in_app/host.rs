@@ -35,10 +35,7 @@ impl Facts {
         let home = crate::config::paths::home_dir().unwrap_or_default();
         Facts {
             platform: Platform::current(),
-            app_roots: vec![
-                PathBuf::from("/Applications"),
-                home.join("Applications"),
-            ],
+            app_roots: vec![PathBuf::from("/Applications"), home.join("Applications")],
             ssh: is_ssh(&env),
             home,
             env,
@@ -223,20 +220,17 @@ pub fn scrubbed_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
 /// 语义（DSH `launchDetachedApp`）：spawn 失败 → `Missing`/`Failed`；
 /// 观察窗内非零退出 → `Failed`；观察窗结束时**仍在运行** → 算成功、交出去、不再跟踪
 /// （kitty、JetBrains 这类启动器会以前台身份活到窗口关闭，等它退出等于永远不返回）。
-pub fn launch_detached(
-    spec: &LaunchSpec,
-    dir: &str,
-    watch: Duration,
-    env: &HashMap<String, String>,
-) -> LaunchOutcome {
+pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
     match spec {
         LaunchSpec::ShellOpen => {
             let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
             spawn_watched(opener, &[dir.to_string()], watch, env, &[])
         }
-        LaunchSpec::Argv { command, args, env: extra } => {
-            spawn_watched(command, &launch_args(args, dir), watch, env, extra)
-        }
+        LaunchSpec::Argv {
+            command,
+            args,
+            env: extra,
+        } => spawn_watched(command, &launch_args(args, dir), watch, env, extra),
     }
 }
 
@@ -280,10 +274,7 @@ pub fn spawn_watched(
                 return if status.success() {
                     LaunchOutcome::Launched
                 } else {
-                    LaunchOutcome::Failed(format!(
-                        "{command} 在观察窗内退出（code {:?}）",
-                        status.code()
-                    ))
+                    LaunchOutcome::Failed(format!("{command} 在观察窗内退出（code {:?}）", status.code()))
                 };
             }
             Ok(None) => {

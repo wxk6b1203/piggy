@@ -43,7 +43,10 @@ pub fn effective_sessions_root(
     env_dir: Option<&str>,
     setting: Option<&str>,
 ) -> (PathBuf, SessionsRootSource) {
-    for (raw, source) in [(env_dir, SessionsRootSource::Env), (setting, SessionsRootSource::Settings)] {
+    for (raw, source) in [
+        (env_dir, SessionsRootSource::Env),
+        (setting, SessionsRootSource::Settings),
+    ] {
         let Some(t) = raw.map(str::trim).filter(|t| !t.is_empty()) else {
             continue;
         };
@@ -78,9 +81,7 @@ pub fn sessions_root_spec() -> (PathBuf, bool) {
 
 /// `PI_CODING_AGENT_SESSION_DIR` 的值（空串视为未设置）。
 fn env_session_dir() -> Option<String> {
-    std::env::var(ENV_SESSION_DIR)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    std::env::var(ENV_SESSION_DIR).ok().filter(|v| !v.trim().is_empty())
 }
 
 /// settings.json 的 `sessionDir`（读不到/不是字符串 → None）。
@@ -97,17 +98,10 @@ fn setting_session_dir() -> Option<String> {
 /// 光看 `dir` 分不清是默认值坏了还是自定义值被吞了，标明来源才好排查。
 pub fn session_dir_effective() -> Result<serde_json::Value, String> {
     let settings = read_json(&agent_dir().join("settings.json"))?;
-    let setting = settings
-        .get("sessionDir")
-        .and_then(|x| x.as_str())
-        .map(String::from);
+    let setting = settings.get("sessionDir").and_then(|x| x.as_str()).map(String::from);
     let env = env_session_dir();
     // 复用同一条优先级规则（不自己再判一遍 is_absolute，否则两处会漂移）
-    let (dir, source) = effective_sessions_root(
-        agent_dir().join("sessions"),
-        env.as_deref(),
-        setting.as_deref(),
-    );
+    let (dir, source) = effective_sessions_root(agent_dir().join("sessions"), env.as_deref(), setting.as_deref());
     Ok(serde_json::json!({
         "dir": dir.to_string_lossy(),
         "isCustom": source != SessionsRootSource::Default,
@@ -181,10 +175,7 @@ fn describe_credential(entry: &serde_json::Value) -> (String, Option<String>) {
             .unwrap_or("unknown")
             .to_string();
         // api_key 的字段名是 `key`（不是 api_key）；oauth 的是 `access`
-        let secret = obj
-            .get("key")
-            .or_else(|| obj.get("access"))
-            .and_then(|k| k.as_str());
+        let secret = obj.get("key").or_else(|| obj.get("access")).and_then(|k| k.as_str());
         return (kind, secret.map(mask_secret));
     }
     // 裸字符串：历史上出现过、但 pi 会视为非法条目 —— 标为 unknown 而不是假装它是 api_key
@@ -199,7 +190,11 @@ pub(crate) fn mask_secret(s: &str) -> String {
     if chars.len() <= 10 {
         return "•".repeat(chars.len());
     }
-    format!("{}…{}", chars[..6].iter().collect::<String>(), chars[chars.len() - 4..].iter().collect::<String>())
+    format!(
+        "{}…{}",
+        chars[..6].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 /// 设置 provider 的 API Key（写入 auth.json）。
@@ -318,7 +313,11 @@ mod auth_shape_tests {
         auth_set_key_at(&agent, "b", "sk-b").unwrap();
         let raw = std::fs::read_to_string(agent.join("auth.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["a"], serde_json::json!({"type":"api_key","key":"sk-a"}), "字段名必须是 key: {raw}");
+        assert_eq!(
+            v["a"],
+            serde_json::json!({"type":"api_key","key":"sk-a"}),
+            "字段名必须是 key: {raw}"
+        );
         assert_eq!(v["b"]["key"], "sk-b");
         // 覆盖同一个 provider 只换值，不新增条目
         auth_set_key_at(&agent, "a", "sk-a2").unwrap();
@@ -350,11 +349,8 @@ mod session_root_tests {
     #[test]
     fn sessions_root_prefers_env_over_settings() {
         // pi：env（PI_CODING_AGENT_SESSION_DIR）优先于 settings.json 的 sessionDir
-        let (got, source) = effective_sessions_root(
-            default_root(),
-            Some("/tmp/env-sessions"),
-            Some("/tmp/set-sessions"),
-        );
+        let (got, source) =
+            effective_sessions_root(default_root(), Some("/tmp/env-sessions"), Some("/tmp/set-sessions"));
         assert_eq!(got, PathBuf::from("/tmp/env-sessions"));
         assert_eq!(source, SessionsRootSource::Env);
     }

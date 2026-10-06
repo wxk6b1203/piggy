@@ -18,11 +18,7 @@ pub fn ensure_within(root: &Path, path: &Path) -> Result<(), String> {
         return Err("路径包含 `..`".into());
     }
     if !path.starts_with(root) {
-        return Err(format!(
-            "路径越界：{} 不在项目根 {} 内",
-            path.display(),
-            root.display()
-        ));
+        return Err(format!("路径越界：{} 不在项目根 {} 内", path.display(), root.display()));
     }
     Ok(())
 }

@@ -97,12 +97,8 @@ impl Registry {
                 return Ok(b.path.clone());
             }
         }
-        let b = crate::pi::discovery::discover(
-            self.pi_source,
-            self.pi_custom_path.as_deref(),
-            self.builtin.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        let b = crate::pi::discovery::discover(self.pi_source, self.pi_custom_path.as_deref(), self.builtin.as_deref())
+            .map_err(|e| e.to_string())?;
         self.pi_bin = Some(b.clone());
         Ok(b.path)
     }
@@ -140,13 +136,13 @@ impl Registry {
             self.open_files.insert(key, tab_id.clone());
         }
         /* 游标初始化（"已见"边界）**不在打开路径上**，由 `spawn_cursor_init` 在后台补。
-           这里曾经直接 `worker.get_entries(None).await`：pi 的 `get_entries` 不带 `since`
-           会把**整段**会话发回来（`rpc-mode.js` 的 get_entries 分支），而我们只要里面的
-           `leafId` —— 11.13 MB 的会话实测 **73 ms**，且随会话线性增长，正好压在
-           "点一下打开会话"最关键的那一下上（用户 2026-09-23 问"这 1s 是 pi 的还是我们的"）。
-           游标只是**崩溃恢复**的优化（`revive_tab` 用它做增量 resync），不是打开会话的
-           必需品：补上之前若 worker 崩了，resync 退回全量（罕见路径，前端按
-           `role:timestamp` 去重，不会重复显示）。 */
+        这里曾经直接 `worker.get_entries(None).await`：pi 的 `get_entries` 不带 `since`
+        会把**整段**会话发回来（`rpc-mode.js` 的 get_entries 分支），而我们只要里面的
+        `leafId` —— 11.13 MB 的会话实测 **73 ms**，且随会话线性增长，正好压在
+        "点一下打开会话"最关键的那一下上（用户 2026-09-23 问"这 1s 是 pi 的还是我们的"）。
+        游标只是**崩溃恢复**的优化（`revive_tab` 用它做增量 resync），不是打开会话的
+        必需品：补上之前若 worker 崩了，resync 退回全量（罕见路径，前端按
+        `role:timestamp` 去重，不会重复显示）。 */
         let last_cursor = None;
         let tab = Tab {
             tab_id: tab_id.clone(),
@@ -261,7 +257,12 @@ impl Registry {
     pub fn alive_worker_count(&self) -> usize {
         self.tabs
             .values()
-            .filter(|t| matches!(t.worker_state(), WorkerState::Ready | WorkerState::Busy | WorkerState::Spawning))
+            .filter(|t| {
+                matches!(
+                    t.worker_state(),
+                    WorkerState::Ready | WorkerState::Busy | WorkerState::Spawning
+                )
+            })
             .count()
     }
 
@@ -298,8 +299,7 @@ impl Registry {
             .tabs
             .iter()
             .filter(|(_, t)| {
-                matches!(t.worker_state(), WorkerState::Ready)
-                    && t.last_activity.elapsed().as_secs() >= timeout_secs
+                matches!(t.worker_state(), WorkerState::Ready) && t.last_activity.elapsed().as_secs() >= timeout_secs
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -325,7 +325,9 @@ impl Registry {
 
     /// 内部回收（不发 sleeping 事件版，供 reap 使用）
     async fn sleep_tab_inner(&mut self, tab_id: &str) -> bool {
-        let Some(tab) = self.tabs.get_mut(tab_id) else { return false };
+        let Some(tab) = self.tabs.get_mut(tab_id) else {
+            return false;
+        };
         tab.deliberate = true;
         tab.restarts = 0;
         if let Some(w) = tab.worker.take() {
@@ -351,15 +353,14 @@ impl Registry {
     }
 
     /// 确保该 tab 有可用 worker；Crashed/None 则复活（复活含游标补齐）。
-    pub async fn ensure_worker(
-        &mut self,
-        sink: &Arc<dyn EventSink>,
-        tab_id: &str,
-    ) -> Result<Worker, String> {
+    pub async fn ensure_worker(&mut self, sink: &Arc<dyn EventSink>, tab_id: &str) -> Result<Worker, String> {
         let needs_revive = match self.tabs.get(tab_id) {
             None => return Err(format!("tab 不存在: {tab_id}")),
             Some(tab) => match &tab.worker {
-                Some(w) => !matches!(w.state(), WorkerState::Ready | WorkerState::Busy | WorkerState::Spawning),
+                Some(w) => !matches!(
+                    w.state(),
+                    WorkerState::Ready | WorkerState::Busy | WorkerState::Spawning
+                ),
                 None => true,
             },
         };
@@ -412,7 +413,6 @@ fn snapshot_of(tab: &Tab, state: &Value) -> TabSnapshot {
         state: state.clone(),
     }
 }
-
 
 /// 崩溃复活（docs/02 §7.5、01 §2.3）：spawn → 握手 → （必要时）switch_session
 /// → get_entries(since=cursor) 游标补齐 → 发 resync 事件。
@@ -501,7 +501,9 @@ pub fn spawn_cursor_init(registry: SharedRegistry, tab_id: String) {
             reg.tabs.get(&tab_id).and_then(|t| t.worker.clone())
         };
         let Some(worker) = worker else { return };
-        let Ok(data) = worker.get_entries(None).await else { return };
+        let Ok(data) = worker.get_entries(None).await else {
+            return;
+        };
         let leaf = data["leafId"].as_str().map(str::to_string);
         let mut reg = registry.lock().await;
         if let Some(tab) = reg.tabs.get_mut(&tab_id) {
@@ -640,7 +642,10 @@ mod tests {
     fn blank_names_are_treated_as_absent() {
         // 新会话：pi 还没给名字（`undefined` / 空串），别把空串当名字传给前端
         assert_eq!(session_name_of(&tab_with_name(None), &json!({})), None);
-        assert_eq!(session_name_of(&tab_with_name(None), &json!({ "sessionName": "" })), None);
+        assert_eq!(
+            session_name_of(&tab_with_name(None), &json!({ "sessionName": "" })),
+            None
+        );
         assert_eq!(session_name_of(&tab_with_name(Some("   ")), &json!({})), None);
     }
 }

@@ -124,8 +124,9 @@ pub fn classify(raw: &Value) -> PiEvent {
         },
         "compaction_end" => PiEvent::CompactionEnd { raw: raw.clone() },
         "auto_retry_start" | "auto_retry_end" => PiEvent::AutoRetry { raw: raw.clone() },
-        "summarization_retry_scheduled" | "summarization_retry_attempt_start"
-        | "summarization_retry_finished" => PiEvent::SummarizationRetry { raw: raw.clone() },
+        "summarization_retry_scheduled" | "summarization_retry_attempt_start" | "summarization_retry_finished" => {
+            PiEvent::SummarizationRetry { raw: raw.clone() }
+        }
         "extension_error" => PiEvent::ExtensionError { raw: raw.clone() },
         "bash_execution_update" => PiEvent::BashExecutionUpdate {
             id: raw["id"].as_str().map(String::from),
@@ -150,10 +151,6 @@ fn parse_ame(v: &Value) -> Ame {
 
 fn str_array(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(String::from))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
         .unwrap_or_default()
 }

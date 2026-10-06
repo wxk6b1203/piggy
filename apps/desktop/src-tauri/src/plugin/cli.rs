@@ -56,16 +56,14 @@ pub struct Job {
 
 /// 任务表。放在模块级而不是 AppState：它只在插件模块里用，
 /// 且必须在测试里能不起 Tauri 直接驱动。
-static JOBS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, Job>>> =
-    std::sync::OnceLock::new();
+static JOBS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, Job>>> = std::sync::OnceLock::new();
 
 fn jobs() -> &'static Mutex<std::collections::HashMap<String, Job>> {
     JOBS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 /// 取消标志：`plugin_job_cancel` 置位，读循环看到后杀子进程。
-static CANCELS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
+static CANCELS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
 
 fn cancels() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     CANCELS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
@@ -178,18 +176,9 @@ pub fn plan(action: &str, source: Option<&str>, scope: &str, cwd: Option<&str>) 
 }
 
 /// 起一个任务。立刻返回 jobId；输出异步推事件。
-pub fn spawn(
-    sink: std::sync::Arc<dyn EventSink>,
-    pi_bin: PathBuf,
-    invocation: Invocation,
-    cwd: PathBuf,
-) -> String {
+pub fn spawn(sink: std::sync::Arc<dyn EventSink>, pi_bin: PathBuf, invocation: Invocation, cwd: PathBuf) -> String {
     let id = uuid::Uuid::new_v4().to_string();
-    let command_line = format!(
-        "{} {}",
-        pi_bin.display(),
-        invocation.args.join(" ")
-    );
+    let command_line = format!("{} {}", pi_bin.display(), invocation.args.join(" "));
     let job = Job {
         id: id.clone(),
         action: invocation.action.to_string(),
@@ -286,18 +275,8 @@ async fn run(
         .spawn()
         .map_err(|e| format!("启动 {} 失败: {e}", pi_bin.display()))?;
 
-    let out_task = tokio::spawn(pump(
-        child.stdout.take(),
-        "stdout",
-        sink.clone(),
-        job_id.to_string(),
-    ));
-    let err_task = tokio::spawn(pump(
-        child.stderr.take(),
-        "stderr",
-        sink.clone(),
-        job_id.to_string(),
-    ));
+    let out_task = tokio::spawn(pump(child.stdout.take(), "stdout", sink.clone(), job_id.to_string()));
+    let err_task = tokio::spawn(pump(child.stderr.take(), "stderr", sink.clone(), job_id.to_string()));
 
     /// 结果的两种可能。做成枚举是为了让 `select!` 的**分支体里不碰 child**——
     /// `child.wait()` 借走了 `child`，在分支体里 `kill()` 会撞借用检查；

@@ -26,7 +26,9 @@ pub fn extension_script(resource_dir: Option<&Path>, filename: &str) -> Option<P
             }
         }
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(filename);
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(filename);
     dev.is_file().then_some(dev)
 }
 
@@ -60,11 +62,7 @@ mod tests {
     #[test]
     fn source_tree_fallback_finds_the_bundled_scripts() {
         // 仓库里这几个文件都是提交过的资源，开发态必须能找到（找不到就等于功能静默消失）
-        for name in [
-            "piggy-guard.js",
-            "piggy-bridge.js",
-            "piggy-subagent-policy.md",
-        ] {
+        for name in ["piggy-guard.js", "piggy-bridge.js", "piggy-subagent-policy.md"] {
             let p = extension_script(None, name).unwrap_or_else(|| panic!("源码树里找不到 {name}"));
             assert!(p.is_file(), "{name} 应存在: {}", p.display());
         }

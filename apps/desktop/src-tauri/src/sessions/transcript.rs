@@ -161,7 +161,6 @@ const ROLE_HEAD: usize = 256;
 /// （实测 `web-search-results`），只看行首会漏掉，于是链条判断出错。
 const TAIL_WINDOW: usize = 512;
 
-
 /// 读一页转录。
 ///
 /// @param path - 会话 JSONL 文件
@@ -355,8 +354,7 @@ pub fn read_after(path: &Path, after: u64, limit: usize) -> Result<Page, String>
             break;
         }
         buf.clear();
-        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut buf)
-            .map_err(|e| format!("读取失败: {e}"))?;
+        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut buf).map_err(|e| format!("读取失败: {e}"))?;
         if n == 0 {
             break; // 文件尾
         }
@@ -499,7 +497,6 @@ fn branch_entries(file: &mut File) -> Result<Vec<(u64, Value)>, String> {
     Ok(chain.into_iter().map(|i| entries[i].clone()).collect())
 }
 
-
 /// 有分支时的兜底：整文件扫一遍，从最后一个条目沿 parentId 追到根，
 /// 在这条链上取 `before` 之前的一页。
 fn branch_window(file: &mut File, end: u64, limit: usize) -> Result<Page, String> {
@@ -550,8 +547,7 @@ pub fn outline(path: &Path) -> Result<Outline, String> {
     let mut line: Vec<u8> = Vec::new();
     loop {
         line.clear();
-        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut line)
-            .map_err(|e| format!("读取失败: {e}"))?;
+        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut line).map_err(|e| format!("读取失败: {e}"))?;
         if n == 0 {
             break;
         }
@@ -939,8 +935,7 @@ pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
 
     loop {
         line.clear();
-        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut line)
-            .map_err(|e| format!("读取失败: {e}"))?;
+        let n = std::io::BufRead::read_until(&mut reader, b'\n', &mut line).map_err(|e| format!("读取失败: {e}"))?;
         if n == 0 {
             break;
         }
@@ -984,7 +979,11 @@ pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
             continue;
         }
         let candidate_id = chain_ref(raw).map(|(id, _)| id);
-        candidates.push(Candidate { offset: start, id: candidate_id, fold });
+        candidates.push(Candidate {
+            offset: start,
+            id: candidate_id,
+            fold,
+        });
     }
 
     // 活动分支：从叶子沿 parentId 走到根
@@ -1017,7 +1016,7 @@ pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
     // 候选自身没有 id（形状可疑）时全盘退回文件序 —— 见函数头第 4 条
     if candidates.iter().any(|c| c.id.is_none()) {
         chain_broken = true;
-  }
+    }
 
     let selected: Vec<(u64, &Fold)> = candidates
         .iter()
@@ -1051,7 +1050,8 @@ pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
 }
 
 /// 去掉行首尾的 ASCII 空白（`\n` / `\r` / 空格 / 制表符），不碰内容。
-fn trim_ascii(line: &[u8]) -> &[u8] {    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
+fn trim_ascii(line: &[u8]) -> &[u8] {
+    let is_ws = |b: &u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
     let start = line.iter().position(|b| !is_ws(b)).unwrap_or(line.len());
     let end = line.iter().rposition(|b| !is_ws(b)).map(|i| i + 1).unwrap_or(start);
     &line[start..end]
@@ -1086,7 +1086,9 @@ fn excerpt(message: &Value) -> String {
                 if b.get("type").and_then(Value::as_str) != Some("text") {
                     continue;
                 }
-                let Some(t) = b.get("text").and_then(Value::as_str) else { continue };
+                let Some(t) = b.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
                 if !out.is_empty() {
                     out.push('\n');
                 }
@@ -1201,7 +1203,8 @@ mod tests {
     }
 
     fn header() -> String {
-        r#"{"type":"session","version":"3","id":"sess-1","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p"}"#.to_string()
+        r#"{"type":"session","version":"3","id":"sess-1","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/tmp/p"}"#
+            .to_string()
     }
 
     /// 一条消息条目（parentId 由调用方串好）
@@ -1221,7 +1224,10 @@ mod tests {
     #[test]
     fn page_from_tail_reads_backwards_and_reports_more() {
         // 120 条消息串成一条链
-        let mut lines = vec![header(), r#"{"type":"model_change","id":"m1","parentId":null,"provider":"p","modelId":"x"}"#.to_string()];
+        let mut lines = vec![
+            header(),
+            r#"{"type":"model_change","id":"m1","parentId":null,"provider":"p","modelId":"x"}"#.to_string(),
+        ];
         let mut parent = "m1".to_string();
         for i in 0..120 {
             let id = format!("id{i:03}");
@@ -1362,7 +1368,11 @@ mod tests {
     #[test]
     fn truncated_tail_line_is_skipped_not_fatal() {
         // pi 写到一半被杀：最后一行不是合法 JSON
-        let mut lines = vec![header(), msg("a", "null", "user", "问题"), msg("b", "\"a\"", "assistant", "回答")];
+        let mut lines = vec![
+            header(),
+            msg("a", "null", "user", "问题"),
+            msg("b", "\"a\"", "assistant", "回答"),
+        ];
         let (_d, path) = write_session(&lines);
         {
             let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
@@ -1376,7 +1386,10 @@ mod tests {
 
     #[test]
     fn outline_covers_every_turn_with_anchors_and_previews() {
-        let mut lines = vec![header(), r#"{"type":"model_change","id":"m1","parentId":null,"provider":"p","modelId":"x"}"#.to_string()];
+        let mut lines = vec![
+            header(),
+            r#"{"type":"model_change","id":"m1","parentId":null,"provider":"p","modelId":"x"}"#.to_string(),
+        ];
         let mut parent = "m1".to_string();
         for i in 1..=4 {
             let uid = format!("u{i}");
@@ -1406,7 +1419,10 @@ mod tests {
         let older = read_page(&path, Some(first.start), 1).unwrap();
         assert!(older.rows.is_empty(), "第 1 轮之前什么都没有");
         // 轮的顺序与偏移都升序
-        assert!(o.turns.windows(2).all(|w| w[0].start < w[1].start && w[0].turn + 1 == w[1].turn));
+        assert!(o
+            .turns
+            .windows(2)
+            .all(|w| w[0].start < w[1].start && w[0].turn + 1 == w[1].turn));
     }
 
     #[test]
@@ -1492,7 +1508,11 @@ mod tests {
         let mid = read_page(&path, Some(o.turns[5].end), 2).unwrap();
         assert!(mid.has_more, "第 6 轮之前还有内容");
         assert!(mid.has_newer, "第 6 轮之后还有内容 —— 界面要能回到最新");
-        assert_eq!(text_row(mid.rows.last().unwrap()), "回答 6", "换窗那一页以这一轮的回答收尾");
+        assert_eq!(
+            text_row(mid.rows.last().unwrap()),
+            "回答 6",
+            "换窗那一页以这一轮的回答收尾"
+        );
     }
 
     #[test]
@@ -1521,7 +1541,10 @@ mod tests {
         // 只按 50 行取会得到 3 轮多（3×14=42 行 -> 第 4 轮半）—— 那正是"打开只看得到一轮多"的来源
         let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
         let users = page.rows.iter().filter(|r| r.role == "user").count();
-        assert!(users >= MIN_TURNS, "工具密集的会话里，一页必须够 {MIN_TURNS} 轮，实际 {users}");
+        assert!(
+            users >= MIN_TURNS,
+            "工具密集的会话里，一页必须够 {MIN_TURNS} 轮，实际 {users}"
+        );
         assert!(page.rows.len() <= MAX_ROWS);
         assert!(page.has_more, "8 轮里只取了后几轮，前面还有");
         // 一轮 14 行：5 轮 = 70 行（> 行数下限 50，所以是"按轮兜底"撑到这里的）
@@ -1562,7 +1585,11 @@ mod tests {
         }
         let (_d, path) = write_session(&lines);
         let page = read_page(&path, None, DEFAULT_LIMIT).unwrap();
-        assert!(page.rows.len() < 20, "一页读进来的字节要受闸门约束，实际 {} 行", page.rows.len());
+        assert!(
+            page.rows.len() < 20,
+            "一页读进来的字节要受闸门约束，实际 {} 行",
+            page.rows.len()
+        );
         assert!(page.has_more);
     }
 
@@ -1604,7 +1631,11 @@ mod tests {
         // 中段窗口（换窗到第 3 轮）：往上、往下都能续
         let o = outline(&path).unwrap();
         let mid = read_page(&path, Some(o.turns[2].end), 4).unwrap();
-        assert_eq!(text_row(mid.rows.last().unwrap()), "回答 3", "换窗那一页以这一轮的回答收尾");
+        assert_eq!(
+            text_row(mid.rows.last().unwrap()),
+            "回答 3",
+            "换窗那一页以这一轮的回答收尾"
+        );
         let down = read_after(&path, mid.end_offset, 4).unwrap();
         assert_eq!(text_row(down.rows.first().unwrap()), "问题 4", "向下续页要正好接上");
         // 从第 4 轮起，读到 5 轮边界：第 4~8 轮 = 10 行
@@ -1627,7 +1658,11 @@ mod tests {
         }
         let (_d, path) = write_session(&lines);
         let page = read_after(&path, 0, DEFAULT_LIMIT).unwrap();
-        assert!(page.rows.len() < 20, "向下读也要受字节闸门约束，实际 {} 行", page.rows.len());
+        assert!(
+            page.rows.len() < 20,
+            "向下读也要受字节闸门约束，实际 {} 行",
+            page.rows.len()
+        );
         assert!(page.has_newer);
     }
 
@@ -1847,16 +1882,24 @@ mod tests {
     fn todo_projection_reads_the_last_write() {
         let lines = vec![
             user("u1", None, "做三件事"),
-            call("a1", Some("u1"), json!([
-                {"content": "一", "status": "in_progress"},
-                {"content": "二", "status": "pending"},
-                {"content": "三", "status": "pending"}
-            ])),
-            event("e1", Some("a1"), json!([
-                {"content": "一", "status": "completed"},
-                {"content": "二", "status": "in_progress"},
-                {"content": "三", "status": "pending"}
-            ])),
+            call(
+                "a1",
+                Some("u1"),
+                json!([
+                    {"content": "一", "status": "in_progress"},
+                    {"content": "二", "status": "pending"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
+            event(
+                "e1",
+                Some("a1"),
+                json!([
+                    {"content": "一", "status": "completed"},
+                    {"content": "二", "status": "in_progress"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
         ];
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
@@ -1873,10 +1916,14 @@ mod tests {
     fn todo_projection_falls_back_to_the_tool_call_arguments() {
         let lines = vec![
             user("u1", None, "做两件事"),
-            call("a1", Some("u1"), json!([
-                {"content": "一", "status": "pending"},
-                {"content": "二", "status": "pending"}
-            ])),
+            call(
+                "a1",
+                Some("u1"),
+                json!([
+                    {"content": "一", "status": "pending"},
+                    {"content": "二", "status": "pending"}
+                ]),
+            ),
         ];
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
@@ -1952,7 +1999,10 @@ mod tests {
         // 预筛必须真的生效：三段 200 KB 的正文只该解析 3 行（user / custom / 无）
         assert!(p.parsed_lines <= 3, "解析了 {} 行，预筛没生效", p.parsed_lines);
         assert!(p.scanned_bytes > 400_000);
-        println!("todo 投影：{} 字节 / 解析 {} 行 / {us}µs", p.scanned_bytes, p.parsed_lines);
+        println!(
+            "todo 投影：{} 字节 / 解析 {} 行 / {us}µs",
+            p.scanned_bytes, p.parsed_lines
+        );
     }
 
     #[test]
@@ -1966,7 +2016,10 @@ mod tests {
             {
                 let mut b = serde_json::Map::new();
                 b.insert("type".into(), json!("message"));
-                b.insert("message".into(), json!({"role": "assistant", "content": [{"type": "text", "text": "好"}]}));
+                b.insert(
+                    "message".into(),
+                    json!({"role": "assistant", "content": [{"type": "text", "text": "好"}]}),
+                );
                 entry("a2", Some("u2"), b)
             },
         ];
@@ -2004,21 +2057,32 @@ mod tests {
         let payload_first = r#"{"type":"custom","customType":"web-search-results","data":{"id":"nested-id","type":"search","timestamp":1790003230702,"query":"x"},"id":"s1","parentId":"a1","timestamp":"2026-09-21T15:07:10.776Z"}"#.to_string();
         let lines = vec![
             user("u1", None, "查一下"),
-            call("a1", Some("u1"), json!([
-                {"content": "一", "status": "pending"},
-                {"content": "二", "status": "pending"},
-                {"content": "三", "status": "pending"}
-            ])),
+            call(
+                "a1",
+                Some("u1"),
+                json!([
+                    {"content": "一", "status": "pending"},
+                    {"content": "二", "status": "pending"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
             payload_first, // 它在**链条中间**：e1 的 parent 就是它（真机 line 108 的形状）
-            event("e1", Some("s1"), json!([
-                {"content": "一", "status": "in_progress"},
-                {"content": "二", "status": "pending"},
-                {"content": "三", "status": "pending"}
-            ])),
+            event(
+                "e1",
+                Some("s1"),
+                json!([
+                    {"content": "一", "status": "in_progress"},
+                    {"content": "二", "status": "pending"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
         ];
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
-        assert!(!p.branchy, "载荷在前的 custom 条目不该把线性会话判成分支（真机 400ms 慢路径的成因）");
+        assert!(
+            !p.branchy,
+            "载荷在前的 custom 条目不该把线性会话判成分支（真机 400ms 慢路径的成因）"
+        );
         assert_eq!(p.todos.unwrap()[0].status, "in_progress");
         assert_eq!(p.source.as_deref(), Some("event"));
     }
@@ -2032,17 +2096,25 @@ mod tests {
         let payload_only = r#"{"type":"custom","customType":"other","data":{"id":"nested-id","note":"x"}}"#.to_string();
         let lines = vec![
             user("u1", None, "x"),
-            call("a1", Some("u1"), json!([
-                {"content": "一", "status": "pending"},
-                {"content": "二", "status": "pending"},
-                {"content": "三", "status": "pending"}
-            ])),
+            call(
+                "a1",
+                Some("u1"),
+                json!([
+                    {"content": "一", "status": "pending"},
+                    {"content": "二", "status": "pending"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
             payload_only,
-            event("e1", Some("a1"), json!([
-                {"content": "一", "status": "completed"},
-                {"content": "二", "status": "pending"},
-                {"content": "三", "status": "pending"}
-            ])),
+            event(
+                "e1",
+                Some("a1"),
+                json!([
+                    {"content": "一", "status": "completed"},
+                    {"content": "二", "status": "pending"},
+                    {"content": "三", "status": "pending"}
+                ]),
+            ),
         ];
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
@@ -2076,7 +2148,12 @@ mod tests {
         let path = dir.path().join("half.jsonl");
         let mut f = File::create(&path).unwrap();
         writeln!(f, "{}", user("u1", None, "x")).unwrap();
-        writeln!(f, "{}", event("e1", Some("u1"), json!([{"content": "一", "status": "pending"}]))).unwrap();
+        writeln!(
+            f,
+            "{}",
+            event("e1", Some("u1"), json!([{"content": "一", "status": "pending"}]))
+        )
+        .unwrap();
         write!(f, "{{\"type\":\"message\",\"id\":\"a1\",\"message\":{{\"role\":\"assis").unwrap();
         drop(f);
         let p = todo_projection(&path).unwrap();
@@ -2101,7 +2178,14 @@ mod tests {
                 p.file_name().unwrap().to_string_lossy(),
                 sz as f64 / 1e6,
                 match &proj.todos {
-                    Some(list) => format!("{} 条：{}", list.len(), list.iter().map(|t| format!("[{}] {}", t.status, t.content)).collect::<Vec<_>>().join(" | ")),
+                    Some(list) => format!(
+                        "{} 条：{}",
+                        list.len(),
+                        list.iter()
+                            .map(|t| format!("[{}] {}", t.status, t.content))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ),
                     None => "无".to_string(),
                 },
                 proj.source.clone().unwrap_or_else(|| "-".into()),

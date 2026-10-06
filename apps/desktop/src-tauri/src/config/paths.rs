@@ -231,10 +231,7 @@ mod tests {
 
     #[test]
     fn agent_dir_env_overrides_home() {
-        let v = env(&[
-            ("HOME", "/Users/u"),
-            (ENV_AGENT_DIR, "/tmp/custom-agent"),
-        ]);
+        let v = env(&[("HOME", "/Users/u"), (ENV_AGENT_DIR, "/tmp/custom-agent")]);
         assert_eq!(agent_dir_from(false, &v), PathBuf::from("/tmp/custom-agent"));
         // `~` 形式也要展开（pi: expandTildePath(envDir)）
         let v = env(&[("HOME", "/Users/u"), (ENV_AGENT_DIR, "~/a")]);

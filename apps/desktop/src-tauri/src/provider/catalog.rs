@@ -108,7 +108,11 @@ mod tests {
                 e.id
             );
         }
-        assert!(CATALOG.len() >= 40, "目录只剩 {} 条，生成脚本大概漏解析了", CATALOG.len());
+        assert!(
+            CATALOG.len() >= 40,
+            "目录只剩 {} 条，生成脚本大概漏解析了",
+            CATALOG.len()
+        );
     }
 
     #[test]
@@ -123,7 +127,12 @@ mod tests {
                 );
             }
             if !e.api.is_empty() {
-                assert!(KNOWN_APIS.contains(&e.api), "{} 的协议 {} 不在 KnownApi 里", e.id, e.api);
+                assert!(
+                    KNOWN_APIS.contains(&e.api),
+                    "{} 的协议 {} 不在 KnownApi 里",
+                    e.id,
+                    e.api
+                );
             }
             for api in e.apis {
                 assert!(KNOWN_APIS.contains(api), "{} 声明了未知协议 {api}", e.id);

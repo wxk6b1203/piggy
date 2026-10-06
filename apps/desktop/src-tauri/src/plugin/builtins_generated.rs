@@ -20,6 +20,7 @@ pub struct Builtin {
 }
 
 /// pi 0.87.1 的 1 个内置扩展。
+#[rustfmt::skip]
 pub const BUILTINS: &[Builtin] = &[
     Builtin { name: "llama.cpp", hidden: true, path: "(pi 内置：packages/coding-agent/src/extensions/llama)" },
 ];

@@ -38,11 +38,12 @@ fn effective(declared_value: Option<&Value>, catalog_value: &'static str) -> (St
 fn auth_entry(auth: &Value, provider: &str) -> Option<(String, Option<String>)> {
     let entry = auth.get(provider)?;
     let obj = entry.as_object()?;
-    let kind = obj.get("type").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
-    let secret = obj
-        .get("key")
-        .or_else(|| obj.get("access"))
-        .and_then(|k| k.as_str());
+    let kind = obj
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let secret = obj.get("key").or_else(|| obj.get("access")).and_then(|k| k.as_str());
     Some((kind, secret.map(pi_files::mask_secret)))
 }
 
@@ -104,10 +105,7 @@ pub fn cached_catalog(agent: &Path, provider: &str) -> Vec<Value> {
 type EnvLookup<'a> = &'a dyn Fn(&str) -> bool;
 
 fn real_env(name: &str) -> bool {
-    !name.is_empty()
-        && std::env::var(name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
+    !name.is_empty() && std::env::var(name).map(|v| !v.trim().is_empty()).unwrap_or(false)
 }
 
 /// 合成总览。`agent` = `~/.pi/agent`（测试注入临时目录）。
@@ -153,8 +151,7 @@ pub fn overview_with(agent: &Path, env: EnvLookup<'_>) -> Result<Value, String> 
             cfg.and_then(|c| c.get("baseUrl")),
             entry.map(|e| e.base_url).unwrap_or(""),
         );
-        let (api, api_source) =
-            effective(cfg.and_then(|c| c.get("api")), entry.map(|e| e.api).unwrap_or(""));
+        let (api, api_source) = effective(cfg.and_then(|c| c.get("api")), entry.map(|e| e.api).unwrap_or(""));
         let env_var = entry.map(|e| e.env_var).unwrap_or("");
         let env_ok = env(env_var);
         let inline_key = cfg
@@ -295,7 +292,12 @@ mod tests {
     fn empty_config_shows_nothing() {
         let dir = fixture(&[("auth.json", "{}"), ("models.json", "{}")]);
         let v = overview_at(dir.path()).unwrap();
-        assert_eq!(v["providers"].as_array().unwrap().len(), 0, "空配置却有行：{:?}", ids(&v));
+        assert_eq!(
+            v["providers"].as_array().unwrap().len(),
+            0,
+            "空配置却有行：{:?}",
+            ids(&v)
+        );
         assert_eq!(v["catalog"].as_array().unwrap().len(), catalog::CATALOG.len());
     }
 
@@ -330,7 +332,10 @@ mod tests {
     #[test]
     fn auth_json_key_wins_over_inline_key() {
         let dir = fixture(&[
-            ("auth.json", r#"{"deepseek":{"type":"api_key","key":"sk-auth-aaaaaaaaaaaa"}}"#),
+            (
+                "auth.json",
+                r#"{"deepseek":{"type":"api_key","key":"sk-auth-aaaaaaaaaaaa"}}"#,
+            ),
             (
                 "models.json",
                 r#"{"providers":{"deepseek":{"apiKey":"sk-inline-bbbbbbbbbbbb"}}}"#,
@@ -339,7 +344,10 @@ mod tests {
         let v = overview_at(dir.path()).unwrap();
         let r = row(&v, "deepseek");
         assert_eq!(r["keySource"], "auth");
-        assert!(r["keyMasked"].as_str().unwrap().starts_with("sk-aut"), "显示的不是生效的那把");
+        assert!(
+            r["keyMasked"].as_str().unwrap().starts_with("sk-aut"),
+            "显示的不是生效的那把"
+        );
         assert_eq!(r["hasInlineKey"], true, "内联那把仍要报出来（界面要提示它没生效）");
         // 没写的字段回落到 pi 目录里的默认值，并且来源要标成 catalog
         assert_eq!(r["baseUrl"], "https://api.deepseek.com");
@@ -362,7 +370,10 @@ mod tests {
         let r = row(&v, "deepseek");
         assert_eq!(r["keySource"], "env");
         assert_eq!(r["envVar"], "DEEPSEEK_API_KEY");
-        assert_eq!(r["baseUrl"], "https://api.deepseek.com", "环境变量就绪时地址该回落到目录默认值");
+        assert_eq!(
+            r["baseUrl"], "https://api.deepseek.com",
+            "环境变量就绪时地址该回落到目录默认值"
+        );
         // 只认环境变量的提供商，不该顺带把别的目录项也显示出来
         assert_eq!(v["providers"].as_array().unwrap().len(), 1, "{:?}", ids(&v));
     }
@@ -372,7 +383,10 @@ mod tests {
     fn cached_catalog_count_comes_from_models_store() {
         let dir = fixture(&[
             ("auth.json", "{}"),
-            ("models.json", r#"{"providers":{"deepseek":{"apiKey":"sk-x-1234567890"}}}"#),
+            (
+                "models.json",
+                r#"{"providers":{"deepseek":{"apiKey":"sk-x-1234567890"}}}"#,
+            ),
             (
                 "models-store.json",
                 r#"{"deepseek":{"models":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}}"#,
@@ -387,7 +401,10 @@ mod tests {
     fn default_provider_is_marked() {
         let dir = fixture(&[
             ("auth.json", "{}"),
-            ("models.json", r#"{"providers":{"a":{"apiKey":"sk-1-1234567890"},"b":{"apiKey":"sk-2-1234567890"}}}"#),
+            (
+                "models.json",
+                r#"{"providers":{"a":{"apiKey":"sk-1-1234567890"},"b":{"apiKey":"sk-2-1234567890"}}}"#,
+            ),
             ("settings.json", r#"{"defaultProvider":"b","defaultModel":"m1"}"#),
         ]);
         let v = overview_at(dir.path()).unwrap();
@@ -434,7 +451,11 @@ mod tests {
                 r["isDefault"],
             );
         }
-        eprintln!("内置目录 {} 条，协议 {} 种", v["catalog"].as_array().unwrap().len(), v["apiOptions"].as_array().unwrap().len());
+        eprintln!(
+            "内置目录 {} 条，协议 {} 种",
+            v["catalog"].as_array().unwrap().len(),
+            v["apiOptions"].as_array().unwrap().len()
+        );
         // 每一行都必须是界面能直接渲染的形状（拿不到 name 就是白行）
         for r in v["providers"].as_array().unwrap() {
             assert!(!r["name"].as_str().unwrap_or("").is_empty(), "有行没有展示名：{r}");

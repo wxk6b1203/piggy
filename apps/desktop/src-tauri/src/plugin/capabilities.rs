@@ -217,11 +217,7 @@ fn declared_capabilities(dir: &Path, problems: &mut Vec<String>) -> Vec<String> 
         .and_then(|piggy| piggy.get("capabilities"));
     match caps {
         None => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(str::to_string)
-            .collect(),
+        Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str()).map(str::to_string).collect(),
         Some(other) => {
             problems.push(format!(
                 "{} 的 pi.piggy.capabilities 不是数组：{other}",
@@ -250,12 +246,7 @@ fn probe_plugin(plugin: &Value, cap: Capability) -> (bool, String, Vec<Value>, V
     let entries: Vec<PathBuf> = plugin
         .get("entries")
         .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str())
-                .map(PathBuf::from)
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|v| v.as_str()).map(PathBuf::from).collect())
         .unwrap_or_default();
     let mut detail: Vec<Value> = Vec::new();
     for entry in &entries {
@@ -442,7 +433,6 @@ mod tests {
         assert!(problems.is_empty(), "没有 package.json 是正常情况，不是问题");
         let _ = fs::remove_dir_all(&tmp);
     }
-
 
     #[test]
     fn dir_entries_are_probed_through_pi_convention_and_do_not_noise() {

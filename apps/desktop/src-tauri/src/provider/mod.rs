@@ -199,12 +199,18 @@ mod tests {
             r#"{"providers":{"deepseek":{"apiKey":"sk-inline"}}}"#,
         )
         .unwrap();
-        assert_eq!(resolve_key(dir.path(), "deepseek", "sk-typed"), ("sk-typed".into(), "typed"));
+        assert_eq!(
+            resolve_key(dir.path(), "deepseek", "sk-typed"),
+            ("sk-typed".into(), "typed")
+        );
         assert_eq!(resolve_key(dir.path(), "deepseek", "  "), ("sk-auth".into(), "auth"));
 
         // 拿掉 auth.json 那把 → 轮到 models.json
         fs::write(dir.path().join("auth.json"), "{}").unwrap();
-        assert_eq!(resolve_key(dir.path(), "deepseek", ""), ("sk-inline".into(), "models_json"));
+        assert_eq!(
+            resolve_key(dir.path(), "deepseek", ""),
+            ("sk-inline".into(), "models_json")
+        );
 
         // 两处都没有 → 环境变量
         fs::write(dir.path().join("models.json"), "{}").unwrap();

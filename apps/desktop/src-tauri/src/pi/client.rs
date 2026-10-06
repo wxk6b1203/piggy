@@ -48,19 +48,13 @@ impl WorkerInner {
     }
 
     /// 底层请求：写入 stdin 并等待对应 id 的 response。
-    pub async fn request(
-        &self,
-        command: &str,
-        mut payload: Value,
-        timeout: Option<Duration>,
-    ) -> Result<Value, String> {
+    pub async fn request(&self, command: &str, mut payload: Value, timeout: Option<Duration>) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         payload["type"] = json!(command);
         payload["id"] = json!(id.to_string());
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
-        let line = serde_json::to_string(&payload)
-            .map_err(|e| format!("serialize {command} failed: {e}"))?;
+        let line = serde_json::to_string(&payload).map_err(|e| format!("serialize {command} failed: {e}"))?;
         if let Err(e) = self.stdin_tx.send(line).await {
             self.pending.lock().await.remove(&id);
             return Err(format!("pi worker stdin closed: {e}"));
@@ -92,10 +86,7 @@ impl WorkerInner {
         if resp["success"].as_bool().unwrap_or(false) {
             Ok(resp.get("data").cloned().unwrap_or(Value::Null))
         } else {
-            Err(resp["error"]
-                .as_str()
-                .unwrap_or("unknown pi error")
-                .to_string())
+            Err(resp["error"].as_str().unwrap_or("unknown pi error").to_string())
         }
     }
 
@@ -111,9 +102,7 @@ impl WorkerInner {
     /// 主动终止（deliberate）：先试 abort（2s 宽限），再 kill。
     pub async fn shutdown(&self) {
         self.set_state(WorkerState::Stopped);
-        let _ = self
-            .request("abort", json!({}), Some(Duration::from_secs(2)))
-            .await;
+        let _ = self.request("abort", json!({}), Some(Duration::from_secs(2))).await;
         if let Some(mut child) = self.child.lock().await.take() {
             let _ = child.kill().await;
         }
@@ -138,21 +127,13 @@ impl WorkerInner {
     }
 
     pub async fn steer(&self, message: &str) -> Result<Value, String> {
-        self.request_checked(
-            "steer",
-            json!({ "message": message }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("steer", json!({ "message": message }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn follow_up(&self, message: &str) -> Result<Value, String> {
-        self.request_checked(
-            "follow_up",
-            json!({ "message": message }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("follow_up", json!({ "message": message }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn abort(&self) -> Result<Value, String> {
@@ -189,12 +170,8 @@ impl WorkerInner {
     }
 
     pub async fn switch_session(&self, path: &str) -> Result<Value, String> {
-        self.request_checked(
-            "switch_session",
-            json!({ "sessionPath": path }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("switch_session", json!({ "sessionPath": path }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<Value, String> {
@@ -207,8 +184,7 @@ impl WorkerInner {
     }
 
     pub async fn get_available_models(&self) -> Result<Value, String> {
-        self.request_checked("get_available_models", json!({}), None)
-            .await
+        self.request_checked("get_available_models", json!({}), None).await
     }
 
     pub async fn get_session_stats(&self) -> Result<Value, String> {
@@ -217,17 +193,12 @@ impl WorkerInner {
     }
 
     pub async fn set_session_name(&self, name: &str) -> Result<Value, String> {
-        self.request_checked(
-            "set_session_name",
-            json!({ "name": name }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("set_session_name", json!({ "name": name }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn bash(&self, command: &str) -> Result<Value, String> {
-        self.request_checked("bash", json!({ "command": command }), None)
-            .await
+        self.request_checked("bash", json!({ "command": command }), None).await
     }
 
     pub async fn export_html(&self, output_path: Option<&str>) -> Result<Value, String> {
@@ -235,27 +206,20 @@ impl WorkerInner {
         if let Some(path) = output_path {
             p["outputPath"] = json!(path);
         }
-        self.request_checked("export_html", p, Some(DEFAULT_TIMEOUT))
-            .await
+        self.request_checked("export_html", p, Some(DEFAULT_TIMEOUT)).await
     }
-
 
     pub async fn get_tree(&self) -> Result<Value, String> {
         self.request_checked("get_tree", json!({}), None).await
     }
 
     pub async fn fork(&self, entry_id: &str) -> Result<Value, String> {
-        self.request_checked(
-            "fork",
-            json!({ "entryId": entry_id }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("fork", json!({ "entryId": entry_id }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn clone_session(&self) -> Result<Value, String> {
-        self.request_checked("clone", json!({}), Some(DEFAULT_TIMEOUT))
-            .await
+        self.request_checked("clone", json!({}), Some(DEFAULT_TIMEOUT)).await
     }
 
     pub async fn get_fork_messages(&self) -> Result<Value, String> {
@@ -264,21 +228,13 @@ impl WorkerInner {
     }
 
     pub async fn set_thinking_level(&self, level: &str) -> Result<Value, String> {
-        self.request_checked(
-            "set_thinking_level",
-            json!({ "level": level }),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("set_thinking_level", json!({ "level": level }), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn get_available_thinking_levels(&self) -> Result<Value, String> {
-        self.request_checked(
-            "get_available_thinking_levels",
-            json!({}),
-            Some(DEFAULT_TIMEOUT),
-        )
-        .await
+        self.request_checked("get_available_thinking_levels", json!({}), Some(DEFAULT_TIMEOUT))
+            .await
     }
 
     pub async fn cycle_thinking_level(&self) -> Result<Value, String> {
@@ -304,21 +260,13 @@ impl WorkerInner {
             .await
     }
 
-    pub async fn raw_request(
-        &self,
-        command: &str,
-        payload: Value,
-        timeout: Option<Duration>,
-    ) -> Result<Value, String> {
+    pub async fn raw_request(&self, command: &str, payload: Value, timeout: Option<Duration>) -> Result<Value, String> {
         self.request(command, payload, timeout).await
     }
 
     /// 直接写入 stdin（测试/调试用；正常路径走 request）。
     pub async fn stdin_send(&self, line: &str) -> Result<(), String> {
-        self.stdin_tx
-            .send(line.to_string())
-            .await
-            .map_err(|e| e.to_string())
+        self.stdin_tx.send(line.to_string()).await.map_err(|e| e.to_string())
     }
 
     /// Extension UI 应答（docs/02 §8）：写回 stdin。

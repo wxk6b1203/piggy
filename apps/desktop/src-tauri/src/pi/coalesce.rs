@@ -83,8 +83,7 @@ impl FrameCoalescer {
             "signals": self.signals,
             "usage": self.usage,
         });
-        self.sink
-            .emit_json(&format!("pi:frame:{}", self.tab_id), frame);
+        self.sink.emit_json(&format!("pi:frame:{}", self.tab_id), frame);
         self.text.clear();
         self.thinking.clear();
         self.tool_args.clear();

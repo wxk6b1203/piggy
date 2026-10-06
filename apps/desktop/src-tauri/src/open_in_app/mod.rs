@@ -102,11 +102,7 @@ pub fn open_in_app_list() -> Vec<String> {
 /// 某个应用的图标（`data:` URL）。拿不到 → None（前端画通用图标，不是报错）。
 #[tauri::command(async)]
 pub fn open_in_app_icon(id: String) -> Option<String> {
-    if let Some(hit) = icon_cache()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&id)
-    {
+    if let Some(hit) = icon_cache().lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
         return hit.clone();
     }
     let value = load_icon(&id);
@@ -158,12 +154,7 @@ pub fn launch_entry(app: &Resolved, dir: &str) -> LaunchOutcome {
     if primary == LaunchOutcome::Launched || app.fallback.is_none() {
         return primary;
     }
-    let fallback = host::launch_detached(
-        app.fallback.as_ref().expect("刚判过"),
-        dir,
-        LAUNCH_WATCH,
-        &facts.env,
-    );
+    let fallback = host::launch_detached(app.fallback.as_ref().expect("刚判过"), dir, LAUNCH_WATCH, &facts.env);
     if fallback == LaunchOutcome::Launched {
         return LaunchOutcome::Launched;
     }
@@ -223,14 +214,10 @@ pub fn open_path_applications(path: String) -> Result<Vec<PathApplication>, Stri
 /// `reveal` 走定位，`open` + `application` 走指定处理器（**先查注册再启动**），
 /// `open` 不带应用就是系统默认。
 #[tauri::command(async)]
-pub fn open_path_open(
-    path: String,
-    action: String,
-    application: Option<String>,
-) -> Result<(), String> {
+pub fn open_path_open(path: String, action: String, application: Option<String>) -> Result<(), String> {
     let file = paths::validate_path(&path)?;
-    let action = paths::PathAction::parse(&action)
-        .ok_or_else(|| format!("未知的打开方式: {action}（只认 open / reveal）"))?;
+    let action =
+        paths::PathAction::parse(&action).ok_or_else(|| format!("未知的打开方式: {action}（只认 open / reveal）"))?;
     let facts = Facts::detect();
     let real = RealHost::new(facts.clone());
     paths::run_action(
@@ -249,11 +236,7 @@ pub fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
         let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
         out.push(TABLE[(n >> 18) as usize & 63] as char);
         out.push(TABLE[(n >> 12) as usize & 63] as char);

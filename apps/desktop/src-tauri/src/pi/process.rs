@@ -147,11 +147,7 @@ pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
     envs
 }
 
-pub async fn spawn_worker(
-    tab_id: &str,
-    args: SpawnArgs,
-    sink: Arc<dyn EventSink>,
-) -> Result<Worker, String> {
+pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink>) -> Result<Worker, String> {
     let argv = cli_args(&args)?;
     let mut cmd = tokio::process::Command::new(&args.pi_bin);
     cmd.current_dir(&args.cwd)
@@ -202,18 +198,9 @@ pub async fn spawn_worker(
             format!("spawn pi failed ({:?}): {e}", args.pi_bin)
         }
     })?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "pi stdin unavailable".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "pi stdout unavailable".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "pi stderr unavailable".to_string())?;
+    let mut stdin = child.stdin.take().ok_or_else(|| "pi stdin unavailable".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "pi stdout unavailable".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "pi stderr unavailable".to_string())?;
 
     let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
     let (state_tx, state_rx) = tokio::sync::watch::channel(WorkerState::Spawning);
@@ -360,11 +347,7 @@ async fn handle_line(
     if v["type"] == "response" {
         let id = v
             .get("id")
-            .and_then(|x| {
-                x.as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or_else(|| x.as_u64())
-            });
+            .and_then(|x| x.as_str().and_then(|s| s.parse::<u64>().ok()).or_else(|| x.as_u64()));
         if let Some(id) = id {
             let tx = worker.pending.lock().await.remove(&id);
             if let Some(tx) = tx {
@@ -470,7 +453,10 @@ mod tests {
         a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
         let workspace = argv(&a);
         assert!(workspace.contains(&"read,grep,find,ls,write,edit".to_string()));
-        assert!(!workspace.iter().any(|x| x.contains("bash")), "不应放开 shell: {workspace:?}");
+        assert!(
+            !workspace.iter().any(|x| x.contains("bash")),
+            "不应放开 shell: {workspace:?}"
+        );
     }
 
     #[test]
@@ -526,7 +512,14 @@ mod tests {
         a.name = Some("fleet:abc/scout".into());
         assert_eq!(
             argv(&a),
-            vec!["--mode", "rpc", "--session", "/tmp/s.jsonl", "--name", "fleet:abc/scout"]
+            vec![
+                "--mode",
+                "rpc",
+                "--session",
+                "/tmp/s.jsonl",
+                "--name",
+                "fleet:abc/scout"
+            ]
         );
         let mut b = args(PermissionMode::Full);
         b.session = SessionTarget::NoSession;
@@ -609,7 +602,9 @@ mod tests {
         a.subagent_policy = Some(policy_file(tmp.path()));
         a.envs = vec![("PI_CODING_AGENT_DIR".into(), "/tmp/empty".into())];
         let envs = spawn_envs(&a);
-        assert!(envs.iter().any(|(k, v)| k == "PI_CODING_AGENT_DIR" && v == "/tmp/empty"));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "PI_CODING_AGENT_DIR" && v == "/tmp/empty"));
         assert!(envs.iter().any(|(k, _)| k == DELEGATION_ENV));
         assert_eq!(envs.len(), 2);
     }

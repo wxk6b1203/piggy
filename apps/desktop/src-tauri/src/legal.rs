@@ -104,8 +104,8 @@ pub fn notices(version: &str) -> Value {
         "licenseName": "GNU General Public License v3.0 or later",
         "//": "无担保那句是 §0 明确要求显示的三件事之一，不要为了好看删掉",
         "warranty": "本程序是自由软件：你可以按自由软件基金会发布的 GNU 通用公共许可证\
-（第 3 版，或你选择的任何更新版本）重新分发和/或修改它。本程序的分发是希望它有用，\
-但没有任何担保，甚至没有适销性或特定用途适用性的默示担保。",
+    （第 3 版，或你选择的任何更新版本）重新分发和/或修改它。本程序的分发是希望它有用，\
+    但没有任何担保，甚至没有适销性或特定用途适用性的默示担保。",
         "licenseUrl": "https://www.gnu.org/licenses/gpl-3.0.html",
         "gplText": GPL_TEXT,
         "thirdParty": THIRD_PARTY,
@@ -123,9 +123,7 @@ pub fn notices(version: &str) -> Value {
 /// 其它平台放 Help（`Menu::default` 在非 macOS 上不带 App 子菜单）。
 /// 泛型是**为了可测**：`tauri::test::mock_app()` 用的是 `MockRuntime`，
 /// 而应用跑的是 `Wry`。不泛型化就只能靠肉眼看菜单（那正是漏掉一条的方式）。
-pub fn build_app_menu<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<tauri::menu::Menu<R>, String> {
+pub fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<tauri::menu::Menu<R>, String> {
     use tauri::menu::{Menu, MenuItem};
     // `MenuItemKind` 只在 macOS 那一支用到 —— **条件导入**是必须的：
     // 无条件导入时，非 macOS 编译会报 `unused import`（我在 Windows 上真机编译才看到，
@@ -134,8 +132,8 @@ pub fn build_app_menu<R: tauri::Runtime>(
     use tauri::menu::MenuItemKind;
 
     let menu = Menu::default(app).map_err(|e| e.to_string())?;
-    let legal = MenuItem::with_id(app, MENU_ID_LEGAL, MENU_LABEL_LEGAL, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
+    let legal =
+        MenuItem::with_id(app, MENU_ID_LEGAL, MENU_LABEL_LEGAL, true, None::<&str>).map_err(|e| e.to_string())?;
     let items = menu.items().map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "macos")]
