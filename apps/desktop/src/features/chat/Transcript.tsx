@@ -23,7 +23,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
-import { liveFor } from '@/lib/live';
+import { liveFor, resetLive } from '@/lib/live';
 import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
 import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
@@ -67,7 +67,6 @@ function railRowsOf(tab: { ids: string[]; byId: Record<string, { role: string; m
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const liveRef = useRef<HTMLDivElement>(null);
   /** 内容层（高度 = 虚拟总高）：测行高会改它，贴底要盯着它。 */
   const innerRef = useRef<HTMLDivElement>(null);
   const ids = useTabMsg(tabId, (t) => t.ids);
@@ -121,11 +120,36 @@ export function Transcript({ tabId }: { tabId: string }) {
     getItemKey: (i) => rowIds[i] ?? `row-${i}`,
   });
 
-  useEffect(() => {
-    const container = liveRef.current;
-    const scroller = scrollRef.current;
-    if (container && scroller) liveFor(tabId).mount(container, scroller);
-    return () => liveFor(tabId).unmount();
+  /**
+   * 实时块的挂载点：**回调 ref** —— 节点的生死由 React 报，不由 effect 的依赖猜。
+   *
+   * 起因（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」）：
+   * 实时行是最后一行、由虚拟化渲染，读者往上滚出窗口（或它在窗口外时这一轮开始流式）
+   * 就会**卸载**；回来时 React 给的是**另一个新节点**。早先这里写的是
+   * `useEffect(… mount(liveRef.current, scrollRef.current) …, [tabId, streaming])`：
+   * 节点换了 effect 不会再跑，引擎从此一直往被摘掉的那个节点写字，
+   * 界面上那一行空着，直到 `message_end` 把整段消息交给 store 才一次性出现。
+   *
+   * 现在：节点挂上就 `attach`，摘掉就 `detach`（文本留在引擎的 `pending` 里，
+   * 见 `lib/live` 的说明），文本与视图各司其职。
+   */
+  const attachLive = useCallback(
+    (node: HTMLDivElement | null) => {
+      const engine = liveFor(tabId);
+      if (node) engine.attach(node);
+      else engine.detach();
+    },
+    [tabId],
+  );
+
+  /**
+   * 一轮的边界（`streaming` 翻转）= 实时块的生命周期边界：上一轮的累积文本作废。
+   *
+   * 用**布局** effect：`attach` 是 ref 阶段先跑的（可能把上一轮残留的 `pending` 重放出来），
+   * 这一句必须在同一帧绘制前把新一轮清干净，不然会闪一下上一轮的字。
+   */
+  useLayoutEffect(() => {
+    resetLive(tabId);
   }, [tabId, streaming]);
 
   /**
@@ -479,7 +503,7 @@ export function Transcript({ tabId }: { tabId: string }) {
 
   return (
     <div className="pg-transcript-wrap" data-rail-side={railPlacement} data-tab-id={tabId}>
-      <div ref={scrollRef} className="pg-transcript">
+      <div ref={scrollRef} className="pg-transcript" data-transcript-scroll>
         {hasMore && (
           <div className="pg-transcript-older">
             <button type="button" disabled={loadingOlder} onClick={() => void loadEarlier()} data-load-older>
@@ -513,7 +537,7 @@ export function Transcript({ tabId }: { tabId: string }) {
                 }}
               >
                 {id === LIVE_ID ? (
-                  <div className="pg-message pg-assistant pg-live" ref={liveRef}>
+                  <div className="pg-message pg-assistant pg-live" ref={attachLive}>
                     <div className="pg-role">assistant ▌</div>
                   </div>
                 ) : (

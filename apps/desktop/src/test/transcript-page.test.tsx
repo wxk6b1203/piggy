@@ -14,25 +14,32 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act } from 'react';
 
-const { invokeMock, scrollToIndex, scrollerSize } = vi.hoisted(() => {
+const { invokeMock, scrollToIndex, scrollerSize, vwindow } = vi.hoisted(() => {
+  /** 一个可订阅的小信号（"值变了 → 重渲染"，同真实虚拟化器的 `onChange`）。 */
+  const signal = <T,>(initial: T) => {
+    const listeners = new Set<() => void>();
+    return {
+      value: initial,
+      subscribe(l: () => void) {
+        listeners.add(l);
+        return () => {
+          listeners.delete(l);
+        };
+      },
+      set(next: T) {
+        this.value = next;
+        for (const l of [...listeners]) l();
+      },
+    };
+  };
   /* 滚动容器的实测高度（真机由虚拟化器**内部**那个 ResizeObserver 报：
      面板被 dockview 摘出 DOM 时 0，回到前台时 622 —— 门禁实测 622→0→622）。
      这里复刻"RO 报新尺寸 → 虚拟化器重渲染"这一步，测试用 `setScrollerSize` 驱动。 */
-  const listeners = new Set<() => void>();
-  const size = {
-    height: 0,
-    subscribe(l: () => void) {
-      listeners.add(l);
-      return () => {
-        listeners.delete(l);
-      };
-    },
-    set(h: number) {
-      size.height = h;
-      for (const l of [...listeners]) l();
-    },
-  };
-  return { invokeMock: vi.fn(), scrollToIndex: vi.fn(), scrollerSize: size };
+  const size = signal({ height: 0 });
+  /* 渲染窗口（真机 = 视口 + overscan 算出来的那一截）。
+     默认全渲染（老用例不需要窗口）；要造"实时行被滚出窗口"的场景就 `vwindow.set(0, 5)`。 */
+  const win = signal({ from: 0, to: Number.POSITIVE_INFINITY });
+  return { invokeMock: vi.fn(), scrollToIndex: vi.fn(), scrollerSize: size, vwindow: win };
 });
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
@@ -55,20 +62,25 @@ vi.mock('@tanstack/react-virtual', async () => {
       getItemKey: (i: number) => string | number;
     }) => {
       // 订阅实测高度：变了就重渲染（真虚拟化器走 `onChange` → rerender，同义）
-      const height = React.useSyncExternalStore(scrollerSize.subscribe, () => scrollerSize.height);
+      const height = React.useSyncExternalStore(scrollerSize.subscribe, () => scrollerSize.value.height);
+      // 渲染窗口：不给窗口就全渲染（老用例的口径不变）
+      const win = React.useSyncExternalStore(vwindow.subscribe, () => vwindow.value);
       const startOf = (index: number) =>
         Array.from({ length: index }, (_, i) => estimateSize(i)).reduce((a, b) => a + b, 0);
       return {
         getTotalSize: () => count * estimateSize(0),
         // `key` 必须是**行键**（组件把 `getItemKey` 传进来了）：读者锚点按行键找回下标，
         // mock 里若拿下标当键，那条路径就永远走不到（假绿）。
-        getVirtualItems: () =>
-          Array.from({ length: count }, (_, index) => ({
+        getVirtualItems: () => {
+          const from = Math.max(0, win.from);
+          const to = Math.min(count - 1, win.to);
+          return Array.from({ length: Math.max(0, to - from + 1) }, (_, k) => from + k).map((index) => ({
             index,
             key: getItemKey(index),
             start: startOf(index),
             size: estimateSize(index),
-          })),
+          }));
+        },
         getOffsetForIndex: (index: number) => [startOf(index)] as const,
         measureElement: () => {},
         measure: () => {},
@@ -80,6 +92,7 @@ vi.mock('@tanstack/react-virtual', async () => {
 });
 
 import { Transcript } from '@/features/chat/Transcript';
+import { liveFor } from '@/lib/live';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
@@ -89,6 +102,14 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 30)
 const q = <T extends Element>(sel: string) => domContainer().querySelector<T>(sel);
 const TAB = 'tab-page';
 const FILE = '/tmp/s.jsonl';
+
+/** 手动设渲染窗口（真机由虚拟化器按视口+overscan 算，见 mock 的说明）。 */
+async function setWindow(from: number, to: number) {
+  await act(async () => {
+    vwindow.set({ from, to });
+    await new Promise((r) => setTimeout(r, 10));
+  });
+}
 
 /** 一行消息（`session_page` 的行形状：`{role, message}`）。 */
 const row = (i: number, role = 'user') => ({
@@ -169,7 +190,7 @@ function scroller(): HTMLDivElement {
 /** 面板可见性：滚动容器有没有真实布局（见 `scrollerSize` 的说明）。 */
 async function setScrollerSize(height: number) {
   await act(async () => {
-    scrollerSize.set(height);
+    scrollerSize.set({ height });
     await new Promise((r) => setTimeout(r, 10));
   });
 }
@@ -210,7 +231,8 @@ function seedOffsets(
 beforeEach(() => {
   invokeMock.mockReset();
   scrollToIndex.mockReset();
-  scrollerSize.height = 0; // jsdom 没有布局，默认与"面板不在前台"的读数一致
+  scrollerSize.value = { height: 0 }; // jsdom 没有布局，默认与"面板不在前台"的读数一致
+  vwindow.value = { from: 0, to: Number.POSITIVE_INFINITY };
   invokeMock.mockImplementation(async (name: string) => {
     if (name === 'session_page') return page(0, 0, false);
     return {};
@@ -704,5 +726,92 @@ describe('向下续页（换窗之后往下滚不再撞墙）', () => {
       invokeMock.mock.calls.filter((c) => c[0] === 'session_page'),
       '程序化滚动触发了续页 —— 会自我级联',
     ).toHaveLength(0);
+  });
+});
+
+/**
+ * 实时块（流式）与虚拟化的交接。
+ *
+ * 起因（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」）：
+ * 实时行是转录的**最后一行**，由虚拟化渲染。读者往上滚出窗口、或它在窗口外时这一轮开始流式，
+ * 这个节点就会被卸载；回到底部时 React 给的是**另一个新节点**。
+ * 早先挂载点由 `useEffect(…, [tabId, streaming])` 决定 —— 节点换了 effect 不会再跑，
+ * 引擎从此往被摘掉的那个节点写字，界面上那一行一直是空的，直到 `message_end`
+ * 把整段消息交给 store 才一次性出现。
+ *
+ * 这里把"渲染窗口"当成虚拟化器（真机 = 视口 + overscan），确定性地造出那次卸载/重挂。
+ */
+describe('实时块绑在**当前**那个节点上（虚拟化卸载/重挂）', () => {
+  it('实时行滚出窗口再滚回来：文本继续长在可见节点上，不许空着', async () => {
+    seed(30);
+    mountDom(<Transcript tabId={TAB} />);
+    await setScrollerSize(400);
+    await flush();
+    const live = liveFor(TAB);
+
+    // 一轮开始 → 末尾出现实时行（真机上这行是 `agent_start` 提交带来的）
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
+    });
+    await flush();
+    await act(async () => {
+      live.handleFrame({ signals: [{ type: 'text_start', contentIndex: 0 }] });
+      live.handleFrame({ text: [{ contentIndex: 0, delta: '前半段' }] });
+    });
+    expect(q('.pg-live')?.textContent).toContain('前半段');
+
+    // 读者往上滚：实时行离开渲染窗口（真机 = 虚拟化把它卸载）
+    await setWindow(0, 5);
+    expect(q('.pg-live')).toBeNull();
+    // 不在窗口里的帧照收（内容不丢）
+    await act(async () => {
+      live.handleFrame({ text: [{ contentIndex: 0, delta: '中间段' }] });
+    });
+
+    // 回到底部：实时行重新渲染 —— 它必须是引擎的视图，而不是一个空壳
+    await setWindow(0, Number.POSITIVE_INFINITY);
+    const node = q('.pg-live');
+    expect(node, '回到窗口后没有实时行').toBeTruthy();
+    expect(node!.textContent, '实时行重挂之后是空的 —— 引擎写进了被摘掉的那个节点').toContain(
+      '前半段中间段',
+    );
+    // 之后的增量继续落在可见节点上
+    await act(async () => {
+      live.handleFrame({ text: [{ contentIndex: 0, delta: '后半段' }] });
+    });
+    expect(q('.pg-live')!.textContent).toContain('前半段中间段后半段');
+  });
+
+  it('新一轮开始清掉上一轮的残留（reset 在 streaming 的边界上）', async () => {
+    seed(4);
+    mountDom(<Transcript tabId={TAB} />);
+    await setScrollerSize(400);
+    await flush();
+    const live = liveFor(TAB);
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
+    });
+    await flush();
+    await act(async () => {
+      live.handleFrame({ text: [{ contentIndex: 0, delta: '上一轮' }] });
+    });
+    expect(q('.pg-live')?.textContent).toContain('上一轮');
+
+    // 一轮结束（实时块转正）→ 新一轮开始
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, { type: 'agent_settled' } as never);
+    });
+    await flush();
+    expect(q('.pg-live')).toBeNull();
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
+    });
+    await flush();
+    expect(q('.pg-live')!.textContent).not.toContain('上一轮');
+    await act(async () => {
+      live.handleFrame({ text: [{ contentIndex: 0, delta: '这一轮' }] });
+    });
+    expect(q('.pg-live')!.textContent).toContain('这一轮');
+    expect(q('.pg-live')!.textContent).not.toContain('上一轮');
   });
 });

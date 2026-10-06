@@ -1,6 +1,7 @@
 /**
  * per-tab 事件接线（docs/03 §2.14）：幂等挂载，tab 关闭时拆除。
- * 帧：仅活动 tab 走实时块；commit：一律入 per-tab store；后台 settled → 未读徽标。
+ * 帧：一律进实时块引擎（后台 tab 只是没有可见节点，文本照攒，见下面的说明）；
+ * commit：一律入 per-tab store；后台 settled → 未读徽标。
  */
 import { on, cmd } from '@/lib/ipc';
 import { liveFor } from '@/lib/live';
@@ -26,9 +27,17 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     const un: VoidFn[] = [];
     un.push(
       await on(`pi:frame:${tabId}`, (frame: Frame) => {
-        if (useTabs.getState().activeTabId === tabId) {
-          liveFor(tabId).handleFrame(frame);
-        }
+        /*
+         * 后台 tab 的帧**也收**。
+         *
+         * 早先这里写着 `if (activeTabId === tabId)` —— 后台 tab 的帧直接丢弃（当时的理由：
+         * "只给活动 tab 做视觉，省掉后台的 DOM 工作"）。但实时块的文本就是**内容**：
+         * 切走那段时间的增量一丢，切回来时那一轮就缺一段（同一个 tab 内看起来像"流式重启"），
+         * 而 DSH 的实时尾部挂在每个会话自己的状态里，不存在"切走就丢字"。
+         * 现在的代价只是"往摘出文档的节点上追加文本"（`lib/live` 的 `attach`/`detach`：
+         * 没有节点就只累积字符串），没有布局，也没有多余的重渲染。
+         */
+        liveFor(tabId).handleFrame(frame);
       }),
     );
     un.push(
