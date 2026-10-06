@@ -3,7 +3,7 @@
  *
  * `pi:frame` → 直接 DOM 追加（appendData），不触发 React 渲染。
  *
- * ## 两条纪律（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」之后定的）
+ * ## 三条纪律（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」之后定的）
  *
  * ① **文本是内容，DOM 节点只是视图。**
  *    累积的文本活在 `pending` 里（每个 contentIndex 的 kind/label/全文），节点只是它当前的
@@ -19,6 +19,13 @@
  * ② **没有布局就没有"底部"。**
  *    `clientHeight === 0`（节点不在文档里 / 面板被 dockview 摘出 DOM）时不写 `scrollTop`：
  *    0/0/0 的几何会被读成"已经贴着底"，对后台 tab 是白做工，对可见性切换是假基线。
+ *
+ * ③ **读者接管之后，引擎一个像素都不许自己滚**（`setFollowing(false)`）。
+ *    引擎这条 rAF 贴底（离底 <120px 就贴）在读者往上滚时就是"每帧把人拽回底部"的元凶 ——
+ *    用户 2026-09-23 报"一直向下滚动，我希望手动向上翻滚时，不会被自动跳到最底下"。
+ *    真浏览器实测（修复前）：`wheel(0,-120)` 之后每 25ms 采样一次，`gap` 恒为 0、
+ *    位置只在跟着内容往上长。跟随意图由 `Transcript` 拥有（只有它知道滚动采样与读者手势），
+ *    引擎只执行；`following` 默认 true（后台 tab 没有转录时也保持"贴底"语义）。
  */
 
 import type { Frame } from '@piggy/pi-protocol';
@@ -42,6 +49,8 @@ class LiveEngine {
   private usageLastEmit = -Infinity;
   private followRAF = 0;
   private disposed = false;
+  /** 读者是否还在跟尾（见文件头 ③）：false 时 `follow()` 直接返回。 */
+  private following = true;
 
   /**
    * 挂到当前 DOM 节点。同一个节点重复 attach 是幂等的（不重建、不清文本）。
@@ -63,6 +72,12 @@ class LiveEngine {
       const el = this.ensureBlock(ci, p.kind, p.label);
       if (el && p.text) this.appendText(el, p.text);
     }
+  }
+
+  /** 跟随意图（Transcript 拥有，见文件头 ③）。 */
+  setFollowing(next: boolean) {
+    this.following = next;
+    if (!next) cancelAnimationFrame(this.followRAF);
   }
 
   /** 节点被摘掉（虚拟化卸载 / 面板摘出 DOM / Transcript 卸载）：只丢视图，文本留着。 */
@@ -198,6 +213,7 @@ class LiveEngine {
   }
 
   private follow() {
+    if (!this.following) return; // 读者接管了（见文件头 ③）
     const el = this.scroller();
     if (!el || !this.container) return;
     if (el.clientHeight <= 0) return; // 没有布局 → 没有"底部"（见文件头 ②）

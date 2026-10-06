@@ -52,6 +52,17 @@ import {
 
 const LIVE_ID = '__live__';
 
+/**
+ * 读者"想往上"的意图有效期（ms）。
+ *
+ * 一次向上滚轮会**立刻**交还控制权（见 `readerUpRef`），但"交还"要能扛住随后那次采样：
+ * 位置刚走了 25px 时几何上仍算"贴着底"（25px 容差），按老规则会当场把跟随还回来 →
+ * 下一帧又把读者拽回去。所以手势期间**不许**用容差反悔；等位置真的往上走了一格
+ * （或手势超过这个窗口还没走成）才结束这次手势，之后才回到"贴底就跟随"的常规规则。
+ * 400ms 是因为 macOS 的惯性滚动会在手指离开后继续发一堆 wheel 事件。
+ */
+const READER_GESTURE_MS = 400;
+
 /** 从 store 的一个 tab 里取出刻度需要的行原料（跳转落位时重新读一次）。 */
 function railRowsOf(tab: { ids: string[]; byId: Record<string, { role: string; message: unknown; offset: number | null }> } | undefined): RailSourceRow[] {
   if (!tab) return [];
@@ -103,14 +114,47 @@ export function Transcript({ tabId }: { tabId: string }) {
   /**
    * 跟随尾部：`ref` 给滚动/尺寸回调读（它们不该因意图变化而重挂），
    * `state` 只驱动「回到底部」按钮的显隐。
+   *
+   * ⚠️ 意图变化必须**同时**告诉实时块引擎（`lib/live` 的 `setFollowing`）：
+   * 引擎自己有一条 rAF 贴底（`follow()`，离底 <120px 就贴），读者一接管它就成了
+   * "每帧把读者拽回底部"的元凶 —— 用户 2026-09-23 报的"手动向上翻滚时会被自动跳到最底下"
+   * 就是它（实测：滚轮往上 120px 之后每一帧都被贴回，`gap` 恒为 0）。
    */
   const followingRef = useRef(true);
   const [following, setFollowingState] = useState(true);
-  const setFollowing = useCallback((next: boolean) => {
-    if (followingRef.current === next) return;
-    followingRef.current = next;
-    setFollowingState(next);
+  const setFollowing = useCallback(
+    (next: boolean) => {
+      liveFor(tabId).setFollowing(next);
+      if (followingRef.current === next) return;
+      followingRef.current = next;
+      setFollowingState(next);
+    },
+    [tabId],
+  );
+
+  /**
+   * 读者手势（滚轮 / 触摸 / 拖滚动条）的最近时刻 —— 非方向性的"这是人滚的"标记。
+   *
+   * 为什么要它：`nextFollowingFromSample` 的第 2 条规则是"内容比上次采样更高 → 是内容把底
+   * 推走的，继续跟随"。流式时内容**每 16ms 就长高一次**，于是"读者刚往上滚了一下"这个
+   * 采样也会命中那条规则 → 跟随意图原地保持 → 下一帧贴底把人拽回去（滚轮在手感上完全没反应）。
+   * 内容长高确实不能算读者滚动（那条规则要留着，它救的是 `loadTail` 换页时浏览器滚动锚定
+   * 造成的假位置），所以判据要换成**"这次滚动背后有没有读者的手势"**。
+   */
+  const readerGestureRef = useRef(0);
+  const markReaderGesture = useCallback(() => {
+    readerGestureRef.current = performance.now();
   }, []);
+
+  /**
+   * 读者**向上**的意图：`{ top: 滚轮那一刻的位置, at: 时刻 }`。
+   *
+   * 与 `readerGestureRef` 分开，是因为它要扛的东西不同：一次上滚必须**兑现**
+   * （位置真的往上走了一格），期间不许被"贴着底"的 25px 容差反悔掉
+   * —— 小滚轮一格正好是 25px 上下，容差会把每一次都吞掉，读者永远翻不上去
+   * （门禁第 20 段实测：4 × `wheel(0,-25)` 每次都被按回底部，`gap` 一路是 0）。
+   */
+  const readerUpRef = useRef<{ top: number; at: number } | null>(null);
 
   const virtualizer = useVirtualizer({
     count: rowIds.length,
@@ -136,8 +180,13 @@ export function Transcript({ tabId }: { tabId: string }) {
   const attachLive = useCallback(
     (node: HTMLDivElement | null) => {
       const engine = liveFor(tabId);
-      if (node) engine.attach(node);
-      else engine.detach();
+      if (node) {
+        engine.attach(node);
+        // 挂上就把当前意图同步过去：读者接管过之后再挂回来的节点，不许自己贴底
+        engine.setFollowing(followingRef.current);
+      } else {
+        engine.detach();
+      }
     },
     [tabId],
   );
@@ -216,22 +265,19 @@ export function Transcript({ tabId }: { tabId: string }) {
   /** 读者动作（点刻度跳转 / 换窗）：忘掉"程序化位置"，下一次滚动算读者滚的。 */
   const handOverToReader = useCallback(() => {
     pinnedTopRef.current = null;
-    followingRef.current = false;
-    setFollowingState(false);
-  }, []);
+    setFollowing(false);
+  }, [setFollowing]);
 
   // 换标签 = 换会话：跟随意图回到初始值（DSH 打开会话没有"上次读到哪"时直接贴底）
   useEffect(() => {
-    followingRef.current = true;
-    setFollowingState(true);
-  }, [tabId]);
+    setFollowing(true);
+  }, [setFollowing, tabId]);
 
   // 换窗（跳到很久以前）：窗口不在尾部，跟随意图必须关掉
   useEffect(() => {
     if (!hasNewer) return;
-    followingRef.current = false;
-    setFollowingState(false);
-  }, [hasNewer]);
+    setFollowing(false);
+  }, [hasNewer, setFollowing]);
 
   // 第一页灌进来（hydrated 由 false 变 true）→ 贴底
   useEffect(() => {
@@ -334,14 +380,40 @@ export function Transcript({ tabId }: { tabId: string }) {
       // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
       // 判据是"这段距离是谁造成的"（内容长高/换页 ≠ 读者滚动），见
       // `nextFollowingFromSample` 的说明 —— 只看"位置对不对得上"会被滚动锚定骗到。
-      setFollowing(
-        nextFollowingFromSample({
-          metrics,
-          pinnedTop: pinnedTopRef.current,
-          lastScrollHeight: pinnedHeightRef.current,
-          following: followingRef.current,
-        }),
-      );
+      //
+      // 但**读者的上滚手势**要让位（用户 2026-09-23 报："一直向下滚动，
+      // 我希望手动向上翻滚时，不会被自动跳到最底下"）：流式时内容每 16ms 长高一次，
+      // "内容长高"这条规则会一直命中，于是读者的滚轮怎么滚都被下一帧贴回去。
+      const up = readerUpRef.current;
+      if (up) {
+        const movedUp = metrics.scrollTop < up.top - 1;
+        const expired = performance.now() - up.at > READER_GESTURE_MS;
+        if (movedUp) {
+          readerUpRef.current = null; // 手势兑现：位置真的往上走了
+          setFollowing(false);
+        } else if (expired) {
+          readerUpRef.current = null; // 抖了一下没走动（已在顶 / 没得滚）：作废，回常规规则
+          setFollowing(
+            nextFollowingFromSample({
+              metrics,
+              pinnedTop: pinnedTopRef.current,
+              lastScrollHeight: pinnedHeightRef.current,
+              following: followingRef.current,
+            }),
+          );
+        }
+        // 手势还在、位置还没动：什么都不改（滚轮那一刻已经交还了，
+        // 这里若按"贴着底"反悔，25px 容差每次都会把读者按回去）
+      } else {
+        setFollowing(
+          nextFollowingFromSample({
+            metrics,
+            pinnedTop: pinnedTopRef.current,
+            lastScrollHeight: pinnedHeightRef.current,
+            following: followingRef.current,
+          }),
+        );
+      }
       // 位置归读者 → 记住他读到哪一行；贴底时清掉（下一次贴底才是权威位置）
       readerAnchorRef.current = followingRef.current
         ? null
@@ -399,18 +471,48 @@ export function Transcript({ tabId }: { tabId: string }) {
     return () => cancelAnimationFrame(raf);
   }, [scrollerHeight, pinToBottom, recomputeActive, restoreReaderAnchor]);
 
+  /**
+   * 读者的滚动意图（DSH 的 `movedByReader` 在 Piggy 这侧的来源）：
+   *
+   * - **滚轮**是"我要看别处"最干净的信号（程序化滚动、内容长高、滚动锚定都不会产生它）；
+   * - 往上滚**立刻**交还控制权，不等几何：这一帧内容还在长，等采样到手引擎已经又贴回底部了
+   *   （真浏览器实测：`wheel(0,-120)` 之后每一帧的 `gap` 都是 0）。
+   *   几何上真要判"有效"由 `recomputeActive` 那次采样兜底 —— 只是原地抖一下（没真滚上去）
+   *   的话它会把跟随还回来（`isAtTail`）；
+   * - 往下滚不改变意图（继续跟随 / 顺便续页），触摸与拖动滚动条只记手势、方向交给采样判。
+   */
+  const onWheel = useCallback(
+    (e: WheelEvent) => {
+      markReaderGesture();
+      if (e.deltaY < 0) {
+        readerUpRef.current = { top: scrollRef.current?.scrollTop ?? 0, at: performance.now() };
+        handOverToReader();
+      } else {
+        readerUpRef.current = null; // 往下滚：上滚意图作废
+        maybeLoadNewer();
+      }
+    },
+    [handOverToReader, markReaderGesture, maybeLoadNewer],
+  );
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     recomputeActive();
     el.addEventListener('scroll', recomputeActive, { passive: true });
-    // 向下续页只认滚轮（见 `maybeLoadNewer` 的说明）
-    el.addEventListener('wheel', maybeLoadNewer, { passive: true });
+    el.addEventListener('wheel', onWheel, { passive: true });
+    // 触摸 / 拖滚动条：只记手势（方向由采样按几何判），键盘滚动同理（能聚焦时）
+    el.addEventListener('touchstart', markReaderGesture, { passive: true });
+    el.addEventListener('pointerdown', markReaderGesture);
+    el.addEventListener('keydown', markReaderGesture);
     return () => {
       el.removeEventListener('scroll', recomputeActive);
-      el.removeEventListener('wheel', maybeLoadNewer);
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', markReaderGesture);
+      el.removeEventListener('pointerdown', markReaderGesture);
+      el.removeEventListener('keydown', markReaderGesture);
     };
-  }, [maybeLoadNewer, recomputeActive]);
+  }, [markReaderGesture, maybeLoadNewer, onWheel, recomputeActive]);
 
   /**
    * 跳到某一轮：已载入的直接滚过去；**没载入的换窗过去**（只读目标那一页）。

@@ -815,3 +815,133 @@ describe('实时块绑在**当前**那个节点上（虚拟化卸载/重挂）',
     expect(q('.pg-live')!.textContent).not.toContain('上一轮');
   });
 });
+
+/**
+ * 流式中"手动往上滚"必须真的把控制权拿走（用户 2026-09-23 报：
+ * "一直向下滚动，我希望手动向上翻滚时，不会被自动跳到最底下"）。
+ *
+ * 现场：`nextFollowingFromSample` 的第 2 条规则是"内容比上次采样更高 → 是内容把底推走的，
+ * 继续跟随"（它救的是 `loadTail` 换页时浏览器滚动锚定造成的假位置）。可流式时内容
+ * **每 16ms 长高一次**，于是读者滚轮那次采样也命中这条规则 → 跟随原地保持 →
+ * 下一帧贴底把人拽回去。真浏览器实测（修复前）：`wheel(0,-25)`×4 之后每 25ms 采样，
+ * `gap` 恒为 0、位置一路跟着内容往上长 —— 滚轮在手感上完全没反应。
+ *
+ * 判据换成"这次滚动背后有没有读者的手势"：有手势只认几何，没手势才用老规则。
+ */
+describe('流式中的回滚：读者手势说了算', () => {
+  function seedRows(n: number) {
+    useMessages.getState().hydratePage(
+      TAB,
+      Array.from({ length: n }, (_, i) => ({ ...row(i, i % 2 === 0 ? 'user' : 'assistant'), offset: i })) as never[],
+      { cursor: 0, hasMore: false },
+    );
+  }
+
+  /** 真滚轮（jsdom 不会自己滚，所以手势与位置分开造：先 wheel，再改位置 + 派发 scroll）。 */
+  async function wheelUp(el: HTMLElement, deltaY: number) {
+    await act(async () => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: false }));
+      await new Promise((r) => setTimeout(r, 10));
+    });
+  }
+
+  it('往上滚之后交还控制权，内容继续长高也不许把读者拽回底部', async () => {
+    seedRows(40);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '组件应当已经贴到底').toBe(1600);
+
+    // 流式中：内容先长高，读者同时往上滚（滚轮手势在手）
+    fakeGeometry(el, 3400, 400);
+    await wheelUp(el, -300);
+    await scrollTo(el, 1300);
+    expect(q('[data-to-bottom]'), '读者滚上去了，跟随却没交还（下一帧就会被拽回底部）').toBeTruthy();
+
+    // 内容继续长高 + 新消息落地：位置必须留在读者那里
+    const keep = el.scrollTop;
+    fakeGeometry(el, 4200, 400);
+    await scrollTo(el, keep);
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: '新落地的一段' }], timestamp: 4242 },
+      } as never);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '内容一长高/新消息一到就把读者拽回了底部').toBe(keep);
+    expect(q('[data-to-bottom]'), '交还之后按钮不许自己消失').toBeTruthy();
+  });
+
+  it('小滚轮一格（25px，正好在"贴着底"的容差内）也必须交还 —— 容差不许吞掉读者的手势', async () => {
+    seedRows(40);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop).toBe(1600);
+
+    // 内容在长高（流式），读者只滚了一格：25px。老口径会把它当成"还贴着底"，
+    // 于是下一次贴底把这一格吞掉 —— 门禁实测 4 格连滚都被按回底部（gap 一路 0）。
+    fakeGeometry(el, 3400, 400);
+    await wheelUp(el, -25);
+    await scrollTo(el, 1575);
+    expect(q('[data-to-bottom]'), '25px 的上滚被容差吞掉了（读者翻不上去）').toBeTruthy();
+    const keep = el.scrollTop;
+    fakeGeometry(el, 3800, 400);
+    await scrollTo(el, keep);
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: '又一段' }], timestamp: 4444 },
+      } as never);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '一格上滚之后又被拽回底部').toBe(keep);
+  });
+
+  it('滚回底部之后跟随自己回来（下一次长高又贴底）', async () => {
+    seedRows(40);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    fakeGeometry(el, 2000, 400);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    await wheelUp(el, -300);
+    await scrollTo(el, 1000);
+    expect(q('[data-to-bottom]')).toBeTruthy();
+
+    // 读者滚回底部（还在手势窗口内）：跟随应当自己回来
+    await scrollTo(el, 1600);
+    expect(q('[data-to-bottom]'), '滚到底了跟随却没回来').toBeNull();
+
+    // 再长高 → 又贴到新的底
+    fakeGeometry(el, 2400, 400);
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: '又一段' }], timestamp: 4343 },
+      } as never);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop, '跟随回来了却没贴到新的底').toBe(2000);
+  });
+});

@@ -188,6 +188,30 @@ describe('LiveEngine（per-tab）', () => {
     expect(scroll.scrollTop).toBe(100);
   });
 
+  /**
+   * 纪律 ③（用户 2026-09-23 报"一直向下滚动，我希望手动向上翻滚时，不会被自动跳到最底下"）：
+   * 引擎的 rAF 贴底在读者接管之后必须停手 —— 否则它每帧把人拽回底部（真浏览器实测：
+   * 滚轮往上 120px 之后每一帧 gap 都回到 0）。
+   */
+  it('读者接管（setFollowing(false)）之后一个像素都不写；交还跟随才继续贴底', async () => {
+    const { e, scroll } = mounted();
+    geometry(scroll, 3000, 400);
+    scroll.scrollTop = 2600; // 底部附近
+    e.setFollowing(false);
+    const g = geometry(scroll, 3000, 400); // 重装几何（顺带把写入计数清零）
+    scroll.scrollTop = 2600;
+    e.handleFrame({ text: [{ contentIndex: 0, delta: '读者在看别处' }] });
+    await frame();
+    expect(g.sets(), '读者接管之后引擎还在自己滚').toBe(1); // 只有我们手动设的那一次
+    expect(scroll.scrollTop).toBe(2600);
+
+    // 交还跟随（读者滚回底部 / 点「回到底部」）→ 下一帧继续贴底
+    e.setFollowing(true);
+    e.handleFrame({ text: [{ contentIndex: 0, delta: '继续跟' }] });
+    await frame();
+    expect(scroll.scrollTop).toBe(3000);
+  });
+
   it('usage 1Hz 节流回调', () => {
     const { e, scroll } = mounted();
     scroll.remove();
