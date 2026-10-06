@@ -611,6 +611,38 @@ DSH `FileDiff.tsx` 与 `DiffBlock.tsx`）：
 **`write` 没有 diff**（pi 的 write 结果 `details` 是 `undefined`，覆盖写看不出"原先是什么"，
 硬凑"全部新增"会骗人）。
 
+### 2.1.7 跨重启记住阅读位置（2026-09-25）
+
+用户要求："跨重启记住阅读位置"。开着会话时"读到哪"由 `TranscriptReading` 拿在内存里
+（面板被摘出 DOM 再挂回来还回去）；**进程一关就没了** —— 重开 Piggy 点开同一个会话，
+一律贴到底。
+
+**存什么**（`lib/readingPosition.ts`）：
+
+```
+{ following: boolean, offset: number | null, delta: number }
+```
+
+- `following` 为真 = 当时就贴着底 → 重开继续贴底（不必记行）；
+- 否则记**锚点行在会话文件里的字节偏移**（`MessageView.offset`）+ `delta`（视口顶端落在
+  这一行内部往下多少像素）。
+
+**键为什么是"会话文件 + 字节偏移"**：行 id 是每次载入现生成的（`role-时间戳-序号`），
+重启后全变；会话文件路径天然稳定，行在文件里的偏移同样稳定 —— 于是隔一次重启
+（哪怕中间 pi 又追加了几轮）"读到哪一行"仍然对得上。`Transcript` 负责把偏移翻回
+当前窗口里的行键（`positions.resolve`），翻不到就**老实贴底**（换过页、会话被截断）。
+
+**什么时候存**：采样落地（`flushSample`）与主动贴底（`followTail`）。⚠️ `followTail`
+**只在 `initialized` 之后才写**：打开会话的头几帧里 `ResizeObserver`（行被测量）会先走到
+那里，此时写 `null` 会把"上次读到中间"当场抹掉 —— 实测现象正是"重载之后永远贴底"。
+
+**存在哪**：`localStorage`（一个键装全部会话，按 `at` 保留最近 200 个），不写
+`~/.piggy/config.json` —— 位置是高频小状态，塞进共享配置文件会带来无谓的读改写与多实例
+写冲突。代价是清缓存会丢，可接受；读不出来（形状坏 / 没存过）一律当作第一次打开。
+
+**还到哪**：`reconcile()` 打开会话那一次 —— `restoreSavedPosition()` 先试还位置，
+失败才 `followTail()`（贴底）。
+
 ### 2.1.6 回合级过程折叠 + 「工作步骤展示」四档（2026-09-25）
 
 用户要的："回合级'过程折叠'"，对标 DSH 的 `TurnProcessNodeView`（docs/12 §3）。

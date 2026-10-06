@@ -35,6 +35,7 @@ import { useStore } from 'zustand';
 import { useAppConfig, type TranscriptDetail } from '@/stores/appConfig';
 import { defaultOpen, useTurnFold } from '@/stores/turnFold';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
+import { useTabs } from '@/stores/tabs';
 import { useTodoSupported } from '@/stores/todo';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
@@ -45,7 +46,8 @@ import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItem
 import { TurnRail } from './TurnRail';
 import { TurnFoldRow } from './TurnFoldRow';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
-import { railRowsFor, useTranscriptScroll } from './useTranscriptScroll';
+import { railRowsFor, useTranscriptScroll, type ReadingPositionPort } from './useTranscriptScroll';
+import { loadReadingPosition, saveReadingPosition } from '@/lib/readingPosition';
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,32 @@ export function Transcript({ tabId }: { tabId: string }) {
     return () => viewport.detach();
   }, [viewport, geometry]);
 
+  /* 跨重启记住阅读位置（docs/04 §2.1.7）：身份是**会话文件 + 行的字节偏移**。
+     `Transcript` 才知道会话文件（`useTabs`）与"偏移 → 行 id"的映射，所以端口在这里造。
+     ⚠️ 端口对象要稳定（`useMemo` 依赖只放会话文件与 tabId）：它挂在阅读层的输入上，
+     每次渲染换引用会让"记位置"这条路径反复重建。 */
+  const sessionFile = useTabs((s) => s.tabs[tabId]?.sessionFile ?? null);
+  const positions = useMemo<ReadingPositionPort>(
+    () => ({
+      read: () => loadReadingPosition(sessionFile),
+      save: (anchor) => {
+        if (anchor === null) {
+          saveReadingPosition(sessionFile, { following: true, offset: null, delta: 0 });
+          return;
+        }
+        const row = useMessages.getState().tabs[tabId]?.byId[anchor.key];
+        if (!row || row.offset == null) return; // 实时追加的行没有偏移：这一格不记（下次采样再试）
+        saveReadingPosition(sessionFile, { following: false, offset: row.offset, delta: anchor.delta });
+      },
+      resolve: (saved) => {
+        if (saved.offset === null) return null;
+        const tab = useMessages.getState().tabs[tabId];
+        return tab?.ids.find((id) => tab.byId[id]?.offset === saved.offset) ?? null;
+      },
+    }),
+    [sessionFile, tabId],
+  );
+
   const scroll = useTranscriptScroll(viewport, {
     tabId,
     ready: hydrated,
@@ -112,6 +140,7 @@ export function Transcript({ tabId }: { tabId: string }) {
     loadingOlder,
     hasNewer,
     loadingNewer,
+    positions,
   });
 
   /* 刻度梯：整段会话的轮次轮廓（文件扫出来的）+ 已载入的行（真实行覆盖轮廓）。

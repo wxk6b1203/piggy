@@ -358,15 +358,32 @@ const messages = [
  * 浏览器门禁可以调 {@link mockSetTranscriptRows} 灌一段长会话，
  * 用来核对"打开即贴底 / 加载更早不跳"这两条真几何行为。
  */
-let mockTranscript: Array<{ role: string; message: unknown }> = messages.map((m) => ({
-  role: String((m as { role?: string }).role ?? ''),
-  message: m,
-}));
+let mockTranscript: Array<{ role: string; message: unknown }> = (() => {
+  /* ⚠️ 初值可以从 localStorage 读：门禁第 26 段要模拟"重启"（重载页面）来核对
+     跨重启记阅读位置，而那一套 init script 每次导航都会清 localStorage ——
+     它把这一段长会话重新播一遍（真机上这份数据在 pi 写的 JSONL 里，不需要这一手）。 */
+  try {
+    const raw = localStorage.getItem('piggy:mock:transcript');
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as Array<{ role: string; message: unknown }>;
+      }
+    }
+  } catch {
+    /* 没有 localStorage / JSON 坏了：用内置演示会话 */
+  }
+  return messages.map((m) => ({
+    role: String((m as { role?: string }).role ?? ''),
+    message: m,
+  }));
+})();
 
 /** 灌入 mock 转录（门禁用：长会话的滚动手感只有真布局能量）。 */
 export function mockSetTranscriptRows(rows: Array<{ role: string; message: unknown }>): void {
   mockTranscript = rows;
 }
+
 
 /**
  * 把 mock 转录**放回内置的演示会话**。

@@ -3034,18 +3034,21 @@ const wheelHold = await (async () => {
      注：这不代表应用侧没问题 —— "读者手势与残留流式叠加"那条仍未查清，缺口留在 docs/15 §4。 */
   const fresh = await page.evaluate(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const stores = globalThis.__piggyStores;
     globalThis.__piggyEditor.closeAllTabs();
     await sleep(700);
     const row = document.querySelector('.pg-session-row');
     if (!row) return { error: '侧栏里没有会话行（点不到会话）' };
     row.click();
-    // 等转录真的挂上来（固定 sleep 会偶尔踩空：这一段的标签是**新开**的）
-    for (let i = 0; i < 40; i += 1) {
+    /* 等转录真的挂上来**并且装载完**（`hydrated`）：`hydratePage` 会 `resetRows`，
+       灌数据抢在它前面 = 那 150 行被整片重置（实测：这一段的转录只剩几百像素）。 */
+    for (let i = 0; i < 60; i += 1) {
       await sleep(150);
-      const id = globalThis.__piggyStores.useTabs.getState().activeTabId;
-      if (document.querySelector(`[data-tab-id="${id}"] .pg-transcript`)) return { tabId: id };
+      const id = stores.useTabs.getState().activeTabId;
+      const t = stores.useMessages.getState().tabs[id];
+      if (document.querySelector(`[data-tab-id="${id}"] .pg-transcript`) && t?.hydrated) return { tabId: id };
     }
-    return { error: '新开的会话标签没有转录 DOM' };
+    return { error: '新开的会话标签没有转录 DOM / 没有装载完' };
   });
   if (fresh.error) {
     bad.push(`回滚（第 20 段）：${fresh.error} ★`);
@@ -3826,6 +3829,176 @@ const turnFolding = await page.evaluate(async () => {
 
   return { standard, expanded, detailed, verbose };
 });
+
+/* ---------- 26. 跨重启记住阅读位置（docs/04 §2.1.7）--------------------------
+ * 用户 2026-09-25："跨重启记住阅读位置"。身份是**会话文件 + 行的字节偏移**（行 id 重载就变），
+ * 存在 localStorage 里。这里走真浏览器：**用鼠标滚轮**滚到中间 → 等采样落地 → **重载页面**
+ * （= 重启）→ 打开同一个会话 → 必须落在刚才那一行附近，而不是贴底；
+ * 点「回到底部」后存的位置变回"贴底"。
+ *
+ * ⚠️ 为什么必须用**滚轮**而不是 `tr.scrollTop = x`：程序化写位置要么被当成"内容长高"、
+ * 要么在采样落地之前就被跟随意图贴回底部（实测：写完 gap 仍是 0，整段核对失去意义）。
+ * 滚轮才是"读者说的"（`movedByReader`），也是用户真实的手势。 */
+const reading = { before: null, after: null, bottom: null };
+
+const readingSetup = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const mock = globalThis.__piggyMock;
+  /* 100 轮 = 200 行，够滚。⚠️ 这一段最后要**重载页面**模拟重启，而：
+     · 门禁的 init script **每次导航都清 localStorage**（"干净启动"的口径）；
+     · mock 的转录是模块级内存状态，重载就回内置演示会话。
+     所以重载前要把"数据 + 存下来的位置"用**新注册的 init script** 重播一遍
+     （真机上这两样本来就在磁盘上：pi 的 JSONL 与我们的 localStorage）。 */
+  const rows = mock.mockBuildTranscript(100);
+  mock.mockSetTranscriptRows(rows);
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelector('.pg-session-row')?.click();
+  let tabId = '';
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(150);
+    tabId = stores.useTabs.getState().activeTabId;
+    const t = stores.useMessages.getState().tabs[tabId];
+    if (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`) && t?.hydrated && (t?.ids ?? []).length > 10) break;
+  }
+  await sleep(500); // 让测量与首次贴底都落定，免得刚滚就被跟随拽回去
+  const tr = document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
+  if (!tr) return { error: '没有转录' };
+  const r = tr.getBoundingClientRect();
+  return {
+    tabId,
+    sessionFile: stores.useTabs.getState().tabs[tabId]?.sessionFile ?? null,
+    rows: stores.useMessages.getState().tabs[tabId]?.ids.length ?? 0,
+    point: { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + Math.min(200, r.height / 2)) },
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+    seeded: rows,
+  };
+});
+
+if (!readingSetup.error) {
+  // 读者的手势：把指针放到转录上往上滚
+  await page.mouse.move(readingSetup.point.x, readingSetup.point.y);
+  await page.mouse.wheel(0, -1800);
+  await page.waitForTimeout(900); // 采样窗口（500ms）落地 = 记位置的时刻
+  reading.before = await page.evaluate(async (info) => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const stores = globalThis.__piggyStores;
+    await sleep(150);
+    const tr = document.querySelector(`[data-tab-id="${info.tabId}"] .pg-transcript`);
+    if (!tr) return { error: '滚完之后找不到转录' };
+    const top = tr.getBoundingClientRect().top;
+    const rowsEls = [...tr.querySelectorAll('.pg-vrow')];
+    const first = rowsEls.find((r) => r.getBoundingClientRect().top >= top - 1) ?? rowsEls[0];
+    const tab = stores.useMessages.getState().tabs[info.tabId];
+    const idx = first?.getAttribute('data-index');
+    const saved = JSON.parse(localStorage.getItem('piggy:reading-position') ?? '{}');
+    return {
+      gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+      anchorOffset: idx != null ? (tab?.byId[tab?.ids[Number(idx)] ?? '']?.offset ?? null) : null,
+      anchorText: (first?.textContent ?? '').slice(0, 24),
+      // ⚠️ 按**本会话文件**取：前面的段各自开过会话、也存过"贴底"
+      saved: info.sessionFile ? (saved[info.sessionFile] ?? null) : null,
+      savedKeys: Object.keys(saved),
+      rows: tab?.ids.length ?? 0,
+      toBottom: !!document.querySelector('[data-to-bottom]'),
+    };
+  }, readingSetup);
+} else {
+  reading.before = readingSetup;
+}
+
+/* 重载 = "重启应用"。先注册一个 init script，把这一段长会话**与**刚存下来的位置
+   在"清空之后、页面脚本之前"重新写进去（顺序：清空的 init script 先注册、先跑）。
+   真机上不需要这一手：pi 的会话文件与我们的 localStorage 都还在。 */
+await page.addInitScript(
+  (payload) => {
+    try {
+      localStorage.setItem('piggy:mock:transcript', JSON.stringify(payload.rows));
+      localStorage.setItem('piggy:reading-position', JSON.stringify({ [payload.file]: payload.position }));
+    } catch {
+      /* 没有 localStorage：这一段会红 */
+    }
+  },
+  {
+    rows: readingSetup.seeded ?? [],
+    file: readingSetup.sessionFile,
+    position: reading.before?.saved ?? { following: true, offset: null, delta: 0 },
+  },
+);
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.pg-transcript', { timeout: 15000 });
+await page.waitForTimeout(1200);
+await unfoldTranscript();
+await page.waitForTimeout(400);
+
+reading.after = await page.evaluate(async (sessionFile) => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  /* ⚠️ 重载恢复的是**更早那份布局快照**（用户关标签的动作不一定写回布局），
+     所以不能假设"重载完就是刚才那个会话"——像真用户那样，重启之后**再点一次**这个会话。
+     按侧栏行的 `data-session-path` 精确点，不靠顺序。 */
+  const row = [...document.querySelectorAll('.pg-session-row')].find(
+    (r) => r.getAttribute('data-session-path') === sessionFile,
+  );
+  if (!row) return { error: `重载后侧栏里找不到这个会话（${sessionFile}）` };
+  row.click();
+  let tabId = '';
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(150);
+    const found = Object.entries(stores.useTabs.getState().tabs).find(([, t]) => t.sessionFile === sessionFile);
+    const t = found ? stores.useMessages.getState().tabs[found[0]] : undefined;
+    if (found && t?.hydrated && (t.ids ?? []).length > 10) {
+      tabId = found[0];
+      break;
+    }
+  }
+  if (!tabId) return { error: '重载后打开会话超时' };
+  await sleep(400);
+  const tr = document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
+  if (!tr) return { error: '重载后没有转录' };
+  const top = tr.getBoundingClientRect().top;
+  const rows = [...tr.querySelectorAll('.pg-vrow')];
+  const first = rows.find((r) => r.getBoundingClientRect().top >= top - 1) ?? rows[0];
+  const tab = stores.useMessages.getState().tabs[tabId];
+  const idx = first?.getAttribute('data-index');
+  return {
+    tabId,
+    file: stores.useTabs.getState().tabs[tabId]?.sessionFile ?? null,
+    rows: tab?.ids.length ?? 0,
+    panelRows: tr.querySelectorAll('.pg-vrow').length,
+    gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+    anchorOffset: idx != null ? (tab?.byId[tab?.ids[Number(idx)] ?? '']?.offset ?? null) : null,
+    anchorText: (first?.textContent ?? '').slice(0, 24),
+    saved: (() => {
+      const file = stores.useTabs.getState().tabs[tabId]?.sessionFile;
+      if (!file) return null;
+      try {
+        return JSON.parse(localStorage.getItem('piggy:reading-position') ?? '{}')[file] ?? null;
+      } catch {
+        return null;
+      }
+    })(),
+    streaming: stores.useMessages.getState().tabs[tabId]?.streaming ?? null,
+    toBottom: !!document.querySelector('[data-to-bottom]'),
+  };
+}, readingSetup.sessionFile ?? null);
+
+// 点「回到底部」→ 存的位置变回"贴底"
+reading.bottom = await page.evaluate(async (sessionFile) => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  document.querySelector('[data-to-bottom]')?.click();
+  await sleep(700);
+  const saved = JSON.parse(localStorage.getItem('piggy:reading-position') ?? '{}');
+  const tr = document.querySelector('.pg-transcript');
+  return {
+    gap: tr ? Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop) : null,
+    saved: sessionFile ? (saved[sessionFile] ?? null) : null,
+    keys: Object.keys(saved),
+    file: sessionFile,
+    toBottom: !!document.querySelector('[data-to-bottom]'),
+  };
+}, readingSetup.sessionFile ?? null);
 
 await browser.close();
 console.log(
@@ -5435,6 +5608,63 @@ if (turnFolding.standard?.folds !== 2) {
   if (!(v.thinks >= 2) || !(v.tools >= 2)) {
     bad.push(`回合折叠：完全展开档过程不全可见（思考 ${v.thinks} / 工具 ${v.tools}）★`);
   }
+}
+
+{
+  const b = reading.before ?? {};
+  const a = reading.after ?? {};
+  const z = reading.bottom ?? {};
+  if (b.error) {
+    bad.push(`阅读位置：${b.error}（滚到中间这一步就没成）★`);
+  } else if (!b.saved || b.saved.following !== false || typeof b.saved.offset !== 'number') {
+    bad.push(
+      `阅读位置：滚到中间之后没有把位置存下来（诊断 ${JSON.stringify({
+        file: b.sessionFile,
+        gap: b.gap,
+        rows: b.rows,
+        sidebarRows: b.sidebarRows,
+        anchorOffset: b.anchorOffset,
+        saved: b.saved,
+        savedKeys: b.savedKeys,
+      })}）★`,
+    );
+  } else {
+    if (!a.error) {
+      if (a.gap === null || a.gap === undefined || a.gap < 100) {
+        bad.push(`阅读位置：重载之后贴到底了（诊断 ${JSON.stringify(a)}）——跨重启没记住 ★`);
+      }
+      /* 顶端往往落在锚点行**内部**（存了 `delta`），此时"视口里第一整行"是锚点的下一行 ——
+         判据放宽到相邻一行，仍然足以区分"还到了那一行"与"贴底/从头开始"。 */
+      const drift = typeof a.anchorOffset === 'number' ? a.anchorOffset - b.saved.offset : Number.NaN;
+      if (!(Math.abs(drift) <= 1)) {
+        bad.push(
+          `阅读位置：重载后的锚点行不是存下来的那一行（存 offset=${b.saved.offset}，` +
+            `读到 ${a.anchorOffset}，偏差 ${drift}，文本 ${JSON.stringify(a.anchorText)}）★`,
+        );
+      }
+      if (!a.toBottom) {
+        bad.push('阅读位置：落在中间却没出现「回到底部」★');
+      }
+    } else {
+      bad.push(`阅读位置：重载后量不到（${a.error}）★`);
+    }
+  }
+  if (!z.saved || z.saved.following !== true) {
+    bad.push(
+      `阅读位置：点「回到底部」之后位置没有变回"贴底"（诊断 ${JSON.stringify({
+        saved: z.saved,
+        file: z.file,
+        keys: z.keys,
+        gap: z.gap,
+        toBottom: z.toBottom,
+      })}）★`,
+    );
+  }
+  if (z.gap !== null && z.gap > 25) {
+    bad.push(`阅读位置：点了「回到底部」还离底 ${z.gap}px ★`);
+  }
+  // 收尾：把这条记录删掉，免得影响人工复跑
+  void z;
 }
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

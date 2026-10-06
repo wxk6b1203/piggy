@@ -38,6 +38,7 @@
  */
 import { useLayoutEffect, useRef, useState } from 'react';
 import { toast } from '@/lib/feedback';
+import type { ReadingPosition } from '@/lib/readingPosition';
 import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
@@ -86,6 +87,21 @@ export function railRowsFor(tabId: string): RailSourceRow[] {
   });
 }
 
+/**
+ * 跨重启的位置存取（docs/04 §2.1.7）。
+ *
+ * 由 `Transcript` 提供（它才知道会话文件路径与"偏移 → 行 id"的映射），
+ * 阅读层只负责"什么时候存/取"。没给端口时行为与从前一样（不记不还）。
+ */
+export interface ReadingPositionPort {
+  /** 读这个会话上次读到的位置 */
+  read(): ReadingPosition | null;
+  /** 记下当前位置（`null` = 贴着底） */
+  save(anchor: ReaderAnchor | null): void;
+  /** 把"存下来的偏移"翻译成当前窗口里的行键；不在窗口里返回 null */
+  resolve(saved: ReadingPosition): string | null;
+}
+
 /** 会话的当前状态（内容信号 + 分页状态），每次渲染刷新。 */
 export interface TranscriptScrollInput {
   tabId: string;
@@ -101,6 +117,8 @@ export interface TranscriptScrollInput {
   loadingOlder: boolean;
   hasNewer: boolean;
   loadingNewer: boolean;
+  /** 跨重启的阅读位置（缺省 = 不记不还） */
+  positions?: ReadingPositionPort | undefined;
 }
 
 export class TranscriptReading {
@@ -145,6 +163,12 @@ export class TranscriptReading {
     if (!landing) return; // 没有布局（面板被摘出 DOM）：一个像素都不写
     this.cancelPending();
     this.anchor = null;
+    /* 主动回到最新 = 明确的"贴底"意图：跨重启的位置也该是贴底。
+       ⚠️ 但**只在我们已经决定过落点之后**才写：打开会话的头几帧里
+       `ResizeObserver`（行被测量）会先于落点判定走到这里，此时写 `null` 会把
+       "上次读到中间"那条记录**当场抹掉** —— 实测现象是"重载之后永远贴底"。
+       `initialized` 正是"落点已定"的标志（`restoreSavedPosition`/`followTail` 都会置它）。 */
+    if (this.state.initialized) this.input.positions?.save(null);
     this.publish({ initialized: true, following: true });
   }
 
@@ -301,7 +325,10 @@ export class TranscriptReading {
     // 没有布局时一个字都不改：0/0/0 的读数会把跟随意图判死（docs/15 规矩 101）
     if (!this.input.ready || this.input.layoutHeight <= 0) return;
     if (!this.state.initialized) {
-      // 打开会话：没有"上次读到哪"就贴底（DSH `restore()`）
+      /* 打开会话的落点（DSH `restore()`）：**上次读到哪就还到哪**，没有才贴底。
+         这是跨重启记阅读位置的唯一入口 —— 位置在 `lib/readingPosition` 里按
+         "会话文件 + 行字节偏移"存着，重启后行 id 全变了，偏移还对得上。 */
+      if (this.restoreSavedPosition()) return;
       this.followTail();
       return;
     }
@@ -317,6 +344,24 @@ export class TranscriptReading {
     }
     if (this.state.following) this.followTail();
     else this.refreshReading();
+  }
+
+  /**
+   * 还上次读到的位置。
+   *
+   * @returns 真的还上了返回 true；没存过 / 行不在窗口里 / 没有布局 → false（调用方贴底）
+   */
+  private restoreSavedPosition(): boolean {
+    const port = this.input.positions;
+    const saved = port?.read() ?? null;
+    // 上次就是贴着底的：继续贴底（这也是默认）
+    if (!port || !saved || saved.following) return false;
+    const key = port.resolve(saved);
+    if (key === null) return false; // 那一行不在当前窗口（换过页 / 会话被截断）→ 贴底
+    const landing = this.viewport.restore({ key, delta: saved.delta, top: 0 });
+    if (landing === null) return false;
+    this.acceptNavigation(landing);
+    return true;
   }
 
   /** 面板**重新有真实布局**（摘出 DOM 又挂回来）→ 按意图收尾，并补一帧（行高估计→实测）。 */
@@ -359,6 +404,9 @@ export class TranscriptReading {
     }
     if (following) this.anchor = null;
     else this.anchor = this.viewport.capturePosition() ?? this.anchor;
+    /* 采样落地 = 读者意图结算的时刻，也是**记位置**的时刻（DSH 在 `flushSample` 里
+       做同一件事）。贴底存 `null`（重开继续贴底），否则存锚点行的字节偏移 + 行内偏移。 */
+    this.input.positions?.save(following ? null : this.anchor);
     this.viewport.acknowledge(scroll.metrics);
     this.publish({
       initialized: true,
