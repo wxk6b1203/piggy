@@ -109,7 +109,10 @@ beforeEach(() => {
     unread: {},
     banner: null,
   });
-  useAppConfig.setState({ railPlacement: 'off', loaded: true });
+  /* 这些用例量的是**行本身**（清单行、工具行、流式行），而回合级过程折叠
+     （docs/04 §2.1.6）默认会把历史回合折起来 —— 折起来是「不渲染」，量不到行。
+     这里显式用 verbose（完全展开）把折叠关掉，让这份用例只测它自己那件事。 */
+  useAppConfig.setState({ railPlacement: 'off', transcriptDetail: 'verbose', loaded: true });
 });
 afterEach(async () => {
   await unmountDom();

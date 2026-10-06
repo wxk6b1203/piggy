@@ -54,9 +54,21 @@ await page.addInitScript(() => {
   localStorage.clear();
   sessionStorage.clear();
 });
+/* ⚠️ 这一整套门禁量的是**行**（工具行 24px、清单行、分页锚点文本…），而回合级过程折叠
+   （docs/04 §2.1.6）默认会把历史回合折起来 —— 折起来是"不渲染"，量不到行。
+   所以：整轮跑「完全展开」档（= 折叠关掉），折叠本身由第 25 段自己切档量。
+   ⚠️ 必须在**每次 `page.goto` 之后**重新关一次：档位是 store 里的状态，重载就回默认；
+   而中途几段会保存设置（`perf_config_save` 会把当时那份值写回去），所以也不能靠
+   "开头设一次"。走 `__piggyStores.useAppConfig`（应用自己那一份实例），别另 import。 */
+async function unfoldTranscript() {
+  await page.evaluate(() => {
+    globalThis.__piggyStores.useAppConfig.getState().setTranscriptDetail('verbose');
+  });
+}
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(900);
+await unfoldTranscript();
 const seed = await page.evaluate(async () => {
   const [{ createTab }, editor] = await Promise.all([
     import('/src/stores/tabs.ts'),
@@ -87,6 +99,7 @@ await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(1500);
 
+await unfoldTranscript();
 /* ---------- 3. 断言 ---------- */
 const probe = await page.evaluate(async () => {
   // ⚠️ 必须用应用自己那份 store 实例：`import('/src/stores/tabs.ts')` 可能拿到另一个
@@ -138,6 +151,7 @@ await page.addInitScript(() => {
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(800);
+await unfoldTranscript();
 /* Fleet 的**右栏按钮已按用户要求隐藏**（2026-09-24），所以这里从事件总线进去：
    视图本身与 `fleet:*` 通道都还在，只是不再占一颗按钮。 */
 await page.evaluate(async () => {
@@ -591,6 +605,7 @@ await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(800);
 
+await unfoldTranscript();
 /**
  * 顺带核实"按需"这个claim：打开两个文件，**只许**下这两个语言的定义。
  * 拦的是"有人图省事把 84 门一次全注册"（docs/10 §2.2 红线）——
@@ -894,6 +909,7 @@ await page.addInitScript((v) => {
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(900);
+await unfoldTranscript();
 const openInAfterReload = await page.evaluate(() => {
   const main = document.querySelector('.pg-opentarget-main');
   return {
@@ -2758,6 +2774,7 @@ await page.addInitScript(() => {
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.pg-composer', { timeout: 15000 });
 await page.waitForTimeout(900);
+await unfoldTranscript();
 const gateOff = await page.evaluate(async () => {
   const stores = globalThis.__piggyStores;
   const tabId = stores.useTabs.getState().activeTabId;
@@ -3228,6 +3245,7 @@ await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.pg-composer', { timeout: 15000 });
 await page.waitForTimeout(900);
 
+await unfoldTranscript();
 const scrollMemory = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const mock = globalThis.__piggyMock;
@@ -3385,6 +3403,7 @@ else {
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.pg-composer', { timeout: 15000 });
 await page.waitForTimeout(3000);
+await unfoldTranscript();
 const restoredScroll = await page.evaluate(() => {
   const wrap = document.querySelector('[data-tab-id]');
   const tr = wrap?.querySelector('.pg-transcript');
@@ -3423,6 +3442,7 @@ await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.pg-composer', { timeout: 15000 });
 await page.waitForTimeout(900);
 
+await unfoldTranscript();
 const noticesAndDiff = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const stores = globalThis.__piggyStores;
@@ -3689,6 +3709,122 @@ const crashLanding = await page.evaluate(async () => {
   };
 
   return { streamingBefore, liveRows, textBefore, afterCrash, afterRevive };
+});
+
+/* ---------- 25. 回合级过程折叠 + 四档密度（docs/04 §2.1.6）--------------------
+ * DSH 把**完成的一轮**再折一层：`已完成工作 · 用时 12s`（33px）。这里量四件事：
+ * ① 默认（标准档）历史回合被折起来 —— 过程行**不在 DOM 里**（折叠 = 不渲染）、回答留着；
+ * ② 点标题能展开，展开后标题行仍在（它兼作这一轮的分隔线）；
+ * ③ 档位走**设置页那条真实路径**：切到「详细」→ 没点过的那一轮过程直接可见；
+ *    切到「完全展开」→ 连标题行都不画；
+ * ④ 中止/失败的回合永远摊开（它是排查现场）——第 24 段已经造过一个崩溃落地，
+ *    这里只核对折叠行上的状态色/文案不出现"已完成工作"。 */
+const turnFolding = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const mock = globalThis.__piggyMock;
+
+  // 两轮，每轮都有过程（思考 + 工具）与最终回答
+  const rows = [];
+  for (let i = 1; i <= 2; i += 1) {
+    rows.push({ role: 'user', message: { role: 'user', content: [{ type: 'text', text: `第 ${i} 轮的问题` }], timestamp: 1_700_000_000_000 + i * 10_000 } });
+    rows.push({
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: `第 ${i} 轮的思考` },
+          { type: 'toolCall', id: `fold-call-${i}`, name: 'bash', arguments: { command: `echo ${i}` } },
+        ],
+        timestamp: 1_700_000_000_500 + i * 10_000,
+      },
+    });
+    rows.push({
+      role: 'toolResult',
+      message: {
+        role: 'toolResult',
+        toolCallId: `fold-call-${i}`,
+        toolName: 'bash',
+        content: [{ type: 'text', text: `${i}` }],
+        timestamp: 1_700_000_000_800 + i * 10_000,
+      },
+    });
+    rows.push({
+      role: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: `第 ${i} 轮的最终回答` }], timestamp: 1_700_000_001_000 + i * 10_000 },
+    });
+  }
+  mock.mockSetTranscriptRows(rows);
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelector('.pg-session-row')?.click();
+  let tabId = '';
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(150);
+    tabId = stores.useTabs.getState().activeTabId;
+    const t = stores.useMessages.getState().tabs[tabId];
+    if (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`) && t?.hydrated && (t?.ids ?? []).length >= 8) break;
+  }
+  const wrap = document.querySelector(`[data-tab-id="${tabId}"]`);
+  const q = (sel) => wrap.querySelectorAll(sel);
+  const read = () => ({
+    folds: q('[data-turn-fold]').length,
+    foldTexts: [...q('[data-turn-fold]')].map((f) => f.textContent.replace(/\s+/g, ' ').trim()),
+    foldHeights: [...q('[data-turn-fold]')].map((f) => Math.round(f.getBoundingClientRect().height)),
+    thinks: q('[data-thinking-row]').length,
+    tools: q('[data-tool-row]').length,
+    answers: [...wrap.querySelectorAll('.pg-message.pg-assistant')].length,
+  });
+
+  /* ⚠️ 门禁其余各段都跑「完全展开」（见文件头：行级核对要看得见行），
+     这一段要量折叠，所以先走设置页把档位切回**标准**。 */
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(900);
+  [...document.querySelectorAll('.pg-settings-navitem')].find((b) => b.textContent === '通用设置')?.click();
+  await sleep(300);
+  document.querySelector('[data-detail-option="standard"]')?.click();
+  await sleep(400);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(600);
+
+  const standard = read();
+  // ② 点开第一轮
+  q('[data-turn-fold]')[0]?.querySelector('.pg-turnfold-head')?.click();
+  await sleep(400);
+  const expanded = read();
+
+  // ③ 走设置页那条真实路径切档位
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(900);
+  [...document.querySelectorAll('.pg-settings-navitem')].find((b) => b.textContent === '通用设置')?.click();
+  await sleep(300);
+  document.querySelector('[data-detail-option="detailed"]')?.click();
+  await sleep(400);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(600);
+  const detailed = read();
+
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(700);
+  [...document.querySelectorAll('.pg-settings-navitem')].find((b) => b.textContent === '通用设置')?.click();
+  await sleep(300);
+  document.querySelector('[data-detail-option="verbose"]')?.click();
+  await sleep(400);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(600);
+  const verbose = read();
+
+  // 收尾：切回「完全展开」（门禁其余各段的口径，见文件头）
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(700);
+  [...document.querySelectorAll('.pg-settings-navitem')].find((b) => b.textContent === '通用设置')?.click();
+  await sleep(300);
+  document.querySelector('[data-detail-option="verbose"]')?.click();
+  await sleep(300);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(400);
+
+  return { standard, expanded, detailed, verbose };
 });
 
 await browser.close();
@@ -5249,6 +5385,55 @@ if (crashLanding.missing) {
   }
   if (r.streaming) {
     bad.push('崩溃落地：resync 之后 streaming 又变成 true ★');
+  }
+}
+
+if (turnFolding.standard?.folds !== 2) {
+  bad.push(`回合折叠：标准档应折出 2 行标题（读到 ${JSON.stringify(turnFolding.standard)}）★`);
+} else {
+  const s0 = turnFolding.standard;
+  if (s0.thinks !== 0 || s0.tools !== 0) {
+    bad.push(`回合折叠：折起来的过程行还在 DOM 里（思考 ${s0.thinks} / 工具 ${s0.tools}）—— 折叠 = 不渲染 ★`);
+  }
+  if (s0.answers !== 2) {
+    bad.push(`回合折叠：最终回答被折进去了（助手行 ${s0.answers}，应 2）★`);
+  }
+  if (!s0.foldTexts.every((t) => t.includes('已完成工作'))) {
+    bad.push(`回合折叠：标题文案不对（读到 ${JSON.stringify(s0.foldTexts)}）★`);
+  }
+  if (!s0.foldHeights.every((h) => h >= 30 && h <= 40)) {
+    bad.push(`回合折叠：标题行高不是 33px 那一档（读到 ${JSON.stringify(s0.foldHeights)}）★`);
+  }
+  if (!/\ds/.test(s0.foldTexts[0] ?? '')) {
+    bad.push(`回合折叠：标准档没显示耗时（读到 ${JSON.stringify(s0.foldTexts[0])}）★`);
+  }
+}
+{
+  const e1 = turnFolding.expanded ?? {};
+  if (!(e1.thinks >= 1) || !(e1.tools >= 1)) {
+    bad.push(`回合折叠：点标题没有展开过程（思考 ${e1.thinks} / 工具 ${e1.tools}）★`);
+  }
+  if (e1.folds !== 2) {
+    bad.push(`回合折叠：展开后标题行不见了（读到 ${e1.folds} 行）—— 它兼作分隔线 ★`);
+  }
+}
+{
+  const d = turnFolding.detailed ?? {};
+  // 点过的那一轮是手动展开的；**没点过**的那一轮在详细档下也该摊开
+  if (!(d.thinks >= 2) || !(d.tools >= 2)) {
+    bad.push(`回合折叠：详细档下没点过的那一轮没有摊开（思考 ${d.thinks} / 工具 ${d.tools}）★`);
+  }
+  if (!(d.folds >= 2)) {
+    bad.push(`回合折叠：详细档丢了标题行（读到 ${d.folds}）★`);
+  }
+}
+{
+  const v = turnFolding.verbose ?? {};
+  if (v.folds !== 0) {
+    bad.push(`回合折叠：完全展开档还画着标题行（读到 ${v.folds}）★`);
+  }
+  if (!(v.thinks >= 2) || !(v.tools >= 2)) {
+    bad.push(`回合折叠：完全展开档过程不全可见（思考 ${v.thinks} / 工具 ${v.tools}）★`);
   }
 }
 

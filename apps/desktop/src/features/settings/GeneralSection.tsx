@@ -15,7 +15,7 @@ import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { loadTitleModels, type ModelOption } from '@/lib/sessionTitle';
 import { thinkingOptions } from '@/lib/thinking';
-import { useAppConfig, type RailPlacement } from '@/stores/appConfig';
+import { useAppConfig, type RailPlacement, type TranscriptDetail } from '@/stores/appConfig';
 
 interface PiSourceOption {
   id: 'system' | 'bundled' | 'custom';
@@ -70,6 +70,8 @@ export function GeneralSection() {
   // 会话预览滚动条（docs/04 §2.6）：三态开关，改完立刻推给所有已打开的会话
   const railPlacement = useAppConfig((s) => s.railPlacement);
   const setRailPlacement = useAppConfig((s) => s.setRailPlacement);
+  const transcriptDetail = useAppConfig((s) => s.transcriptDetail);
+  const setTranscriptDetail = useAppConfig((s) => s.setTranscriptDetail);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
@@ -137,6 +139,8 @@ export function GeneralSection() {
     title?: { maxChars: number; source: string; model: string; thinking: string };
     /** 预览滚动条位置（off / left / right） */
     rail?: RailPlacement;
+    /** 工作步骤展示档位（compact / standard / detailed / verbose） */
+    detail?: TranscriptDetail;
   }) => {
     if (busy) return;
     setBusy(true);
@@ -152,7 +156,10 @@ export function GeneralSection() {
         titleSource: patch.title?.source ?? titleCfg.source,
         titleModel: patch.title?.model ?? titleCfg.model,
         titleThinking: patch.title?.thinking ?? titleCfg.thinking,
-        transcriptRail: patch.rail ?? railPlacement,
+        /* ⚠️ 取**当前 store 值**而不是闭包里的变量：保存其它字段时会把这两项一起写回去，
+           而闭包里的值可能是这次渲染之前的（设置页开着不动、别处改了档位 → 一保存就写回旧值）。 */
+        transcriptRail: patch.rail ?? useAppConfig.getState().railPlacement,
+        transcriptDetail: patch.detail ?? useAppConfig.getState().transcriptDetail,
       });
       // 改的是"新会话默认档位"，不是某个标签页的档位 —— 用专门的命令，不传 tabId
       if (patch.permissionMode) await cmd('pi_set_default_permission', { mode: patch.permissionMode });
@@ -504,6 +511,41 @@ export function GeneralSection() {
         <span className="pg-fg-dim">
           主会话区一侧的刻度梯：一条刻度 = 一轮对话，亮的那条是当前读到的位置。
           悬停看这一轮的问与答，点击跳过去。
+        </span>
+      </div>
+
+      {/* 工作步骤展示（docs/04 §2.1.6）：四档，控制"过程"显示到哪一层。
+          DSH 把这一项放在 `Settings → General → Work details`，四档的名字照抄。 */}
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">工作步骤展示</span>
+        <div className="pg-runtime-modes" data-detail-setting>
+          {(
+            [
+              ['compact', '简洁'],
+              ['standard', '标准'],
+              ['detailed', '详细'],
+              ['verbose', '完全展开'],
+            ] as [TranscriptDetail, string][]
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`pg-btn${transcriptDetail === id ? ' pg-btn-primary' : ''}`}
+              disabled={busy}
+              data-detail-option={id}
+              onClick={() => {
+                setTranscriptDetail(id);
+                void save({ detail: id });
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="pg-fg-dim">
+          一轮结束后，把这一轮的思考与工具调用折成一行「已完成工作 · 用时」：
+          简洁只留标题、标准带耗时、详细直接摊开过程、完全展开连标题行都不画。
+          正在跑的那一轮与中止/失败的回合**永远摊开**。
         </span>
       </div>
 

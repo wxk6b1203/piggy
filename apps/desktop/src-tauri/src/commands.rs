@@ -371,6 +371,9 @@ pub async fn perf_config_save(
     title_thinking: Option<String>,
     // 会话预览滚动条位置（off / left / right）。不传 = 保持既有值。
     transcript_rail: Option<String>,
+    // 工作步骤展示档位（compact / standard / detailed / verbose，docs/04 §2.1.6）。
+    // 不传 = 保持既有值。
+    transcript_detail: Option<String>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -407,6 +410,9 @@ pub async fn perf_config_save(
 
     if let Some(r) = transcript_rail.as_deref() {
         cfg.transcript_rail = crate::config::app::RailPlacement::parse(r)?;
+    }
+    if let Some(d) = transcript_detail.as_deref() {
+        cfg.transcript_detail = crate::config::app::TranscriptDetail::parse(d)?;
     }
 
     // 1) 先算出变更计划（纯函数；会拦住"custom 但没有路径"这种自相矛盾的组合）

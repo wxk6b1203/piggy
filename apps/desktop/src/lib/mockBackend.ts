@@ -503,6 +503,17 @@ export const mockTitleCfg = {
   thinking: '' as string,
   /** 预览滚动条位置（与 Rust `PerfConfig.transcript_rail` 同义，默认右） */
   rail: 'right' as string,
+  /* 工作步骤展示档位（与 Rust `PerfConfig.transcript_detail` 同义，默认 standard）。
+     ⚠️ 初值从 localStorage 读：浏览器门禁的**行级**核对（工具行、清单行、分页锚点…）
+     需要关掉折叠才能量到行，而门禁中间会重载页面 —— 只改内存里的值会在重载后丢。
+     键名与 `piggy:mock:todo-capability` 同一套（门禁的 init script 里写）。 */
+  detail: (() => {
+    try {
+      return localStorage.getItem('piggy:mock:transcript-detail') ?? 'standard';
+    } catch {
+      return 'standard';
+    }
+  })() as string,
 };
 /**
  * `title_model_options` 的假数据（= `pi --list-models` 的解析结果）。
@@ -916,6 +927,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     title_model: mockTitleCfg.model || null,
     title_thinking: mockTitleCfg.thinking || null,
     transcript_rail: mockTitleCfg.rail,
+    transcript_detail: mockTitleCfg.detail,
   }),
   perf_config_save: (a) => {
     appCfg.max_workers = Number(a.maxWorkers ?? appCfg.max_workers);
@@ -933,6 +945,15 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (a.titleModel !== undefined) mockTitleCfg.model = String(a.titleModel ?? '');
     if (a.titleThinking !== undefined) mockTitleCfg.thinking = String(a.titleThinking ?? '');
     if (a.transcriptRail !== undefined) mockTitleCfg.rail = String(a.transcriptRail);
+    if (a.transcriptDetail !== undefined) {
+      mockTitleCfg.detail = String(a.transcriptDetail);
+      // 存一份：门禁切档之后重载页面还要是这一档（见 `mockTitleCfg.detail` 的注释）
+      try {
+        localStorage.setItem('piggy:mock:transcript-detail', mockTitleCfg.detail);
+      } catch {
+        /* 无 localStorage：门禁那条核对会失去意义，不影响真机 */
+      }
+    }
     return null;
   },
   tab_sleep: () => null,

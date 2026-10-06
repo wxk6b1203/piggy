@@ -32,15 +32,18 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
-import { useAppConfig } from '@/stores/appConfig';
+import { useAppConfig, type TranscriptDetail } from '@/stores/appConfig';
+import { defaultOpen, useTurnFold } from '@/stores/turnFold';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
 import { useTodoSupported } from '@/stores/todo';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
 import { todoBaselines, type TodoItem } from '@/lib/todoModel';
+import { foldRowInput, turnFolds, type TurnFold } from '@/lib/turnFold';
 import { changedStatsOf } from '@/stores/messages';
 import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItems';
 import { TurnRail } from './TurnRail';
+import { TurnFoldRow } from './TurnFoldRow';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
 import { railRowsFor, useTranscriptScroll } from './useTranscriptScroll';
 
@@ -154,7 +157,58 @@ export function Transcript({ tabId }: { tabId: string }) {
     [tabId, ids, commitSeq],
   );
 
-  /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
+  /* ── 回合级过程折叠（docs/04 §2.1.6）────────────────────────────────────
+     行 → 轮 → 每轮"折哪些行"。纯函数在 `lib/turnFold.ts`；这里变成**每行的渲染计划**：
+
+       · `plan.fold`：这一行的上方要画折叠标题（画在"过程第一行"上方，没有过程时画在回答上方）；
+       · `plan.folded`：这一行属于被折起来的过程 → 不渲染（虚拟化器量到 0 高）。
+
+     为什么用"查表 + 高度归零"而不是"生成一份新的行数组"：行的**下标**必须与 `ids` 一致 ——
+     刻度梯的 `rowIndex`、虚拟化器的测量、阅读锚点全都按下标对齐。折起来的行仍然占一个下标，
+     只是高度为 0，这三套机制一个都不用改。 */
+  const streaming = useTabMsg(tabId, (t) => t.streaming);
+  const detail = useAppConfig((s) => s.transcriptDetail);
+  /** 手动开合记忆（键 = 会话文件偏移，见 `stores/turnFold.ts`）；变了要重算计划 */
+  const foldMemory = useTurnFold((s) => s.open[tabId]);
+  const toggleFold = useTurnFold((s) => s.toggle);
+
+  const folds = useMemo(() => {
+    const rows = ids
+      .map((id) => useMessages.getState().tabs[tabId]?.byId[id])
+      .filter(Boolean)
+      .map((row) => foldRowInput(row as MessageViewT));
+    return turnFolds(rows, streaming);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 行数据从 store 现读（不通过参数），ids/commitSeq/streaming 是刻意的重算触发条件
+  }, [tabId, ids, commitSeq, streaming]);
+
+  const plans = useMemo(() => {
+    const out = new Map<string, { fold?: TurnFold; folded: boolean; open: boolean; turnKey: string }>();
+    if (detail === 'verbose') return out; // 完全展开档：连标题行都不画
+    const tab = useMessages.getState().tabs[tabId];
+    const keyOf = (index: number): string => {
+      const row = tab?.byId[ids[index] ?? ''];
+      // 优先会话文件偏移（跨重新载入稳定）；拿不到退回行 id
+      return row ? (row.offset != null ? `off:${row.offset}` : `id:${row.id}`) : '';
+    };
+    for (const fold of folds) {
+      if (!fold.showHeader) continue;
+      const headId = ids[fold.headIndex];
+      if (!headId) continue;
+      const turnKey = keyOf(fold.start);
+      const open = foldMemory?.[turnKey] ?? defaultOpen(detail);
+      // 中止/失败的回合永远摊开（过程就是排查现场）
+      const folded = fold.foldable && !open;
+      out.set(headId, { fold, folded: folded && fold.processIndexes.includes(fold.headIndex), open, turnKey });
+      for (const i of fold.processIndexes) {
+        const id = ids[i];
+        if (!id || id === headId) continue;
+        out.set(id, { folded, open, turnKey });
+      }
+    }
+    return out;
+  }, [folds, ids, detail, foldMemory, tabId]);
+
+  /* 当前轮次 = 阅读线所在那一轮  /* 当前轮次 = 阅读线所在那一轮  /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
      ⚠️ 阅读线**不看瞬时几何**：流式时内容两帧之间长高，几何会把"自己贴的底"读成
      "读者滚上去了"，于是亮条在最新那轮与阅读线那轮之间逐帧来回翻（实测 58 ↔ 61）。 */
   const activeTurn = useMemo(
@@ -199,7 +253,24 @@ export function Transcript({ tabId }: { tabId: string }) {
                   transform: `translateY(${vi.start}px)`,
                 }}
               >
-                <Row tabId={tabId} id={id} baselines={baselines} changeStats={changeStats} />
+                {(() => {
+                  const plan = plans.get(id);
+                  return (
+                    <>
+                      {plan?.fold ? (
+                        <TurnFoldRow
+                          fold={plan.fold}
+                          open={plan.open}
+                          mode={detail}
+                          onToggle={() => toggleFold(tabId, plan.turnKey, detail)}
+                        />
+                      ) : null}
+                      {plan?.folded ? null : (
+                        <Row tabId={tabId} id={id} baselines={baselines} changeStats={changeStats} detail={detail} />
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             );
           })}
@@ -270,6 +341,7 @@ function Row({
   id,
   baselines,
   changeStats,
+  detail,
 }: {
   tabId: string;
   id: string;
@@ -277,6 +349,8 @@ function Row({
   baselines: Map<string, TodoItem[]> | null;
   /** 文件改动的调用 id → 加删行数（见 `stores/messages.ts` 的 `changedStatsOf`） */
   changeStats: Record<string, { added: number; removed: number }>;
+  /** 工作步骤展示档位（只有 `compact` 会改行的呈现：落定的思考摘要隐藏） */
+  detail: TranscriptDetail;
 }) {
   const view = useStore(useMessages, (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined);
   /* 工具行的窄摘要要的是**调用参数**（`运行命令 · pnpm test`），而参数在上一条助手消息里
@@ -302,6 +376,7 @@ function Row({
       baselines={baselines}
       tabId={tabId}
       changeStats={changeStats}
+      detail={detail}
       memory={memory}
     />
   );

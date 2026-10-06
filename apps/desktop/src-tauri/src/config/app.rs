@@ -76,6 +76,58 @@ impl RailPlacement {
     }
 }
 
+/// 「工作步骤展示」四档（DSH `Settings → General → Work details`，docs/12 §3）。
+///
+/// 四档控制的是**过程可见度**：从"历史回合只留一行摘要"到"过程全展开"。
+/// 与 DSH 的对应关系（Piggy 没有它的二级分组，所以做的是等价映射）：
+///
+/// | 档 | 历史回合 | 折叠行 | 思考摘要 |
+/// |---|---|---|---|
+/// | `compact` 简洁 | 折成一行 | 只有状态，**不带耗时** | 隐藏 |
+/// | `standard` 标准（默认） | 折成一行 | 状态 + 耗时 | 首行 |
+/// | `detailed` 详细 | **不折**（过程直接可见） | 状态 + 耗时，但不可折叠 | 首行 |
+/// | `verbose` 完全展开 | 不折 | 不出现 | 首行 |
+///
+/// 默认 `standard` 的理由与 DSH 一致：它把长会话从"一堵墙"变成"一条摘要"，
+/// 而**正在跑的那一轮永远展开**（用户正要看着它）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TranscriptDetail {
+    Compact,
+    Detailed,
+    Verbose,
+    /// 默认档。`#[serde(other)]` 要求它**排在最后**（serde 的约束）——
+    /// 认不出的值收回这里，而不是让整份配置反序列化失败。
+    #[default]
+    #[serde(other)]
+    Standard,
+}
+
+impl TranscriptDetail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Standard => "standard",
+            Self::Detailed => "detailed",
+            Self::Verbose => "verbose",
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "compact" => Ok(Self::Compact),
+            "standard" => Ok(Self::Standard),
+            "detailed" => Ok(Self::Detailed),
+            "verbose" => Ok(Self::Verbose),
+            // 兼容 DSH 的历史取值（`normal`/`expanded` 曾经是它的名字，见它的 README）
+            "normal" => Ok(Self::Detailed),
+            "expanded" => Ok(Self::Verbose),
+            other => Err(format!(
+                "未知的工作步骤展示档位 {other:?}（可选：compact / standard / detailed / verbose）"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PerfConfig {
     /// 并发 worker 上限（05 §4.2，默认 8）
@@ -128,6 +180,9 @@ pub struct PerfConfig {
     /// 会话预览滚动条放哪边（docs/04 §2.6）：`off` / `left` / `right`（默认）。
     #[serde(default)]
     pub transcript_rail: RailPlacement,
+    /// 工作步骤展示档位（docs/04 §2.1.6）：`compact` / `standard`（默认）/ `detailed` / `verbose`。
+    #[serde(default)]
+    pub transcript_detail: TranscriptDetail,
 }
 
 fn default_title_max_chars() -> u32 {
@@ -169,6 +224,7 @@ impl Default for PerfConfig {
             title_model: None,
             title_thinking: None,
             transcript_rail: RailPlacement::default(),
+            transcript_detail: TranscriptDetail::default(),
         }
     }
 }
@@ -233,6 +289,22 @@ mod tests {
     /// 预览滚动条的三态：默认右、能解析、**认不出的值收回默认**（而不是整份配置失败）。
     #[test]
     fn rail_placement_parses_and_falls_back() {
+        assert_eq!(TranscriptDetail::default(), TranscriptDetail::Standard);
+        assert_eq!(TranscriptDetail::parse("compact").unwrap(), TranscriptDetail::Compact);
+        assert_eq!(TranscriptDetail::parse(" verbose ").unwrap(), TranscriptDetail::Verbose);
+        // DSH 的历史取值（改名前后）也要认，否则老配置会被当成"坏值"
+        assert_eq!(TranscriptDetail::parse("normal").unwrap(), TranscriptDetail::Detailed);
+        assert_eq!(TranscriptDetail::parse("expanded").unwrap(), TranscriptDetail::Verbose);
+        assert!(TranscriptDetail::parse("nope").is_err(), "写配置时要吵");
+        let cfg: PerfConfig = serde_json::from_str(r#"{"transcript_detail":"wat"}"#).unwrap();
+        assert_eq!(
+            cfg.transcript_detail,
+            TranscriptDetail::Standard,
+            "认不出的值收回默认档（不能整份配置重置）"
+        );
+        let cfg: PerfConfig = serde_json::from_str(r#"{"transcript_detail":"verbose"}"#).unwrap();
+        assert_eq!(cfg.transcript_detail, TranscriptDetail::Verbose);
+
         assert_eq!(RailPlacement::default(), RailPlacement::Right);
         assert_eq!(RailPlacement::parse("off").unwrap(), RailPlacement::Off);
         assert_eq!(RailPlacement::parse(" left ").unwrap(), RailPlacement::Left);

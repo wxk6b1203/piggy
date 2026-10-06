@@ -38,6 +38,7 @@ import { NoticeRow } from './NoticeRow';
 import { TodoRow } from './TodoRow';
 import { useTodoSupported } from '@/stores/todo';
 import type { TodoItem } from '@/lib/todoModel';
+import type { TranscriptDetail } from '@/stores/appConfig';
 import { firstLine } from './toolRowModel';
 import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 import { formatExactTokens } from '@/lib/tokenFormat';
@@ -115,6 +116,7 @@ export function MessageView({
   baselines,
   tabId,
   changeStats,
+  detail = 'standard',
   memory,
 }: {
   view: MessageViewRow;
@@ -133,6 +135,12 @@ export function MessageView({
    * 不在这里订阅整个 `toolResults` —— 那会让每个助手行在**每帧**重渲染。
    */
   changeStats?: Record<string, { added: number; removed: number }> | null | undefined;
+  /**
+   * 工作步骤展示档位（docs/04 §2.1.6）。只有 `compact` 会改这一行的呈现：
+   * **落定的思考行不显示摘要**（DSH 的 `Settled reasoning preview: Hidden`）。
+   * 工具行的摘要不隐藏 —— 它是识别"这行干了什么"的唯一线索，藏了行就废了。
+   */
+  detail?: TranscriptDetail | undefined;
   /**
    * 这一行的身份（tab + 行 id）：行内展开态靠它跨"虚拟化卸载"活下来
    * （见 `lib/rowMemory`；没有它 —— 轨迹视图那种孤立渲染 —— 退化为组件内 state）。
@@ -182,6 +190,7 @@ export function MessageView({
               block={b}
               tabId={tabId}
               baselines={baselines}
+              detail={detail}
               memory={memory}
             />
           ))}
@@ -366,16 +375,24 @@ export function ThinkingRow({
   streaming = false,
   memory,
   slot,
+  hideSummary = false,
 }: {
   text: string;
   streaming?: boolean;
   memory?: RowMemory | undefined;
   slot: string;
+  /**
+   * 不显示摘要（`compact` 档 + 已落定）。
+   *
+   * DSH 的 `Settled reasoning preview: Hidden`：简洁档下思考行只留「思考」两个字，
+   * 想看内容自己展开。**流式中的摘要不隐藏** —— 那正是"现在想到哪"的唯一线索。
+   */
+  hideSummary?: boolean;
 }) {
   /* 展开态**记忆在行外**：这条行滚出虚拟窗口就被卸载，`useState` 会跟着丢
      —— 用户报的"展开看完、滚上去再滚回底部就看不清过程"就是它（见 lib/rowMemory）。 */
   const [open, setOpen] = useRowFlag(slotKey(memory, slot), 'open');
-  const summary = thinkingSummary(text, streaming);
+  const summary = hideSummary && !streaming ? '' : thinkingSummary(text, streaming);
   return (
     <div
       className="pg-thinkrow"
@@ -473,6 +490,7 @@ function Block({
   index,
   tabId,
   baselines,
+  detail,
   memory,
 }: {
   block: RenderBlock;
@@ -480,6 +498,8 @@ function Block({
   index: number;
   tabId?: string | undefined;
   baselines?: Map<string, TodoItem[]> | null | undefined;
+  /** 工作步骤展示档位（只有 `compact` 会改块的呈现：落定的思考摘要隐藏） */
+  detail?: TranscriptDetail | undefined;
   memory?: RowMemory | undefined;
 }) {
   /* 同一行里可能有多个工具行/思考行：行记忆的插槽必须带块下标，否则它们会共用
@@ -511,6 +531,7 @@ function Block({
           streaming={block.streaming}
           memory={memory}
           slot={`think:${index}`}
+          hideSummary={detail === 'compact'}
         />
       );
     case 'toolCall':

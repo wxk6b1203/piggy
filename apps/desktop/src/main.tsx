@@ -35,13 +35,16 @@ if (import.meta.env.DEV) {
     import('@/lib/commands'),
     import('@/features/workspace/EditorArea'),
     import('@/features/common/monaco-pool'),
-  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool]) => {
+    // 界面配置（预览滚动条位置、工作步骤展示档位）：门禁要能改它来量不同档位下的几何
+    import('@/stores/appConfig'),
+  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool, appConfig]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
       useTrajectory: trajectory.useTrajectory,
       useFleet: fleet.useFleet,
       useTodo: todo.useTodo,
+      useAppConfig: appConfig.useAppConfig,
     };
     (globalThis as Record<string, unknown>).__piggyCommands = commands;
     // 预览相关（ui:startup 第 5/9 段与 Monaco 资源核对用）；另 import 一份会拿到另一个实例
