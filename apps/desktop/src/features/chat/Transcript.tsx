@@ -38,6 +38,7 @@ import { useTodoSupported } from '@/stores/todo';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
 import { todoBaselines, type TodoItem } from '@/lib/todoModel';
+import { changedStatsOf } from '@/stores/messages';
 import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItems';
 import { TurnRail } from './TurnRail';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
@@ -138,6 +139,16 @@ export function Transcript({ tabId }: { tabId: string }) {
     [todoOn, tabId, ids, commitSeq],
   );
 
+  /**
+   * 每条工具调用的**改动行数**（改动卡片的 `+N -M`）。
+   *
+   * 与 `baselines` 同一套口径：`commitSeq`（实时结果落地）+ `ids`（分页读进来的结果）
+   * 各管一条路 —— **只订阅 `commitSeq` 是不够的**：`hydratePage`/`prependPage` 不涨它，
+   * 于是打开会话时算出的那份空表会被一路记住（实测：卡片上的 `+N -M` 永远是空的）。
+   * 也不订阅每帧都换引用的 `toolResults`（那会让每个助手行在流式时每帧重渲染）。
+   */
+  const changeStats = useMemo(() => changedStatsOf(tabId), [tabId, ids, commitSeq]);
+
   /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
      ⚠️ 阅读线**不看瞬时几何**：流式时内容两帧之间长高，几何会把"自己贴的底"读成
      "读者滚上去了"，于是亮条在最新那轮与阅读线那轮之间逐帧来回翻（实测 58 ↔ 61）。 */
@@ -183,7 +194,7 @@ export function Transcript({ tabId }: { tabId: string }) {
                   transform: `translateY(${vi.start}px)`,
                 }}
               >
-                <Row tabId={tabId} id={id} baselines={baselines} />
+                <Row tabId={tabId} id={id} baselines={baselines} changeStats={changeStats} />
               </div>
             );
           })}
@@ -253,11 +264,14 @@ function Row({
   tabId,
   id,
   baselines,
+  changeStats,
 }: {
   tabId: string;
   id: string;
   /** `todo_write` 的调用 id → 它的上一份清单（见 `todoBaselines`） */
   baselines: Map<string, TodoItem[]> | null;
+  /** 文件改动的调用 id → 加删行数（见 `stores/messages.ts` 的 `changedStatsOf`） */
+  changeStats: Record<string, { added: number; removed: number }>;
 }) {
   const view = useStore(useMessages, (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined);
   /* 工具行的窄摘要要的是**调用参数**（`运行命令 · pnpm test`），而参数在上一条助手消息里
@@ -282,6 +296,7 @@ function Row({
       baseline={baseline}
       baselines={baselines}
       tabId={tabId}
+      changeStats={changeStats}
       memory={memory}
     />
   );

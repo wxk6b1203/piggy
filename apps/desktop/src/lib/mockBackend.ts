@@ -236,6 +236,42 @@ export const MOCK_COMPACTION_ENTRY = {
   fromHook: false,
 };
 
+/**
+ * mock 的一次 `edit`：参数、结果与 pi 的 `details.patch`（门禁按这几个常量核对 diff）。
+ *
+ * patch 是**真的统一 diff 文本**（`createTwoFilesPatch` 的输出：`---`/`+++` 加两个
+ * `@@` 块），不是编一个形状像的字符串 —— 解析器要是把 `---` 当成删除行、
+ * 或者把第二个 hunk 吞掉，门禁里的行数与行内容立刻对不上。
+ * 第二个 hunk 让整块 diff 到 13 行，**超过行内折叠阈值（9）**，
+ * 于是"展开剩下的 N 行"这条交互也被真的走到。
+ */
+export const MOCK_EDIT_PATH = 'src/lib/live.ts';
+export const MOCK_EDIT_CALL_ID = 'call_mock_edit';
+export const MOCK_EDIT_PATCH = [
+  '===================================================================',
+  `--- ${MOCK_EDIT_PATH}`,
+  `+++ ${MOCK_EDIT_PATH}`,
+  '@@ -1,5 +1,6 @@',
+  ' // 实时引擎的注册表',
+  ' export function liveFor(tabId: string): LiveEngine {',
+  '-  return engines.get(tabId) ?? create(tabId);',
+  '+  const engine = engines.get(tabId);',
+  '+  return engine ?? create(tabId);',
+  ' }',
+  '@@ -20,3 +21,4 @@',
+  ' export function drop(tabId: string): void {',
+  '   engines.delete(tabId);',
+  '+  listeners.delete(tabId);',
+  ' }',
+  '',
+].join('\n');
+export const MOCK_EDIT_DIFF = [
+  '+   3   const engine = engines.get(tabId);',
+  '+   4   return engine ?? create(tabId);',
+  '-   3   return engines.get(tabId) ?? create(tabId);',
+  '+  23   listeners.delete(tabId);',
+].join('\n');
+
 const messages = [
   { role: 'user', content: '帮我看看这个项目的流式渲染管线', timestamp: now() - 60_000 },
   {
@@ -243,11 +279,27 @@ const messages = [
     content: [
       { type: 'thinking', thinking: '用户想验证 mock 管线。' },
       { type: 'text', text: '这是一条 mock 助手消息：**流式渲染**分两层——协议合帧（Rust）与渲染分帧（前端瞬态直写）。' },
-      { type: 'toolCall', name: 'edit', arguments: { path: 'src/lib/live.ts', oldText: 'a', newText: 'b' } },
-      { type: 'toolCall', name: 'write', arguments: { path: 'src/features/chat/Transcript.tsx', content: '…' } },
-      { type: 'toolCall', name: 'edit', arguments: { path: 'src/styles.css', oldText: 'a', newText: 'b' } },
+      /* ⚠️ 参数按 **pi 的真实 schema** 写（`dist/core/tools/edit.d.ts`）：
+         `{ path, edits: [{ oldText, newText }] }`。这里曾经是 Claude Code 的形状
+         （`file_path` / `old_string` / `new_string`）—— mock 比真机宽松，
+         于是"参数键名不对"这类错在浏览器门禁里永远看不见。 */
+      { type: 'toolCall', id: MOCK_EDIT_CALL_ID, name: 'edit', arguments: { path: MOCK_EDIT_PATH, edits: [{ oldText: 'return engines.get(tabId) ?? create(tabId);', newText: 'const engine = engines.get(tabId);\n  return engine ?? create(tabId);' }] } },
+      { type: 'toolCall', id: 'call_mock_write', name: 'write', arguments: { path: 'src/features/chat/Transcript.tsx', content: '…' } },
+      { type: 'toolCall', id: 'call_mock_edit2', name: 'edit', arguments: { path: 'src/styles.css', edits: [{ oldText: 'a', newText: 'b' }] } },
     ],
     timestamp: now() - 59_000,
+  },
+  /* 第一条 edit 的结果：带 `details.patch` —— 界面上的 diff 与 `+N −M` 全从它来。
+     第二条 edit（styles.css）**故意不给结果**：门禁据此核对"拿不到 patch 的文件
+     只显示路径、不显示行数"（不臆造 `+0 −0`）。 */
+  {
+    role: 'toolResult',
+    toolCallId: MOCK_EDIT_CALL_ID,
+    toolName: 'edit',
+    content: [{ type: 'text', text: `Applied 1 edit to ${MOCK_EDIT_PATH}` }],
+    details: { diff: MOCK_EDIT_DIFF, patch: MOCK_EDIT_PATCH, firstChangedLine: 2 },
+    isError: false,
+    timestamp: now() - 58_500,
   },
   {
     role: 'toolResult',
@@ -305,6 +357,21 @@ let mockTranscript: Array<{ role: string; message: unknown }> = messages.map((m)
 /** 灌入 mock 转录（门禁用：长会话的滚动手感只有真布局能量）。 */
 export function mockSetTranscriptRows(rows: Array<{ role: string; message: unknown }>): void {
   mockTranscript = rows;
+}
+
+/**
+ * 把 mock 转录**放回内置的演示会话**。
+ *
+ * 门禁里的段落会各自灌自己那段数据（长会话、超长思考…），而 `mockTranscript` 是
+ * 模块级状态、**跨段落留着**。于是"打开侧栏第一个会话"这种动作读到的是**上一段灌的**
+ * 东西 —— 后面那一段想核对内置演示会话里的行（例如 `edit` 的 diff）就什么都找不到，
+ * 而失败信息只会说"没找到那一行"，看不出是数据没换回来（实测踩过）。
+ */
+export function mockResetTranscript(): void {
+  mockTranscript = messages.map((m) => ({
+    role: String((m as { role?: string }).role ?? ''),
+    message: m,
+  }));
 }
 
 /** 造 n 轮（user + assistant）mock 转录；门禁与单测共用一套形状。 */
@@ -680,7 +747,6 @@ function mockTodoProjection() {
   let current: Array<{ content: string; status: string }> | null = null;
   let source: 'event' | 'call' | null = null;
   let cleared = false;
-  let writes = 0;
   const readList = (value: unknown): Array<{ content: string; status: string }> | null => {
     if (!Array.isArray(value)) return null;
     const out: Array<{ content: string; status: string }> = [];
@@ -699,7 +765,6 @@ function mockTodoProjection() {
       if (list) {
         current = list;
         source = 'event';
-        writes += 1;
         cleared = false;
       }
       continue;
@@ -716,7 +781,6 @@ function mockTodoProjection() {
       if (list) {
         current = list;
         source = 'call';
-        writes += 1;
         cleared = false;
       }
     }
@@ -725,8 +789,6 @@ function mockTodoProjection() {
     todos: cleared ? null : current,
     source,
     offset: null,
-    clearedByTurn: cleared,
-    writes,
     branchy: false,
     scannedBytes: 0,
     parsedLines: 0,
@@ -1802,8 +1864,10 @@ if (typeof window !== 'undefined' && isMock) {
       emit(`pi:frame:${tabId}`, { signals: [{ type: 'thinking_start', contentIndex: 0 }] });
       emit(`pi:frame:${tabId}`, { thinking: [{ contentIndex: 0, delta: '先读一下 stores/messages.ts\n第二行思考' }] });
       emit(`pi:frame:${tabId}`, { signals: [{ type: 'toolcall_start', contentIndex: 1, id: 'live-edit', toolName: 'edit' }] });
-      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: '{"file_path":"src/stores/mes' }] });
-      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: 'sages.ts","old_string":"a","new_string":"b"}' }] });
+      /* 参数按 **pi 的真实 schema** 发（`{path, edits:[{oldText,newText}]}`）：
+         门禁第 21 段要核对"实时那一行的摘要取自调用参数"，键名写错就退化成结果首行。 */
+      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: '{"path":"src/stores/mes' }] });
+      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: 'sages.ts","edits":[{"oldText":"a","newText":"b"}]}' }] });
       /* 正文从 markdown 开头流：门禁据此断言"流式途中标题/粗体已经成形"
          （部分渲染 markdown，`features/chat/markdown.tsx` 的增量解析）。 */
       const head = '## 流式标题\n\n这是 **加粗** 的正文：';
@@ -1828,7 +1892,7 @@ if (typeof window !== 'undefined' && isMock) {
               type: 'toolCall',
               id: 'live-edit',
               name: 'edit',
-              arguments: { file_path: 'src/stores/messages.ts', old_string: 'a', new_string: 'b' },
+              arguments: { path: 'src/stores/messages.ts', edits: [{ oldText: 'a', newText: 'b' }] },
             },
             { type: 'text', text },
           ],

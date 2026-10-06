@@ -738,14 +738,14 @@ fn session_todo_projection_shape() {
 
     let p = piggy_lib::sessions::transcript::todo_projection(&path).expect("projection ok");
     let out = p.to_json();
-    for key in ["todos", "source", "offset", "clearedByTurn", "writes", "branchy", "chainBroken", "scannedBytes", "parsedLines"] {
+    for key in ["todos", "source", "offset", "branchy", "chainBroken", "scannedBytes", "parsedLines"] {
         assert!(out.get(key).is_some(), "session_todo 缺少字段 {key}：{out}");
     }
     assert!(out["todos"].is_array(), "todos 是数组（有清单时）：{out}");
     assert_eq!(out["todos"][0]["content"], "一");
     assert_eq!(out["todos"][0]["status"], "pending");
     assert_eq!(out["source"], "event");
-    assert_eq!(out["writes"], 1);
+    assert!(out["offset"].as_u64().is_some(), "offset 指向那次写入的字节位置");
     assert!(out["branchy"].is_boolean());
     assert!(out["scannedBytes"].is_number());
     // 没有清单时必须是 null（不是空数组）：前端据此区分"没有计划"与"空计划"

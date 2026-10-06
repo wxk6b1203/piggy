@@ -34,6 +34,7 @@ import { Icon } from '@/features/common/Icon';
 import { SessionWorkspace } from '@/features/chat/SessionWorkspace';
 import { SettingsTab } from '@/features/settings/SettingsTab';
 import { FilePreview } from '@/features/preview/FilePreview';
+import { DiffView } from '@/features/preview/DiffView';
 import { EmptyEditor } from './EmptyEditor';
 
 export interface SessionParams {
@@ -52,7 +53,22 @@ export interface PreviewParams {
   /** 项目根（快捷编辑的越界守卫边界；缺省 = 只读） */
   root?: string;
 }
-export type PanelParams = SessionParams | SettingsParams | PreviewParams;
+/**
+ * 改动标签（diff 视图）。
+ *
+ * 参数里只放 `{tabId, callId}`，**不放 patch 本身**：这份参数会被
+ * dockview 序列化进布局 JSON（localStorage），一个 patch 动辄几 KB，
+ * 放进去等于把整份 diff 抄进布局。改动内容就在 messages store 的工具结果索引里
+ * （`details`），标签页按这两个 id 去取（`features/preview/DiffView.tsx`）。
+ */
+export interface DiffParams {
+  kind: 'diff';
+  tabId: string;
+  toolCallId: string;
+  /** 展示用的文件名（取不到内容时还能说清这是哪个文件的改动） */
+  title?: string;
+}
+export type PanelParams = SessionParams | SettingsParams | PreviewParams | DiffParams;
 
 /* ---------------- 面板组件注册表 ---------------- */
 
@@ -79,6 +95,14 @@ const components = {
   session: (props: IDockviewPanelProps<SessionParams>) => <SessionWorkspace tabId={props.params.tabId} />,
   settings: () => <SettingsTab />,
   preview: PreviewPanel,
+  diff: (props: IDockviewPanelProps<DiffParams>) => (
+    <DiffView
+      tabId={props.params.tabId}
+      callId={props.params.toolCallId}
+      title={props.params.title}
+      onOpenFile={(path) => openPreviewTab(path, path, path.split(/[\\/]/).pop() ?? path)}
+    />
+  ),
   missing: () => <div className="pg-missing">会话文件不存在或已删除（可关闭此标签）</div>,
   welcome: () => (
     <div className="pg-welcome">
@@ -418,6 +442,31 @@ export function focusSessionTab(tabId: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * 打开（或聚焦）一个**改动标签**。
+ *
+ * 面板 id 按 `会话 + 调用` 定：同一个文件在同一轮里只开一个标签，再点一次是聚焦
+ * （与 `openPreviewTab` 的 `preview:<key>` 同一套幂等口径）。同一文件在**另一轮**
+ * 再改一次就是另一个 callId → 另一个标签，两个版本的改动可以并排看。
+ */
+export function openDiffTab(tabId: string, toolCallId: string, title: string) {
+  const id = `diff:${tabId}:${toolCallId}`;
+  const existing = api()?.getPanel(id);
+  if (existing) {
+    existing.focus();
+    // 复用既有面板时**改参数**：同一个 callId 只在标签已被复用（布局恢复）时才会变标题
+    existing.api.updateParameters({ kind: 'diff', tabId, toolCallId, title } satisfies DiffParams);
+    return;
+  }
+  api()?.addPanel({
+    id,
+    component: 'diff',
+    title: `± ${title}`,
+    params: { kind: 'diff', tabId, toolCallId, title } satisfies DiffParams,
+  });
+  api()?.getPanel(id)?.focus();
 }
 
 export function openPreviewTab(key: string, path: string, title: string, root?: string) {

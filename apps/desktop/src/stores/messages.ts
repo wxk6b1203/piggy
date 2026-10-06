@@ -29,6 +29,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import type { AgentMessage, Frame } from '@piggy/pi-protocol';
+import { diffTotals, patchOfResult } from '@/lib/diff';
 import type { OutlineTurn } from '@/features/chat/turnRailItems';
 
 // keys 去重集合用 Set 存放（05 §4.4），immer 需启用 MapSet 插件
@@ -58,6 +59,45 @@ export interface ToolResultView {
   toolName: string;
   text: string;
   isError: boolean;
+  /**
+   * 这条结果改动了几行（`+added/−removed`，来自 `details.patch` 的 hunk）。
+   * 不是文件改动（bash / read…）或没有 patch（pi 的 `write`）就是 `null` —— 不臆造 0。
+   */
+  changed?: { added: number; removed: number } | null;
+  /**
+   * 结果的结构化副产品（pi `ToolResultMessage.details`）。
+   *
+   * 为什么要留着它：`edit` 工具把**实际落盘的改动**放在这里
+   * （`{ diff, patch, firstChangedLine }`，pi `core/tools/edit.ts`），
+   * 而正文只有一句"Applied 1 edit to …"。界面要显示 diff，只能从这儿拿 ——
+   * 从调用参数（`edits[].oldText/newText`）自己算一遍是**猜**：
+   * 模糊匹配、行尾归一化、`replace_all` 之后真正的结果都可能与参数不同。
+   */
+  details?: unknown;
+}
+
+/**
+ * 会话内提示行（用户 2026-09-25："本会话内的提示，比如重试中这种，不要展示全局，
+ * 展示在会话内即可"）。
+ *
+ * DSH 里这两件事本来就是**对话流里的节点**：模型重试是 `model-retry` 节点
+ * （`MessageItem.tsx` 的 `ModelRetryItem`），压缩是压缩标记行 / 运行中的
+ * `GenericCommandCard`。Piggy 此前把它做成一条**全局 banner**（挂在应用顶部 +
+ * 输入框上方），于是一边在看别的标签、别的会话，一边被"A 会话正在重试"打扰。
+ *
+ * 现在它是一行**真实的行**（进 `ids`/`byId`）：位置、间距、虚拟化、跟随都与别的行一致，
+ * 而且只出现在**它所属的那个会话**里。
+ */
+export interface NoticeView {
+  kind: 'retry' | 'compaction';
+  /** 重试：第几次 / 上限 / 这次等了多久（pi `auto_retry_start` 的字段） */
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  /** 重试：上一次失败的原因（pi `errorMessage`） */
+  errorMessage?: string;
+  /** 压缩：触发原因（`manual` / `threshold`） */
+  reason?: string;
 }
 
 export interface MessageView {
@@ -75,6 +115,8 @@ export interface MessageView {
    * 转正时清掉，行本身留在原位（同一个 id、同一个下标）。
    */
   live?: (LiveBlock | undefined)[];
+  /** 会话内提示行（`role === 'notice'`）：见 {@link NoticeView} */
+  notice?: NoticeView;
 }
 
 /**
@@ -154,7 +196,6 @@ export interface TabMessages {
    * 用它而不是订阅 `byId`：流式时 `byId` 每 16ms 换一次引用，订阅它等于让转录每帧重渲染。
    */
   commitSeq: number;
-  banner: string | null;
   hydrated: boolean;
   /* ── 分页（docs/03 §2.19）：打开会话只载入尾部一页，往上的历史按需再读 ── */
   /** 已载入的第一行在会话文件里的字节偏移（`null` = 没有文件游标，例如退回 get_messages） */
@@ -192,7 +233,6 @@ const emptyTab = (): TabMessages => ({
   toolResults: {},
   pendingId: null,
   commitSeq: 0,
-  banner: null,
   hydrated: false,
   pageCursor: null,
   hasMore: false,
@@ -275,12 +315,23 @@ function indexToolCalls(tab: TabMessages, m: AgentMessage): void {
 
 /** `toolResult` 消息 → `toolResults` 索引（工具行就地把结果接上，见类型注释）。 */
 function indexToolResult(tab: TabMessages, m: AgentMessage): void {
-  const r = m as { toolCallId?: string; toolName?: string; content?: unknown; isError?: boolean };
+  const r = m as {
+    toolCallId?: string;
+    toolName?: string;
+    content?: unknown;
+    isError?: boolean;
+    details?: unknown;
+  };
   if (!r.toolCallId) return;
+  /* 改动统计**在索引时算一次**（不是在每次渲染时算）：patch 解析是纯字符串扫描，
+     一条结果只付一次；渲染层只读 `changed`。 */
+  const patch = patchOfResult(r.toolName ?? '', r.details);
   tab.toolResults[r.toolCallId] = {
     toolName: r.toolName ?? '',
     text: contentText(m),
     isError: r.isError === true,
+    details: r.details,
+    changed: patch ? diffTotals(patch.hunks) : null,
   };
 }
 
@@ -325,6 +376,45 @@ function pushRow(tab: TabMessages, row: PageRow): boolean {
   if (!id) return false;
   tab.ids.push(id);
   return true;
+}
+
+/**
+ * 提示行的行 id：**每类提示只占一行**（`notice:<kind>`）。
+ *
+ * 重试会连着来好几次（`auto_retry_start` 每次都发），压缩也可能反复触发；
+ * 每次都 push 一行的话，转录尾部会堆出一串"正在重试"的化石。
+ * 用固定 id 就地改内容：行还在原位，React 也不重建组件。
+ */
+const NOTICE_ID: Record<NoticeView['kind'], string> = {
+  retry: 'notice:retry',
+  compaction: 'notice:compaction',
+};
+
+/** 建/改一条提示行（已经在就改内容，不新增行、不改下标）。 */
+function pushNotice(tab: TabMessages, notice: NoticeView): void {
+  const id = NOTICE_ID[notice.kind];
+  const row = tab.byId[id];
+  if (row) {
+    row.notice = notice;
+    return;
+  }
+  tab.byId[id] = {
+    id,
+    role: 'notice',
+    // 这一行的"消息"是空的：它表达的是**正在进行的状态**，不是会话内容
+    message: { role: 'notice' } as unknown as AgentMessage,
+    offset: null,
+    notice,
+  };
+  tab.ids.push(id);
+}
+
+/** 撤掉一条提示行（结束/成功/取消都走这里：它只表示"正在…"）。 */
+function dropNotice(tab: TabMessages, kind: NoticeView['kind']): void {
+  const id = NOTICE_ID[kind];
+  if (!tab.byId[id]) return;
+  delete tab.byId[id];
+  tab.ids = tab.ids.filter((x) => x !== id);
 }
 
 /**
@@ -602,10 +692,14 @@ export const useMessages = create<MessagesState>()(
           case 'agent_start':
             tab.streaming = true;
             break;
-          case 'agent_settled':
+          case 'agent_settled': {
             tab.streaming = false;
-            tab.banner = null;
+            // 一轮落定：还在挂着的提示行（重试/压缩）一并撤掉 —— 它们的语义就是"正在…"。
+            // pi 正常会给 end 事件；worker 崩/被毙时给不出，这里兜底，免得化石行留在转录里。
+            dropNotice(tab, 'retry');
+            dropNotice(tab, 'compaction');
             break;
+          }
           case 'queue_update': {
             const q = e as unknown as { steering: string[]; followUp: string[] };
             tab.queue = { steering: [...q.steering], followUp: [...q.followUp] };
@@ -625,17 +719,36 @@ export const useMessages = create<MessagesState>()(
             }
             break;
           }
+          /* 压缩与重试：pi 的事件说的都是**进程内的状态**，界面把它落成**会话里的一行**
+             （见 `NoticeView`）。字段直接从 pi 的事件带过来（`auto_retry_start` 的
+             attempt/maxAttempts/delayMs/errorMessage），不在这里编文案。 */
           case 'compaction_start':
-            tab.banner = '⟳ 正在压缩上下文…';
+            pushNotice(tab, {
+              kind: 'compaction',
+              reason: (e as { reason?: string }).reason || undefined,
+            });
             break;
           case 'compaction_end':
-            tab.banner = null;
+            dropNotice(tab, 'compaction');
             break;
-          case 'auto_retry_start':
-            tab.banner = '↻ 自动重试中…';
+          case 'auto_retry_start': {
+            const r = e as unknown as {
+              attempt?: number;
+              maxAttempts?: number;
+              delayMs?: number;
+              errorMessage?: string;
+            };
+            pushNotice(tab, {
+              kind: 'retry',
+              attempt: r.attempt,
+              maxAttempts: r.maxAttempts,
+              delayMs: r.delayMs,
+              errorMessage: r.errorMessage,
+            });
             break;
+          }
           case 'auto_retry_end':
-            tab.banner = null;
+            dropNotice(tab, 'retry');
             break;
           case 'piggy:resync': {
             // resync 是**权威全量**（worker 崩/休眠后补齐上下文）：流式那一行连同它的
@@ -679,6 +792,24 @@ export function useTabMsg<T>(tabId: string | null, sel: (t: TabMessages) => T): 
  */
 export function useRowMsg(tabId: string | null, rowId: string): MessageView | undefined {
   return useStore(useMessages, (s) => (tabId ? s.tabs[tabId]?.byId[rowId] : undefined));
+}
+
+/**
+ * 已载入窗口里**每条工具调用的改动行数**（`callId → {added, removed}`）。
+ *
+ * 改动卡片要显示 `+N −M`，而卡片渲染在助手行里：它既不该在渲染时解析 patch
+ * （每次重渲染都白扫一遍），也不该订阅整个 `toolResults`（流式时每帧换引用 →
+ * 每个助手行每帧重渲染）。所以在**提交**时算一次，按 `commitSeq` 当依赖
+ * （与 `todoBaselines` 同一套口径）。
+ */
+export function changedStatsOf(tabId: string): Record<string, { added: number; removed: number }> {
+  const out: Record<string, { added: number; removed: number }> = {};
+  const tab = useMessages.getState().tabs[tabId];
+  if (!tab) return out;
+  for (const [callId, result] of Object.entries(tab.toolResults)) {
+    if (result.changed) out[callId] = result.changed;
+  }
+  return out;
 }
 
 /** 工具结果切片（工具行用它就地接上结果）。 */

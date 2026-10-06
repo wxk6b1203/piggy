@@ -631,7 +631,14 @@ pub struct TodoItem {
 /// 这是 DSH `sessionProjections` 的 `todos` 单元的等价物
 /// （`packages/todo/tool-todo/src/index.ts:134-145`）：**最新一次整表写入**就是当前计划，
 /// `null` = 还没有过写入。**外加 DSH 的 turn/start 清空规则**：写入之后又开始了新的一轮
-/// （用户发了新消息）→ 投影回 `null`（`cleared_by_turn = true` 说明是"被清空"而不是"没写过"）。
+/// （用户发了新消息）→ 投影回 `null`。
+///
+/// ⚠️ 曾经还转出 `clearedByTurn`（"是清空还是从来没写过"）与 `writes`（写过几次）两个字段。
+/// 前端在**同一个改动里**就把它们删了（`TodoPanel` 不再显示"上一轮的任务清单已归档"那条
+/// 弱提示，那个"被清空"的状态没有任何界面消费它），于是这两个字段成了**没有读者**的
+/// 计算与 IPC 负载。现在连 Rust 侧一起删掉 —— `turn/start` 清空这条**行为**保留
+/// （`fold_projection` 里仍有 `cleared` 这个局部变量决定要不要回 `None`），
+/// 只是不再对外声明"这是被清空的"。
 ///
 /// 两个来源，按优先级：
 ///   1. `todo/write` —— 插件写的 **custom 会话条目**（与 DSH 的事件同名同形）；
@@ -644,10 +651,6 @@ pub struct TodoProjection {
     pub source: Option<String>,
     /// 那条写入在文件里的字节偏移（界面可以据此"跳到那一轮"）
     pub offset: Option<u64>,
-    /// 写入之后又开始了新的一轮 —— 按 DSH 的规则清空
-    pub cleared_by_turn: bool,
-    /// 整段会话里见过几次整表写入
-    pub writes: usize,
     /// 文件有分支（活动分支比全部条目短）
     pub branchy: bool,
     /// 链条走断了 —— 上面的结论是**按文件序**折出来的（退回行为），不是沿活动分支
@@ -668,8 +671,6 @@ impl TodoProjection {
                 .collect::<Vec<_>>()),
             "source": self.source,
             "offset": self.offset,
-            "clearedByTurn": self.cleared_by_turn,
-            "writes": self.writes,
             "branchy": self.branchy,
             "chainBroken": self.chain_broken,
             "scannedBytes": self.scanned_bytes,
@@ -859,14 +860,12 @@ fn classify(entry: &Value) -> Fold {
 /// 来源优先级不参与"谁赢"—— 文件序已经决定了先后（插件先让模型调用、
 /// 执行时再追写 custom 条目，所以同一份清单的条目天然排在调用之后）。
 /// 来源只用来告诉前端"这条结论是读条目得来的，还是从调用参数里刨出来的"。
-fn fold_projection(entries: &[(u64, &Fold)]) -> (Option<Vec<TodoItem>>, Option<String>, Option<u64>, bool, usize) {
+fn fold_projection(entries: &[(u64, &Fold)]) -> (Option<Vec<TodoItem>>, Option<String>, Option<u64>) {
     let mut current: Option<(Vec<TodoItem>, u8, u64)> = None; // (清单, 来源, 偏移)
     let mut cleared = false;
-    let mut writes = 0usize;
     for (offset, fold) in entries {
         match fold {
             Fold::Write(list, rank) => {
-                writes += 1;
                 current = Some((list.clone(), *rank, *offset));
                 cleared = false;
             }
@@ -883,13 +882,14 @@ fn fold_projection(entries: &[(u64, &Fold)]) -> (Option<Vec<TodoItem>>, Option<S
             let source = if rank == 0 { "event" } else { "call" };
             if cleared {
                 // 写过了，但之后又开了新一轮：按 DSH 的 turn/start 规则清空。
-                // 偏移与来源照样给出 —— 界面要能说"这里曾经有过一份清单"。
-                (None, Some(source.to_string()), Some(offset), true, writes)
+                // 偏移与来源照样给出 —— 上一版靠它们显示"上一轮的任务清单已归档"，
+                // 那条提示已经删了，但偏移仍然是"这份清单写在哪一轮"的答案。
+                (None, Some(source.to_string()), Some(offset))
             } else {
-                (Some(list), Some(source.to_string()), Some(offset), false, writes)
+                (Some(list), Some(source.to_string()), Some(offset))
             }
         }
-        None => (None, None, None, false, writes),
+        None => (None, None, None),
     }
 }
 
@@ -1038,13 +1038,11 @@ pub fn todo_projection(path: &Path) -> Result<TodoProjection, String> {
         .map(|path| path.len() < id_order.len())
         .unwrap_or(false);
 
-    let (todos, source, write_offset, cleared, writes) = fold_projection(&selected);
+    let (todos, source, write_offset) = fold_projection(&selected);
     Ok(TodoProjection {
         todos,
         source,
         offset: write_offset,
-        cleared_by_turn: cleared,
-        writes,
         branchy,
         chain_broken,
         scanned_bytes,
@@ -1867,8 +1865,6 @@ mod tests {
         assert_eq!(todos[1].status, "in_progress");
         assert_eq!(todos[0].status, "completed", "事件比调用参数新，应取事件");
         assert_eq!(p.source.as_deref(), Some("event"));
-        assert_eq!(p.writes, 2, "一次调用 + 一次事件");
-        assert!(!p.cleared_by_turn);
         assert!(!p.branchy);
         assert!(p.offset.is_some());
     }
@@ -1899,8 +1895,8 @@ mod tests {
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
         assert!(p.todos.is_none(), "新一轮开始后不该再显示旧计划");
-        assert!(p.cleared_by_turn, "要说清是『被新一轮清空』而不是『没写过』");
-        assert_eq!(p.writes, 1);
+        // 清空之后 source/offset 仍然在：它是"这份清单写在哪一轮"的答案
+        assert_eq!(p.source.as_deref(), Some("event"));
         assert!(p.offset.is_some(), "清空也要留下『曾经写过』的位置");
     }
 
@@ -1914,8 +1910,6 @@ mod tests {
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
         assert_eq!(p.todos.unwrap()[0].status, "completed");
-        assert!(!p.cleared_by_turn);
-        assert_eq!(p.writes, 2);
     }
 
     #[test]
@@ -1930,7 +1924,7 @@ mod tests {
         let (_d, path) = write_session(&lines);
         let p = todo_projection(&path).unwrap();
         assert!(p.todos.is_none(), "形状不认识的清单宁可不显示");
-        assert_eq!(p.writes, 0, "不认识的条目不算一次写入");
+        assert_eq!(p.source, None, "不认识的条目不算一次写入");
     }
 
     #[test]
@@ -1940,7 +1934,7 @@ mod tests {
         let p = todo_projection(&path).unwrap();
         // 空数组是一次合法的"清空"写入
         assert_eq!(p.todos.unwrap().len(), 0);
-        assert_eq!(p.writes, 1);
+        assert_eq!(p.source.as_deref(), Some("call"));
     }
 
     #[test]
@@ -1980,7 +1974,7 @@ mod tests {
         let p = todo_projection(&path).unwrap();
         assert!(p.branchy, "parentId 链断了 → 应走分支慢路径");
         assert!(p.todos.is_none(), "被放弃的分支上的清单不能当成当前计划");
-        assert_eq!(p.writes, 0);
+        assert_eq!(p.source, None, "被放弃的分支上一次写入都不该算");
     }
 
     #[test]
@@ -2026,7 +2020,6 @@ mod tests {
         let p = todo_projection(&path).unwrap();
         assert!(!p.branchy, "载荷在前的 custom 条目不该把线性会话判成分支（真机 400ms 慢路径的成因）");
         assert_eq!(p.todos.unwrap()[0].status, "in_progress");
-        assert_eq!(p.writes, 2);
         assert_eq!(p.source.as_deref(), Some("event"));
     }
 
@@ -2104,7 +2097,7 @@ mod tests {
             let proj = todo_projection(&p).unwrap();
             let us = t0.elapsed().as_micros();
             println!(
-                "{} ({:.1} MB) → {us}µs：{} / 来源 {} / 写 {} 次 / 解析 {} 行 / branchy={} / chainBroken={}",
+                "{} ({:.1} MB) → {us}µs：{} / 来源 {} / 解析 {} 行 / branchy={} / chainBroken={}",
                 p.file_name().unwrap().to_string_lossy(),
                 sz as f64 / 1e6,
                 match &proj.todos {
@@ -2112,7 +2105,6 @@ mod tests {
                     None => "无".to_string(),
                 },
                 proj.source.clone().unwrap_or_else(|| "-".into()),
-                proj.writes,
                 proj.parsed_lines,
                 proj.branchy,
                 proj.chain_broken,
@@ -2132,7 +2124,7 @@ mod tests {
             let outline = outline(p).unwrap();
             let outline_us = t1.elapsed().as_micros();
             println!(
-                "{} ({:.1} MB) → todo 投影 {us}µs：{} / 来源 {} / 写 {} 次 / 扫 {} 字节 / 解析 {} 行 / branchy={}",
+                "{} ({:.1} MB) → todo 投影 {us}µs：{} / 来源 {} / 扫 {} 字节 / 解析 {} 行 / branchy={}",
                 p.file_name().unwrap().to_string_lossy(),
                 *sz as f64 / 1e6,
                 match &proj.todos {
@@ -2140,7 +2132,6 @@ mod tests {
                     None => "无".to_string(),
                 },
                 proj.source.clone().unwrap_or_else(|| "-".into()),
-                proj.writes,
                 proj.scanned_bytes,
                 proj.parsed_lines,
                 proj.branchy,

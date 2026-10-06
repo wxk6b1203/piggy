@@ -456,8 +456,16 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 所以"移出整块"是唯一的清空路径——漏了它预览会一直挂着，docs/15 规矩 47）；
 点击跳到那一轮；当前刻度**跟着滚动走**并在梯子内居中（指针停在梯子上时不抢）。
 
-**左右两档只差一个属性**：`.pg-rail-left` 把刻度改成左对齐、预览框翻到右侧
+**左右两档只差一个属性**：`.pg-rail-at-left` 把刻度改成左对齐、预览框翻到右侧
 （否则预览会盖住正文）。CSS 里两组规则各自镜像，组件只有一份。
+
+> ⚠️ 这两个类名是 `pg-rail-at-*`，**不是 `pg-rail-left`/`pg-rail-right`**（2026-09-25 改）。
+> `pg-rail-left` 早被**折叠后的侧栏图标轨**占了（§1.2 左视图轨，56px 宽、flex 列、
+> 侧栏底色 + 右边框）。左置时那个 nav 同时命中两条规则、后出现的侧栏那条赢：实测
+> nav 变成 **56px 宽的深色竖条**（正文左边一条黑带），里面的 `.pg-rail-scroll` 在
+> flex 列里宽度塌成 **0** —— 刻度一根都看不见、点不到，预览框也弹不出来
+> （用户报："如果会话预览滚动条设置为左边，显示就会很奇怪，有错误"）。
+> 右置时看不出任何异常，所以这条只有真的切到左边才量得到：门禁第 15b 段就是这么量的。
 
 **布局**（用户明确的约束）：开启时**两侧同时**加 44px 留白
 （`--pg-rail-clearance`），刻度梯（28px 宽、贴边 12px）落在这段留白里——
@@ -491,10 +499,16 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
  │   │       ├─ <TextBlock/>     <ThinkingBlock/> <ToolCard/> <ImageBlock/>…
  │   │       ├─ 压缩行            文件里的 `compaction` 条目（DSH 的「上下文已压缩」）
  │   │       └─ （流式的那一行就是上面这一行：`live` 槽位装着还没落定的块）
+ │   │       ├─ 提示行            正在重试模型请求 / 正在压缩（§2.1.2）
+ │   │       └─ （流式的那一行就是上面这一行：`live` 槽位装着还没落定的块）
  │   ├─ 「回到底部」              离开底部才出现的 34px 圆形按钮（DSH `chat.toBottom`）
- │   └─ <CompactorBanner/> <RetryToast/> …（生命周期横幅）
+ │   └─ <TurnRail/>              会话预览滚动条（§2.6；左右/关三态）
  └─ <Composer/>                  自研 + antd Upload 粘贴/拖拽
 ```
+
+> ⚠️ 这张树里原先写着 `<CompactorBanner/> <RetryToast/>`（生命周期横幅）。2026-09-25 起
+> **没有了**：会话级的状态是转录里的**一行**（§2.1.2），应用顶部那条 banner 只留给
+> 应用级的事（启动失败、worker 反复崩溃）。
 
 **语言判定只有一处**：预览的语法高亮走 `features/common/monaco-langs.ts::langForPath`
 （按扩展名 + 整文件名 → Monaco 语言 id，逐门懒加载）。`FilePreview` 里曾经还有一张 16 项的本地表，
@@ -528,6 +542,74 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 
 两条不变量：**决策层不写 `scrollTop`**（只有 `TranscriptViewport` 写），
 **视图层不认识"跟随"**（只有一个 `following` 布尔与三个回调）。
+
+### 2.1.2 会话内提示行（`NoticeRow`，2026-09-25）
+
+用户："本会话内的提示，比如重试中这种，不要展示全局，展示在会话内即可。"
+
+此前 `auto_retry_start` / `compaction_start` 写的是 `messagesStore` 的一条
+`tab.banner` 字符串，由 `AppFrame` 渲染成**应用顶部的全局横幅**（另有一条同文案挂在
+输入框上方）。后果是"我在看 B 会话，顶部却在报 A 会话正在重试"，而且那条横幅与它
+描述的那一轮**没有任何位置关系**。
+
+现在它们是**转录里的行**（`role: 'notice'`，进 `ids`/`byId`）：
+
+| 状态 | 形状 | DSH 对应 |
+|---|---|---|
+| 正在重试模型请求 | `<details>`：扫光的一行状态（`正在重试模型请求（2/3） · 4s`）+ 展开看「重试延迟 / 失败原因」 | `MessageItem.tsx` 的 `ModelRetryItem` |
+| 正在压缩上下文 | 与工具行同一套窄行（`DisclosureRow` + `running` 扫光），摘要 `正在压缩…` | `GenericCommandCard`（`runningSummary`） |
+
+三条纪律：
+
+1. **每类提示只占一行**（行 id 是固定的 `notice:retry` / `notice:compaction`）：
+   `auto_retry_start` 每次重试都发一遍，按事件 push 会在转录尾部堆出一串化石。
+2. **位置就是它在会话里的位置**：行进 `ids`，于是重试之后新起的那条流式行自然排在
+   它**后面**（DSH 的 `model-retry` 也是会话流里的一个节点）。渲染在"转录尾部"是不够的
+   ——那时新起的流式行会插到提示行前面，读起来像"先回答、后重试"。
+3. **结束即撤**：`auto_retry_end` / `compaction_end` 撤掉对应行；`agent_settled`
+   **兜底全撤**（pi 在 worker 崩/被毙时给不出 end 事件，不兜底就会留下"正在重试"的化石）。
+   重试倒计时按 DSH 口径：**以这一行第一次渲染为零点**（宿主事件时间与 `Date.now()`
+   可能不同源），250ms 一跳、走到 1s 停表、向上取整。
+
+字段直接从 pi 的事件带过来（`auto_retry_start` 的 `attempt` / `maxAttempts` / `delayMs` /
+`errorMessage`），界面不编文案。生命周期与取值由 `notice-row.test.tsx` 钉住，
+真浏览器里"有没有全局横幅"由门禁第 22 段量。
+
+### 2.1.3 DIFF 展示（2026-09-25）
+
+用户："DSH 可以展示 DIFF，我们能不能也搞。"
+
+**数据来自 pi，不是自己算的**：`edit` 工具的 `ToolResultMessage.details` 是
+`EditToolDetails = { diff, patch, firstChangedLine }`
+（`pi-coding-agent/dist/core/tools/edit.d.ts`）—— `patch` 是标准统一 patch，
+**实际落盘的结果**（模糊匹配、行尾归一化、`replace_all` 都已经算进去了）。
+拿调用参数（`edits[].oldText/newText`）自己推一份是**猜**，DSH 在工具还没返回时
+只能这么猜，并把那份叫 *intended* diff；Piggy 不做这件事（工具没返回就不显示 diff）。
+
+三个展示面，全部从同一份 patch 解析（`lib/diff.ts`，行型/行号/并排配对逐条抄
+DSH `FileDiff.tsx` 与 `DiffBlock.tsx`）：
+
+| 位置 | 内容 | 代码 |
+|---|---|---|
+| 工具行摘要 | `+3 -1`（跟在参数摘要后面；没有 patch 就不显示，不臆造 `+0 -0`） | `ToolRow.tsx` |
+| 工具行正文（展开） | 行内 diff 块：路径行 + 逐 hunk 的增删/上下文行 + `⋯`，**超过 9 行折成头 5 尾 4** | `features/chat/DiffBlock.tsx` |
+| 回合尾「已编辑 N 个文件」卡片 | 总计与**每行**的 `+N -M`；有 patch 才有数字 | `features/chat/ChangedFiles.tsx` |
+| 改动标签页（点卡片某一行） | 统一/并排两种版式 + 折行 + 「打开文件」；逐 hunk 画 `@@ … @@` 头与两侧行号 | `features/preview/{DiffView,FileDiff}.tsx` |
+
+为什么是**新标签页**而不是 DSH 的右栏 review：Piggy 没有那个面板（用户 2026-09-25
+早先的决定："我的工具是没有侧边预览这种功能的，改成打开新的Tab来预览"）。
+标签参数只放 `{tabId, toolCallId}` —— patch 动辄几 KB，放进 dockview 参数等于
+抄进布局 JSON（localStorage）；内容本来就在消息 store 的 `details` 里。
+
+加删行数**在索引结果时算一次**（`indexToolResult` → `changed`），不在渲染时解析：
+派生值按 `commitSeq` **和 `ids`** 两条依赖重算 —— 只订阅 `commitSeq` 是不够的，
+`hydratePage` 不涨它，于是打开会话时算出的空表会被一路记住（实测：卡片上的
+`+N -M` 永远是空的）。
+
+保留的差异（都记在 docs/14 的缺口表）：**diff 视图不做语法高亮**（DSH 的 `FileDiff`
+用 shiki 给两侧上色，Piggy 的 shiki 管线挂在整块文本的 `CodeBlock` 上）；
+**`write` 没有 diff**（pi 的 write 结果 `details` 是 `undefined`，覆盖写看不出"原先是什么"，
+硬凑"全部新增"会骗人）。
 
 ### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
 

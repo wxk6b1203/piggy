@@ -104,13 +104,22 @@ body {
 }
 .pg-to-bottom.pg-to-newer:disabled { cursor: default; opacity: 0.7; }
 /* 刻度梯：DSH 的几何（宽 28、贴边 12、竖直居中于可视带、内部可滚）
-   —— 只有 28px 宽，落在上面的 44px 留白里，不压正文。 */
+   —— 只有 28px 宽，落在上面的 44px 留白里，不压正文。
+
+   ⚠️ 左右两态用的是 `pg-rail-at-*`，**不是 `pg-rail-left`**（2026-09-25 用户报"设成左边
+   显示很奇怪"）：`.pg-rail-left` 这个名字早被**折叠后的侧栏图标轨**占了（本文件
+   「工作区布局」那一段，`SidebarRail.tsx` 用它，56px 宽、flex 列、侧栏底色 + 右边框）。
+   左置时刻度梯的 nav 同时拿到 `pg-rail` 和 `pg-rail-left`，后者晚出现、赢了宽度与
+   display —— 实测：nav 变成 56px 宽的深色竖条（截图里正文左边那条黑带），
+   里面的 `.pg-rail-scroll` 在 flex 列 + `align-items:center` 下宽度塌成 **0**，
+   于是刻度一根都看不见、也点不到（预览框都弹不出来）。
+   同一个类名给两个东西用，改哪个都像在修另一个 —— 这里给刻度梯换命名空间。 */
 .pg-rail {
   position: absolute; top: 50%; transform: translateY(-50%);
   width: 28px; z-index: 5;
 }
-.pg-rail-right { right: 12px; }
-.pg-rail-left { left: 12px; }
+.pg-rail-at-right { right: 12px; }
+.pg-rail-at-left { left: 12px; }
 .pg-rail-scroll {
   height: 100%; max-height: inherit; overflow-y: auto; overscroll-behavior: contain;
   scrollbar-width: none; position: relative;
@@ -140,8 +149,8 @@ body {
   transform: translateY(-50%) scaleX(0.6);
   transition: transform 140ms ease, background-color 140ms ease;
 }
-.pg-rail-right .pg-rail-mark::before { right: 0; transform-origin: right center; }
-.pg-rail-left .pg-rail-mark::before { left: 0; transform-origin: left center; }
+.pg-rail-at-right .pg-rail-mark::before { right: 0; transform-origin: right center; }
+.pg-rail-at-left .pg-rail-mark::before { left: 0; transform-origin: left center; }
 .pg-rail-mark.is-preview::before { transform: translateY(-50%) scaleX(0.9); background: var(--pg-fg-caption); }
 /* 正在为这一轮翻页（点未载入的刻度之后）：脉冲（DSH `.markBusy::before`，1s 循环） */
 .pg-rail-mark.is-busy::before { animation: pg-rail-busy 1s ease-in-out infinite; }
@@ -176,8 +185,8 @@ body {
   /* 悬停相邻刻度时预览框跟随移动（DSH `.preview { transition: top 140ms ... }`） */
   transition: top 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.pg-rail-right .pg-rail-preview { right: calc(100% + 10px); }
-.pg-rail-left .pg-rail-preview { left: calc(100% + 10px); }
+.pg-rail-at-right .pg-rail-preview { right: calc(100% + 10px); }
+.pg-rail-at-left .pg-rail-preview { left: calc(100% + 10px); }
 .pg-rail-preview-prompt,
 .pg-rail-preview-response {
   display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
@@ -534,6 +543,42 @@ body {
 }
 .pg-thinkrow[data-state='running'] .pg-trow-summary > * { overflow: visible; text-overflow: clip; }
 .pg-thinkrow [data-thinking-body] { padding: 2px 0 6px; }
+/* ── 会话内提示行（正在重试模型请求 / 正在压缩）─────────────────────────────
+   用户 2026-09-25："本会话内的提示，比如重试中这种，不要展示全局，展示在会话内即可"。
+   数值逐条抄 DSH `MessageItem.module.css` 的 `.retryRow` / `.retrySummary` / `.retryDetails`：
+   13px/20px 的三级文字色、`summary` 右侧 6px 的小折角（`[open]` 时转 45°）、
+   细节两行 13px/18px、标签用二级色、缩进 14px。 */
+.pg-notice-retry {
+  color: var(--pg-fg-dim);
+  font-size: var(--pg-fs-13);
+  line-height: var(--pg-lh-13);
+}
+.pg-notice-retry-summary {
+  display: inline-flex; align-items: center; width: fit-content; max-width: 100%;
+  padding: 2px 0; gap: 7px; border-radius: var(--pg-r-sm);
+  color: inherit; cursor: pointer; list-style: none; user-select: none;
+}
+/* 折角：默认朝下（可展开），展开时转成朝上 */
+.pg-notice-retry-summary::after {
+  flex: none; width: 6px; height: 6px; margin-right: 2px;
+  border-right: 1.5px solid currentcolor; border-bottom: 1.5px solid currentcolor;
+  content: ''; transform: rotate(-45deg); transition: transform 120ms ease;
+}
+.pg-notice-retry[open] .pg-notice-retry-summary::after { transform: rotate(45deg); }
+.pg-notice-retry-summary::-webkit-details-marker { display: none; }
+.pg-notice-retry-summary:hover { color: var(--pg-fg-secondary); }
+.pg-notice-retry-summary:focus-visible {
+  outline: 1.5px solid var(--pg-brand); outline-offset: 2px;
+}
+.pg-notice-retry-text { min-width: 0; overflow-wrap: anywhere; }
+.pg-notice-retry-details {
+  display: grid; gap: 2px; margin-top: 3px; padding-left: 14px;
+  overflow-wrap: anywhere; font-size: var(--pg-fs-13); line-height: var(--pg-lh-12);
+}
+.pg-notice-detail-label { color: var(--pg-fg-secondary); }
+/* 压缩提示：与工具行同一套窄行，只是它不是工具（没有结果、不可展开） */
+.pg-notice-compaction { margin: 0; }
+
 /* 压缩行（会话文件里的 `compaction` 条目，docs/03 §2.19）：与"思考"同一套左侧竖线，
    但整行居中偏左、颜色更弱——它是历史里的一个书签，不是一条消息。 */
 .pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; }
@@ -932,7 +977,6 @@ body {
 .pg-tree { padding: 8px; font-size: 12px; }
 
 /* composer 扩展 */
-.pg-composer-banner { font-size: 12px; color: #e3b341; margin-bottom: 4px; }
 .pg-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .pg-img-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--pg-bg-sidebar); border: 1px solid var(--pg-border-l2); border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .pg-img-remove { background: none; border: none; color: var(--pg-fg-dim); cursor: pointer; }
@@ -1002,6 +1046,83 @@ body {
   background: transparent; color: var(--pg-fg-dim); font: inherit; font-size: var(--pg-fs-12); cursor: pointer;
 }
 .pg-cf-toggle:hover { background: var(--pg-hover); color: var(--pg-fg); }
+/* 加删行数（DSH `ChangedFiles.module.css` 的 `.added` / `.deleted`：绿 + / 红 −）。
+   数字用**等宽数字**：一列文件的 `+13` / `+9` 要对齐，不然右边缘像被啃过。 */
+.pg-cf-counts {
+  display: inline-flex; gap: 6px; flex: none;
+  font-variant-numeric: tabular-nums; font-family: var(--pg-mono);
+}
+.pg-cf-added { color: var(--pg-diff-add-fg); }
+.pg-cf-deleted { color: var(--pg-diff-del-fg); }
+.pg-cf-hint { margin-left: 6px; }
+/* 卡片头部那一行：`+407 −198  在标签页中打开` */
+.pg-cf-stat .pg-cf-counts { margin-right: 2px; font-size: var(--pg-fs-11); }
+
+/* ── 行内 diff 块（DSH `DiffBlock`，工具行 `edit` 的正文）──────────────────────
+   几何与 DSH 的 `DiffBlock.module.css` 一致：等宽 11px/18px、行内 `padding: 0 10px`、
+   路径行与 `⋯` 用弱色、增删行用底色（与 CodeBlock 的 diff 语义同一组令牌）。 */
+.pg-diff { position: relative; margin: 4px 0 2px; }
+.pg-diff-body {
+  display: flex; flex-direction: column; overflow-x: auto;
+  border: 0.5px solid var(--pg-border-l2); border-radius: var(--pg-r-lg);
+  background: var(--pg-codeblock); padding: 4px 0;
+}
+.pg-diff-line {
+  padding: 0 10px; font-family: var(--pg-mono); font-size: 11px; line-height: 18px;
+  white-space: pre; color: var(--pg-fg-secondary);
+}
+.pg-diff-line[data-diff-kind='add'] { background: var(--pg-diff-add-bg); box-shadow: inset 3px 0 var(--pg-diff-add-gutter); }
+.pg-diff-line[data-diff-kind='del'] { background: var(--pg-diff-del-bg); box-shadow: inset 3px 0 var(--pg-diff-del-gutter); }
+.pg-diff-line[data-diff-kind='path'] { color: var(--pg-fg-dim); }
+.pg-diff-line[data-diff-kind='gap'] { color: var(--pg-fg-caption); }
+.pg-diff-fold {
+  display: flex; align-items: center; gap: var(--pg-sp-2); align-self: flex-start;
+  margin: 2px 8px; padding: 1px 8px; border: 0.5px solid var(--pg-border-l2); border-radius: var(--pg-r-pill);
+  background: var(--pg-bg-layer-2); color: var(--pg-fg-dim); font: inherit; font-size: var(--pg-fs-11);
+  cursor: pointer;
+}
+.pg-diff-fold:hover { background: var(--pg-hover-solid); color: var(--pg-fg); }
+.pg-diff-copy {
+  position: absolute; top: 6px; right: 8px; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--pg-r-sm);
+  background: var(--pg-bg-layer-2); color: var(--pg-fg-dim); cursor: pointer; opacity: 0;
+}
+.pg-diff:hover .pg-diff-copy, .pg-diff-copy:focus-visible { opacity: 1; }
+.pg-diff-copy:hover { color: var(--pg-fg); }
+/* 工具行摘要后面的 `+N −M`（DSH `ToolRow.module.css` 的 `.diffStat`） */
+.pg-trow-diffstat {
+  flex: none; margin-left: var(--pg-sp-3); font-family: var(--pg-mono); font-size: var(--pg-fs-11);
+  font-variant-numeric: tabular-nums;
+}
+.pg-diff-added { color: var(--pg-diff-add-fg); }
+.pg-diff-removed { color: var(--pg-diff-del-fg); }
+
+/* ── 改动标签页（DSH `FileDiff`）──────────────────────────────────────────────
+   统一视图：旧行号 / 新行号 / 符号 / 原文 四列；并排视图：一行两格。
+   行号列宽固定 + `tabular-nums`，否则行号位数一变整块就左右抖。 */
+.pg-diffview-body { overflow: auto; }
+.pg-fd { display: flex; flex-direction: column; padding: 6px 0 12px; font-family: var(--pg-mono); font-size: var(--pg-fs-12); }
+.pg-fd-note { margin: 6px 12px; color: var(--pg-fg-dim); font-family: var(--pg-font); font-size: var(--pg-fs-12); }
+.pg-fd-hunk { display: flex; flex-direction: column; }
+.pg-fd-hunkhead {
+  padding: 0 12px; color: var(--pg-fg-caption); line-height: 20px;
+  background: var(--pg-diff-hunk-bg); white-space: pre;
+}
+.pg-fd-line, .pg-fd-splitline { display: flex; align-items: flex-start; line-height: 20px; white-space: pre; }
+.pg-fd-no {
+  flex: none; width: 48px; padding-right: 8px; text-align: right;
+  color: var(--pg-fg-caption); font-variant-numeric: tabular-nums; user-select: none;
+}
+.pg-fd-sign { flex: none; width: 14px; color: var(--pg-fg-dim); user-select: none; }
+.pg-fd-text { flex: 1; min-width: 0; color: var(--pg-fg-secondary); }
+.pg-fd-line.pg-fd-add { background: var(--pg-diff-add-bg); box-shadow: inset 3px 0 var(--pg-diff-add-gutter); }
+.pg-fd-line.pg-fd-del { background: var(--pg-diff-del-bg); box-shadow: inset 3px 0 var(--pg-diff-del-gutter); }
+.pg-fd-cell { display: flex; flex: 1 1 50%; min-width: 0; }
+.pg-fd-cell.pg-fd-del { background: var(--pg-diff-del-bg); }
+.pg-fd-cell.pg-fd-add { background: var(--pg-diff-add-bg); }
+.pg-fd-empty { background: var(--pg-hover); }
+.pg-fd[data-review-wrap] .pg-fd-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 文档预览（DSH TextPreview，docs/12 §6.5）：面包屑与语言条同一行、38px */
 .pg-preview { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--pg-bg-app); }

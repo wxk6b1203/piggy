@@ -76,6 +76,7 @@ export function ToolCallRow({ tabId, callId, toolName, args, baseline, memory }:
       text={text}
       running={running}
       memory={memory}
+      details={result?.details}
     />
   );
 }

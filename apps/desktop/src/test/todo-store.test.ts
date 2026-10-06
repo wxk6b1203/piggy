@@ -236,8 +236,6 @@ describe('打开会话时的装载（含项目级插件的按需补探）', () =
           todos: [t('一', 'in_progress'), t('二', 'pending')],
           source: 'event',
           offset: 512,
-          clearedByTurn: false,
-          writes: 2,
           branchy: false,
           chainBroken: false,
           scannedBytes: 2048,
@@ -270,7 +268,7 @@ describe('打开会话时的装载（含项目级插件的按需补探）', () =
   it('投影里 todos 形状坏掉 → 当作"没有计划"，不编造空清单', async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === 'plugin_capability') return Promise.resolve(capabilityPayload());
-      return Promise.resolve({ todos: [{ content: '一', status: 'done' }], writes: 1 });
+      return Promise.resolve({ todos: [{ content: '一', status: 'done' }], source: 'event' });
     });
     await useTodo.getState().loadCapability();
     await loadTodosForSession('t1', '/h/s.jsonl');

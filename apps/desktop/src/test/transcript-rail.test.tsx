@@ -75,7 +75,7 @@ describe('转录里的预览滚动条', () => {
     await flush();
     const wrap = q('[data-rail-side]')!;
     expect(wrap.getAttribute('data-rail-side')).toBe('right');
-    expect(q('.pg-rail-right')).toBeTruthy();
+    expect(q('.pg-rail-at-right')).toBeTruthy();
     const marks = qa('[data-rail-mark]');
     expect(marks).toHaveLength(20);
     // 最后一条刻度的预览内容是最后一轮（真·整段历史，不只是可视区那几条）
@@ -100,7 +100,7 @@ describe('转录里的预览滚动条', () => {
       useAppConfig.getState().setRailPlacement('left');
       await new Promise((r) => setTimeout(r, 30));
     });
-    expect(q('.pg-rail-left')).toBeTruthy();
+    expect(q('.pg-rail-at-left')).toBeTruthy();
     expect(q('[data-rail-side]')!.getAttribute('data-rail-side')).toBe('left');
   });
 

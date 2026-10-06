@@ -2613,6 +2613,129 @@ const scrolledDown = {
   toLatestGone: downPages.at(-1)?.toLatest === false,
 };
 
+/* ---------- 15b. 刻度梯左置：类名不许和"折叠后的侧栏图标轨"撞车 ----------
+ * 起因（2026-09-25 用户报："如果会话预览滚动条设置为左边，显示就会很奇怪，有错误"）：
+ * 刻度梯的左右两态原来叫 `.pg-rail-left` / `.pg-rail-right`，而 `.pg-rail-left`
+ * 这个名字**早被折叠后的侧栏图标轨占了**（`SidebarRail.tsx`：56px 宽、flex 列、
+ * 侧栏底色 + 右边框）。左置时那个 nav 同时命中两条规则，后出现的侧栏那条赢：
+ * 实测 nav 变成 **56px 宽的深色竖条**（正文左边一条黑带），里面的 `.pg-rail-scroll`
+ * 在 flex 列 + `align-items:center` 下宽度塌成 **0** —— 刻度一根都看不见、点不到，
+ * 预览框也弹不出来。右置时看着一切正常，所以这条只有**真的切到左边**才量得到。
+ *
+ * 这一段走用户那条路：设置页「通用设置」→「左侧」→ 回到会话标签量几何。
+ * ⚠️ 量之前必须让会话面板回到前台：dockview 会把非活动面板的 DOM 摘掉，那时量到的是 0。 */
+await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const mock = globalThis.__piggyMock;
+  mock.mockSetTranscriptRows(mock.mockBuildTranscript(30));
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(600);
+  document.querySelector('.pg-session-row')?.click();
+  await sleep(1500);
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(900);
+  [...document.querySelectorAll('.pg-settings-navitem')]
+    .find((b) => b.textContent === '通用设置')
+    ?.click();
+  await sleep(300);
+  document.querySelector('[data-rail-option="left"]')?.click();
+  await sleep(400);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(800);
+});
+
+const railLeft = await page.evaluate(() => {
+  const wrap = document.querySelector('.pg-transcript-wrap');
+  const tr = wrap?.querySelector('.pg-transcript');
+  const rail = wrap?.querySelector('[data-turn-rail]');
+  const scroll = rail?.querySelector('.pg-rail-scroll');
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  const marks = [...(rail?.querySelectorAll('[data-rail-mark]') ?? [])];
+  return {
+    side: wrap?.getAttribute('data-rail-side'),
+    placement: rail?.getAttribute('data-rail-placement'),
+    cls: rail?.className ?? '',
+    wrap: box(wrap),
+    transcript: box(tr),
+    rail: box(rail),
+    scroll: box(scroll),
+    marks: marks.length,
+    activeMarks: rail?.querySelectorAll('.pg-rail-mark.is-active').length ?? 0,
+  };
+});
+
+// 真的用鼠标悬停其中一条刻度：预览框必须朝**正文那一侧**弹出来（不是贴左边出屏）
+const hoverIndex = Math.max(0, Math.round((railLeft.marks ?? 2) / 2));
+await page
+  .locator('[data-turn-rail] [data-rail-mark]')
+  .nth(hoverIndex)
+  .hover({ timeout: 4000 })
+  .catch((e) => bad.push(`刻度梯左置：悬停刻度失败（${e.message.split('\n')[0]}）★`));
+await page.waitForTimeout(350);
+const railPreview = await page.evaluate(() => {
+  const wrap = document.querySelector('.pg-transcript-wrap');
+  const rail = wrap?.querySelector('[data-turn-rail]');
+  const preview = rail?.querySelector('[data-rail-preview]');
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  return { preview: box(preview), rail: box(rail), text: (preview?.textContent ?? '').slice(0, 24) };
+});
+
+// 收尾：把这一项改回默认（后面几段还要用刻度梯）
+await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await globalThis.__piggyEditor.openSettingsTab();
+  await sleep(700);
+  [...document.querySelectorAll('.pg-settings-navitem')]
+    .find((b) => b.textContent === '通用设置')
+    ?.click();
+  await sleep(250);
+  document.querySelector('[data-rail-option="right"]')?.click();
+  await sleep(300);
+  globalThis.__piggyDock.panels.find((p) => p.params?.kind === 'session')?.api.setActive();
+  await sleep(400);
+});
+
+{
+  const rail = railLeft.rail ?? {};
+  const scroll = railLeft.scroll ?? {};
+  const wrap = railLeft.wrap ?? {};
+  if (railLeft.side !== 'left' || railLeft.placement !== 'left') {
+    bad.push(`刻度梯左置：设置页点了「左侧」，转录的 data-rail-side 还是 ${JSON.stringify(railLeft.side)} ★`);
+  }
+  if (/pg-rail-left\b/.test(railLeft.cls)) {
+    bad.push(`刻度梯左置：nav 又拿到了 \`pg-rail-left\`（${railLeft.cls}）—— 那是折叠侧栏图标轨的类名，会把它撑成 56px 深色竖条 ★`);
+  }
+  if (rail.w !== 28) {
+    bad.push(`刻度梯左置：刻度梯宽 ${rail.w}px（应 28）—— 撞上侧栏那条规则就会变成 56 ★`);
+  }
+  if (!(scroll.w > 0)) {
+    bad.push(`刻度梯左置：梯子的滚动容器宽 0（flex 列 + align-items:center 把它压塌了），刻度全不可见 ★`);
+  }
+  if (!(rail.x - wrap.x >= 8 && rail.x - wrap.x <= 16)) {
+    bad.push(`刻度梯左置：刻度梯没贴在左边（距转录带左边 ${rail.x - wrap.x}px，应约 12）★`);
+  }
+  if (!(railLeft.marks > 0) || railLeft.activeMarks !== 1) {
+    bad.push(`刻度梯左置：刻度 ${railLeft.marks} 条 / 亮着 ${railLeft.activeMarks} 条（应 >0 且正好 1 条是当前位置）★`);
+  }
+  const preview = railPreview.preview;
+  if (!preview) {
+    bad.push('刻度梯左置：悬停刻度没有弹出预览框 ★');
+  } else if (!(preview.x >= (railPreview.rail?.x ?? 0) + (railPreview.rail?.w ?? 0) - 1)) {
+    bad.push(`刻度梯左置：预览框没朝正文那边弹（预览 x=${preview.x}，刻度梯右边缘 ${(railPreview.rail?.x ?? 0) + (railPreview.rail?.w ?? 0)}）★`);
+  }
+  if ((railPreview.text ?? '') === '') {
+    bad.push('刻度梯左置：预览框是空的 ★');
+  }
+}
+
 /* ---------- 16. 能力闸门：**没探测到 todo 插件时，todo 界面一点都不出现** ----------
  * 这条是用户要求的分界线："如果探测到 todo 插件并已经启用，piggy 就自动支持 todo 功能"。
  * 反过来必须同样成立：关掉能力探测之后，即便会话里全是 `todo_write` 的行，
@@ -3245,6 +3368,200 @@ else {
   }
 }
 
+/* ---------- 22. 会话内提示行 + DIFF 展示（用户 2026-09-25 的两条要求）----------
+ *
+ * ① "本会话内的提示，比如重试中这种，不要展示全局，展示在会话内即可"：
+ *    重试/压缩必须是**转录里的一行**（`data-notice-row`），而应用顶部的 `.pg-banner`
+ *    与输入框上方那条 `pg-composer-banner` **都不许**再出现这两句话。
+ * ② "DSH 可以展示 DIFF，我们能不能也搞"：三条一起量 ——
+ *    工具行摘要里的 `+N −M`、展开后的行内 diff 块（含折叠开关）、
+ *    改动卡片的每行行数，以及点一行开出来的 **diff 标签**（两个 hunk 都得在）。
+ *
+ * 数据来自 mock 那次真实的 `edit`（`MOCK_EDIT_PATCH`：加 3 删 1、两个 hunk），
+ * 而且第二条 edit（styles.css）**故意没有结果** —— 它必须只显示路径、不显示行数。
+ */
+await page.goto(URL, { waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.pg-composer', { timeout: 15000 });
+await page.waitForTimeout(900);
+
+const noticesAndDiff = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const mock = globalThis.__piggyMock;
+
+  /* ⚠️ 这一段的会话数据**自己灌**（不靠"打开侧栏第一个会话"）：`mockTranscript`
+     是模块级状态、跨段落留着，前面几段各灌过自己的长会话；而且页游标也会跟着上一次
+     打开的位置走。自己灌一份带 `edit` 的转录，量到的东西才只由这一段决定。 */
+  const rows = [
+    {
+      role: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: '把 live.ts 里的引擎查询改一下' }], timestamp: 1_700_000_200_000 },
+    },
+    {
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '好，改这三处。' },
+          /* 参数按 pi 的真实 schema（`{path, edits:[{oldText,newText}]}`） */
+          {
+            type: 'toolCall',
+            id: mock.MOCK_EDIT_CALL_ID,
+            name: 'edit',
+            arguments: { path: mock.MOCK_EDIT_PATH, edits: [{ oldText: 'a', newText: 'b' }] },
+          },
+          { type: 'toolCall', id: 'gate-write', name: 'write', arguments: { path: 'src/features/chat/Transcript.tsx', content: '…' } },
+          /* 第二条 edit **故意没有结果**：没有 patch 的文件不许显示行数 */
+          { type: 'toolCall', id: 'gate-edit-2', name: 'edit', arguments: { path: 'src/styles.css', edits: [{ oldText: 'a', newText: 'b' }] } },
+        ],
+        timestamp: 1_700_000_200_500,
+      },
+    },
+    {
+      role: 'toolResult',
+      toolCallId: mock.MOCK_EDIT_CALL_ID,
+      toolName: 'edit',
+      message: {
+        role: 'toolResult',
+        toolCallId: mock.MOCK_EDIT_CALL_ID,
+        toolName: 'edit',
+        content: [{ type: 'text', text: `Applied 1 edit to ${mock.MOCK_EDIT_PATH}` }],
+        details: { diff: mock.MOCK_EDIT_DIFF, patch: mock.MOCK_EDIT_PATCH, firstChangedLine: 2 },
+        isError: false,
+        timestamp: 1_700_000_200_800,
+      },
+    },
+  ].map((r) => (r.message ? r : { role: r.role, message: r.message }));
+
+  mock.mockSetTranscriptRows(rows);
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(600);
+  document.querySelector('.pg-session-row')?.click();
+  await sleep(1800);
+  const tabId = stores.useTabs.getState().activeTabId;
+  const wrap = document.querySelector(`[data-tab-id="${tabId}"]`);
+  const tr = wrap?.querySelector('.pg-transcript');
+  if (!tr) return { missing: true };
+  if (!tr.querySelector('[data-tool-row][data-tool="edit"]')) {
+    return {
+      missing: true,
+      reason: '灌进去的 edit 行没有渲染出来',
+      diag: {
+        rows: tr.querySelectorAll('.pg-vrow').length,
+        tools: [...tr.querySelectorAll('[data-tool-row]')].map((r) => r.getAttribute('data-tool')),
+      },
+    };
+  }
+
+  /* ── ① 会话内提示行：重试 + 压缩各一条，且全局 banner 一个都不许有 ── */
+  const apply = (ev) => stores.useMessages.getState().applyCommit(tabId, ev);
+  apply({ type: 'agent_start' });
+  apply({
+    type: 'auto_retry_start',
+    attempt: 2,
+    maxAttempts: 3,
+    delayMs: 4000,
+    errorMessage: 'provider 500',
+  });
+  apply({ type: 'compaction_start', reason: 'threshold' });
+  await sleep(600);
+  const noticeRows = [...tr.querySelectorAll('[data-notice-row]')];
+  const notices = {
+    kinds: noticeRows.map((r) => r.getAttribute('data-notice')),
+    retryText: (tr.querySelector('[data-notice="retry"]')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    retryDetails: (
+      tr.querySelector('[data-notice="retry"] [data-notice-details]')?.textContent ?? ''
+    ).replace(/\s+/g, ' ').trim(),
+    compactionIsNarrowRow: !!tr.querySelector('[data-notice="compaction"] [data-disclosure-row]'),
+    globalBanner: document.querySelector('.pg-banner')?.textContent ?? null,
+    composerBanner: document.querySelector('.pg-composer-banner')?.textContent ?? null,
+  };
+  // 撤除：end 事件之后那一行必须消失
+  apply({ type: 'auto_retry_end', success: true, attempt: 2 });
+  apply({ type: 'compaction_end', reason: 'threshold' });
+  await sleep(400);
+  notices.afterEnd = tr.querySelectorAll('[data-notice-row]').length;
+  apply({ type: 'agent_settled' });
+
+  /* ── ② 工具行里的 diff ── */
+  const trow = tr.querySelector('[data-tool-row][data-tool="edit"]');
+  const diffStat = (trow?.querySelector('[data-diff-stat]')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  // 展开（DisclosureRow 是 role=button 的一行，点它）
+  trow?.querySelector('[data-disclosure-row]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(500);
+  const block = trow?.querySelector('[data-diff-block]');
+  const lines = [...(block?.querySelectorAll('.pg-diff-line') ?? [])];
+  const kinds = lines.map((l) => l.getAttribute('data-diff-kind'));
+  const fold = block?.querySelector('[data-diff-fold]');
+  const foldedLines = lines.length;
+  const tailText = lines.map((l) => l.textContent).join('\n');
+  const toolDiff = {
+    found: !!trow,
+    stat: diffStat,
+    hasBlock: !!block,
+    foldedLines,
+    kinds: [...new Set(kinds)],
+    pathShown: tailText.includes(mock.MOCK_EDIT_PATH),
+    addedShown: tailText.includes('const engine = engines.get(tabId);'),
+    removedShown: tailText.includes('return engines.get(tabId) ?? create(tabId);'),
+    secondHunkShown: tailText.includes('listeners.delete(tabId);'),
+    foldLabel: fold?.textContent ?? null,
+  };
+  // 展开折叠：行数必须变多（而且第二个 hunk 的**上下文行**要露出来）
+  fold?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(300);
+  toolDiff.expandedLines = trow?.querySelectorAll('.pg-diff-line').length ?? 0;
+  toolDiff.expandedTail = (
+    trow?.querySelector('[data-diff-block]')?.textContent ?? ''
+  ).includes('export function drop(tabId: string): void {');
+
+  /* ── ③ 改动卡片：每行的 +N −M，没有 patch 的不许编数字 ── */
+  const card = tr.querySelector('[data-changed-files]');
+  const cardRows = [...(card?.querySelectorAll('.pg-cf-row') ?? [])];
+  const totals = card?.querySelector('.pg-cf-stat')?.textContent ?? '';
+  const changed = {
+    title: card?.querySelector('.pg-cf-title')?.textContent ?? null,
+    totals: totals.replace(/\s+/g, ' ').trim(),
+    rows: cardRows.map((r) => ({
+      path: r.querySelector('.pg-cf-path')?.textContent ?? '',
+      counts: (r.querySelector('.pg-cf-counts')?.textContent ?? '').replace(/\s+/g, ''),
+    })),
+    live: stores.useMessages.getState().tabs[tabId]?.toolResults[mock.MOCK_EDIT_CALL_ID]?.changed ?? null,
+  };
+
+  /* ── ④ 点一行 → diff 标签 ── */
+  cardRows[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(900);
+  const panel = document.querySelector('[data-diffview]');
+  const diffTab = {
+    open: !!panel,
+    missing: !!document.querySelector('[data-diff-missing]'),
+    path: panel?.getAttribute('data-diff-path') ?? null,
+    total: (panel?.querySelector('[data-diff-total]')?.textContent ?? '').replace(/\s+/g, ''),
+    hunks: [...(panel?.querySelectorAll('[data-diff-hunk-header]') ?? [])].map((h) => h.textContent),
+    lines: panel?.querySelectorAll('[data-diff-line]').length ?? 0,
+    view: panel?.querySelector('[data-review-view]')?.getAttribute('data-review-view') ?? null,
+  };
+  // 切并排：两侧都有格子，且仍然两个 hunk
+  panel?.querySelector('[data-diff-tool="split"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(300);
+  const splitPanel = document.querySelector('[data-diffview]');
+  diffTab.splitView = splitPanel?.querySelector('[data-review-view]')?.getAttribute('data-review-view') ?? null;
+  diffTab.splitCells = splitPanel?.querySelectorAll('.pg-fd-cell').length ?? 0;
+  diffTab.afterSplitHunks = splitPanel?.querySelectorAll('[data-diff-hunk-header]').length ?? 0;
+  // 打开文件：diff 标签里那颗按钮要能回到普通预览
+  const before = globalThis.__piggyDock.panels.length;
+  splitPanel?.querySelector('[data-diff-tool="open-file"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(700);
+  diffTab.panelsBefore = before;
+  diffTab.panelsAfter = globalThis.__piggyDock.panels.length;
+  diffTab.previewTab = [...document.querySelectorAll('.dv-tab')].some((t) =>
+    (t.textContent ?? '').includes('✦'),
+  );
+
+  return { notices, toolDiff, changed, diffTab };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -3254,7 +3571,7 @@ console.log(
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
       sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
-      scrollMemory, restoredScroll, liveBind, wheelHold, liveRows,
+      scrollMemory, restoredScroll, liveBind, wheelHold, liveRows, noticesAndDiff,
     },
     null,
     1,
@@ -4645,6 +4962,106 @@ if (!numbers.meter.hasRailBtn) {
     bad.push(
       `压缩细节：中断的压缩没说中断（读到 ${JSON.stringify(traj.aborted?.text)}）—— 占位行不许留着"正在压缩…" ★`,
     );
+  }
+}
+
+if (noticesAndDiff.missing) {
+  bad.push(
+    `会话内提示/diff：${noticesAndDiff.reason ?? '找不到转录区'}（诊断 ${JSON.stringify(noticesAndDiff.diag)}）★`,
+  );
+} else {
+  const n = noticesAndDiff.notices ?? {};
+  if (!n.kinds?.includes('retry') || !n.kinds?.includes('compaction')) {
+    bad.push(`会话内提示：重试/压缩不是转录里的一行（读到 ${JSON.stringify(n.kinds)}）★`);
+  }
+  if (!/正在重试模型请求（2\/3）/.test(n.retryText ?? '')) {
+    bad.push(`会话内提示：重试行没有带 attempt/上限（读到 ${JSON.stringify(n.retryText)}）★`);
+  }
+  if (!/重试延迟/.test(n.retryDetails ?? '') || !/provider 500/.test(n.retryDetails ?? '')) {
+    bad.push(`会话内提示：重试详情缺延迟或失败原因（读到 ${JSON.stringify(n.retryDetails)}）★`);
+  }
+  if (!n.compactionIsNarrowRow) {
+    bad.push('会话内提示：压缩提示不是窄行（DSH 那一行就是命令卡）★');
+  }
+  if (n.globalBanner !== null) {
+    bad.push(`会话内提示：应用顶部还在显示会话级 banner（${JSON.stringify(n.globalBanner)}）—— 用户要的就是去掉它 ★`);
+  }
+  if (n.composerBanner !== null) {
+    bad.push(`会话内提示：输入框上方还在显示会话级 banner（${JSON.stringify(n.composerBanner)}）★`);
+  }
+  if (n.afterEnd !== 0) {
+    bad.push(`会话内提示：end 事件之后提示行没撤（还剩 ${n.afterEnd} 条化石行）★`);
+  }
+
+  const d = noticesAndDiff.toolDiff ?? {};
+  if (d.stat !== '+3 -1') {
+    bad.push(`DIFF：工具行摘要没显示加删行数（读到 ${JSON.stringify(d.stat)}，应 "+3 -1"）★`);
+  }
+  if (!d.hasBlock) bad.push('DIFF：展开 edit 行没有行内 diff 块 ★');
+  if (d.foldedLines > 9) {
+    bad.push(`DIFF：行内 diff 没按 9 行折叠（画了 ${d.foldedLines} 行）★`);
+  }
+  for (const kind of ['path', 'add', 'del', 'context']) {
+    if (!d.kinds?.includes(kind)) {
+      bad.push(`DIFF：行内 diff 没有 ${kind} 行（读到 ${JSON.stringify(d.kinds)}）★`);
+    }
+  }
+  if (!d.pathShown || !d.addedShown || !d.removedShown) {
+    bad.push(`DIFF：行内 diff 的内容不对（路径 ${d.pathShown} / 新增行 ${d.addedShown} / 删除行 ${d.removedShown}）★`);
+  }
+  if (!/展开剩下的 \d+ 行/.test(d.foldLabel ?? '')) {
+    bad.push(`DIFF：折叠开关的文案不对（读到 ${JSON.stringify(d.foldLabel)}）★`);
+  }
+  if (!(d.expandedLines > d.foldedLines) || !d.expandedTail) {
+    bad.push(`DIFF：展开之后行数没变多或第二段没露出来（${d.foldedLines} → ${d.expandedLines}，tail=${d.expandedTail}）★`);
+  }
+  if (!d.secondHunkShown) {
+    bad.push('DIFF：第二个 hunk 被吞了（只画了第一个 @@ 块）★');
+  }
+
+  const c = noticesAndDiff.changed ?? {};
+  if (c.title !== '已编辑 3 个文件') {
+    bad.push(`改动卡片：标题不对（读到 ${JSON.stringify(c.title)}）★`);
+  }
+  if (!/\+3\s*-1/.test(c.totals ?? '')) {
+    bad.push(`改动卡片：总计没有 "+3 -1"（读到 ${JSON.stringify(c.totals)}）★`);
+  }
+  const withPatch = (c.rows ?? []).find((r) => r.path === 'src/lib/live.ts');
+  if (!withPatch || withPatch.counts !== '+3-1') {
+    bad.push(`改动卡片：有 patch 的那一行没显示 +3 -1（读到 ${JSON.stringify(withPatch)}）★`);
+  }
+  const withoutPatch = (c.rows ?? []).find((r) => r.path === 'src/styles.css');
+  if (!withoutPatch || withoutPatch.counts !== '') {
+    bad.push(`改动卡片：没有 patch 的文件被安上了行数（读到 ${JSON.stringify(withoutPatch)}）★`);
+  }
+  if (c.live?.added !== 3 || c.live?.removed !== 1) {
+    bad.push(`改动卡片：结果索引里的行数不对（读到 ${JSON.stringify(c.live)}）★`);
+  }
+
+  const t = noticesAndDiff.diffTab ?? {};
+  if (!t.open || t.missing) {
+    bad.push(`DIFF 标签：点改动卡片的行没有开出 diff 标签（open=${t.open} missing=${t.missing}）★`);
+  }
+  if (t.path !== 'src/lib/live.ts') {
+    bad.push(`DIFF 标签：路径不对（读到 ${JSON.stringify(t.path)}）★`);
+  }
+  if (t.total !== '+3-1') {
+    bad.push(`DIFF 标签：头部总计不对（读到 ${JSON.stringify(t.total)}）★`);
+  }
+  if ((t.hunks ?? []).length !== 2) {
+    bad.push(`DIFF 标签：hunk 头数量不对（读到 ${JSON.stringify(t.hunks)}，应两个）★`);
+  }
+  if (!(t.lines >= 10)) {
+    bad.push(`DIFF 标签：只画了 ${t.lines} 行（两个 hunk 应 ≥10 行）★`);
+  }
+  if (t.view !== 'unified') {
+    bad.push(`DIFF 标签：默认版式不是统一视图（读到 ${JSON.stringify(t.view)}）★`);
+  }
+  if (t.splitView !== 'split' || !(t.splitCells > 0) || t.afterSplitHunks !== 2) {
+    bad.push(`DIFF 标签：并排视图不对（view=${t.splitView} cells=${t.splitCells} hunks=${t.afterSplitHunks}）★`);
+  }
+  if (t.panelsAfter !== (t.panelsBefore ?? 0) + 1 || !t.previewTab) {
+    bad.push(`DIFF 标签：「打开文件」没有开出预览标签（${t.panelsBefore} → ${t.panelsAfter}，preview=${t.previewTab}）★`);
   }
 }
 

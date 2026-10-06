@@ -18,10 +18,13 @@
  * 折叠时那一块代码卡片（含 shiki 高亮的整棵 DOM）根本不存在 —— 一屏几十个工具结果时
  * 这是实打实的开销差别。
  */
+import { useMemo } from 'react';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
 import { Icon } from '@/features/common/Icon';
+import { diffTotals, patchOfResult } from '@/lib/diff';
 import { CodeBlock } from './CodeBlock';
+import { DiffBlock } from './DiffBlock';
 import { inferToolLang } from './highlight';
 import { toolRowModel, VARIANT_ICONS } from './toolRowModel';
 
@@ -42,14 +45,29 @@ export interface ToolRowProps {
   running?: boolean | undefined;
   /** 这一行的身份：展开态记忆（见 lib/rowMemory；缺省 = 不记忆） */
   memory?: RowMemory | undefined;
+  /** 结果的 `details`（pi 的结构化副产品：`edit` 的 patch 在这里） */
+  details?: unknown;
 }
 
-export function ToolRow({ toolName, toolCallId, args, isError, text, running = false, memory }: ToolRowProps) {
+export function ToolRow({
+  toolName,
+  toolCallId,
+  args,
+  isError,
+  text,
+  running = false,
+  memory,
+  details,
+}: ToolRowProps) {
   /* 展开态记忆在行外：滚出虚拟窗口的行会被卸载，行内 useState 会跟着丢
      （用户报："工具行展开看完，滚上去再滚回底部又折回去了"）。 */
   const [open, setOpen] = useRowFlag(slotKey(memory, 'tool'), 'open');
   const model = toolRowModel(toolName, args, text, isError);
   const { lang } = inferToolLang(toolName, text);
+  /* 文件改动（`edit`…）的**实际** diff：从结果的 `details.patch` 解析
+     （pi 自己算好的那份，不是拿调用参数猜的）。没有 patch 的工具 → null → 走原来的代码块。 */
+  const patch = useMemo(() => patchOfResult(toolName ?? '', details), [toolName, details]);
+  const changed = useMemo(() => (patch ? diffTotals(patch.hunks) : null), [patch]);
 
   return (
     <div
@@ -86,17 +104,29 @@ export function ToolRow({ toolName, toolCallId, args, isError, text, running = f
                 </span>
               </>
             ) : null}
+            {/* 改动行数（DSH `ToolRow` 的 `diffStat`）：`+12 -3` 跟在摘要后面。
+                只在真有 patch 时出现 —— 不臆造 +0 -0。 */}
+            {changed ? (
+              <span className="pg-trow-diffstat" data-diff-stat>
+                <span className="pg-diff-added">+{changed.added}</span>{' '}
+                <span className="pg-diff-removed">-{changed.removed}</span>
+              </span>
+            ) : null}
           </>
         }
       >
-        {/* 正文照旧是那块代码卡片：折叠/高亮/行数/复制都在 */}
-        <CodeBlock
-          code={text}
-          lang={lang}
-          title={toolName ?? 'tool'}
-          collapsible
-          memoryKey={slotKey(memory, 'tool:body')}
-        />
+        {/* 正文：文件改动给 **diff**（DSH 的 `diffBody` 分支），其余照旧是那块代码卡片 */}
+        {patch ? (
+          <DiffBlock patch={patch} />
+        ) : (
+          <CodeBlock
+            code={text}
+            lang={lang}
+            title={toolName ?? 'tool'}
+            collapsible
+            memoryKey={slotKey(memory, 'tool:body')}
+          />
+        )}
       </DisclosureRow>
     </div>
   );

@@ -36,8 +36,6 @@ function setTab(
   tabId: string,
   state: Partial<{
     todos: TodoItem[] | null;
-    clearedByTurn: boolean;
-    writes: number;
     source: 'event' | 'call' | 'live' | null;
     chainBroken: boolean;
   }>,

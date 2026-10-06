@@ -670,7 +670,10 @@ K 缩写（`formatTokens`），两者都出自 `lib/tokenFormat`（§3.0b）。
 
 折叠规则与 DSH 的 `todos` 投影单元逐条一致（`tool-todo/src/index.ts:134-145`）：
 **last-write-wins**，且 `turn/start`（用户发新消息）把它清空 —— 清空后 `todos=null`
-但 `clearedByTurn=true`，界面能说清"上一轮有过一份清单"，而不是假装从来没有。
+（`source` / `offset` 照样给出：那是"这份清单写在哪一轮"的答案）。
+清空与"从来没写过"在数据上是同一个结论，早先还多转一个 `clearedByTurn` 供界面显示
+"上一轮的任务清单已归档"，那条弱提示与 `writes` 计数在 2026-09-25 一起删了 ——
+没有读者的字段就是纯粹的扫描与 IPC 负载。
 
 **一趟扫、只解析候选行**：既没有 `todo` 字样、又不是用户消息的行完全不解析。
 真机上最贵的是三行 3.35 MB 的工具输出 —— 它们连"读个 id"都不做：

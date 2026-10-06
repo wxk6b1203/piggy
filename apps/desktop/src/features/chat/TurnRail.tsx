@@ -170,7 +170,7 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
 
   return (
     <nav
-      className={`pg-rail pg-rail-${placement}`}
+      className={`pg-rail pg-rail-at-${placement}`}
       aria-label="会话轮次导航"
       data-turn-rail
       data-rail-placement={placement}

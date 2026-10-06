@@ -73,7 +73,6 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
   const queue = useTabMsg(tabId, (t) => t.queue);
-  const banner = useTabMsg(tabId, (t) => t.banner);
 
   const send = async (opts?: { behavior?: 'steer' | 'followUp' }) => {
     const value = text.trim();
@@ -267,7 +266,6 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
 
   return (
     <div className="pg-composer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      {banner && <div className="pg-composer-banner">{banner}</div>}
       {streaming ? (
         <div className="pg-queuebar">
           <span className="pg-streaming-dot" /> agent 运行中

@@ -324,7 +324,7 @@ describe('刻度梯组件（TurnRail）', () => {
     mountDom(<TurnRail {...props} placement="left" />);
     await flush();
     expect(q('[data-turn-rail]')!.getAttribute('data-rail-placement')).toBe('left');
-    expect(q('.pg-rail-left')).toBeTruthy();
+    expect(q('.pg-rail-at-left')).toBeTruthy();
   });
 
   it('键盘也能预览：聚焦出预览、失焦收起（鼠标能做的键盘也要能做）', async () => {

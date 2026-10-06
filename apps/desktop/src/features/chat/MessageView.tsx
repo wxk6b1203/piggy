@@ -24,15 +24,17 @@ import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
-import { ChangedFiles, changedFilesOf } from './ChangedFiles';
+import { ChangedFiles, type ChangedFile } from './ChangedFiles';
 import { baseName, resolveAgainst } from '@/lib/paths';
+import { editedCallsOf } from '@/lib/diff';
 import { useTabs } from '@/stores/tabs';
-import { openPreviewTab } from '@/features/workspace/EditorArea';
+import { openDiffTab, openPreviewTab } from '@/features/workspace/EditorArea';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Markdown, StreamingMarkdown } from './markdown';
 import { TextShimmer } from '@/features/common/TextShimmer';
 import { ToolRow } from './ToolRow';
 import { ToolCallRow } from './ToolCallRow';
+import { NoticeRow } from './NoticeRow';
 import { TodoRow } from './TodoRow';
 import { useTodoSupported } from '@/stores/todo';
 import type { TodoItem } from '@/lib/todoModel';
@@ -112,6 +114,7 @@ export function MessageView({
   baseline,
   baselines,
   tabId,
+  changeStats,
   memory,
 }: {
   view: MessageViewRow;
@@ -124,6 +127,13 @@ export function MessageView({
   /** 会话 id：助手消息里的工具行要按它取结果索引（`toolResults`） */
   tabId?: string | undefined;
   /**
+   * 本轮各次文件改动的加删行数（`callId → {added, removed}`）。
+   *
+   * 由 `Transcript` 按 `commitSeq` 现算（改动卡片要显示 `+N −M`），
+   * 不在这里订阅整个 `toolResults` —— 那会让每个助手行在**每帧**重渲染。
+   */
+  changeStats?: Record<string, { added: number; removed: number }> | null | undefined;
+  /**
    * 这一行的身份（tab + 行 id）：行内展开态靠它跨"虚拟化卸载"活下来
    * （见 `lib/rowMemory`；没有它 —— 轨迹视图那种孤立渲染 —— 退化为组件内 state）。
    */
@@ -132,6 +142,12 @@ export function MessageView({
   const todoOn = useTodoSupported();
   const m = view.message as AgentMessage & { content?: unknown };
   const role = view.role;
+  /* 会话内提示行（正在重试 / 正在压缩）：不是会话内容，是**进程状态**的一行。
+     它进 `ids` 是为了位置正确（重试之后新起的那条流式行必须排在它后面），
+     见 `stores/messages.ts` 的 `pushNotice`。 */
+  if (role === 'notice' && view.notice) {
+    return <NoticeRow notice={view.notice} />;
+  }
   if (role === 'user') {
     return (
       <div className="pg-user-row">
@@ -145,7 +161,16 @@ export function MessageView({
     const blocks = view.live ? liveBlocks(view.live) : settledBlocks(m.content);
     const full = blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('');
     const committed = (Array.isArray(m.content) ? m.content : []) as ContentBlock[];
-    const changed = view.live ? [] : changedFilesOf(committed);
+    /* 本轮改动的文件：路径来自调用参数，加删行数来自工具结果（`changeStats`，
+       由结果索引里 `details.patch` 数出来）。拿不到行数的文件只显示路径 —— 不臆造数字。 */
+    const changed: ChangedFile[] = view.live
+      ? []
+      : editedCallsOf(committed).map((c) => ({
+          path: c.path,
+          callId: c.callId,
+          added: changeStats?.[c.callId]?.added ?? null,
+          removed: changeStats?.[c.callId]?.removed ?? null,
+        }));
     const failure = view.live ? null : turnFailure(m);
     return (
       <div className="pg-message pg-assistant" data-streaming={view.live ? '' : undefined}>
@@ -170,10 +195,17 @@ export function MessageView({
             与右栏文件树点文件是同一条路。工具参数里的路径可能是相对的，按会话 cwd 解析。 */}
         <ChangedFiles
           files={changed}
-          onOpen={(path) => {
+          onOpen={(file) => {
             const cwd = tabId ? useTabs.getState().tabs[tabId]?.cwd : undefined;
-            const full = resolveAgainst(cwd, path);
-            openPreviewTab(full, full, baseName(full) || full, cwd ?? undefined);
+            const full = resolveAgainst(cwd, file.path);
+            const name = baseName(full) || full;
+            /* 有实际 diff 的（`edit`…）开 **diff 标签**：用户要看的正是"改成了什么样"。
+               没有 diff 的（`write` 覆盖写、拿不到结果）退回文件预览 —— 至少能看到现在的内容。 */
+            if (tabId && file.callId && file.added != null) {
+              openDiffTab(tabId, file.callId, name);
+              return;
+            }
+            openPreviewTab(full, full, name, cwd ?? undefined);
           }}
         />
         {/* 操作行（复制/时间）只在落定之后出现：流式时内容还不是最终文本，

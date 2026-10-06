@@ -11,7 +11,6 @@ import { useAppCommands } from '@/lib/appCommands';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { HelpOverlay } from '@/features/palette/HelpOverlay';
 import { BashPanel } from './BashPanel';
-import { useTabMsg } from '@/stores/messages';
 import { useTabs, createTab } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { EditorArea, closeActivePanel, openSessionTab } from './EditorArea';
@@ -64,7 +63,6 @@ export function resetBootForTest() {
 export function AppFrame() {
   useAppCommands();
 
-  const tabs = useTabs((s) => s.tabs);
   const activeTabId = useTabs((s) => s.activeTabId);
   const banner = useTabs((s) => s.banner);
   const sidebarOpen = useUi((s) => s.sidebarOpen);
@@ -80,20 +78,22 @@ export function AppFrame() {
     };
   }, []);
 
-  const msgBanner = useTabMsg(activeTabId, (t) => t.banner);
-
+  /* 这条 banner 只留给**应用级**的事（启动失败、worker 反复崩）。
+      ⚠️ 会话级的状态（正在重试 / 正在压缩）**不走这里**（用户 2026-09-25："本会话内的提示，
+      不要展示全局，展示在会话内即可"）—— 它们是转录里的一行（`NoticeView`），
+      于是切到别的标签时不会再被别的会话的状态打扰。 */
   return (
     <div className="pg-app">
-      {(banner ?? msgBanner) && (
+      {banner && (
         <div
           className="pg-banner"
-          role={banner?.startsWith('启动失败') ? 'button' : undefined}
-          onClick={banner?.startsWith('启动失败') ? () => retryBoot() : undefined}
-          style={banner?.startsWith('启动失败') ? { cursor: 'pointer' } : undefined}
-          title={banner?.startsWith('启动失败') ? '点击重试' : undefined}
+          role={banner.startsWith('启动失败') ? 'button' : undefined}
+          onClick={banner.startsWith('启动失败') ? () => retryBoot() : undefined}
+          style={banner.startsWith('启动失败') ? { cursor: 'pointer' } : undefined}
+          title={banner.startsWith('启动失败') ? '点击重试' : undefined}
         >
-          {banner ?? msgBanner}
-          {banner?.startsWith('启动失败') ? '（点击重试）' : ''}
+          {banner}
+          {banner.startsWith('启动失败') ? '（点击重试）' : ''}
         </div>
       )}
       <div className="pg-frame">

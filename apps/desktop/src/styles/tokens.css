@@ -148,6 +148,9 @@
   --pg-diff-del-bg: rgba(248, 81, 73, 0.13);
   --pg-diff-add-gutter: rgb(63, 185, 80);
   --pg-diff-del-gutter: rgb(248, 81, 73);
+  /* 加删**文字**色（`+12 −3` 的数字）：与 gutter 同色，暗底上比底色可读 */
+  --pg-diff-add-fg: rgb(63, 185, 80);
+  --pg-diff-del-fg: rgb(248, 81, 73);
   --pg-diff-hunk-bg: rgba(56, 139, 253, 0.12);
 
   /* 滚动条 */
@@ -212,6 +215,8 @@
   --pg-diff-del-bg: rgba(248, 81, 73, 0.11);
   --pg-diff-add-gutter: rgb(26, 127, 55);
   --pg-diff-del-gutter: rgb(207, 34, 46);
+  --pg-diff-add-fg: rgb(26, 127, 55);
+  --pg-diff-del-fg: rgb(207, 34, 46);
   --pg-diff-hunk-bg: rgba(56, 139, 253, 0.1);
 
   --pg-scrollbar: rgb(229, 229, 229);
