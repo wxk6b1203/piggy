@@ -84,6 +84,13 @@ export function Picker({
     setOpen(next);
     onOpenChange?.(next);
   };
+  /**
+   * `onOpenChange` 是每次渲染新建的闭包，所以 `setOpenAndNotify` 也是 ——
+   * 直接把它写进下面那个 effect 的依赖，会让"关闭时移除两个监听器"每次渲染都跑一遍
+   * （反复重订阅）。用 ref 取**最新**的那一份：订阅只建一次，行为仍跟着最新 props 走。
+   */
+  const notifyRef = useRef(setOpenAndNotify);
+  notifyRef.current = setOpenAndNotify;
 
   // 外部唤起（命令面板）：只在"打开"方向生效，避免和点击切换打架
   useEffect(() => {
@@ -113,10 +120,10 @@ export function Picker({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (anchorRef.current?.contains(t) || menuRef.current?.contains(t)) return;
-      setOpenAndNotify(false);
+      notifyRef.current(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenAndNotify(false);
+      if (e.key === 'Escape') notifyRef.current(false);
     };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);

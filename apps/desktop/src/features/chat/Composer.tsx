@@ -14,7 +14,6 @@ import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { wakeIfNeeded } from '@/lib/sleep';
 import { useTabMsg } from '@/stores/messages';
-import { useTabs } from '@/stores/tabs';
 import { useSessionStats } from '@/stores/stats';
 import { clampPercent, DECIMALS, formatPercent, formatTokens } from '@/lib/tokenFormat';
 import {

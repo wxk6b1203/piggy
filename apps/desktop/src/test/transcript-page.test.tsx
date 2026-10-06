@@ -168,26 +168,6 @@ function fakeGeometry(el: HTMLElement, scrollHeight = 2000, clientHeight = 400) 
   };
 }
 
-/** 攒下 ResizeObserver 的回调，测试里手动触发（jsdom 不会自己触发）。 */
-function captureResizeObservers(): { callbacks: Array<() => void>; restore: () => void } {
-  const callbacks: Array<() => void> = [];
-  const Real = globalThis.ResizeObserver;
-  class Spy {
-    constructor(cb: ResizeObserverCallback) {
-      callbacks.push(() => cb([], this as unknown as ResizeObserver));
-    }
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  }
-  (globalThis as Record<string, unknown>).ResizeObserver = Spy as never;
-  return {
-    callbacks,
-    restore: () => {
-      (globalThis as Record<string, unknown>).ResizeObserver = Real;
-    },
-  };
-}
 
 function scroller(): HTMLDivElement {
   const el = q<HTMLDivElement>('.pg-transcript');

@@ -187,7 +187,6 @@ function FilesView({ tabId }: { tabId: string | null }) {
   // 首屏加载根目录（懒加载只针对子目录）
   useEffect(() => {
     if (cwd) void loadDir(cwd, cwd);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd]);
 
   const toggle = (dir: string) => {

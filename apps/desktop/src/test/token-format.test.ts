@@ -115,6 +115,8 @@ describe('formatPercent：上下文占用百分比不许露出 f64 尾巴', () =
     expect(clampPercent(Number.NaN)).toBe(0);
     expect(clampPercent(140)).toBe(100);
     expect(clampPercent(-1)).toBe(0);
-    expect(clampPercent(20.316622691292876)).toBeCloseTo(20.3166226912928, 10);
+    // 刻意用一个**超出 f64 有效位**的输入：界面上的百分比要按双精度数截断，
+    // 用 Number('…') 而不是字面量，是因为字面量本身在解析期就已经丢精度（no-loss-of-precision）。
+    expect(clampPercent(Number('20.316622691292876'))).toBeCloseTo(20.3166226912928, 10);
   });
 });

@@ -12,6 +12,7 @@ export function HelpOverlay() {
   const [capturing, setCapturing] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   // registry 是外部可变状态：以 open 为显式依赖重算，避免编译器 memo 复用旧元素（M1 修正记录）
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- open 不是被用到，而是重算的触发条件（见上）
   const cmds = useMemo(() => allCommands(), [open]);
 
   const startCapture = (id: string) => {

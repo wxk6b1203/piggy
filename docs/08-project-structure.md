@@ -62,7 +62,7 @@ piggy/
 | 类型 | tsc --noEmit（独立于构建的 typecheck 脚本） | workspace 引用走 `exports` 字段 |
 | Rust | cargo（workspace 单 crate + 未来按需拆分） | `cargo clippy -D warnings`；MSRV 1.80 |
 | 桌面打包 | `tauri build`（dmg/nsis/appimage）+ tauri-plugin-updater | 签名与更新元数据在 release.yml（M4） |
-| 格式化 | prettier + rustfmt（CI 校验） | — |
+| 格式化 | **rustfmt**（`src-tauri/rustfmt.toml`，`max_width = 120`；CI 的 `rust` 作业跑 `cargo fmt --check`）。**没有 prettier**：本仓不是它的依赖、也没有配置文件 —— 这一格此前写成「prettier + rustfmt（CI 校验）」，属于「文档说有、实际没有」，2026-09-25 核对时改 | — |
 | Lint | eslint（含自定义规则，§4）+ clippy | — |
 
 ## 3. 依赖纪律
@@ -79,12 +79,24 @@ piggy/
 
 ## 4. 代码规范与质量门（PR 阻断项）
 
-1. `tsc` / `clippy -D warnings` / `eslint --max-warnings 0` 通过；
-2. **eslint 自定义规则**：
-   - `apps/desktop/src/features/chat/**` 禁 `antd` 导入（04 §2 铁律）；
-   - `pi:frame` 处理路径禁 `setState` 类 API（04 §4.1，按文件路径匹配）；
-   - 禁 `setInterval`（05 §3.1，白名单：回收计时器所在文件）；
-   - 禁 `dangerouslySetInnerHTML`（白名单：Shiki/rehype 输出容器，必须伴随 sanitize 上游断言注释）；
+1. `tsc` / `cargo clippy --all-targets -- -D warnings` / `cargo fmt --check` /
+   `eslint --max-warnings 0` 通过 —— **`pnpm lint` 真的会跑**（`apps/desktop` 的
+   `lint` 脚本 + CI 的 `frontend` 作业那一步）；2026-09-25 之前它是空转的：
+   根 `package.json` 有 `lint: pnpm -r --if-present lint`，但没有任何子包定义 `lint`，
+   于是下面四条红线**一条都没在跑**（而 `eslint-disable-next-line react-hooks/…`
+   那种注释还会因为规则没装而报 `Definition for rule ... was not found`）。
+2. **eslint 自定义规则**（`apps/desktop/eslint.config.js`，逐条对应）：
+   - `apps/desktop/src/features/chat/**` 禁 `antd` 导入（04 §2 铁律）。**按目录匹配**：
+     早先逐个文件列名单，`features/chat/` 下 21 个文件只有 7 个在名单内，新文件天然漏网；
+   - `pi:frame` 处理路径禁 React（04 §4.1）：`lib/tabEvents.ts` / `lib/ipc.ts` /
+     `stores/messages.ts` / `lib/coalesce.ts` 四个文件禁 `react` 导入与
+     `useState`/`useReducer`/`setState` 调用；
+   - 禁 `setInterval`（05 §3.1）：`window.setInterval` 与**裸 `setInterval`** 两条都禁
+     （只禁前者会漏掉同一个函数的全局调用），前端无白名单（回收计时器在 Rust 侧）；
+   - 禁 `dangerouslySetInnerHTML`（04 §9）：当前是**全禁**（没有文件需要它；
+     真要放开必须先有 sanitize 上游断言，届时在这里写白名单）；
+   - `react-hooks/rules-of-hooks`（error）与 `exhaustive-deps`（warn）已接入
+     （`eslint-plugin-react-hooks`）；依赖数组上刻意留的口子必须带 `-- 理由` 注释。
 3. 协议类型改动必须同步 `packages/pi-protocol` 与 Rust `protocol.rs`（对拍测试强制，§5）；
 4. 行为变更必须附 docs/ 修改（docs README 闭环规则 2/4）；
 5. 性能红线清单（04 §9）勾选确认。

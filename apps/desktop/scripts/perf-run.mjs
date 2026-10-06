@@ -97,7 +97,6 @@ const scenarios = {
     // 8 tab 并发流式（缩短）：mock 创建 8 tab，灌帧期间无主线程长任务
     await page.evaluate(longTaskObserve);
     const data = await page.evaluate(async () => {
-      const { invoke } = await import('@tauri-apps/api/core');
       const t0 = performance.now();
       await window.__piggyPerf.streamFor(5000);
       return { wallMs: performance.now() - t0, longTasks: window.__lt };

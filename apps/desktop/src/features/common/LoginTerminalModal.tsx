@@ -7,8 +7,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from 'antd';
 import { cmd, on } from '@/lib/ipc';
 
-type TermModule = typeof import('@xterm/xterm');
-
 export function LoginTerminalModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(null);

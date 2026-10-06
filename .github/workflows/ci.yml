@@ -14,6 +14,9 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r --if-present typecheck
+      # 红线纪律（docs/08 §4）：此前 `pnpm lint` 是**空转**（根 package.json 有 lint 脚本，
+      # 但没有任何子包定义它），四条自定义红线一条都没在跑。
+      - run: pnpm -r --if-present lint
       - run: pnpm -r --if-present test
       - run: pnpm --filter @piggy/desktop build
 

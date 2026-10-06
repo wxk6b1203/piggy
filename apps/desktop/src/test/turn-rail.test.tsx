@@ -426,7 +426,7 @@ describe('梯子量的是转录带，绝不量自己（自触发 ResizeObserver 
     const observed: Element[] = [];
     const Real = globalThis.ResizeObserver;
     class Spy {
-      constructor(_cb: ResizeObserverCallback) {}
+      constructor() {}
       observe(el: Element) {
         observed.push(el);
       }

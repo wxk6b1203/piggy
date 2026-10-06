@@ -41,7 +41,7 @@ function biggestSession() {
   let best = null;
   for (const dir of readdirSync(root)) {
     const full = join(root, dir);
-    let files = [];
+    let files;
     try {
       files = readdirSync(full).filter((f) => f.endsWith('.jsonl'));
     } catch {

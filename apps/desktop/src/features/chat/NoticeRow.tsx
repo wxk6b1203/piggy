@@ -36,13 +36,16 @@ export function NoticeRow({ notice }: { notice: NoticeView }) {
 
 /** 「正在重试模型请求（1/3） · 5s」——DSH `ModelRetryItem`。 */
 function RetryNotice({ notice }: { notice: NoticeView }) {
-  // 零点 = 这一行第一次渲染的时刻（DSH 同一条注释：宿主事件时间与本地时钟可能不同源）
+  /* 零点 = 这一行第一次渲染的时刻（DSH 同一条注释：宿主事件时间与本地时钟可能不同源）。
+     ⚠️ 这里返回的是**对象**而不是裸数字：第 N 次与第 N+1 次重试的 `Date.now() + delayMs`
+     完全可能算出同一个毫秒值（同一毫秒内两次事件、或 delayMs 相同且恰好对齐），
+     那时 effect 的依赖没变、表就不会重起 —— 界面停在上一轮的倒计时上。
+     带上 `attempt` 让"新的一次等待"必然是一个新身份。 */
   const deadline = useMemo(
-    () => Date.now() + (notice.delayMs ?? 0),
-    // 第几次重试变了就是新的一次等待 → 重新起表
+    () => ({ at: Date.now() + (notice.delayMs ?? 0), attempt: notice.attempt ?? 1 }),
     [notice.delayMs, notice.attempt],
   );
-  const [seconds, setSeconds] = useState(() => retrySeconds(deadline - Date.now()));
+  const [seconds, setSeconds] = useState(() => retrySeconds(deadline.at - Date.now()));
 
   useEffect(() => {
     /* 倒计时用**单发 setTimeout 链**，不是 `setInterval`：docs/05 §3.1 的"零轮询架构"
@@ -53,7 +56,7 @@ function RetryNotice({ notice }: { notice: NoticeView }) {
        而 250ms 会让"等待"这一格每秒多跑三次渲染 —— 这里不需要那么密。 */
     let timer: number | undefined;
     const arm = () => {
-      const left = retrySeconds(deadline - Date.now());
+      const left = retrySeconds(deadline.at - Date.now());
       setSeconds(left);
       if (left > 1) timer = window.setTimeout(arm, 1000);
     };

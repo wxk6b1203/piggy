@@ -115,7 +115,7 @@ export function Transcript({ tabId }: { tabId: string }) {
      于是"预览全部、展示部分"同时成立（DSH `mergeTurnRailItems` 同构）。 */
   const railRows = useMemo<RailSourceRow[]>(
     () => railRowsFor(tabId),
-    // ids/commitSeq 变了就要重算（`railRowsFor` 直接读 store，所以这里显式列依赖）
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `railRowsFor` 直接读 store（不通过参数），ids/commitSeq 是刻意的重算触发条件
     [tabId, ids, commitSeq],
   );
   const railItems = useMemo(() => mergeRailItems(outline, railRows), [outline, railRows]);
@@ -136,6 +136,7 @@ export function Transcript({ tabId }: { tabId: string }) {
               .filter(Boolean) as MessageViewT[],
           )
         : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 同上：`todoBaselines` 读的是传进去的行，ids/commitSeq 决定"什么时候重算"
     [todoOn, tabId, ids, commitSeq],
   );
 
@@ -147,7 +148,11 @@ export function Transcript({ tabId }: { tabId: string }) {
    * 于是打开会话时算出的那份空表会被一路记住（实测：卡片上的 `+N -M` 永远是空的）。
    * 也不订阅每帧都换引用的 `toolResults`（那会让每个助手行在流式时每帧重渲染）。
    */
-  const changeStats = useMemo(() => changedStatsOf(tabId), [tabId, ids, commitSeq]);
+  const changeStats = useMemo(
+    () => changedStatsOf(tabId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `changedStatsOf` 直接读 store（见上一条注释）
+    [tabId, ids, commitSeq],
+  );
 
   /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
      ⚠️ 阅读线**不看瞬时几何**：流式时内容两帧之间长高，几何会把"自己贴的底"读成

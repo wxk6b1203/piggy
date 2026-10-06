@@ -55,7 +55,7 @@ for (const sel of clicks) {
 }
 for (const js of evals) {
   await page.evaluate((code) => {
-    // eslint-disable-next-line no-new-func
+    // 用 new Function 跑调用方给的片段：这是调试脚本的 `--eval` 开关，输入来自命令行
     new Function(code)();
   }, js).catch((e) => errors.push(`eval ${js}: ${e.message}`));
   await page.waitForTimeout(400);

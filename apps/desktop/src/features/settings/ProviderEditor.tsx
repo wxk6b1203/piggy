@@ -56,7 +56,7 @@ const isHttp = (s: string) => /^https?:\/\//.test(s.trim());
 
 export function ProviderEditor({ row, draft, hideTitle, apiOptions, onSaved, onCancel }: Props) {
   const provider = row?.provider ?? draft?.provider ?? '';
-  const [name, setName] = useState(row?.name ?? draft?.name ?? '');
+  const name = row?.name ?? draft?.name ?? '';
   const [baseUrl, setBaseUrl] = useState(row?.baseUrl ?? draft?.baseUrl ?? '');
   const [api, setApi] = useState(row?.api ?? draft?.api ?? '');
   const [models, setModels] = useState<ModelRow[]>(row?.models ?? []);

@@ -34,7 +34,6 @@ import { mountDom, unmountDom, domContainer } from './dom-render';
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 40)); });
 const q = <T extends Element>(sel: string) => domContainer().querySelector<T>(sel);
-const qa = <T extends Element>(sel: string) => [...domContainer().querySelectorAll<T>(sel)];
 /** 菜单是 portal 到 body 的，不在挂载容器里 */
 const mq = <T extends Element>(sel: string) => document.body.querySelector<T>(sel);
 const mqa = <T extends Element>(sel: string) => [...document.body.querySelectorAll<T>(sel)];

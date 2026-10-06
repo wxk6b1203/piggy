@@ -245,7 +245,6 @@ const fleet = await page.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 3500));
 
     const cards = [...document.querySelectorAll('.pg-codeblock')];
-    const pick = (sel) => cards.map((c) => c.querySelector(sel)).filter(Boolean);
     const diffCard = cards.find((c) => c.getAttribute('data-lang') === 'diff');
     const goCard = cards.find((c) => c.getAttribute('data-lang') === 'go');
     const colorOf = (el) => (el ? getComputedStyle(el).color : null);
@@ -594,7 +593,7 @@ await page.waitForTimeout(800);
  */
 const langDeps = new Set();
 const onLangDep = (r) => {
-  const m = r.url().match(/languages[\/_]definitions[\/_]([a-z0-9-]+)[\/_]register/);
+  const m = r.url().match(/languages[/_]definitions[/_]([a-z0-9-]+)[/_]register/);
   if (m) langDeps.add(m[1]);
 };
 page.on('response', onLangDep);
@@ -1302,7 +1301,6 @@ const settingsEdge = await page.evaluate(async () => {
  *       `contextmenu` 事件在真浏览器里走的是另一条路；
  *   (c) 生成完侧栏那一行**真的换了文字**——这条要跨 IPC + 重渲染。 */
 const sessionTitle = await page.evaluate(async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
   const rows = qa('.pg-session-row');
   return {
@@ -1352,7 +1350,6 @@ const cornerProbe = await page.evaluate(async () => {
   if (!row) return { ok: false };
   window.dispatchEvent(new Event('scroll', { bubbles: true }));
   await sleep(100);
-  const r = row.getBoundingClientRect();
   row.dispatchEvent(
     new MouseEvent('contextmenu', {
       bubbles: true,

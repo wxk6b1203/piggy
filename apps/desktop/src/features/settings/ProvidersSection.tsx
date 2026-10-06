@@ -63,7 +63,8 @@ export function ProvidersSection() {
     setCustomId('');
   };
 
-  const rows = data?.providers ?? [];
+  // `data?.providers ?? []` 每次渲染都会新建数组 → 下面 useMemo 的依赖每次都在变。
+  const rows = useMemo(() => data?.providers ?? [], [data]);
   const taken = useMemo(() => new Set(rows.map((r) => r.provider)), [rows]);
   const addable = (data?.catalog ?? []).filter((c) => !taken.has(c.id));
 

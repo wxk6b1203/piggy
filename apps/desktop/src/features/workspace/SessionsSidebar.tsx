@@ -7,7 +7,7 @@ import { cmd } from '@/lib/ipc';
 import { pickDirectory } from '@/lib/picker';
 import { baseName } from '@/lib/paths';
 import { createTabGuarded, findTabBySession } from '@/lib/tabCreate';
-import { applySessionName, createTab, useTabs, type TabSnapshot } from '@/stores/tabs';
+import { applySessionName, useTabs, type TabSnapshot } from '@/stores/tabs';
 import {
   useSessions,
   sessionTitle,
@@ -255,40 +255,43 @@ export function SessionsSidebar() {
     return list.slice(0, 4);
   }, [sidebar]);
 
-  /** 菜单项：会话行的全部操作都能从这儿够到（悬停图标放不下更多了）。 */
-  const menuItems = useCallback(
-    (m: SessionMeta): MenuItem[] => {
-      const hasName = !!m.name;
-      return [
-        { id: 'open', label: '打开会话', onSelect: () => void openSession(m) },
-        {
-          id: 'title',
-          label: hasName ? '重新生成标题' : '生成标题',
-          hint: '调用模型，按会话内容起一个短标题',
-          disabled: titling !== null,
-          onSelect: () => void doGenerateTitle(m),
+  /**
+   * 菜单项：会话行的全部操作都能从这儿够到（悬停图标放不下更多了）。
+   *
+   * ⚠️ 刻意**不**用 `useCallback`：它在渲染里被就地调用（`items={menu ? menuItems(...) : []}`），
+   * 每次渲染照样建一个新数组 —— memo 一个字节都没省下，却让依赖数组常年挂着三条
+   * `exhaustive-deps` 警告（那三条警告本身是对的：里面用到的闭包每次渲染都是新的）。
+   */
+  const menuItems = (m: SessionMeta): MenuItem[] => {
+    const hasName = !!m.name;
+    return [
+      { id: 'open', label: '打开会话', onSelect: () => void openSession(m) },
+      {
+        id: 'title',
+        label: hasName ? '重新生成标题' : '生成标题',
+        hint: '调用模型，按会话内容起一个短标题',
+        disabled: titling !== null,
+        onSelect: () => void doGenerateTitle(m),
+      },
+      {
+        id: 'title-preview',
+        label: '看看会拿什么去生成',
+        hint: '不调用模型，只列出取材的消息',
+        disabled: titling !== null,
+        onSelect: () => void openTitlePreview(m),
+      },
+      {
+        id: 'rename',
+        label: '重命名…',
+        onSelect: () => {
+          setRenaming(m);
+          setRenameText(m.name ?? sessionTitle(m));
         },
-        {
-          id: 'title-preview',
-          label: '看看会拿什么去生成',
-          hint: '不调用模型，只列出取材的消息',
-          disabled: titling !== null,
-          onSelect: () => void openTitlePreview(m),
-        },
-        {
-          id: 'rename',
-          label: '重命名…',
-          onSelect: () => {
-            setRenaming(m);
-            setRenameText(m.name ?? sessionTitle(m));
-          },
-        },
-        { id: 'export', label: '导出 HTML', onSelect: () => void doExport(m) },
-        { id: 'delete', label: '删除会话', danger: true, onSelect: () => doDelete(m) },
-      ];
-    },
-    [doGenerateTitle, doDelete, doExport, openSession, titling],
-  );
+      },
+      { id: 'export', label: '导出 HTML', onSelect: () => void doExport(m) },
+      { id: 'delete', label: '删除会话', danger: true, onSelect: () => doDelete(m) },
+    ];
+  };
 
   return (
     <div className="pg-sidebar">
