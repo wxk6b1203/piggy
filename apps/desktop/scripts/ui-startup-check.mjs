@@ -3010,20 +3010,31 @@ const liveBind = await page.evaluate(async () => {
  * 位置必须"留在原地"而 gap 继续变大 —— 那才证明是内容在长、读者没被拽走。
  */
 const wheelHold = await (async () => {
-  const tabId = liveBind.tabId;
-  /* ⚠️ 先把上一段（第 19 段）那条假流式**等干净**再开始（2026-09-25 加）。
-     上一段用的是**同一个 tab**，它的 `streamFor(3400)` 若还在跑，这一段的滚轮手势会被
-     后续帧打断：实测同一份代码有时 gap 一路长上去（读者拿住），有时在 25px 容差里
-     被拽回底部 —— 两次采样值逐帧相同，说明是**时序**而不是逻辑（docs/15 §4 记过这条
-     flaky）。等 `streaming` 落地再灌数据，这一段就只由自己决定。 */
-  await page.evaluate(async (id) => {
+  /* ⚠️ 这一段**用自己的新标签**（2026-09-25 改）：从前蹭第 19 段那个 tab，而第 19 段的
+     假流式（`streamFor(3400)`）可能还没跑完 —— 实测同一份代码有时 gap 一路长上去
+     （读者拿住位置），有时在 25px 容差里被拽回底部，两次采样逐帧相同，说明是**时序**
+     而不是逻辑（docs/15 §4 记过这条 flaky）。用干净标签之后这一段只由自己决定。
+     注：这不代表应用侧没问题 —— "读者手势与残留流式叠加"那条仍未查清，缺口留在 docs/15 §4。 */
+  const fresh = await page.evaluate(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const stores = globalThis.__piggyStores;
-    for (let i = 0; i < 60; i += 1) {
-      if (!stores.useMessages.getState().tabs[id]?.streaming) return;
-      await sleep(100);
+    globalThis.__piggyEditor.closeAllTabs();
+    await sleep(700);
+    const row = document.querySelector('.pg-session-row');
+    if (!row) return { error: '侧栏里没有会话行（点不到会话）' };
+    row.click();
+    // 等转录真的挂上来（固定 sleep 会偶尔踩空：这一段的标签是**新开**的）
+    for (let i = 0; i < 40; i += 1) {
+      await sleep(150);
+      const id = globalThis.__piggyStores.useTabs.getState().activeTabId;
+      if (document.querySelector(`[data-tab-id="${id}"] .pg-transcript`)) return { tabId: id };
     }
-  }, tabId);
+    return { error: '新开的会话标签没有转录 DOM' };
+  });
+  if (fresh.error) {
+    bad.push(`回滚（第 20 段）：${fresh.error} ★`);
+    return { skipped: true, error: fresh.error };
+  }
+  const tabId = fresh.tabId;
   const setup = await page.evaluate(async (id) => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const stores = globalThis.__piggyStores;
@@ -3114,10 +3125,21 @@ const wheelHold = await (async () => {
  * 这一段用 `__piggyPerf.streamMixed` 走**真实帧通道**（思考 + 工具参数 JSON 增量 + 正文），
  * 并与同一份参数 hydrate 出来的提交行逐项对比：标题、摘要、行高必须一致。
  */
-const liveRows = await page.evaluate(async (id) => {
+const liveRows = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const stores = globalThis.__piggyStores;
-  globalThis.__piggyEditor.focusSessionTab(id);
+  /* ⚠️ 这一段**自己开一个会话**（2026-09-25 改）：它原来借用第 19 段那个 tab，
+     而第 20/21 段之间会关标签重开 —— 复用别人的 tab 就会踩到"那个面板已经不在了"
+     （实测：`tr` 为 null，整段抛异常）。自己的数据自己开，是这一段唯一正确的依赖。 */
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelector('.pg-session-row')?.click();
+  let id = '';
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(150);
+    id = stores.useTabs.getState().activeTabId;
+    if (document.querySelector(`[data-tab-id="${id}"] .pg-transcript`)) break;
+  }
   // 同一份参数先 hydrate 成**提交行**（parity 的参照物）
   stores.useMessages.getState().hydrate(id, [
     { role: 'user', content: [{ type: 'text', text: '参照物' }], timestamp: 1_700_000_000_000 },
@@ -3184,7 +3206,7 @@ const liveRows = await page.evaluate(async (id) => {
     committedTool: box(tr.querySelector('.pg-vrow [data-tool-row][data-tool="edit"]') ?? null),
   };
   return out;
-}, liveBind.tabId);
+});
 
 /* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
  *
@@ -3595,6 +3617,78 @@ const noticesAndDiff = await page.evaluate(async () => {
   );
 
   return { notices, toolDiff, changed, diffTab };
+});
+
+/* ---------- 24. worker 崩/休眠：这一轮必须**当场落地**（docs/15 §4 的老缺口）----------
+ * 缺口原文：崩了之后 `streaming` 仍是 true、实时行还挂着、"停止"按钮仍可用 —— 界面
+ * 假装还在跑，而那个能把这一轮落地的 `message_end` 永远不会来。现在：
+ * 崩/休眠 → `interruptTurn` 把实时块转正成一条 `stopReason='aborted'` 的消息（内容不丢）
+ * + `streaming` 归假；`piggy:resync` 回来后**先丢掉那行**再灌权威条目（它不在会话文件里）。
+ *
+ * ⚠️ 必须在崩与 resync **之间**量：`mockCrash` 与 `mockRevive` 是拆开的两个 helper，
+ * 合成的 `crashRecover` 会把中断行按设计丢掉，断言窗口只有 100ms。 */
+const crashLanding = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  /* `mockCrash`/`mockRevive` 挂在 `__piggyPerf` 上（与 `streamFor`/`crashRecover` 同一个
+     对象），**不是** mock 后端模块的导出。 */
+  const perf = globalThis.__piggyPerf;
+  /* 先开一个**会话**：跑到这里时活动标签可能是第 17/22 段留下的预览或设置页
+     （`activeTabId` 此时是面板的 kind，没有转录 DOM）。 */
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(700);
+  document.querySelector('.pg-session-row')?.click();
+  let tabId = '';
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(150);
+    tabId = stores.useTabs.getState().activeTabId;
+    if (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`)) break;
+  }
+  const tr = () => document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
+  const msg = () => stores.useMessages.getState().tabs[tabId];
+  if (!tr()) return { missing: true, diag: { tabId, panels: globalThis.__piggyDock.panels.length } };
+
+  /* ⚠️ 还要等**会话装载完**（`hydrated`）：`hydratePage` 会 `resetRows`，
+     若它落在流式开始之后，实时行会被整片重置掉 → 帧被丢（`!pendingId` 直接 return），
+     表现就是"假流式没跑起来、崩溃前没有实时行可落地"（实测踩过）。 */
+  for (let i = 0; i < 40; i += 1) {
+    if (msg()?.hydrated === true && (msg()?.ids ?? []).length > 0) break;
+    await sleep(150);
+  }
+
+  // 起一条假流式，等到真的流出了一段字
+  void globalThis.__piggyPerf.streamFor(4000, 16, tabId);
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(100);
+    if ((msg()?.ids ?? []).some((id) => msg().byId[id]?.live)) break;
+  }
+  const streamingBefore = msg()?.streaming === true;
+  const liveRows = document.querySelectorAll(`[data-tab-id="${tabId}"] [data-streaming]`).length;
+  const textBefore = (document.querySelector(`[data-tab-id="${tabId}"] [data-streaming]`)?.textContent ?? '').length;
+
+  perf.mockCrash(tabId);
+  await sleep(500);
+  const interruptedId = (msg()?.ids ?? []).find((id) => msg().byId[id]?.interrupted);
+  const abortedCard = document.querySelector(`[data-tab-id="${tabId}"] .pg-turn-failure[data-kind="aborted"]`);
+  const afterCrash = {
+    streaming: msg()?.streaming === true,
+    liveRows: document.querySelectorAll(`[data-tab-id="${tabId}"] [data-streaming]`).length,
+    interruptedRows: (msg()?.ids ?? []).filter((id) => msg().byId[id]?.interrupted).length,
+    abortedCard: !!abortedCard,
+    textLen: (interruptedId ? document.querySelector(`[data-tab-id="${tabId}"]`)?.textContent ?? '' : '').length,
+    hasToolRow: document.querySelectorAll(`[data-tab-id="${tabId}"] [data-tool-row]`).length,
+  };
+
+  perf.mockRevive(tabId);
+  await sleep(600);
+  const afterRevive = {
+    interruptedRows: (msg()?.ids ?? []).filter((id) => msg().byId[id]?.interrupted).length,
+    userRows: (msg()?.ids ?? []).filter((id) => msg().byId[id]?.role === 'user').length,
+    streaming: msg()?.streaming === true,
+    state: stores.useTabs.getState().tabs[tabId]?.workerState ?? null,
+  };
+
+  return { streamingBefore, liveRows, textBefore, afterCrash, afterRevive };
 });
 
 await browser.close();
@@ -5122,6 +5216,40 @@ if (unmockedCommands.length > 0) {
     `mock 覆盖：这一段里调到了没有实现的 mock 命令：\n    ${[...new Set(unmockedCommands)].join('\n    ')}\n` +
       '    门禁跑在 mock 上，缺 handler 会让相关界面静默失效（兜底只 warn + 返回 {}）★',
   );
+}
+
+if (crashLanding.missing) {
+  bad.push(`崩溃落地：找不到转录区（诊断 ${JSON.stringify(crashLanding.diag)}）★`);
+} else {
+  if (!crashLanding.streamingBefore) {
+    bad.push('崩溃落地：前置条件不成立（假流式没跑起来），这一条核对失去意义');
+  }
+  const c = crashLanding.afterCrash ?? {};
+  if (c.streaming) {
+    bad.push('崩溃落地：崩了之后 `streaming` 仍是 true（界面假装还在跑）★');
+  }
+  if (c.liveRows !== 0) {
+    bad.push(`崩溃落地：崩溃后还挂着 ${c.liveRows} 个流式标记 ★`);
+  }
+  if (c.interruptedRows !== 1) {
+    bad.push(`崩溃落地：没有落地成一条「已中止」的行（读到 ${c.interruptedRows} 行）★`);
+  }
+  if (!c.abortedCard) {
+    bad.push('崩溃落地：没有画出「已中止」卡片（已流出的内容应当保留在上面）★');
+  }
+  if (!(c.textLen > 0)) {
+    bad.push('崩溃落地：落地之后转录里没有任何文本（已流出的字被吃掉了？）★');
+  }
+  const r = crashLanding.afterRevive ?? {};
+  if (r.interruptedRows !== 0) {
+    bad.push(`崩溃落地：resync 之后中断行还在（${r.interruptedRows} 行）—— 它会与文件里的真身重复 ★`);
+  }
+  if (!(r.userRows >= 1)) {
+    bad.push(`崩溃落地：resync 没有把权威条目灌进来（user 行 ${r.userRows}）★`);
+  }
+  if (r.streaming) {
+    bad.push('崩溃落地：resync 之后 streaming 又变成 true ★');
+  }
 }
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

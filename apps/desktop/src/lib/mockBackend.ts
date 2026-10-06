@@ -1973,6 +1973,27 @@ if (typeof window !== 'undefined' && isMock) {
       }
     },
     /** S5：崩溃恢复（worker 崩溃 → resync 补齐） */
+    /**
+     * 只报"崩了"。
+     *
+     * 与 `crashRecover` 拆开是为了让门禁能在**中间那一刻**量东西：崩溃之后、resync 之前
+     * 那一瞬间，这一轮必须已经落地（`streaming` 归假 + 一条「已中止」的行）。
+     * 合成一个 helper 的话，resync 会把中断行按设计丢掉，断言窗口只有 100ms。
+     */
+    mockCrash(tabId = TAB): void {
+      emit(`pi:state:${tabId}`, { state: 'crashed' });
+    },
+    /** worker 醒来：按会话文件补齐上下文（`piggy:resync`）并把状态改回 ready。 */
+    mockRevive(tabId = TAB): void {
+      emit(`pi:commit:${tabId}`, {
+        type: 'piggy:resync',
+        entries: [
+          { type: 'message', id: 'r1', message: { role: 'user', content: '崩溃前消息', timestamp: 1_700_000_000_001 } },
+        ],
+        leafId: 'r1',
+      });
+      emit(`pi:state:${tabId}`, { state: 'ready', revived: true });
+    },
     async crashRecover(): Promise<void> {
       emit(`pi:state:${TAB}`, { state: 'crashed' });
       await new Promise((r) => setTimeout(r, 100));

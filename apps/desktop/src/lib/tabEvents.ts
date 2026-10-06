@@ -60,6 +60,12 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
           useBash.getState().append(tabId, b.delta ?? '');
         }
         if (ev.type === 'agent_settled') {
+          /* 一轮落定时**还挂着流式行** = 那个 `message_end` 没来（用户中断、pi 出错后直接
+             收尾、扩展把消息吞了……）。落地成「已中止」，别让它永远转圈。
+             ⚠️ 顺序：先落地（要读 `pendingId`），再走下面那些"落定之后"的事。 */
+          useMessages
+            .getState()
+            .interruptTurn(tabId, '本轮结束，但没有收到最终消息（已中止）');
           const t = useTabs.getState();
           if (t.activeTabId !== tabId) t.markUnread(tabId);
           windowEvents.emit('refresh-stats', tabId);
@@ -75,6 +81,21 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     un.push(
       await on(`pi:state:${tabId}`, (st: { state?: string } & Record<string, unknown>) => {
         if (st.state === 'sleeping') markSleeping(tabId); // 主动休眠/空闲回收（05 §4）
+        /* ⚠️ 崩了/睡了而这一轮**还在流**：必须当场把这一轮落地（docs/15 §4 那条缺口）。
+           从前这里只改 worker 状态，于是 `streaming` 一直是 true、实时行一直挂着、
+           "停止"按钮一直可用 —— 界面假装还在跑，而那个 `message_end` 永远不会来。
+           已流出的字不丢（`interruptTurn` 把实时块转正成一条「已中止」的消息）。
+           顺序：先落地再改 worker 状态（落地要读 `pendingId`）。 */
+        if (st.state === 'crashed' || st.state === 'sleeping') {
+          useMessages
+            .getState()
+            .interruptTurn(
+              tabId,
+              st.state === 'crashed'
+                ? 'pi 进程崩溃（本轮已中断，已生成的内容保留在上面）'
+                : 'pi 进程被回收休眠（本轮已中断，已生成的内容保留在上面）',
+            );
+        }
         useTabs
           .getState()
           .setWorkerState(tabId, (st.state ?? 'ready') as never, st);

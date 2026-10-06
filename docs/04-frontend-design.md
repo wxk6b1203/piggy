@@ -611,7 +611,34 @@ DSH `FileDiff.tsx` 与 `DiffBlock.tsx`）：
 **`write` 没有 diff**（pi 的 write 结果 `details` 是 `undefined`，覆盖写看不出"原先是什么"，
 硬凑"全部新增"会骗人）。
 
-### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
+### 2.1.5 一轮什么时候算结束（崩 / 休眠 / 没有 `message_end`）
+
+转录里"这一轮还在跑"只有一个判据：`useMessages.tabs[id].streaming`（实时行、状态行的
+"运行中"、`Esc`/停止按钮的可用态都从它派生）。而它此前**只由 `message_end` 落地** ——
+worker 崩溃、空闲回收休眠、pi 自己收尾却没发最终消息，这三种情况下那个事件永远不会来：
+界面假装还在跑（docs/15 §4 记了很久的那条缺口）。
+
+现在补上**唯一的落地入口** `stores/messages.ts::interruptTurn(tabId, reason)`：
+
+```
+实时块（live 槽位）→ 转正成一条助手消息（stopReason:'aborted' + errorMessage: 原因）
+                   → 行打 interrupted 标记 → streaming = false
+```
+
+两处触发（`lib/tabEvents.ts`）：`pi:state` 报 `crashed` / `sleeping`；以及
+`agent_settled` 时**还挂着流式行**（用户中断、扩展吞了消息……）。
+
+三条口径（都是当时悬着、现在定下来的）：
+
+1. **部分输出算一条消息**。它就是用户已经在屏幕上看到的东西，丢掉才是 bug ——
+   失败回合的呈现复用 `lib/turnFailure.ts` 那套判读，于是直接画出「已中止 + 原因」，
+   不需要另造一套 UI；
+2. **与 `piggy:resync` 的去重靠标记**，不靠"长得像"：`interrupted` 行**不在会话文件里**
+   （pi 只在 `message_end` 落盘），所以 resync 前先丢掉它们，文件里那一轮的真身回来时
+   不会变成两行；
+3. **一个字都没流出来就不留空行**（一条空白助手消息只会让人以为界面坏了）。
+
+### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
 
 三条反馈对应三处改动（实现细节见 03 §2.19 / §3.0d）：
 

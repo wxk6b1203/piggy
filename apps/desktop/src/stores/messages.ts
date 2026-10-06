@@ -126,6 +126,14 @@ export interface MessageView {
   live?: (LiveBlock | undefined)[];
   /** 会话内提示行（`role === 'notice'`）：见 {@link NoticeView} */
   notice?: NoticeView;
+  /**
+   * 这一行是**中断落地**出来的（worker 崩/休眠/一轮没有 `message_end` 就落定）。
+   *
+   * 它刻意**不是**权威消息：pi 只在 `message_end` 时落盘，所以这一行不在会话文件里。
+   * `piggy:resync`（worker 醒来后按文件补齐上下文）必须**先把它丢掉**再灌 entries ——
+   * 否则同一轮会出现两行（一行带"已中断"，一行是文件里真正的样子）。
+   */
+  interrupted?: boolean;
 }
 
 /**
@@ -279,6 +287,18 @@ interface MessagesState {
   /** 一帧流式数据（`pi:frame`）：往**流式那一行**的槽位里累加 */
   applyFrame(tabId: string, frame: Frame): void;
   applyCommit(tabId: string, ev: { type: string } & Record<string, unknown>): void;
+  /**
+   * **把这一轮落地**（worker 崩了/休眠了，或者一轮没等到 `message_end` 就落定）。
+   *
+   * 为什么必须有这个入口：`streaming` / 实时行 / 状态行全都只由 `message_end` 落地，
+   * 而 worker 崩掉时那个事件永远不会来 —— 实测（docs/15 §4）：崩了之后 `streaming`
+   * 仍是 `true`、实时行还挂着、"停止"按钮仍然可用，界面**假装还在跑**。
+   *
+   * 落地的形态复用"失败回合"那一套判读（`lib/turnFailure.ts`）：一条
+   * `stopReason: 'aborted'` 的助手消息 + 已流出的内容，于是 `TurnFailureCard` 直接
+   * 画出「已中止 + 原因」，不需要另造一套 UI。已流出的字**一个字都不丢**。
+   */
+  interruptTurn(tabId: string, reason: string): void;
   remove(tabId: string): void;
 }
 
@@ -515,6 +535,19 @@ function finishPending(tab: TabMessages, m: AgentMessage): boolean {
 }
 
 /** 撤掉流式的这一行（resync / 换整页这类"权威数据要重来"的路径用它）。 */
+/**
+ * 撤掉所有"中断落地"出来的行（`piggy:resync` 前调用）。
+ *
+ * 判据是行上的 `interrupted` 标记而不是"长得像"：只有 `interruptTurn` 会打这个标记，
+ * 而它打标记的前提是"这一行不在会话文件里"。
+ */
+function dropInterrupted(tab: TabMessages): void {
+  const doomed = tab.ids.filter((id) => tab.byId[id]?.interrupted);
+  if (doomed.length === 0) return;
+  for (const id of doomed) delete tab.byId[id];
+  tab.ids = tab.ids.filter((id) => !doomed.includes(id));
+}
+
 function dropPending(tab: TabMessages): void {
   const id = tab.pendingId;
   if (!id) return;
@@ -783,8 +816,11 @@ export const useMessages = create<MessagesState>()(
             break;
           }
           case 'piggy:resync': {
-            // resync 是**权威全量**（worker 崩/休眠后补齐上下文）：流式那一行连同它的
-            // 半截文本一起撤掉 —— 它要么在 entries 里以权威消息的身份回来，要么本来就没落盘。
+            /* resync 是**权威全量**（worker 崩/休眠后补齐上下文）：流式那一行连同它的
+               半截文本一起撤掉 —— 它要么在 entries 里以权威消息的身份回来，要么本来就没落盘。
+               已经**落地成"已中断"的行**同理：它不在会话文件里（pi 只在 message_end 落盘），
+               留着就会与文件里那一轮的真身重复（两行同一轮）。 */
+            dropInterrupted(tab);
             dropPending(tab);
             const entries =
               (e as unknown as { entries?: Array<{ type: string; message?: AgentMessage }> }).entries ?? [];
@@ -797,6 +833,36 @@ export const useMessages = create<MessagesState>()(
           default:
             break;
         }
+      });
+    },
+
+    interruptTurn(tabId, reason) {
+      set((s) => {
+        const tab = s.tabs[tabId];
+        if (!tab) return;
+        tab.streaming = false;
+        const id = tab.pendingId;
+        if (!id) return; // 没有流式行 = 这一轮本来就没开始（或已经落地过）
+        const row = tab.byId[id];
+        tab.pendingId = null;
+        if (!row) return;
+        const blocks = materializeLive(row.live ?? []);
+        delete row.live;
+        /* 一个字都没流出来：那就**不留空行**（空白助手消息只会让人以为界面坏了），
+           直接把这行撤掉；真正的信息在提示行/状态栏与日志里。 */
+        if (blocks.length === 0) {
+          delete tab.byId[id];
+          tab.ids = tab.ids.filter((x) => x !== id);
+          return;
+        }
+        row.interrupted = true;
+        row.message = {
+          role: 'assistant',
+          content: blocks,
+          stopReason: 'aborted',
+          errorMessage: reason,
+          timestamp: Date.now(),
+        } as unknown as AgentMessage;
       });
     },
 

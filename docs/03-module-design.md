@@ -922,6 +922,12 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 代价是"每帧一次 store 写入"，收益是**订阅面只有那一行**（行组件选自己那一行的切片），
 转录本体与虚拟化器的身份都不动 —— 单帧工作量仍有上界（04 §4.2）。
 
+2026-09-25 补：**一轮的落地**不只有 `message_end` 一条路。`interruptTurn(tabId, reason)`
+把实时块转正成一条 `stopReason:'aborted'` 的消息（带 `interrupted` 标记）并落地
+`streaming=false`，由 `pi:state` 的 `crashed`/`sleeping` 与"`agent_settled` 时还挂着流式行"
+两处触发；`piggy:resync` 前先 `dropInterrupted`（那些行不在会话文件里，留着会与真身重复）。
+理由与三条口径见 04 §2.1.5。
+
 ### 3.3 `features/chat/` — 转录与输入
 
 - `Transcript`：TanStack Virtual 虚拟化容器；行组件按消息类型分发；
