@@ -13,7 +13,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + �
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
 | `vitest` | apps/desktop **561**（57 文件），另有 `packages/piggy-bridge` **36/37** 与 `packages/pi-protocol` **30/30**。⚠️ bridge 那条既存红是 `artifact.test.ts`：**产物与源码都与 HEAD 一致**、手动 `buildBridge()` 逐字节相同（17156 字节），是这条用例在 vitest 环境里的自身问题，与 todo 这批改动无关（未修，留档）。apps/desktop 明细：**561**（57 文件，含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）、**本轮新增 56 条：21 条清单模型（含与 Rust 状态白名单的跨语言一致性）、8 条清单行、9 条计划面板、16 条 todo store（能力探测的坏形状 / seed / 实时增量 / 项目级补探）、2 条转录接线（端到端两行写入，钉住差异基线按调用 id 配对）**）、**本轮新增 20 条：7 条行内展开态记忆（键口径 / LRU / 清理）、7 条展开态跨卸载重挂（思考行 / 工具行 / 工具正文代码块 / 行与行·标签与标签不串 / 关标签要忘）、4 条读者位置锚点（口径 / 钳制 / 行没了退回裸位置）、2 条面板不在前台的几何（隐藏期间不许写位置·不许丢跟随 / 读者接管则分毫不差还回去）**）、**本轮新增 8 条：会话名的同步（按会话文件推给打开的标签 / 不误改别的会话 / 空白=清掉 / 路径字面比较 / 头部响应式跟着变 / 命令面板那条入口也会推 / 后端说没写下去就不许本地改口）**）、**本轮新增 3 条：连点两次只 addPanel 一次且不弹报错 / 同一快照连开两次只加一个面板 / 双击只读一次尾页**）|
-| `cargo test` | **335 + 3 + 21 + 2**（另有 9 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮新增：`plugin::capabilities` 9 条、`transcript::todo_projection` 12 条（折叠/清空/坏形状/预筛/分支/**载荷在前的 custom 条目**/半行/真机）、`tests/ipc_contract.rs` 2 条（两个新命令的返回形状逐个锁死）|
+| `cargo test` | **336 + 3 + 21 + 2**（另有 9 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮新增：`plugin::capabilities` 9 条、`transcript::todo_projection` 12 条（折叠/清空/坏形状/预筛/分支/**载荷在前的 custom 条目**/半行/真机）、`tests/ipc_contract.rs` 2 条（两个新命令的返回形状逐个锁死）|
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
@@ -22,6 +22,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + �
 | `ui:startup` 压缩细节（本轮新增） | **压缩行必须看得见细节**：对话行（分页从会话文件读出来那行）断言此前 token / 保留边界 `firstKeptEntryId` / 涉及文件计数 / 摘要调用用量 / 可展开摘要，并断言分页行里**没有** `systemMessage`；轨迹行断言「已压缩」行**可展开**、点开后有保留边界与摘要全文；实时路径断言 `start`+`entry_appended`+`compaction_end(result)` **只多一行**且带 `estimatedTokensAfter`；失败态断言写「压缩失败：…」+ `data-failed`、中断态断言不再留「正在压缩…」。红检实测：把轨迹行改回不可展开 + 对话行去掉两行细节 → 门禁逐条点名（含「点不开 —— 用户报的就是这条」） |
 | `ui:startup` 工具窄行（本轮新增） | **空间利用率**变成可断言的真几何：行高 ≤26（实测 24）、连续三行 ≤76（实测 72）、标题/摘要逐条核对（`读取 · src/module1.ts`、`运行命令 · pnpm test -- --grep boundary-1`，且 `data-summary-source=args`）、折叠时正文**仍在 DOM 里**且 `display:none`、点开出现代码卡片（182px）再点收起。红检实测：把工具行改回默认展开 / 摘要不读参数 / 折叠时卸载正文 / 去掉 `toolCalls` 索引 → 单测与门禁逐条点名 |
 | `ui:startup` Markdown（本轮新增） | **记号必须真的变成元素**：h1/h2/strong/行内 code/列表/引用/hr/表格单元格/围栏卡片（含行数条）逐条断言，正常链接 href 正确；安全两条在真浏览器里量——原始 HTML **不进 DOM**（`document.querySelectorAll('.pg-md img, .pg-md script')` 为 0、`window.__pwned` 未被写）且 `javascript:` 链接降级成纯文本；最后断言正文里**没有 `##`/`**`/``` 残留**。红检实测：白名单失效 / 围栏不走代码卡片 / 链接点击不交宿主 → 单测逐条点名 |
+| `pi:cost`（本轮新增，**诊断不是门禁**） | 「打开会话的 1 秒花在哪」逐段实测：`pi --mode rpc --no-session` 裸启动 214 ms → 加载用户已装扩展后 **744 ms**（其中 pi-subagents **+431 ms**、pi-web-access +32、pi-todo +50、pi-guardrails +55）→ 我们的 bridge/守卫只 +12 ms → 11.13 MB 会话文件本身 +50 ms → 我们的 `get_entries(None)` 游标初始化 **+74 ms**（回包 10.90 MB，只要 leafId —— 已挪到后台）。结论写进 docs/05 §5.6/§5.7 |
 | `ui:startup` 连点两次（本轮新增） | **第 18 段**：同一个会话行连发两次 click，断言 `addPanel` 只被调**一次**、没有重复 id、`addPanel` 没抛、界面上没有报错提示、转录只有一份。这一段专门抓"去重只做了一半"：`createTabGuarded` 让两次点击拿到同一个快照之后，还会各自 `addPanel`。红检实测（去掉 `openSessionTab` 的幂等守卫）：门禁逐条点名，其中一条就是用户原话里的 `Error: dockview: panel with id session:<uuid> already exists` |
 | `ui:startup` 会话标题三处一致（本轮新增） | **第 14b 段**：点会话行上的生成图标（用户那条原路），断言**侧栏 / 上方的会话头部 / 活动标签页标题**三处都变了**且彼此一致**（`agree`）。三个显示点来源不同（`session_list` / tabs store / dockview 面板 title），只测侧栏就会漏掉"左边变了、上面还是旧的"。红检实测两条：去掉 `PgTab` 的同步 → 门禁点名「改名之后标签页标题还是「插件管理页的标题生成」」+「三处标题不一致」；去掉侧栏那次 `applySessionName` → 点名「改名之后**上方的标题**还是…（用户报的就是这条）」 |
 | `ui:startup` 展开态与切标签（本轮新增） | **第 17 段：只有真浏览器能量的两条**（用户 2026-09-23 报）。① 长思考行展开（24 → 1456px）→ 滚到顶（**断言这一行确实被卸载了**：`[data-thinking-row]` 数 0，"虚拟化卸载没发生"时这条核对会自报失去意义）→ 滚回底部仍展开、高度还是 1456px；② 会话被切到后台（断言 `isConnected=false`、三个读数全 0）→ 后台真流式跑完 → 切回来 `gap=0` 且不冒「回到底部」；③ 读者往上滚到 400 → 切走再切回（浏览器会把位置清零）→ 仍停在 400 且「回到底部」还在；④ 重载（启动恢复）之后恢复出来的会话也贴在结尾。红检实测：去掉"重新有布局就收尾"那条 effect → 门禁点名「读者位置：切走再切回被拽动了（0，切走前是 400）」 |
@@ -984,6 +985,27 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
     是文件里的名字）。于是"打开已命名会话，上方标题对不对"这条在 mock 下**永远复现不出来**。
     写 mock 时对着 Rust 的类型抄（这里是 `MockTabSnapshot` 的 `session_name: string | null`），
     宁可比真机更严，也别更宽松。
+
+106. **"打开慢"要分段量，别猜；量出来之后先看是谁的时间。**
+    用户问"这 1s 是 pi 的还是你们的"。答案只有量出来才算：
+    `pnpm --filter @piggy/desktop pi:cost` 逐项加扩展、逐段计时（docs/05 §5.6）。
+    结果是 **pi 的地板 214 ms + 用户装的扩展 530 ms + 会话文件 50 ms**，
+    我们注入的扩展与 Rust 数据面只有 12 / 25 ms 量级 —— 而**我们唯一可省的一笔**
+    （`get_entries(None)` 74 ms，随会话线性）就在打开路径上。
+    两条附带结论：
+    · **"长会话更慢"未必是解析文件**：11.13 MB 对 0.14 MB 只差 50 ms；线性的是我们那次
+      "把整段会话要回来只为拿一个 leafId"的调用；
+    · **别人的配置不许我们替他改**（规矩 95b 的同一立场）：扩展慢是用户装了什么决定的，
+      Piggy 不能为了快就 `-ne` 掉它们（工具会凭空消失）。
+
+107. **恢复用的元数据不许压在用户操作的关键路径上。**
+    游标（`last_cursor`）只被崩溃恢复（`revive_tab` 的增量 resync）用，
+    却在 `create_tab` 里同步等了一次"整段会话"的往返 —— 打开会话每次都要付。
+    改成 `spawn_cursor_init` 后台补之后，语义只弱化了"崩溃恰好发生在这 100 ms 内"
+    这一种情形（退回全量 resync，前端按 `role:timestamp` 去重，不丢数据）。
+    写入判据 `fill_cursor_if_empty` 抽成纯函数并有单测：**迟到的叶子不许覆盖更新的值**
+    —— 游标比"前端已看到的"更新会让 resync **跳过**条目，那是静默丢消息，
+    比多传一段严重得多。判据本身错了，是数据丢失级别的事故，所以它必须有测试。
 
 ## 4. 未完成 / 待决策
 

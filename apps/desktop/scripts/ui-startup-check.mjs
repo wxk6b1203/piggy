@@ -2691,6 +2691,18 @@ const dblClickOpen = await page.evaluate(async () => {
   if (!box) return { error: '找不到会话行' };
   const x = Math.round(box.x + 60);
   const y = Math.round(box.y + box.height / 2);
+  // 顺手量一下"点击 → 转录真的画出来"（前端那一半；pi 那一半见 scripts/pi-open-cost.mjs）。
+  // mock 的 tab_create 是 250ms 的**假** pi 启动，所以这个数 = 250 + 纯 UI 成本。
+  const t0 = performance.now();
+  let firstRowMs = null;
+  const watch = () => {
+    if (firstRowMs === null && document.querySelectorAll('.pg-vrow').length > 0) {
+      firstRowMs = Math.round(performance.now() - t0);
+      return;
+    }
+    if (performance.now() - t0 < 6000) requestAnimationFrame(watch);
+  };
+  requestAnimationFrame(watch);
   // 两次点击**同一个 tick 级别**的间隔（双击就是这么来的）
   row.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
   row.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
@@ -2705,6 +2717,7 @@ const dblClickOpen = await page.evaluate(async () => {
     panels: dock.panels.map((p) => p.id),
     dvTabs: [...document.querySelectorAll('.dv-tab .dv-default-tab-content')].map((e) => (e.textContent ?? '').trim()),
     transcripts: document.querySelectorAll('.pg-transcript').length,
+    firstRowMs,
   };
 });
 
@@ -3415,6 +3428,14 @@ else {
     }
     if ((dc.transcripts ?? 0) > 1) {
       bad.push(`连点两次：同一个会话装了 ${dc.transcripts} 份转录（loadTail 洗了两遍）★`);
+    }
+    /* 前端那一半的延迟也记一笔（真 pi 那半见 `pnpm --filter @piggy/desktop pi:cost`）：
+       mock 里 tab_create 固定 250ms，所以这里超出 250+250 就说明打开路径上又多了一次
+       "等一个慢东西"（历史上正是 `get_entries(None)` 那类）。不按 60fps 判——CI 机器会抖。 */
+    if (dc.firstRowMs === null || dc.firstRowMs === undefined) {
+      bad.push('打开耗时：点了会话行之后 6 秒内没有画出任何一行转录 ★');
+    } else if (dc.firstRowMs > 600) {
+      bad.push(`打开耗时：点击 → 首行 ${dc.firstRowMs}ms（mock 的 250ms + UI 应 <600ms）★`);
     }
   }
 

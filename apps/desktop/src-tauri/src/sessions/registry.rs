@@ -139,12 +139,15 @@ impl Registry {
             }
             self.open_files.insert(key, tab_id.clone());
         }
-        // 游标初始化：当前 leaf 即为"已见"边界
-        let last_cursor = worker
-            .get_entries(None)
-            .await
-            .ok()
-            .and_then(|d| d["leafId"].as_str().map(String::from));
+        /* 游标初始化（"已见"边界）**不在打开路径上**，由 `spawn_cursor_init` 在后台补。
+           这里曾经直接 `worker.get_entries(None).await`：pi 的 `get_entries` 不带 `since`
+           会把**整段**会话发回来（`rpc-mode.js` 的 get_entries 分支），而我们只要里面的
+           `leafId` —— 11.13 MB 的会话实测 **73 ms**，且随会话线性增长，正好压在
+           "点一下打开会话"最关键的那一下上（用户 2026-09-23 问"这 1s 是 pi 的还是我们的"）。
+           游标只是**崩溃恢复**的优化（`revive_tab` 用它做增量 resync），不是打开会话的
+           必需品：补上之前若 worker 崩了，resync 退回全量（罕见路径，前端按
+           `role:timestamp` 去重，不会重复显示）。 */
+        let last_cursor = None;
         let tab = Tab {
             tab_id: tab_id.clone(),
             cwd,
@@ -484,6 +487,46 @@ async fn revive_tab(reg: &mut Registry, sink: &Arc<dyn EventSink>, tab_id: &str)
 }
 
 /// 崩溃 watcher（docs/01 §2.3）：状态变 Crashed 且非主动关闭 → 退避后自动复活（≤3 次）。
+/// 后台补初始游标（见 `create_tab` 里的说明）。
+///
+/// 单独一个函数只因为**不能在 registry 锁里跑**：对长会话这是一次百毫秒级的
+/// "把整段会话序列化 + 传回来 + 解析"，而那把锁是全局的（会卡住其它标签的命令）。
+///
+/// 只在 `last_cursor` 还是空时写入：游标比"前端实际已经看到的"更新，会让崩溃恢复的
+/// resync **漏掉**条目 —— 那是数据丢失，比多传一段严重得多。
+pub fn spawn_cursor_init(registry: SharedRegistry, tab_id: String) {
+    tokio::spawn(async move {
+        let worker = {
+            let reg = registry.lock().await;
+            reg.tabs.get(&tab_id).and_then(|t| t.worker.clone())
+        };
+        let Some(worker) = worker else { return };
+        let Ok(data) = worker.get_entries(None).await else { return };
+        let leaf = data["leafId"].as_str().map(str::to_string);
+        let mut reg = registry.lock().await;
+        if let Some(tab) = reg.tabs.get_mut(&tab_id) {
+            fill_cursor_if_empty(tab, leaf);
+        }
+    });
+}
+
+/// 后台游标的写入判据（抽成纯函数是为了能单测 —— 这条判据错了是**数据丢失**级别的）。
+///
+/// 只在还是空时写：迟到的叶子绝不许覆盖更新的值。游标比"前端实际已经看到的"更新，
+/// 崩溃恢复的 resync 就会**跳过**那些条目 —— 那是静默丢消息，比慢一点严重得多。
+///
+/// @returns 是否真的写进去了
+fn fill_cursor_if_empty(tab: &mut Tab, leaf: Option<String>) -> bool {
+    let Some(leaf) = leaf.filter(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    if tab.last_cursor.is_some() {
+        return false;
+    }
+    tab.last_cursor = Some(leaf);
+    true
+}
+
 pub fn spawn_tab_watcher(shared: SharedRegistry, sink: Arc<dyn EventSink>, tab_id: String) {
     tokio::spawn(async move {
         let mut rx = {
@@ -568,6 +611,29 @@ mod tests {
         let tab = tab_with_name(Some("新名字"));
         let state = json!({ "sessionName": "旧名字" });
         assert_eq!(session_name_of(&tab, &state).as_deref(), Some("新名字"));
+    }
+
+    fn tab_for_cursor(cursor: Option<&str>) -> Tab {
+        let mut t = tab_with_name(None);
+        t.last_cursor = cursor.map(str::to_string);
+        t
+    }
+
+    #[test]
+    fn background_cursor_fills_only_when_empty() {
+        // 空 → 补上
+        let mut t = tab_for_cursor(None);
+        assert!(fill_cursor_if_empty(&mut t, Some("leaf-1".into())));
+        assert_eq!(t.last_cursor.as_deref(), Some("leaf-1"));
+        // 已经有值（例如 revive 之后写的更新值）→ 迟到的叶子**不许覆盖**：
+        // 游标比"前端已看到的"更新 → resync 会跳过条目 = 静默丢消息
+        assert!(!fill_cursor_if_empty(&mut t, Some("leaf-2".into())));
+        assert_eq!(t.last_cursor.as_deref(), Some("leaf-1"));
+        // pi 没给叶子 / 给了空串 → 什么都不做
+        let mut empty = tab_for_cursor(None);
+        assert!(!fill_cursor_if_empty(&mut empty, None));
+        assert!(!fill_cursor_if_empty(&mut empty, Some("  ".into())));
+        assert!(empty.last_cursor.is_none());
     }
 
     #[test]

@@ -229,6 +229,9 @@ pub async fn tab_create(
             }
         }
     };
+    // 初始游标在后台补（`get_entries` 不带 since 会把整段会话发回来，长会话实测 73ms，
+    // 不该压在打开路径上 —— 见 `sessions::registry::spawn_cursor_init` 的说明）
+    crate::sessions::registry::spawn_cursor_init(state.registry.clone(), snapshot.tab_id.clone());
     spawn_tab_watcher(
         state.registry.clone(),
         sink(&app),
@@ -1378,6 +1381,8 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
                 }
             }
         };
+        // 游标同样后台补（lane 的会话是空的，几乎不花时间；保持与 UI 那条路径一致）
+        crate::sessions::registry::spawn_cursor_init(state.registry.clone(), tab_id.clone());
         state.fleet.bind_tab(run_id, &lane_key, &tab_id);
         let worker = state.registry.lock().await.tabs.get(&tab_id).and_then(|t| t.worker.clone());
         fleet_emit(app, &state);

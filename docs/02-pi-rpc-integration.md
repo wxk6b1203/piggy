@@ -229,6 +229,13 @@ registry 保证一个会话文件同时只被一个 worker 打开（01 §2.2）�
 
 Rust 侧拒绝前会 `worker.shutdown()`（`child.kill()`），所以被挡下的那次没有进程泄漏。
 
+**游标（"已见"边界）在后台补**：`get_entries` 不带 `since` 会把整段会话发回来，我们只要
+里面的 `leafId` —— 11 MB 会话实测 74 ms，正好压在"点一下打开会话"那一下上（05 §5.6）。
+现在 `create_tab` 直接返回、`spawn_cursor_init` 在后台补；它只是崩溃恢复的优化
+（`revive_tab` 用它做增量 resync），补上之前崩了就是全量 resync（罕见，且前端按
+`role:timestamp` 去重）。写入判据 `fill_cursor_if_empty` 有单测：**迟到的叶子不许覆盖
+更新的值** —— 游标比"前端已看到的"更新，会让 resync 跳过条目，那是静默丢消息。
+
 ### 6.4 游标增量同步（恢复与复活）
 
 `get_entries` 支持 `since=<entryId>` 且响应带 `leafId`：
