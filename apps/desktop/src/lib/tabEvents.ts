@@ -4,7 +4,7 @@
  * commit：一律入 per-tab store；后台 settled → 未读徽标。
  */
 import { on, cmd } from '@/lib/ipc';
-import { liveFor } from '@/lib/live';
+import { liveFor, resetLive } from '@/lib/live';
 import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
 import { useTodo } from '@/stores/todo';
@@ -42,6 +42,16 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
     );
     un.push(
       await on(`pi:commit:${tabId}`, (ev: { type: string }) => {
+        /*
+         * 一轮的边界（实时块的累积文本在这一刻作废）**在这里**认，不在渲染侧：
+         * · 必须在 `applyCommit` **之前** —— `agent_start` 之后到来的帧属于新一轮，
+         *   清晚了就把新一轮开头的字清掉了（真浏览器探针实测：同一 tick 里发
+         *   `agent_start` + 帧，渲染侧那次 reset 会把刚收到的帧抹掉，那一行空着）；
+         * · 事件层是唯一有**顺序保证**的地方（`agent_start` 与紧随其后的帧走同一条 IPC，
+         *   到达顺序即发送顺序），渲染侧只能"下一帧再清"，没有这个保证。
+         * 文本的权威副本这时已经在 store 里（上一轮以 `agent_settled` 收尾），清掉不丢内容。
+         */
+        if (ev.type === 'agent_start') resetLive(tabId);
         useMessages.getState().applyCommit(tabId, ev);
         // 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
         useTodo.getState().noteCommit(tabId, ev);

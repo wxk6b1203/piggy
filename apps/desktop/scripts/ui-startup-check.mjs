@@ -2827,6 +2827,103 @@ const liveBind = await page.evaluate(async () => {
   };
 });
 
+/* ---------- 20. 流式中手动往上滚：**读者说了算**（用户 2026-09-23 报：
+ *   "一直向下滚动，我希望手动向上翻滚时，不会被自动跳到最底下"）
+ *
+ * 现场（真浏览器探针，先复现后修）：`nextFollowingFromSample` 的第 2 条规则是
+ * "内容比上次采样更高 → 是内容把底推走的，继续跟随"（它救的是 `loadTail` 换页时
+ * 浏览器滚动锚定造成的假位置）。可流式时内容**每 16ms 长高一次**，于是读者滚轮那次
+ * 采样也命中这条规则 → 跟随原地保持 → 下一帧贴底把人拽回去。修复前实测：
+ * `wheel(0,-25)`×4 之后每 25ms 采一次，`gap` **恒为 0**、位置只是跟着内容往上长
+ * —— 滚轮在手感上完全没反应。
+ *
+ * 改法：判据换成"这次滚动背后有没有读者的手势"（滚轮/触摸/拖滚动条，窗口 400ms）：
+ * 有手势 → 只认几何（到不了底就是不跟随）；没手势 → 老规则（换页锚定那类照旧）。
+ * 另加：引擎的 rAF 贴底也跟跟随意图走（`lib/live` 的 `setFollowing`），
+ * 否则它自己就每帧把人拽回去。
+ *
+ * 这一段必须用**真滚轮**（Playwright 的 `mouse.wheel`）：合成 `WheelEvent` 不会真的滚动。
+ * 位置必须"留在原地"而 gap 继续变大 —— 那才证明是内容在长、读者没被拽走。
+ */
+const wheelHold = await (async () => {
+  const tabId = liveBind.tabId;
+  const setup = await page.evaluate(async (id) => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const stores = globalThis.__piggyStores;
+    globalThis.__piggyEditor.focusSessionTab(id);
+    stores.useMessages.getState().hydrate(
+      id,
+      Array.from({ length: 150 }, (_, i) => ({
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: [{ type: 'text', text: `第 ${i} 行 ${'x'.repeat(200)}` }],
+        timestamp: 1_700_000_000_000 + i,
+      })),
+    );
+    await sleep(400);
+    const tr = document.querySelector(`[data-tab-id="${id}"] .pg-transcript`);
+    tr.scrollTop = tr.scrollHeight;
+    await sleep(250);
+    void globalThis.__piggyPerf.streamFor(7000, 16, id);
+    const r = tr.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  }, tabId);
+
+  const read = () =>
+    page.evaluate((id) => {
+      const wrap = document.querySelector(`[data-tab-id="${id}"]`);
+      const tr = wrap?.querySelector('.pg-transcript');
+      if (!tr) return null;
+      return {
+        top: Math.round(tr.scrollTop),
+        sh: Math.round(tr.scrollHeight),
+        gap: Math.round(tr.scrollHeight - tr.clientHeight - tr.scrollTop),
+        btn: !!wrap.querySelector('[data-to-bottom]'),
+      };
+    }, tabId);
+
+  await page.mouse.move(setup.x, setup.y);
+  await page.waitForTimeout(500);
+  const bottom = await read();
+  // 慢速小幅上滚（trackpad 手感）：4 × -25，每 25ms 采一次
+  const nudge = [];
+  for (let k = 0; k < 4; k += 1) {
+    await page.mouse.wheel(0, -25);
+    for (let i = 0; i < 4; i += 1) {
+      await page.waitForTimeout(25);
+      nudge.push(await read());
+    }
+  }
+  const afterNudge = await read();
+  // 内容继续长 1.1s：位置必须留在原地（gap 只会变大），且「回到底部」必须出现
+  const hold = [];
+  for (let i = 0; i < 11; i += 1) {
+    await page.waitForTimeout(100);
+    hold.push(await read());
+  }
+  const heldTop = hold.map((x) => x.top);
+  const result = {
+    bottom,
+    nudge: nudge.map((x) => `${x.top}/${x.gap}${x.btn ? 'B' : ''}`),
+    afterNudge,
+    hold: hold.map((x) => `${x.top}/${x.gap}${x.btn ? 'B' : ''}`),
+    movedDuringHold: Math.max(...heldTop) - Math.min(...heldTop),
+    // ⚠️ "流式在跑"要用 scrollHeight 量：跟随时 gap 恒为 0，拿 gap 当增长量会把
+    // "没在流"和"读者被拽着走"混成一件事（红检时正是这样，报了一条会误导人的前置失败）
+    grewDuringHold:
+      Math.max(...hold.map((x) => x.sh)) - Math.min(...hold.map((x) => x.sh)),
+    allHeldBtn: hold.every((x) => x.btn),
+    // 滚回底部 → 跟随必须自己回来
+    backToBottom: null,
+    stillFollowing: null,
+  };
+  for (let k = 0; k < 8; k += 1) await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(700);
+  result.backToBottom = await read();
+  await page.waitForTimeout(700);
+  result.stillFollowing = await read();
+  return result;
+})();
+
 /* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
  *
  * 两条都是**只有真浏览器能量**的几何/生命周期问题：
@@ -3035,7 +3132,7 @@ console.log(
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
       sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
-      scrollMemory, restoredScroll, liveBind,
+      scrollMemory, restoredScroll, liveBind, wheelHold,
     },
     null,
     1,
@@ -4189,6 +4286,38 @@ if (liveBind.backLen <= liveBind.outLen) {
 }
 if (!liveBind.streamingDone) bad.push('实时块：这一段跑完之后 streaming 没有回到 false ★');
 if (!liveBind.liveGoneAtEnd) bad.push('实时块：这一轮结束后实时行没有撤掉（会与转正的消息重复）★');
+
+/* 流式中手动往上滚：读者说了算（用户 2026-09-23 报"会被自动跳到最底下"） */
+if (!wheelHold.bottom || wheelHold.bottom.gap > 25) {
+  bad.push(`回滚：开始之前没贴在底部（gap=${wheelHold.bottom?.gap}）—— 这一段失去意义`);
+}
+if (wheelHold.afterNudge.gap <= 25) {
+  bad.push(
+    `回滚：滚轮往上之后还贴着底（gap=${wheelHold.afterNudge.gap}）—— 滚轮被无视了 ★` +
+      `（采样：${wheelHold.nudge.join(' ')}）`,
+  );
+}
+if (!wheelHold.afterNudge.btn) {
+  bad.push('回滚：读者往上滚了却没出现「回到底部」（跟随意图没交还）★');
+}
+if (wheelHold.movedDuringHold > 6) {
+  bad.push(
+    `回滚：内容继续长的那 1.1s 里位置被拽动了 ${wheelHold.movedDuringHold}px` +
+      `（应当留在原地、只有 gap 在变大）★（采样：${wheelHold.hold.join(' ')}）`,
+  );
+}
+if (wheelHold.grewDuringHold < 100) {
+  bad.push(`回滚：这 1.1s 内容只长了 ${wheelHold.grewDuringHold}px —— 流式没在跑，这一段失去意义`);
+}
+if (!wheelHold.allHeldBtn) bad.push('回滚：位置留住的过程中「回到底部」消失过（跟随意图被翻回去了）★');
+if ((wheelHold.backToBottom?.gap ?? 999) > 25 || wheelHold.backToBottom?.btn) {
+  bad.push(
+    `回滚：滚回底部之后跟随没回来（gap=${wheelHold.backToBottom?.gap}，按钮=${wheelHold.backToBottom?.btn}）★`,
+  );
+}
+if ((wheelHold.stillFollowing?.gap ?? 999) > 25) {
+  bad.push(`回滚：跟随回来之后又跟丢了（0.7s 后 gap=${wheelHold.stillFollowing?.gap}）★`);
+}
 
 /* 页面错误一条都不许有。其中 `ResizeObserver loop completed with undelivered notifications`
    单独点名：它是"量自己 → 自己变 → 再量"的自触发循环（用户 2026-09-23 贴的日志里连着三条），

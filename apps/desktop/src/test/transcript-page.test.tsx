@@ -14,7 +14,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act } from 'react';
 
-const { invokeMock, scrollToIndex, scrollerSize, vwindow } = vi.hoisted(() => {
+const { invokeMock, scrollToIndex, scrollerSize, vwindow, busListen } = vi.hoisted(() => {
   /** 一个可订阅的小信号（"值变了 → 重渲染"，同真实虚拟化器的 `onChange`）。 */
   const signal = <T,>(initial: T) => {
     const listeners = new Set<() => void>();
@@ -39,10 +39,18 @@ const { invokeMock, scrollToIndex, scrollerSize, vwindow } = vi.hoisted(() => {
   /* 渲染窗口（真机 = 视口 + overscan 算出来的那一截）。
      默认全渲染（老用例不需要窗口）；要造"实时行被滚出窗口"的场景就 `vwindow.set(0, 5)`。 */
   const win = signal({ from: 0, to: Number.POSITIVE_INFINITY });
-  return { invokeMock: vi.fn(), scrollToIndex: vi.fn(), scrollerSize: size, vwindow: win };
+  /* Tauri `listen` 的回调表：`tabEvents` 的接线要**真的**被走到（实时块的一轮边界
+     在事件层判，见 `lib/tabEvents`），所以测试用 `emitBus` 从这条通道推事件。 */
+  const bus = new Map<string, (e: { payload: unknown }) => void>();
+  return { invokeMock: vi.fn(), scrollToIndex: vi.fn(), scrollerSize: size, vwindow: win, busListen: bus };
 });
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (channel: string, cb: (e: { payload: unknown }) => void) => {
+    busListen.set(channel, cb);
+    return () => busListen.delete(channel);
+  },
+}));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
 vi.mock('@/lib/feedback', () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
@@ -93,6 +101,7 @@ vi.mock('@tanstack/react-virtual', async () => {
 
 import { Transcript } from '@/features/chat/Transcript';
 import { liveFor } from '@/lib/live';
+import { ensureTabListeners } from '@/lib/tabEvents';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
@@ -191,6 +200,14 @@ function scroller(): HTMLDivElement {
 async function setScrollerSize(height: number) {
   await act(async () => {
     scrollerSize.set({ height });
+    await new Promise((r) => setTimeout(r, 10));
+  });
+}
+
+/** 从 `pi:commit:{tab}` 通道推一条事件（走 `tabEvents` 的真实接线）。 */
+async function emitCommit(ev: Record<string, unknown>) {
+  await act(async () => {
+    busListen.get(`pi:commit:${TAB}`)?.({ payload: ev });
     await new Promise((r) => setTimeout(r, 10));
   });
 }
@@ -782,30 +799,25 @@ describe('实时块绑在**当前**那个节点上（虚拟化卸载/重挂）',
     expect(q('.pg-live')!.textContent).toContain('前半段中间段后半段');
   });
 
-  it('新一轮开始清掉上一轮的残留（reset 在 streaming 的边界上）', async () => {
+  it('新一轮开始清掉上一轮的残留（边界在**事件层**：`agent_start` 一到就清，早于新帧）', async () => {
     seed(4);
     mountDom(<Transcript tabId={TAB} />);
     await setScrollerSize(400);
     await flush();
+    await ensureTabListeners(TAB); // 装上真实接线（pi:commit / pi:frame …）
     const live = liveFor(TAB);
-    await act(async () => {
-      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
-    });
+    await emitCommit({ type: 'agent_start' });
     await flush();
     await act(async () => {
       live.handleFrame({ text: [{ contentIndex: 0, delta: '上一轮' }] });
     });
     expect(q('.pg-live')?.textContent).toContain('上一轮');
 
-    // 一轮结束（实时块转正）→ 新一轮开始
-    await act(async () => {
-      useMessages.getState().applyCommit(TAB, { type: 'agent_settled' } as never);
-    });
+    // 一轮结束（实时块转正）→ 新一轮开始：`agent_start` 一到就把累积文本清掉
+    await emitCommit({ type: 'agent_settled' });
     await flush();
     expect(q('.pg-live')).toBeNull();
-    await act(async () => {
-      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
-    });
+    await emitCommit({ type: 'agent_start' });
     await flush();
     expect(q('.pg-live')!.textContent).not.toContain('上一轮');
     await act(async () => {

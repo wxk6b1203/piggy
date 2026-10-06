@@ -23,7 +23,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
-import { liveFor, resetLive } from '@/lib/live';
+import { liveFor } from '@/lib/live';
 import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
 import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
@@ -191,15 +191,10 @@ export function Transcript({ tabId }: { tabId: string }) {
     [tabId],
   );
 
-  /**
-   * 一轮的边界（`streaming` 翻转）= 实时块的生命周期边界：上一轮的累积文本作废。
-   *
-   * 用**布局** effect：`attach` 是 ref 阶段先跑的（可能把上一轮残留的 `pending` 重放出来），
-   * 这一句必须在同一帧绘制前把新一轮清干净，不然会闪一下上一轮的字。
-   */
-  useLayoutEffect(() => {
-    resetLive(tabId);
-  }, [tabId, streaming]);
+  /* 一轮的边界（实时块的累积文本作废）**不在这里清**：它由 `lib/tabEvents` 在
+     `agent_start` 到达时、`applyCommit` 之前清（那里有 IPC 的顺序保证，见那边的说明）。
+     渲染侧"下一帧再清"会清掉新一轮开头已经收到的帧 —— 探针实测过：同一 tick 里
+     `agent_start` + 帧，那一行最后是空的。 */
 
   /**
    * 我们上一次**程序化**设置的 scrollTop（DSH `ScrollFollow.sampledTop` 同义）。
