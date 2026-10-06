@@ -2721,6 +2721,112 @@ const dblClickOpen = await page.evaluate(async () => {
   };
 });
 
+/* ---------- 19. 实时块必须绑在"当前那个"节点上（用户 2026-09-23 报："有时候不会滚动输出？会等到完成后再全部输出"）
+ *
+ * 现场（真浏览器探针，先复现后修）：实时行是转录的**最后一行**、由虚拟化渲染。
+ * 读者往上滚出窗口、或这一轮在窗口外开始流式，这个节点就会被卸载；回到窗口时
+ * React 给的是**另一个新节点**。早先挂载点由 `useEffect(…, [tabId, streaming])` 决定
+ * —— 节点换了 effect 不会再跑，引擎从此往被摘掉的那个节点写字：界面上那一行空着，
+ * 直到这一轮结束、`message_end` 把整段消息交给 store 才一次性出现。切走另一个会话
+ * 再切回同理（后台 tab 的帧以前被 `if (activeTabId === tabId)` 直接丢弃）。
+ *
+ * 这一段量三件只有真浏览器能量的事：
+ *   ① 实时行的文本长在**当前**那个节点上（引擎的 container === DOM 里的 .pg-live）；
+ *   ② 滚出虚拟窗口再回来：卸载期间的字一个不丢；
+ *   ③ 切到另一个会话再切回：通道上发出的字数与可见字数之差 ≈ 0（不是"整段丢"）。
+ *
+ * 判据用"通道发出的字数"（`__piggyMock.mockOn` 订阅的是与引擎**同一条**事件通道），
+ * 所以它不依赖 mock 的分片节奏，也不怕 setTimeout 抖动。
+ */
+const liveBind = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  const mock = globalThis.__piggyMock;
+  const editor = globalThis.__piggyEditor;
+  const live = globalThis.__piggyLive;
+
+  // 自己建一个会话标签：不依赖前面几段留下的状态（第 18 段做过 closeAllTabs）
+  const snap = await mock.mockInvoke('tab_create', { cwd: '/Users/mock/proj' });
+  editor.openSessionTab(snap, '门禁：实时块');
+  const tabId = snap.tab_id;
+  await sleep(400);
+  // 灌够行数：实时行（最后一行）必须能真的滚出虚拟窗口，否则这一段是空转
+  stores.useMessages.getState().hydrate(
+    tabId,
+    Array.from({ length: 200 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: [{ type: 'text', text: `第 ${i} 行：滚动负载 ${'x'.repeat(120)}` }],
+      timestamp: 1_700_000_000_000 + i,
+    })),
+  );
+  await sleep(300);
+  const tr = () => document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
+  const liveEl = () => tr()?.querySelector('.pg-live') ?? null;
+  const eng = live.liveFor(tabId);
+  // 文本长度含 "assistant ▌"（11 字）：比较两次数值时它会抵消
+  const textLen = () => (liveEl()?.textContent ?? '').length;
+  tr().scrollTop = tr().scrollHeight;
+  await sleep(200);
+
+  let sent = 0;
+  const un = mock.mockOn(`pi:frame:${tabId}`, (f) => {
+    for (const d of f.text ?? []) sent += (d.delta ?? '').length;
+  });
+
+  void globalThis.__piggyPerf.streamFor(3400, 16, tabId);
+  await sleep(300);
+
+  /* ① 往上滚：实时行滚出虚拟窗口（真机 = 被卸载）→ 再回到底部 */
+  const outLen = textLen();
+  const sentOut = sent;
+  tr().scrollTop = 0;
+  await sleep(150);
+  const unmounted = liveEl() === null;
+  await sleep(250);
+  tr().scrollTop = tr().scrollHeight;
+  await sleep(300);
+  const backLen = textLen();
+  const sentBack = sent;
+  const boundAfterScroll = eng.container === liveEl();
+  const lostOnScroll = sentBack - sentOut - Math.max(0, backLen - outLen);
+
+  /* ② 切到另一个会话再切回来：切走那一段的帧不许丢 */
+  const b = await mock.mockInvoke('tab_create', { cwd: '/Users/mock/proj' });
+  editor.openSessionTab(b, '门禁：另一个会话');
+  await sleep(700);
+  const detachedWhileAway = tr() === null; // 内容被 dockview 摘出 DOM（组件还在）
+  const focusOk = editor.focusSessionTab(tabId);
+  await sleep(600);
+  const backLen2 = textLen();
+  const sentBack2 = sent;
+  const boundAfterSwitch = eng.container === liveEl();
+  const behindAfterSwitch = sentBack2 - Math.max(0, backLen2 - 11);
+
+  await sleep(1400); // 让这一轮流完（streamFor 3.4s）
+  const streamingDone = stores.useMessages.getState().tabs[tabId]?.streaming === false;
+  const liveGoneAtEnd = liveEl() === null;
+  un?.();
+
+  return {
+    tabId,
+    unmounted,
+    outLen,
+    backLen,
+    sentOut,
+    sentBack,
+    lostOnScroll,
+    boundAfterScroll,
+    detachedWhileAway,
+    focusOk,
+    backLen2,
+    sentBack2,
+    behindAfterSwitch,
+    boundAfterSwitch,
+    streamingDone,
+    liveGoneAtEnd,
+  };
+});
+
 /* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
  *
  * 两条都是**只有真浏览器能量**的几何/生命周期问题：
@@ -2929,7 +3035,7 @@ console.log(
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
       sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
-      scrollMemory, restoredScroll,
+      scrollMemory, restoredScroll, liveBind,
     },
     null,
     1,
@@ -4047,6 +4153,42 @@ if (sc.gapMax > 25) bad.push(`分页：流式中离底最多 ${sc.gapMax}px —�
 if (!sc.liveMonotonic) {
   bad.push(`分页：流式文本长度不是单调增长（${sc.liveLen?.join(' → ')}）—— 实时块被反复重置 ★`);
 }
+
+/* 实时块绑在"当前那个"节点上（用户 2026-09-23 报："有时候不会滚动输出？会等到完成后再全部输出"）。
+   判据是"通道上发出去的字数"对"可见实时块里的字数"，所以与 mock 的分片节奏、setTimeout
+   抖动都无关；阈值给得比故障量级（滚走 400ms ≈ 250 字 / 切走 700ms ≈ 440 字）宽得多。 */
+if (!liveBind.unmounted) {
+  bad.push('实时块：往上滚之后实时行没有被虚拟化卸载 —— 这一段没测到东西（前置不成立）★');
+}
+if (!liveBind.boundAfterScroll) {
+  bad.push('实时块：滚出窗口再回来，引擎写的是**另一个**节点（可见那一行会一直空着）★');
+}
+if (liveBind.lostOnScroll > 60) {
+  bad.push(
+    `实时块：滚出窗口期间丢了 ${liveBind.lostOnScroll} 个字（通道发了 ${liveBind.sentBack - liveBind.sentOut}）` +
+      '—— 节点摘掉时把累积文本也清了 ★',
+  );
+}
+if (!liveBind.detachedWhileAway) {
+  bad.push('实时块：切到另一个会话时旧转录还留着 —— 这一段没造出"面板被摘出 DOM"（前置不成立）');
+}
+if (liveBind.focusOk !== true) bad.push('实时块：切回原会话失败（focusSessionTab 返回 false）★');
+if (!liveBind.boundAfterSwitch) {
+  bad.push('实时块：切走再切回之后，引擎绑的不是当前可见的那个节点 ★');
+}
+if (liveBind.behindAfterSwitch > 90) {
+  bad.push(
+    `实时块：切走再切回之后可见文本落后 ${liveBind.behindAfterSwitch} 字` +
+      '—— 切走那一段的帧被丢了（`tabEvents` 又按 activeTabId 过滤了？）★',
+  );
+}
+if (liveBind.backLen <= liveBind.outLen) {
+  bad.push(
+    `实时块：回到底部之后实时块没有把"卸载期间"的字补上（出去 ${liveBind.outLen} → 回来 ${liveBind.backLen}）★`,
+  );
+}
+if (!liveBind.streamingDone) bad.push('实时块：这一段跑完之后 streaming 没有回到 false ★');
+if (!liveBind.liveGoneAtEnd) bad.push('实时块：这一轮结束后实时行没有撤掉（会与转正的消息重复）★');
 
 /* 页面错误一条都不许有。其中 `ResizeObserver loop completed with undelivered notifications`
    单独点名：它是"量自己 → 自己变 → 再量"的自触发循环（用户 2026-09-23 贴的日志里连着三条），

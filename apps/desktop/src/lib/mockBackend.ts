@@ -1759,20 +1759,25 @@ export const isMock = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' i
 /** 性能场景钩子（05 §6.2 S1–S6，M2）：仅 mock 环境暴露，直接驱动真实渲染管线 */
 if (typeof window !== 'undefined' && isMock) {
   (window as unknown as Record<string, unknown>).__piggyPerf = {
-    /** S1：向活动 tab 灌 delta 帧 totalMs 毫秒（16ms 一帧，走真实 live 通道） */
-    async streamFor(totalMs: number, chunkMs = 16): Promise<number> {
+    /**
+     * S1：灌 delta 帧 totalMs 毫秒（chunkMs 一帧，走真实 live 通道）。
+     *
+     * `tabId` 默认是 mock 的第一个 tab；门禁第 19 段要往**它自己刚建的**那个会话灌
+     * （那段不能依赖前面几段留下的标签，`closeAllTabs` 之后 TAB 早就不在了）。
+     */
+    async streamFor(totalMs: number, chunkMs = 16, tabId = TAB): Promise<number> {
       const start = performance.now();
-      emit(`pi:commit:${TAB}`, { type: 'agent_start' });
+      emit(`pi:commit:${tabId}`, { type: 'agent_start' });
       let i = 0;
       while (performance.now() - start < totalMs) {
-        emit(`pi:frame:${TAB}`, {
+        emit(`pi:frame:${tabId}`, {
           text: [{ contentIndex: 0, delta: '流式渲染性能压测流。' }],
           usage: { totalTokens: 1000 + i },
         });
         i += 1;
         await new Promise((r) => setTimeout(r, chunkMs));
       }
-      emit(`pi:commit:${TAB}`, { type: 'agent_settled' });
+      emit(`pi:commit:${tabId}`, { type: 'agent_settled' });
       return i;
     },
     /** S3：hydrate n 条消息，返回耗时 ms（对应"打开大会话"路径） */

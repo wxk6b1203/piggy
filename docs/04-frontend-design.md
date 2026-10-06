@@ -637,9 +637,23 @@ interface MessagesState {
 - 更新**只**来自 `pi:commit`（message_end / tool_execution_end / turn_end…）——低频、权威；
 - `AgentMessageView` = pi 权威消息 + UI 派生字段（折叠态、高亮标记等）分离存储，避免污染协议对象。
 
-### 3.2 瞬态：liveStore（无文本本体）
+### 3.2 瞬态：live（一轮的文本 + 它的视图）
 
-liveStore 只登记"哪个 tab 的哪个 contentIndex 挂在哪个 DOM 句柄"，**不保存流式文本**。文本帧直接写 DOM（§4.3），彻底绕过 React 渲染与 GC 压力。这是流式 60fps 的结构性保证，而非微优化。
+实现是 `lib/live.ts` 的 **per-tab 引擎**（不是全局 liveStore）：每个 contentIndex 一块
+（text / thinking / tool），文本帧直接 `appendData` 进 DOM，绕过 React 渲染与 GC 压力
+—— 这是流式 60fps 的结构性保证，而非微优化。
+
+**但"不保存文本"是错的**（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"
+之后改的口径）：
+
+- 每块在 `pending` 里留一份 `{kind, label, text}`（**当前这一轮**的累积，一轮边界 `reset`）
+  —— 它是内容，DOM 节点只是它的一个渲染目标；
+- 节点被摘掉（虚拟化把实时行滚出窗口、dockview 把面板摘出 DOM）只 `detach()`：断开视图，
+  **一个字都不清**；节点回来 `attach()` 按 `pending` 原样重建（thinking 折叠块与工具名一起）；
+- 挂载点由**回调 ref** 给（节点的生死由 React 报，不由 effect 的依赖猜），
+  `streaming` 翻转 = 一轮的边界 → `reset`。
+
+为什么必须这样，以及"长度断言测不出来"这件事，见 §4.6。
 
 ### 3.3 store 之外的规则
 
@@ -654,14 +668,18 @@ liveStore 只登记"哪个 tab 的哪个 contentIndex 挂在哪个 DOM 句柄"�
 ```
 pi:frame:{tabId}（≤60Hz）
   → lib/ipc 帧解码（zod 轻校验：只校验 envelope，不校验文本内容）
-  → liveStore.writeQueue.enqueue(frame)        // 纯入队，无渲染
-  → rAF 调度器 flush：
-      for item of queue:
-        TextDelta      → liveTextNode.appendData(item.s)      // 文本节点追加，O(1)
-        ThinkingDelta  → thinking 块同上（折叠态下只更新计数徽标）
-        ToolArgsDelta  → 累积到缓冲（不渲染；toolcall_end 才展示）
-        Usage          → 状态栏轻量更新（限 1Hz 节流）
+  → liveFor(tabId).handleFrame(frame)          // 直写，无 React 渲染
+      signals        → 建块（text / thinking / tool）并把块的形状记进 pending
+      TextDelta      → appendData(item.s) + pending 累积          // 文本节点追加，O(1)
+      ThinkingDelta  → thinking 块同上（折叠态下只更新计数徽标）
+      ToolArgsDelta  → 只记形状（不渲染；toolcall_end 才展示）
+      usage          → 缓存在引擎里（限 1Hz 节流回调）
+  → follow()：离底 <120px 且**有布局**时才 rAF 贴底
 ```
+
+⚠️ **后台 tab 的帧照收**（2026-09-23 改）：以前 `tabEvents` 里写着
+`if (activeTabId === tabId)`，切走那段时间的增量直接丢 —— 切回来那一轮缺一段。
+现在没有可见节点时只累积字符串（或写进被摘出文档的节点，无布局），内容不丢。
 
 ### 4.2 帧内工作量上界
 
@@ -671,7 +689,8 @@ pi:frame:{tabId}（≤60Hz）
 
 `message_end` 到达（`pi:commit` 通道）：
 
-1. `LiveBlock.unmount()`：断开直写句柄；
+1. 实时块**撤下来**：`streaming` 翻转 → 那一行离开 `rowIds`，节点随之卸载（`detach`），
+   并在这一轮结束时 `reset` 掉 `pending`（文本的权威副本这时已经在 store 里了）；
 2. messagesStore 批量提交权威消息（immer patch）；
 3. 虚拟化行立即包含新 `MessageView`（DOM 结构等价替换，视觉无跳变：实时块与新行使用同一 CSS 类，高度差异由虚拟器 measure 修正）；
 4. 焦点滚动策略：用户在底部 1 屏内 → 自动跟随；用户上滚 → 暂停跟随并显示"回到底部"浮标。
@@ -692,6 +711,32 @@ pi:frame:{tabId}（≤60Hz）
   另外"跳到很久以前的某一轮"仍只能一页页往上翻；
 - "考古模式"（右栏或抽屉）：`get_entries` 游标分页（每次 200 条，向上滚动加载），只读渲染；
 - 分支树（`get_tree`）用自绘 SVG 缩略图 + antd Tree 详情，点击分支节点提示"将切换活动分支（branch 导航）"——走 `switch_session`/fork 语义【契约验证 C11：RPC 的分支切换入口。rpc.md 只提供 fork/clone/switch；就地 branch 导航（TUI 的 `/tree`）若 RPC 未暴露，则用 fork 等价实现并在 UI 措辞区分】。
+
+### 4.6 节点只是视图（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"）
+
+现场：实时行是转录的**最后一行**、由虚拟化渲染。读者往上滚出窗口、或这一轮在窗口外开始
+流式，这个节点就会被**卸载**；回到窗口时 React 给的是**另一个新节点**。
+挂载点早先由 `useEffect(…, [tabId, streaming])` 决定 —— 节点换了 effect 不会再跑，
+引擎从此往被摘掉的那个节点写字。实测序列（真 Chromium 探针）：
+
+```
+… 15/15 → -1/20 -1/25 -1/35 -1/40 → 40/40 45/45 48/48     修复后（回来时补齐）
+… 15/15 → -1/20 -1/25 -1/35 -1/40 → 11 11 11             修复前（那一行只剩 "assistant ▌"）
+```
+
+修复前的表现正是用户说的："不输出"，然后 `message_end` 把整段消息交给 store，一次性出现。
+
+三条纪律（写在 `lib/live.ts` 文件头）：
+
+1. **文本是内容，节点只是视图**：`detach` 只丢视图，`attach` 按 `pending` 重建；
+2. **挂载点用回调 ref**：节点的生死由 React 报，不由 effect 的依赖猜；
+3. **没有布局就没有"底部"**：`clientHeight === 0` 时不写 `scrollTop`
+   （0/0/0 会被读成"已经贴着底"，对后台 tab 是白做工，对可见性切换是假基线）。
+
+⚠️ **这类 bug 的断言必须是"身份"而不是"长度"**：绑定错了的时候，DOM 上完全看不出来
+（那一行空着，而文本在一个已经摘掉的节点里继续长）。所以门禁第 19 段的判据是
+`引擎的 container === document 里那个 .pg-live`，以及"通道发出的字数 − 可见字数"。
+docs/15 规矩 108/109。
 
 ## 5. Markdown 与富内容渲染
 

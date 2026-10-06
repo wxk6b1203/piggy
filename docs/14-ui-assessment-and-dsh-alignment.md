@@ -295,6 +295,8 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 | 「本轮文件改动」 | 已是 `ChangedFiles` **卡片**（C1） | 不存在 | ⬜ 待做 |
 | Markdown 渲染 | 助手正文按 **markdown** 渲染：DSH 用 `micromark + mdast → 直接出 React`（`ui-primitives/src/markdown/render.tsx`，弃用 react-markdown/remark-rehype 是为了流式缓存冻结块） | 只做围栏切分，`##`/`**` 原样显示（用户 2026-09-23 截图） | ✅ 已对齐**呈现**、有意偏离**实现**：Piggy 用 `marked.lexer()` → token → React（用户裁定"micromark 太小众"）。两者都不产生 HTML 字符串；差异只在 parser：marked 解析快 12×、栈小 10 KB gz，但**没有** KaTeX 数学、脚注、增量（流式）解析这三档 —— 前两档 Piggy 目前不用，第三档 Piggy 的流式阶段本来就是纯文本（04 §5.1） |
 
+| 流式实时块 | 流式文本在 **React 状态**里（会话状态持有正在流式的消息，实时尾部就是转录的最后一行）—— 切会话、滚动、虚拟化都对它没有影响 | 直写 DOM（60fps 的结构性保证，04 §4），但**文本只活在 DOM 节点里**：节点被虚拟化卸载 / 面板被摘出 DOM，那一行就空着；切走的后台 tab 的帧还被丢弃 | ⚠️ 有意偏离**实现**、已对齐**行为**（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"）：`lib/live` 的引擎把当前这一轮的文本留在 `pending`（= 内容），DOM 节点只是**视图** —— 节点摘掉只 `detach`、回来 `attach` 按 `pending` 重建；挂载点用回调 ref；后台 tab 的帧照收。真浏览器门禁第 19 段按"通道发出的字数 − 可见字数"对账（`lostOnScroll 0`、`behindAfterSwitch 21` 字）。见 04 §3.2/§4.6、15 规矩 108/109 |
+
 ## 5. 改造原则（已执行）
 
 1. **保留协议/状态逻辑**——`Composer` 的 slash/图片/队列/streamingBehavior、`Transcript` 的虚拟化与 LiveBlock 直写、
