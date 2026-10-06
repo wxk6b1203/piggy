@@ -19,21 +19,10 @@
  */
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
-import { Icon, type IconName } from '@/features/common/Icon';
+import { Icon } from '@/features/common/Icon';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
-import { toolRowModel, type ToolVariant } from './toolRowModel';
-
-/** 变体 → 前导图标（DSH `GenericToolCard` 的 `VARIANT_ICONS`：14px 字形放进 16px 框）。 */
-const VARIANT_ICONS: Record<ToolVariant, IconName> = {
-  search: 'search',
-  read: 'book',
-  bash: 'terminal',
-  write: 'edit',
-  edit: 'edit',
-  code: 'code',
-  others: 'tools',
-};
+import { toolRowModel, VARIANT_ICONS } from './toolRowModel';
 
 export interface ToolRowProps {
   toolName: string | undefined;

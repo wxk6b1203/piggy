@@ -1780,6 +1780,27 @@ if (typeof window !== 'undefined' && isMock) {
       emit(`pi:commit:${tabId}`, { type: 'agent_settled' });
       return i;
     },
+    /**
+     * S1b：思考 + 工具调用 + 正文三种块一起流（门禁第 21 段量"实时块里的思考/工具
+     * 是不是和提交之后一样的窄行"）。工具参数按 JSON 增量发：先半截、再补全，
+     * 好让"够完整才抽摘要"这条也被真的走到。
+     */
+    async streamMixed(totalMs: number, chunkMs = 16, tabId = TAB): Promise<void> {
+      const start = performance.now();
+      emit(`pi:commit:${tabId}`, { type: 'agent_start' });
+      emit(`pi:frame:${tabId}`, { signals: [{ type: 'thinking_start', contentIndex: 0 }] });
+      emit(`pi:frame:${tabId}`, { thinking: [{ contentIndex: 0, delta: '先读一下 stores/messages.ts\n第二行思考' }] });
+      emit(`pi:frame:${tabId}`, { signals: [{ type: 'toolcall_start', contentIndex: 1, toolName: 'edit' }] });
+      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: '{"file_path":"src/stores/mes' }] });
+      emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: 'sages.ts","old_string":"a","new_string":"b"}' }] });
+      let i = 0;
+      while (performance.now() - start < totalMs) {
+        emit(`pi:frame:${tabId}`, { text: [{ contentIndex: 2, delta: '正文流。' }], usage: { totalTokens: 1000 + i } });
+        i += 1;
+        await new Promise((r) => setTimeout(r, chunkMs));
+      }
+      emit(`pi:commit:${tabId}`, { type: 'agent_settled' });
+    },
     /** S3：hydrate n 条消息，返回耗时 ms（对应"打开大会话"路径） */
     async hydrate(n: number): Promise<number> {
       const { useMessages } = await import('@/stores/messages');

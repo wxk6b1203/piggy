@@ -65,18 +65,53 @@ describe('LiveEngine（per-tab）', () => {
     expect(textNodes.length).toBe(1);
   });
 
-  it('thinking 与 toolcall 信号建块', () => {
+  /**
+   * 思考/工具在实时块里也必须是**窄行**（用户 2026-09-23："工具/思考等默认折叠"）。
+   *
+   * 以前这里是裸的原生 `<details>`（`▶ ◈ thinking`）和一个 `⚙ bash…` 芯片；
+   * 现在与提交之后的 `ThinkingRow`/`ToolRow` **同一套标记与几何**（`pg-thinkrow`/`pg-trow`
+   * + `pg-drow*` + `pg-trow-sep/summary`），标题/摘要走同一个 `toolRowModel`。
+   */
+  it('thinking 与 toolcall 建出与提交行同构的窄行（标题 + 摘要 + 折叠正文）', () => {
     const { e, container } = mounted();
     e.handleFrame({
       signals: [
         { type: 'thinking_start', contentIndex: 1 },
         { type: 'toolcall_start', contentIndex: 2, id: 'c1', toolName: 'bash' },
       ],
-      thinking: [{ contentIndex: 1, delta: 'hmm' }],
+      thinking: [{ contentIndex: 1, delta: '第一行想法\n第二行' }],
     });
-    expect(container.querySelector('.pg-live-thinking')).toBeTruthy();
-    expect((container.querySelector('.pg-thinking-body') as HTMLElement).textContent).toBe('hmm');
-    expect(container.querySelector('.pg-live-toolchip')!.textContent).toContain('bash');
+    const think = container.querySelector('[data-thinking-row]')!;
+    expect(think).toBeTruthy();
+    expect(think.querySelector('.pg-drow-title')!.textContent).toBe('思考');
+    expect(think.querySelector('.pg-trow-summary')!.textContent).toBe('第一行想法');
+    // 默认折叠：正文挂着 `hidden`（点开才看得见）
+    const body = think.querySelector('[data-thinking-body]') as HTMLElement;
+    expect(body.hasAttribute('hidden')).toBe(true);
+    expect((body.querySelector('.pg-thinking-body') as HTMLElement).textContent).toBe('第一行想法\n第二行');
+    expect(think.querySelector('[data-disclosure-row]')).toBeTruthy();
+    // 点一下才展开（与提交行同一套语义）
+    (think.querySelector('[data-disclosure-row]') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(body.hasAttribute('hidden')).toBe(false);
+    expect(think.hasAttribute('data-open')).toBe(true);
+
+    const tool = container.querySelector('[data-tool-row]')!;
+    expect(tool.getAttribute('data-tool')).toBe('bash');
+    expect(tool.getAttribute('data-variant')).toBe('bash');
+    expect(tool.querySelector('.pg-drow-title')!.textContent).toBe('运行命令');
+  });
+
+  it('工具参数是流式的 JSON：够完整才抽摘要（半截不许瞎解析）', () => {
+    const { e, container } = mounted();
+    e.handleFrame({ signals: [{ type: 'toolcall_start', contentIndex: 2, id: 'c1', toolName: 'bash' }] });
+    const tool = container.querySelector('[data-tool-row]')!;
+    const summary = tool.querySelector('.pg-trow-summary') as HTMLElement;
+    expect(summary.textContent, '参数还没来，摘要只该有标题').toBe('');
+    e.handleFrame({ toolArgs: [{ contentIndex: 2, delta: '{"comm' }] });
+    expect(summary.textContent, '半截 JSON 不该被解析').toBe('');
+    e.handleFrame({ toolArgs: [{ contentIndex: 2, delta: 'and":"pnpm test"}' }] });
+    expect(summary.textContent).toBe('pnpm test');
+    expect(summary.getAttribute('data-summary-source')).toBe('args');
   });
 
   it('attach 前到达的帧在 attach 后冲刷（竞态安全，用全新 tab 验证 pending 存活）', () => {
@@ -132,7 +167,9 @@ describe('LiveEngine（per-tab）', () => {
     const second = node();
     e.attach(second.container);
     expect((second.container.querySelector('.pg-live-text') as HTMLElement).textContent).toBe('说一句');
-    expect(second.container.querySelector('.pg-live-toolchip')!.textContent).toContain('edit');
+    const tool = second.container.querySelector('[data-tool-row]')!;
+    expect(tool.getAttribute('data-tool')).toBe('edit');
+    expect(tool.querySelector('.pg-drow-title')!.textContent).toBe('编辑');
   });
 
   it('同一个节点重复 attach 幂等（不重建、不重复文本）', () => {

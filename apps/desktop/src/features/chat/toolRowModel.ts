@@ -27,7 +27,25 @@
  */
 
 /** DSH 的 7 种行变体（`ToolRowVariant`）。 */
+import type { IconName } from '@/features/common/codicon-names';
+
 export type ToolVariant = 'search' | 'read' | 'bash' | 'write' | 'edit' | 'code' | 'others';
+
+/**
+ * 变体 → 前导图标（DSH `GenericToolCard` 的 `VARIANT_ICONS`：14px 字形放进 16px 框）。
+ *
+ * 放在这个**纯**模块里是为了让实时块引擎（`lib/live`）也能用同一张表 ——
+ * 否则"流式那一行"和"提交之后那一行"会各拿一套图标，慢慢漂。
+ */
+export const VARIANT_ICONS: Record<ToolVariant, IconName> = {
+  search: 'search',
+  read: 'book',
+  bash: 'terminal',
+  write: 'edit',
+  edit: 'edit',
+  code: 'code',
+  others: 'tools',
+};
 
 /** 变体 → 标题（DSH `ui-conversation/locales.ts:290-296` 的中文口径）。 */
 export const TOOL_TITLES: Record<ToolVariant, string> = {

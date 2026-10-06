@@ -334,12 +334,6 @@ body {
 }
 .pg-action-btn:hover { background: var(--pg-hover); color: var(--pg-fg); }
 .pg-action-time { color: var(--pg-fg-caption); font-size: var(--pg-fs-11); font-variant-numeric: tabular-nums; }
-.pg-thinking, .pg-live-thinking {
-  border-left: 2px solid var(--pg-border-l2);
-  margin: 4px 0 4px 0; padding-left: 10px;
-  color: var(--pg-fg-dim); font-size: 12px;
-}
-.pg-thinking summary, .pg-live-thinking summary { cursor: pointer; user-select: none; }
 .pg-thinking-body { white-space: pre-wrap; margin-top: 4px; }
 
 /* ── 窄行折叠（DisclosureRow）：转录里"默认折起来的一行"共用 ──────────────────
@@ -520,11 +514,6 @@ body {
 .pg-live { min-height: 28px; }
 .pg-live .pg-role { color: var(--pg-accent); }
 .pg-live-text { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
-.pg-live-toolchip {
-  display: inline-block; margin: 4px 0; padding: 2px 10px;
-  background: var(--pg-bg-sidebar); border-radius: 10px;
-  color: var(--pg-fg-dim); font-size: 12px;
-}
 
 /* Composer（DSH InputBar.module.css，docs/12 §3.8 —— 几何逐条照抄） */
 .pg-composer {

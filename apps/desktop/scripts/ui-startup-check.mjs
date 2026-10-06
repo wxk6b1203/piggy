@@ -2924,6 +2924,83 @@ const wheelHold = await (async () => {
   return result;
 })();
 
+/* ---------- 21. 实时块里的思考/工具 = 和提交之后同一套窄行（用户 2026-09-23："工具/思考等默认折叠"）
+ *
+ * 现场：实时块里思考是个裸的原生 `<details>`（`▶ ◈ thinking`）、工具是个 `⚙ edit…` 芯片，
+ * 与提交之后的窄行（`思考 · 首行摘要` / `编辑 · src/stores/messages.ts`，24px）完全不是一个东西。
+ * 现在实时行按 `DisclosureRow` + `ThinkingRow`/`ToolRow` 的标记搭（同一套 CSS 与
+ * `toolRowModel` 漏斗），于是"流式那一行"和"提交之后那一行"标题/摘要/几何都一致。
+ *
+ * 这一段用 `__piggyPerf.streamMixed` 走**真实帧通道**（思考 + 工具参数 JSON 增量 + 正文），
+ * 并与同一份参数 hydrate 出来的提交行逐项对比：标题、摘要、行高必须一致。
+ */
+const liveRows = await page.evaluate(async (id) => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stores = globalThis.__piggyStores;
+  globalThis.__piggyEditor.focusSessionTab(id);
+  // 同一份参数先 hydrate 成**提交行**（parity 的参照物）
+  stores.useMessages.getState().hydrate(id, [
+    { role: 'user', content: [{ type: 'text', text: '参照物' }], timestamp: 1_700_000_000_000 },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '先读一下 stores/messages.ts\n第二行思考' },
+        {
+          type: 'toolCall',
+          id: 'ref-edit',
+          name: 'edit',
+          arguments: { file_path: 'src/stores/messages.ts', old_string: 'a', new_string: 'b' },
+        },
+      ],
+      timestamp: 1_700_000_000_001,
+    },
+    {
+      role: 'toolResult',
+      toolCallId: 'ref-edit',
+      toolName: 'edit',
+      content: [{ type: 'text', text: 'ok' }],
+      timestamp: 1_700_000_000_002,
+    },
+  ]);
+  await sleep(400);
+  const tr = document.querySelector(`[data-tab-id="${id}"] .pg-transcript`);
+  tr.scrollTop = tr.scrollHeight;
+  await sleep(200);
+  void globalThis.__piggyPerf.streamMixed(2600, 16, id);
+  await sleep(700);
+  tr.scrollTop = tr.scrollHeight;
+  await sleep(200);
+
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      h: Math.round(r.height),
+      title: (el.querySelector('.pg-drow-title')?.textContent ?? '').trim(),
+      summary: (el.querySelector('.pg-trow-summary')?.textContent ?? '').trim(),
+      source: el.querySelector('.pg-trow-summary')?.getAttribute('data-summary-source') ?? null,
+      expandable: el.querySelector('[data-disclosure-row]')?.hasAttribute('data-expandable') ?? null,
+    };
+  };
+  const live = tr.querySelector('.pg-live');
+  const thinkBody = live?.querySelector('[data-thinking-body]') ?? null;
+  const out = {
+    liveThinking: box(live?.querySelector('[data-thinking-row]') ?? null),
+    liveTool: box(live?.querySelector('[data-tool-row]') ?? null),
+    liveToolVariant: live?.querySelector('[data-tool-row]')?.getAttribute('data-variant') ?? null,
+    liveText: (live?.querySelector('.pg-live-text')?.textContent ?? '').slice(0, 24),
+    // 折叠：正文挂着 `hidden` 且不占高度
+    thinkBodyHidden: thinkBody ? thinkBody.hasAttribute('hidden') : null,
+    thinkBodyH: thinkBody ? Math.round(thinkBody.getBoundingClientRect().height) : null,
+    // 旧标记必须没了（退回去就是红的）
+    oldChip: tr.querySelectorAll('.pg-live-toolchip').length,
+    oldDetails: tr.querySelectorAll('.pg-live-thinking').length,
+    committedThinking: box(tr.querySelector('.pg-vrow [data-thinking-row]') ?? null),
+    committedTool: box(tr.querySelector('.pg-vrow [data-tool-row][data-tool="edit"]') ?? null),
+  };
+  return out;
+}, liveBind.tabId);
+
 /* ---------- 17. 展开态跨"虚拟化卸载" + 面板回到前台要贴底（用户 2026-09-23 报）
  *
  * 两条都是**只有真浏览器能量**的几何/生命周期问题：
@@ -3132,7 +3209,7 @@ console.log(
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
       sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
-      scrollMemory, restoredScroll, liveBind, wheelHold,
+      scrollMemory, restoredScroll, liveBind, wheelHold, liveRows,
     },
     null,
     1,
@@ -4317,6 +4394,62 @@ if ((wheelHold.backToBottom?.gap ?? 999) > 25 || wheelHold.backToBottom?.btn) {
 }
 if ((wheelHold.stillFollowing?.gap ?? 999) > 25) {
   bad.push(`回滚：跟随回来之后又跟丢了（0.7s 后 gap=${wheelHold.stillFollowing?.gap}）★`);
+}
+
+/* 实时块里的思考/工具：与提交行同一套窄行（用户 2026-09-23："工具/思考等默认折叠"） */
+if (!liveRows.liveThinking || !liveRows.liveTool) {
+  bad.push(
+    `实时行：思考/工具行没建出来（think=${JSON.stringify(liveRows.liveThinking)}，tool=${JSON.stringify(liveRows.liveTool)}）★`,
+  );
+} else {
+  if (liveRows.oldChip || liveRows.oldDetails) {
+    bad.push(
+      `实时行：还在用旧标记（⚙ 芯片 ${liveRows.oldChip} 个 / 原生 details ${liveRows.oldDetails} 个）★`,
+    );
+  }
+  if (!(liveRows.liveThinking.h > 0 && liveRows.liveThinking.h <= 26)) {
+    bad.push(`实时行：思考行高 ${liveRows.liveThinking.h}px（提交行是 24px 的窄行）★`);
+  }
+  if (liveRows.liveThinking.h !== liveRows.committedThinking?.h) {
+    bad.push(
+      `实时行：思考行 ${liveRows.liveThinking.h}px ≠ 提交行 ${liveRows.committedThinking?.h}px —— 两套几何 ★`,
+    );
+  }
+  if (liveRows.liveThinking.title !== '思考') {
+    bad.push(`实时行：思考行的标题是「${liveRows.liveThinking.title}」（应为「思考」）★`);
+  }
+  if (liveRows.liveThinking.summary !== '先读一下 stores/messages.ts') {
+    bad.push(
+      `实时行：思考摘要不是首行（读到「${liveRows.liveThinking.summary}」）—— 折叠摘要要不出来 ★`,
+    );
+  }
+  if (liveRows.thinkBodyHidden !== true || liveRows.thinkBodyH !== 0) {
+    bad.push(
+      `实时行：思考正文默认没折起来（hidden=${liveRows.thinkBodyHidden}，高 ${liveRows.thinkBodyH}px）★`,
+    );
+  }
+  if (liveRows.liveToolVariant !== 'edit') {
+    bad.push(`实时行：工具行的 data-variant 是「${liveRows.liveToolVariant}」（应为 edit）★`);
+  }
+  if (liveRows.liveTool.title !== liveRows.committedTool?.title) {
+    bad.push(
+      `实时行：工具标题「${liveRows.liveTool.title}」≠ 提交行「${liveRows.committedTool?.title}」` +
+        '—— 标题表没走同一个漏斗 ★',
+    );
+  }
+  if (liveRows.liveTool.summary !== 'src/stores/messages.ts') {
+    bad.push(
+      `实时行：工具摘要不是从流式参数里抽出来的（读到「${liveRows.liveTool.summary}」）★`,
+    );
+  }
+  if (liveRows.liveTool.source !== 'args') {
+    bad.push(`实时行：工具摘要没标 data-summary-source=args（读到 ${liveRows.liveTool.source}）★`);
+  }
+  if (liveRows.liveTool.h !== liveRows.committedTool?.h) {
+    bad.push(
+      `实时行：工具行 ${liveRows.liveTool.h}px ≠ 提交行 ${liveRows.committedTool?.h}px —— 两套几何 ★`,
+    );
+  }
 }
 
 /* 页面错误一条都不许有。其中 `ResizeObserver loop completed with undelivered notifications`
