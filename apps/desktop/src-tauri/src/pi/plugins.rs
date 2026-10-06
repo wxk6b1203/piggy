@@ -63,7 +63,7 @@ pub fn read_manifest(dir: &Path) -> Option<Manifest> {
 
 /// 给定"这次要注入的插件目录"，收集它们申报的工具名。
 ///
-/// 与 {@link enabled_plugin_tools} 的区别：这一条**不看配置**，只认调用方已经决定注入的目录
+/// **不看配置**，只认调用方已经决定注入的目录
 /// （`spawn` 路径上 `bundled_extensions` 就是最终清单）—— 白名单必须与"真的注入了什么"
 /// 严格一致，多一个名字就是骗模型。
 ///
@@ -73,29 +73,6 @@ pub fn plugin_tools_for(dirs: &[PathBuf]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for dir in dirs {
         let Some(m) = read_manifest(dir) else {
-            continue;
-        };
-        for t in m.tools {
-            if !out.contains(&t) {
-                out.push(t);
-            }
-        }
-    }
-    out
-}
-
-/// 该注入的插件所提供的**工具名**（限制档位拼 `--tools` 白名单时用）。
-///
-/// @param bundled - 随包带的插件目录
-/// @returns 去重后的工具名（顺序 = 目录顺序 + 清单顺序）
-pub fn enabled_plugin_tools(bundled: &[PathBuf]) -> Vec<String> {
-    let enabled = crate::config::app::perf_config_load().bundled_plugins;
-    let mut out: Vec<String> = Vec::new();
-    for p in resolve(bundled, &enabled, home_dir().as_deref(), None) {
-        if !p.inject {
-            continue;
-        }
-        let Some(m) = read_manifest(&p.dir) else {
             continue;
         };
         for t in m.tools {

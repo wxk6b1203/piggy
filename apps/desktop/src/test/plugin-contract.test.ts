@@ -13,6 +13,7 @@
  *  4. **可打包**：不依赖 npm 包（只允许 pi 的虚拟模块）、入口存在、许可证写清楚 ——
  *     目标机器上很可能没有 node/npm，这个目录就是最终产物。
  */
+import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +38,14 @@ const pluginLib = pluginLibRaw as {
 };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DIR = join(HERE, '..', '..', 'src-tauri', 'resources', 'pi-plugins', 'pi-ask');
+const PLUGINS_DIR = join(HERE, '..', '..', 'src-tauri', 'resources', 'pi-plugins');
+const DIR = join(PLUGINS_DIR, 'pi-ask');
 const read = (name: string) => readFileSync(join(DIR, name), 'utf8');
+
+/** 随包分发的全部插件（每个目录一个 `piggy-plugin.json`）。 */
+const PLUGINS = readdirSync(PLUGINS_DIR)
+  .filter((n) => existsSync(join(PLUGINS_DIR, n, 'piggy-plugin.json')))
+  .sort();
 const manifest = JSON.parse(read('piggy-plugin.json')) as {
   name: string;
   title: string;
@@ -121,5 +128,59 @@ describe('pi-ask 与宿主的契约', () => {
     expect(text).toContain('选型：A');
     expect(text).toContain('顺便加测试');
     expect(text).toContain('x：a.ts');
+  });
+});
+
+describe('随包分发的每个插件（自研 + 收录的第三方）', () => {
+  it('目录、清单与许可证齐全（随包分发别人的代码必须带许可证）', () => {
+    expect(PLUGINS.length, '一个随包插件都没有？').toBeGreaterThan(0);
+    for (const name of PLUGINS) {
+      const dir = join(PLUGINS_DIR, name);
+      const m = JSON.parse(readFileSync(join(dir, 'piggy-plugin.json'), 'utf8')) as {
+        name: string;
+        entry: string;
+        license: string;
+        tools: string[];
+      };
+      expect(m.name, `${name}: 清单里的名字与目录名不一致`).toBe(name);
+      expect(existsSync(join(dir, m.entry)), `${name}: 入口 ${m.entry} 不存在`).toBe(true);
+      expect(existsSync(join(dir, 'LICENSE')), `${name}: 缺 LICENSE`).toBe(true);
+      expect(m.license, `${name}: 许可证没写`).not.toBe('');
+      expect(Array.isArray(m.tools), `${name}: tools 必须是数组（限制档位靠它拼白名单）`).toBe(true);
+    }
+  });
+
+  it('收录的第三方插件必须能证明出处，且内容没被动过（漂移检测）', () => {
+    for (const name of PLUGINS) {
+      const dir = join(PLUGINS_DIR, name);
+      const vendorPath = join(dir, 'vendor.json');
+      // 自研插件不需要 vendor.json（它是本仓的一部分，出处就是本仓）
+      if (!existsSync(vendorPath)) continue;
+      const v = JSON.parse(readFileSync(vendorPath, 'utf8')) as {
+        source: { path: string; commit: string | null };
+        files: Record<string, string>;
+      };
+      expect(v.source.path, `${name}: vendor.json 没记来源`).not.toBe('');
+      expect(Object.keys(v.files).length, `${name}: vendor.json 没有文件清单`).toBeGreaterThan(0);
+      for (const [rel, want] of Object.entries(v.files)) {
+        const file = join(dir, rel);
+        expect(existsSync(file), `${name}: 清单里的 ${rel} 不在`).toBe(true);
+        const got = createHash('sha256').update(readFileSync(file)).digest('hex');
+        expect(got, `${name}: ${rel} 被改过（请重跑 scripts/vendor-plugin.mjs）`).toBe(want);
+      }
+    }
+  });
+
+  it('每个插件都不依赖 npm 包（只允许 pi 的虚拟模块与相对路径）', () => {
+    const VIRTUAL = new Set(['typebox', '@earendil-works/pi-coding-agent', '@sinclair/typebox']);
+    for (const name of PLUGINS) {
+      const dir = join(PLUGINS_DIR, name);
+      const m = JSON.parse(readFileSync(join(dir, 'piggy-plugin.json'), 'utf8')) as { entry: string };
+      const entry = readFileSync(join(dir, m.entry), 'utf8');
+      for (const spec of [...entry.matchAll(/from\s+'([^']+)'/g)].map((x) => x[1] ?? '')) {
+        const ok = VIRTUAL.has(spec) || spec.startsWith('./') || spec.startsWith('../');
+        expect(ok, `${name}: 不允许的依赖 ${spec}（目标机器可能没有 node/npm）`).toBe(true);
+      }
+    }
   });
 });

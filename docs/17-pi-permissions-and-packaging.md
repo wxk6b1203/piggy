@@ -150,6 +150,32 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 3. **清单缺失/入口不存在就不注入**：pi 对"加载失败的扩展"的处理是报诊断并退出 ——
    宁可少一个功能，也不能让用户开不了会话。
 
+### 2.2c 收录第三方插件（`scripts/vendor-plugin.mjs`）
+
+随包的插件有两类：**自研**（`pi-ask`，就在本仓里，GPL-3.0-or-later）与**收录的第三方**
+（今天一个：`pi-todo`，MIT，来自 `~/Project/pi-todo`）。收录走脚本，不手工复制：
+
+```bash
+node scripts/vendor-plugin.mjs --from ~/Project/pi-todo --name pi-todo \
+     --entry index.ts --tools todo_enable,todo_write --commands todos --title '任务清单（DSH 风格）'
+node scripts/vendor-plugin.mjs --check     # CI 跑这条：文件内容与 vendor.json 对不上就红
+```
+
+脚本钉住三件事：
+
+1. **出处**：`vendor.json` 记来源路径、上游 commit、许可证与每个文件的 sha256；
+2. **许可证**：上游必须有 `LICENSE*` 文件，或 `package.json` 里写了 SPDX（没有就**拒绝收录**）；
+   没有 LICENSE 文件时按 SPDX 补一份正文（目前只支持 MIT —— 别的宁可人工补，不猜）；
+3. **漂移**：`--check` 重算哈希。本地被就地改过、或忘了重跑收录，CI 都会红。
+
+`--tools` / `--commands` **必须显式写**（脚本不给默认值）：清单里的工具名会被加进限制档位的
+`--tools` 白名单，猜错就等于告诉模型"你有这个工具"而它并不存在。
+
+收录完有两步收尾（脚本会提醒）：把名字加进 `config/app.rs::default_bundled_plugins()`、
+跑一次 `node scripts/pi-plugin-probe.mjs`（真 pi 能不能加载它）。
+契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
+有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
+
 设置页那一块（`features/settings/BundledPluginsRow.tsx`）显示每个内置插件的名字、说明、
 申报的工具与命令、许可证、目录，以及**这次装不装 / 为什么不装**。它不在 pi 自己的
 "插件"页里，因为那一页扫的是 pi 的发现目录，`-e` 注入的东西天然不在其中。

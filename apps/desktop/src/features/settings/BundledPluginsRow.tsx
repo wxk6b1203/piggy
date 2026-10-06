@@ -20,6 +20,9 @@ interface BundledPlugin {
   tools: string[];
   commands: string[];
   dir: string;
+  /** 配置里开着吗（勾选框跟它走） */
+  enabled: boolean;
+  /** 这次真的注入了吗（可能与 `enabled` 不一致：用户自己装过同名扩展时会被跳过） */
   inject: boolean;
   skipped: string | null;
 }
@@ -42,7 +45,8 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
     if (busy) return;
     setBusy(true);
     try {
-      const enabled = (plugins ?? []).filter((x) => (x.name === p.name ? on : x.inject)).map((x) => x.name);
+      // 按**配置**算（不是按"这次注入了吗"）：跳过是运行时判断，不该被写进配置
+      const enabled = (plugins ?? []).filter((x) => (x.name === p.name ? on : x.enabled)).map((x) => x.name);
       await cmd('perf_config_save', { bundledPlugins: enabled });
       toast.success('已保存（对新建会话生效）');
       load();
@@ -69,11 +73,17 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
       <span className="pg-settings-label">内置插件</span>
       <div className="pg-bundled-list">
         {plugins.map((p) => (
-          <div className="pg-bundled" key={p.name} data-bundled={p.name} data-inject={p.inject ? '' : undefined}>
+          <div
+            className="pg-bundled"
+            key={p.name}
+            data-bundled={p.name}
+            data-enabled={p.enabled ? '' : undefined}
+            data-inject={p.inject ? '' : undefined}
+          >
             <label className="pg-bundled-head">
               <input
                 type="checkbox"
-                checked={p.inject}
+                checked={p.enabled}
                 disabled={busy}
                 data-bundled-toggle={p.name}
                 onChange={(e) => void toggle(p, e.target.checked)}

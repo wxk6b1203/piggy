@@ -4101,6 +4101,7 @@ const bundledUI = await page.evaluate(async () => {
   const row = document.querySelector('[data-bundled="pi-ask"]');
   if (!row) return { error: '设置页里找不到内置插件那一条' };
   const before = {
+    enabled: row.hasAttribute('data-enabled'),
     inject: row.hasAttribute('data-inject'),
     title: row.querySelector('.pg-bundled-title')?.textContent ?? '',
     license: row.querySelector('.pg-bundled-license')?.textContent ?? '',
@@ -4111,6 +4112,7 @@ const bundledUI = await page.evaluate(async () => {
   await sleep(700);
   const offRow = document.querySelector('[data-bundled="pi-ask"]');
   const off = {
+    enabled: offRow?.hasAttribute('data-enabled') ?? null,
     inject: offRow?.hasAttribute('data-inject') ?? null,
     skip: offRow?.querySelector('[data-bundled-skip]')?.textContent?.trim() ?? null,
     enabledInConfig: [...(mock.mockTitleCfg.bundled ?? [])],
@@ -4118,6 +4120,7 @@ const bundledUI = await page.evaluate(async () => {
   offRow?.querySelector('[data-bundled-toggle="pi-ask"]')?.click();
   await sleep(700);
   const back = {
+    enabled: document.querySelector('[data-bundled="pi-ask"]')?.hasAttribute('data-enabled') ?? null,
     inject: document.querySelector('[data-bundled="pi-ask"]')?.hasAttribute('data-inject') ?? null,
     enabledInConfig: [...(mock.mockTitleCfg.bundled ?? [])],
   };
@@ -5838,18 +5841,20 @@ if (turnFolding.standard?.folds !== 2) {
   if (bundledUI.error) {
     bad.push(`内置插件：${bundledUI.error} ★`);
   } else {
-    if (!b.inject) bad.push('内置插件：默认应当是"已注入"（随包带的功能没理由先去设置里找）★');
+    if (!b.enabled || !b.inject) {
+      bad.push('内置插件：默认应当是"开着且已注入"（随包带的功能没理由先去设置里找）★');
+    }
     if (!/结构化提问/.test(b.title)) bad.push(`内置插件：标题不对（读到 ${JSON.stringify(b.title)}）★`);
     if (!/GPL/.test(b.license)) bad.push(`内置插件：许可证没显示（读到 ${JSON.stringify(b.license)}）★`);
     if (!/ask_user_question/.test(b.meta)) bad.push(`内置插件：没显示它提供哪些工具（读到 ${JSON.stringify(b.meta)}）★`);
-    if (o.inject !== false) bad.push('内置插件：关掉之后界面上还是"已注入"★');
+    if (o.enabled !== false || o.inject !== false) bad.push('内置插件：关掉之后界面上还是"开着/已注入"★');
     if ((o.enabledInConfig ?? []).length !== 0) {
       bad.push(`内置插件：关掉之后配置里还留着（读到 ${JSON.stringify(o.enabledInConfig)}）★`);
     }
     if (!/关掉/.test(o.skip ?? '')) {
       bad.push(`内置插件：没说清这次为什么不注入（读到 ${JSON.stringify(o.skip)}）★`);
     }
-    if (k.inject !== true) bad.push('内置插件：再打开之后没有回到"已注入"★');
+    if (k.enabled !== true || k.inject !== true) bad.push('内置插件：再打开之后没有回到"开着且已注入"★');
     if (!(k.enabledInConfig ?? []).includes('pi-ask')) {
       bad.push(`内置插件：再打开之后配置里没有 pi-ask（读到 ${JSON.stringify(k.enabledInConfig)}）★`);
     }

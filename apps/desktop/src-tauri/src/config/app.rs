@@ -197,7 +197,16 @@ pub struct PerfConfig {
 /// 写死在这里而不是"扫目录全都开"：随包多带一个插件就意味着模型多看见一个工具，
 /// 这件事应当是一个**明确的**决定（改这里 + 加测试），不是目录里多放一个文件就自动生效。
 pub fn default_bundled_plugins() -> Vec<String> {
-    vec!["pi-ask".to_string()]
+    vec![
+        // Piggy 自己的：结构化提问 + 计划模式（resources/pi-plugins/pi-ask）
+        "pi-ask".to_string(),
+        /* 第三方（收录自上游仓库，见插件目录里的 vendor.json 与 LICENSE）：
+           pi-todo —— DSH 风格的 todo_write 清单。`scripts/vendor-plugin.mjs` 负责收录与
+           漂移检测；`scripts/pi-plugin-probe.mjs` 负责"pi 真的能加载它"。
+           ⚠️ 用户自己装过同名扩展时不会注入（两份同名扩展会让 pi 因工具名冲突退出），
+           界面上会说明原因。 */
+        "pi-todo".to_string(),
+    ]
 }
 
 fn default_title_max_chars() -> u32 {
@@ -307,7 +316,11 @@ mod tests {
     fn rail_placement_parses_and_falls_back() {
         // 默认注入哪些插件是**显式**决定（不是"目录里有啥就开啥"）
         let cfg = PerfConfig::default();
-        assert_eq!(cfg.bundled_plugins, vec!["pi-ask".to_string()]);
+        assert_eq!(
+            cfg.bundled_plugins,
+            vec!["pi-ask".to_string(), "pi-todo".to_string()],
+            "默认随包分发的插件清单（改这里要同时想清楚：模型会多看见哪些工具）"
+        );
         // 老配置里没有这个字段 → 拿到默认（插件照常开）
         let cfg: PerfConfig = serde_json::from_str(r#"{"max_workers":3}"#).unwrap();
         assert_eq!(cfg.bundled_plugins, default_bundled_plugins());

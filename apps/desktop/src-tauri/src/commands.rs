@@ -370,6 +370,10 @@ pub async fn plugin_bundled(state: State<'_, AppState>) -> Result<serde_json::Va
         .into_iter()
         .map(|p| {
             let m = crate::pi::plugins::read_manifest(&p.dir).unwrap_or_default();
+            // ⚠️ `enabled`（配置里开着吗）与 `inject`（这次真的注入了吗）**不是一回事**：
+            // 用户自己装过同名扩展时配置是开着的、但 Piggy 主动不注入（否则 pi 会因为
+            // 工具名冲突根本不进会话）。界面上的勾选框要跟着**配置**走，跳过原因单独显示。
+            let enabled_in_config = enabled.iter().any(|n| n == &p.name);
             serde_json::json!({
                 "name": p.name,
                 "title": if m.title.is_empty() { p.name.clone() } else { m.title },
@@ -379,6 +383,7 @@ pub async fn plugin_bundled(state: State<'_, AppState>) -> Result<serde_json::Va
                 "commands": m.commands,
                 "dir": p.dir.to_string_lossy(),
                 "bundled": true,
+                "enabled": enabled_in_config,
                 "inject": p.inject,
                 "skipped": p.skipped,
             })

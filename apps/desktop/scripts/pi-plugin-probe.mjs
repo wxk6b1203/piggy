@@ -20,13 +20,19 @@
  * 没有 pi 时**跳过并成功退出**（CI 上不一定装了 pi）；有 pi 但哪一条不成立就红。
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, cpSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PLUGIN = join(HERE, '..', 'src-tauri', 'resources', 'pi-plugins', 'pi-ask');
+const PLUGINS_DIR = join(HERE, '..', 'src-tauri', 'resources', 'pi-plugins');
+const PLUGIN = join(PLUGINS_DIR, 'pi-ask');
+/** 随包分发的全部插件（每个都要能在真 pi 上加载起来）。 */
+const ALL_PLUGINS = readdirSync(PLUGINS_DIR)
+  .filter((n) => existsSync(join(PLUGINS_DIR, n, 'piggy-plugin.json')))
+  .sort()
+  .map((n) => ({ name: n, dir: join(PLUGINS_DIR, n) }));
 const PI = process.env.PI ?? 'pi';
 
 /**
@@ -86,6 +92,36 @@ try {
     process.exit(0);
   }
   console.log(`pi: ${version}\n插件: ${PLUGIN}\n`);
+
+  // ── 0b. 每个随包插件都要能加载（收录进来的第三方插件同样）
+  for (const p of ALL_PLUGINS) {
+    const manifest = JSON.parse(readFileSync(join(p.dir, 'piggy-plugin.json'), 'utf8'));
+    const probeFile = join(tmp, `probe-${p.name}.js`);
+    writeFileSync(
+      probeFile,
+      [
+        'export default function probe(pi) {',
+        "  pi.on('session_start', () => {",
+        '    process.stderr.write(`PROBE tools=${JSON.stringify((pi.getAllTools?.() ?? []).map((t) => t.name).sort())}\n`);',
+        '  });',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const res = await runPi(['-e', p.dir, '-e', probeFile], { type: 'get_state', id: 1 });
+    const got = /PROBE tools=\[([^\]]*)\]/.exec(res.err)?.[1] ?? '';
+    const declared = (manifest.tools ?? []).filter((t) => got.includes(`"${t}"`));
+    const ok = res.responded && declared.length === (manifest.tools ?? []).length;
+    if (
+      !report(
+        ok,
+        `${p.name} 能被真 pi 加载，申报的工具都在`,
+        `responded=${res.responded} declared=${JSON.stringify(declared)} all=${got}`,
+      )
+    ) {
+      problems.push(`${p.name} 加载`);
+    }
+  }
 
   // ── 1. 能加载 + 命令/工具都在
   const probe = join(tmp, 'probe.js');

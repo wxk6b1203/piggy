@@ -1,0 +1,22 @@
+{
+  "name": "pi-todo",
+  "source": {
+    "path": "/Users/wxk/Documents/Project/pi-todo",
+    "commit": "112b795f5d1cc7bbded445a8df61a350e3f8b8e1",
+    "dirty": false,
+    "licenseFile": null,
+    "spdx": "MIT"
+  },
+  "vendoredAt": "2026-10-06T10:58:12.916Z",
+  "files": {
+    "README.md": "302f4fb1b061e607bb41b5e69b5341cff3bc9ff03026ad95331c8a66c65bea77",
+    "index.ts": "213c48c6c0240446fb78a4964ca15213ce20715353f383e2c001374c357001c3",
+    "src/activation.ts": "5a4d19879cb63592f8f2930b5d074bc0d1c5259cee137cd3a1387ee05992cec1",
+    "src/complexity.ts": "2546df1430d89d78e32bfe04bad727fc54cdfe7d8739ee242f8d97ac30ca27d8",
+    "src/config.ts": "1c1c4e44f2fb696be9413e5bfab688c2dcd4196a994785be37534164796c9a95",
+    "src/model.ts": "6b9ad3646872e133c6d343104f85ff11b8b80d452b72a82d63eb121a894b9c7d",
+    "src/prompt.ts": "fb284a7564f2319e4691228ff5eb6631725814b91955a12dbcad5f23303498c3",
+    "src/state.ts": "13bc69fb8f52411d11b6f592e74f9f06c313ad79c3ba07094c2bc7ef044443b8",
+    "src/tools.ts": "17f94fa1b4c4a970617592956d911c1bfdc19b1e70bee4d92ec9a0ba6d5c5201"
+  }
+}

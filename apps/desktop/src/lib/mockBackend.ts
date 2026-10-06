@@ -1255,6 +1255,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         commands: ['plan', 'plan-off'],
         dir: '/mock/resources/pi-plugins/pi-ask',
         bundled: true,
+        enabled: mockBundledEnabled(),
         inject: mockBundledEnabled(),
         skipped: mockBundledEnabled() ? null : '设置里关掉了',
       },

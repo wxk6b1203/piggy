@@ -17,6 +17,8 @@ jobs:
       # 红线纪律（docs/08 §4）：此前 `pnpm lint` 是**空转**（根 package.json 有 lint 脚本，
       # 但没有任何子包定义它），四条自定义红线一条都没在跑。
       - run: pnpm -r --if-present lint
+      # 收录的第三方插件不许被就地改过（docs/17 §2.2b：vendor.json 里的 sha256 对账）
+      - run: node apps/desktop/scripts/vendor-plugin.mjs --check
       - run: pnpm -r --if-present test
       - run: pnpm --filter @piggy/desktop build
 

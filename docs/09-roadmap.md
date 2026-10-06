@@ -117,6 +117,7 @@ M1 修正记录（实现期发现）：
 | 回合级过程折叠 + 四档密度（2026-09-25） | `lib/turnFold.ts` + `TurnFoldRow` + `PerfConfig.transcript_detail`（简洁/标准/详细/完全展开），设置 → 通用 › 工作步骤展示（04 §2.1.6） | ✅ |
 | 跨重启记住阅读位置（2026-09-25） | `lib/readingPosition.ts`（会话文件 + 行字节偏移）+ `TranscriptReading` 的还位置路径（04 §2.1.7） | ✅ |
 | 结构化提问 + 计划模式（2026-09-25） | 捆绑插件 `resources/pi-plugins/pi-ask`（`ask_user_question` / `exit_plan_mode` / `/plan`）+ 转录里的提问卡 + 设置里的内置插件开关（04 §2.1.8、17 §2.2b） | ✅ |
+| 插件打包与收录（2026-09-25） | `pi/plugins.rs`（发现/去重/开关）+ `--extension <dir>` 注入 + 白名单合并；`scripts/vendor-plugin.mjs` 收录第三方（首个：`pi-todo` MIT）+ `--check` 漂移检测；`scripts/pi-plugin-probe.mjs` 真机探针（进 CI contract 作业）（17 §2.2b/2.2c） | ✅ |
 | 独立发布（08 §7.1） | `scripts/fetch-pi-standalone.mjs`（GitHub Releases 下载 + SHA256 强校验 + tar 解包 → `src-tauri/resources/pi/`）；`tauri.full.conf.json`（full SKU bundle.resources）；发现链插入内置档（显式 > PI_BIN > 内置 > PATH，02 §2.1）；lite=默认 conf 不捆绑 | ✅（脚本+接线；release 资产直链需发布时按实际资产名核对 URL 模板） |
 | M1 顺延：Monaco schema 校验 | `monaco-setup.registerPiggySchemas`（pi settings/models 双 schema）+ MonacoHost 显式模型 URI | ✅ |
 
