@@ -22,7 +22,10 @@
  * 不折的三种情况（DSH 的 `turnProcessAlwaysOpen` 同义）：
  *   1. **正在跑的那一轮**（段内有 `live` 行）—— 用户正看着它长；
  *   2. **中止 / 失败**的回合 —— 过程是排查现场，折起来等于藏证据；
- *   3. 段内**没有过程**（只有一问一答）—— 没有可折的东西，连标题都不画。
+ *   3. 段内**没有过程**（只有一问一答）—— 没有可折的东西，连标题都不画；
+ *   4. 段内挂着**还没回答的提问卡**（`pendingQuestion`）—— pi 正阻塞在工具调用里，
+ *      既没有流式行也没有 `streaming`，按 ①② 判会误当成"已结束"，于是把用户要回答的卡
+ *      一起折起来（截图实测抓到）。"等回答"与"正在跑"同样不许折。
  *
  * ## 四档密度只改"默认开合"与"折叠行长什么样"
  *
@@ -56,6 +59,15 @@ export interface FoldRowInput {
   hasText: boolean;
   /** 时间戳（算"用时"用；缺省 null） */
   timestamp: number | null;
+  /**
+   * 这一行上挂着**还没回答的提问**（`ask_user_question` / `exit_plan_mode` 的卡片）。
+   *
+   * 为什么要单独标出来：等用户回答的那一轮，pi 正阻塞在工具调用里 —— 没有流式行、
+   * `streaming` 也是 false，按"有流式行才算没结束"的判据它会被当成**已结束**，
+   * 于是整段过程连同那张卡一起被折起来：**用户根本看不到要回答什么**（截图实测抓到）。
+   * 所以"等用户回答"必须与"正在跑"一样对待：过程全展开、不折。
+   */
+  pendingQuestion?: boolean;
 }
 
 export type TurnStatus = 'done' | 'aborted' | 'failed';
@@ -92,17 +104,20 @@ export interface TurnFold {
    */
   showHeader: boolean;
   /** 原因（测试与门禁断言用；`foldable` 为真时是 `null`） */
-  reason: 'running' | 'settled-failure' | 'no-process' | null;
+  reason: 'running' | 'pending-question' | 'settled-failure' | 'no-process' | null;
 }
 
 /** 从消息里摘出折叠判读需要的字段（store 的 `MessageView` 也满足这个形状）。 */
-export function foldRowInput(row: {
-  id: string;
-  role: string;
-  live?: unknown;
-  interrupted?: boolean;
-  message: AgentMessage;
-}): FoldRowInput {
+export function foldRowInput(
+  row: {
+    id: string;
+    role: string;
+    live?: unknown;
+    interrupted?: boolean;
+    message: AgentMessage;
+  },
+  pendingQuestions?: ReadonlySet<string> | null,
+): FoldRowInput {
   const m = row.message as {
     role?: string;
     content?: unknown;
@@ -113,10 +128,15 @@ export function foldRowInput(row: {
   const blocks = Array.isArray(m.content) ? m.content : [];
   let hasToolCall = false;
   let hasText = false;
+  let pendingQuestion = false;
   for (const b of blocks) {
-    const blk = b as { type?: string; text?: unknown };
-    if (blk?.type === 'toolCall') hasToolCall = true;
-    else if (blk?.type === 'text' && typeof blk.text === 'string' && blk.text.trim() !== '') hasText = true;
+    const blk = b as { type?: string; text?: unknown; id?: unknown };
+    if (blk?.type === 'toolCall') {
+      hasToolCall = true;
+      if (blk.id !== undefined && pendingQuestions?.has(String(blk.id)) === true) pendingQuestion = true;
+    } else if (blk?.type === 'text' && typeof blk.text === 'string' && blk.text.trim() !== '') {
+      hasText = true;
+    }
   }
   const aborted = m.stopReason === 'aborted';
   const errored = m.stopReason === 'error' || (typeof m.errorMessage === 'string' && m.errorMessage !== '');
@@ -129,6 +149,7 @@ export function foldRowInput(row: {
     hasToolCall,
     hasText,
     timestamp: typeof m.timestamp === 'number' ? m.timestamp : null,
+    ...(pendingQuestion ? { pendingQuestion: true } : {}),
   };
 }
 
@@ -188,10 +209,13 @@ function foldSegment(
   }
   const processIndexes: number[] = [];
   let running = false;
+  let waiting = false;
   let failure: 'error' | 'aborted' | null = null;
   for (let i = start + 1; i <= end; i += 1) {
     const r = rows[i]!;
     if (r.live) running = true;
+    // 等用户回答 = 没结束（见 `FoldRowInput.pendingQuestion` 的注释）
+    if (r.pendingQuestion === true) waiting = true;
     if (r.failure) failure = r.failure;
     if (isProcess(r, i === answerIndex)) processIndexes.push(i);
   }
@@ -210,9 +234,10 @@ function foldSegment(
   /* "结束了吗"：段内有流式行 → 没结束；此外**最后一段**在 `streaming` 为真时也算没结束
      （用户刚发出去、第一个 token 还没到，那一段只有一条 user 行）。 */
   const last = end === rows.length - 1;
-  const closed = !running && !(last && streaming);
+  const closed = !running && !waiting && !(last && streaming);
   let reason: TurnFold['reason'] = null;
-  if (!closed) reason = 'running';
+  if (waiting) reason = 'pending-question';
+  else if (!closed) reason = 'running';
   else if (processIndexes.length === 0) reason = 'no-process';
   else if (failure !== null) reason = 'settled-failure';
   return {

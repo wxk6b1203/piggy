@@ -35,6 +35,7 @@ import { useStore } from 'zustand';
 import { useAppConfig, type TranscriptDetail } from '@/stores/appConfig';
 import { defaultOpen, useTurnFold } from '@/stores/turnFold';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
+import { useQuestions } from '@/stores/questions';
 import { useTabs } from '@/stores/tabs';
 import { useTodoSupported } from '@/stores/todo';
 import { Icon } from '@/features/common/Icon';
@@ -201,14 +202,18 @@ export function Transcript({ tabId }: { tabId: string }) {
   const foldMemory = useTurnFold((s) => s.open[tabId]);
   const toggleFold = useTurnFold((s) => s.toggle);
 
+  /* 还没回答的提问（`stores/questions.ts`）：这些轮**不许折** —— 否则用户看不到
+     要回答什么（见 `lib/turnFold.ts` 里 `pendingQuestion` 的注释，截图实测抓到的）。 */
+  const pendingQuestions = useQuestions((s) => s.pending);
   const folds = useMemo(() => {
+    const pendingIds = new Set(Object.keys(pendingQuestions));
     const rows = ids
       .map((id) => useMessages.getState().tabs[tabId]?.byId[id])
       .filter(Boolean)
-      .map((row) => foldRowInput(row as MessageViewT));
+      .map((row) => foldRowInput(row as MessageViewT, pendingIds));
     return turnFolds(rows, streaming);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 行数据从 store 现读（不通过参数），ids/commitSeq/streaming 是刻意的重算触发条件
-  }, [tabId, ids, commitSeq, streaming]);
+  }, [tabId, ids, commitSeq, streaming, pendingQuestions]);
 
   const plans = useMemo(() => {
     const out = new Map<string, { fold?: TurnFold; folded: boolean; open: boolean; turnKey: string }>();

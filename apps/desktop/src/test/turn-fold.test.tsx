@@ -52,6 +52,7 @@ import { ensureTabListeners } from '@/lib/tabEvents';
 import { foldRowInput, formatDuration, turnFolds, type FoldRowInput } from '@/lib/turnFold';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
+import { useQuestions } from '@/stores/questions';
 import { useTabs } from '@/stores/tabs';
 import { useTurnFold } from '@/stores/turnFold';
 import { mountDom, unmountDom, domContainer } from './dom-render';
@@ -134,6 +135,33 @@ describe('turnFolds（纯函数）', () => {
     // 中途那一轮即使有 live 行也不算结束
     const twoTurns: FoldRowInput[] = [user('u1', 0), assistant('a1', 10, { live: true }), user('u2', 20)];
     expect(turnFolds(twoTurns, true)[0]!.closed).toBe(false);
+  });
+
+  it('等用户回答的提问卡不折（pi 阻塞在工具里：没有流式行也没有 streaming）', () => {
+    const rowsIn: FoldRowInput[] = [
+      user('u1', 0),
+      { ...assistant('a1', 10, { text: false, tool: true }), pendingQuestion: true },
+      assistant('a2', 20),
+    ];
+    const f = turnFolds(rowsIn, false)[0]!;
+    expect(f.foldable, '等回答的那一轮被折了 —— 用户就看不到要回答什么').toBe(false);
+    expect(f.reason).toBe('pending-question');
+    expect(f.closed).toBe(false);
+  });
+
+  it('foldRowInput：待答的 toolCallId 会被认出来', () => {
+    const row = {
+      id: 'r1',
+      role: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'ask-1', name: 'ask_user_question', arguments: {} }],
+        timestamp: 1,
+      } as never,
+    };
+    expect(foldRowInput(row, new Set(['ask-1'])).pendingQuestion).toBe(true);
+    expect(foldRowInput(row, new Set(['other'])).pendingQuestion).toBeUndefined();
+    expect(foldRowInput(row).pendingQuestion).toBeUndefined();
   });
 
   it('中止 / 失败的回合不折（过程是排查现场）', () => {
@@ -305,6 +333,35 @@ describe('渲染：折成一行、点开、档位与手动选择', () => {
     expect(rows('[data-thinking-row]'), '手动展开的选择被档位切换吃掉了').toHaveLength(1);
     // 折叠记忆用的是会话文件偏移（跨载入稳定）——这里 hydrate 不带 offset，退回行 id
     expect(Object.keys(useTurnFold.getState().open[TAB] ?? {}).length).toBeGreaterThan(0);
+  });
+
+  it('标准档下：挂着的提问卡不许被折起来（卡片必须看得见）', async () => {
+    useMessages.getState().hydrate(TAB, [
+      { role: 'user', content: [{ type: 'text', text: '帮我改一下' }], timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'toolCall',
+            id: 'ask-9',
+            name: 'ask_user_question',
+            arguments: { questions: [{ id: 'q1', question: '用哪个库？', options: [{ label: 'A' }] }] },
+          },
+        ],
+        timestamp: 2,
+      },
+    ] as never[]);
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+    await ensureTabListeners(TAB);
+    // 标准档（默认折叠）+ 挂着一个待答提问
+    await act(async () => {
+      useAppConfig.setState({ transcriptDetail: 'standard' });
+      useQuestions.setState({ pending: { 'ask-9': { requestId: 'req-9', tabId: TAB, toolCallId: 'ask-9' } } });
+    });
+    await flush();
+    expect(rows('[data-question-card]'), '提问卡被折叠藏起来了（用户看不到要回答什么）').toHaveLength(1);
+    expect(rows('[data-turn-fold]'), '等回答的那一轮不该出现"已完成工作"折叠行').toHaveLength(0);
   });
 
   it('正在跑的那一轮不折（过程可见）', async () => {

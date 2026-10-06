@@ -110,7 +110,7 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
       </div>
       <span className="pg-fg-dim">
         这些插件随 Piggy 分发、用 <code>pi --extension</code> 注入（不需要 npm）。
-        改开关后**新建会话**生效；已在跑的会话要重启标签页。
+        改开关后「新建会话」生效；已在跑的会话要重启标签页。
       </span>
     </div>
   );

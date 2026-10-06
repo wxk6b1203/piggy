@@ -4049,6 +4049,11 @@ const askCard = await page.evaluate(async () => {
     if (document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`) && t?.hydrated) break;
   }
   await sleep(400);
+  /* ⚠️ 这一段特意切到**标准档**（折叠开着）：第一版跑在"完全展开"档下，
+     于是"提问卡被回合折叠藏起来"这个 bug 完全没被覆盖 —— 用户看不到要回答什么，
+     而门禁全绿（截图时才发现）。等回答的那一轮不许折（见 `lib/turnFold.ts`）。 */
+  stores.useAppConfig.getState().setTranscriptDetail('standard');
+  await sleep(300);
 
   /* 插件发的那个请求（真通道：pi:ui-req）。`mockAskUserQuestion` 与 `streamFor`/`mockCrash`
      一样挂在 `__piggyPerf` 上，**不是** mock 模块的导出。 */
@@ -4067,6 +4072,7 @@ const askCard = await page.evaluate(async () => {
     multi: wrap.querySelector('[data-question="files"] .pg-qcard-multi')?.textContent?.trim() ?? '',
     hasCustom: !!wrap.querySelector('[data-question-custom="db"]'),
     submit: !!wrap.querySelector('.pg-qcard-actions .pg-btn'),
+    folds: wrap.querySelectorAll('[data-turn-fold]').length,
   };
 
   // 选一个 + 勾两个 + 填自由文本 → 提交
@@ -4084,7 +4090,10 @@ const askCard = await page.evaluate(async () => {
   await sleep(600);
 
   const replies = (globalThis.__piggyMock?.uiReplies ?? []).slice();
-  return { ...collected, replies, pendingLeft: Object.keys(stores.useQuestions.getState().pending).length };
+  const pendingLeft = Object.keys(stores.useQuestions.getState().pending).length;
+  // 收尾：切回门禁的统一口径（完全展开），免得影响后面的段
+  stores.useAppConfig.getState().setTranscriptDetail('verbose');
+  return { ...collected, replies, pendingLeft };
 });
 
 /* ---------- 28. 内置插件的可见性与开关（docs/06 §7，设置 › 通用）-------------------
@@ -5806,6 +5815,9 @@ if (turnFolding.standard?.folds !== 2) {
     if (a.multi !== '可多选') bad.push(`提问卡：多选标记丢了（读到 ${JSON.stringify(a.multi)}）★`);
     if (!a.hasCustom) bad.push('提问卡：没有自由文本输入框 ★');
     if (!a.submit) bad.push('提问卡：没有提交按钮 ★');
+    if (a.folds !== 0) {
+      bad.push(`提问卡：等回答的那一轮被折起来了（读到 ${a.folds} 行「已完成工作」）★`);
+    }
   }
   const reply = (a.replies ?? []).find((r) => r && r.id);
   if (!reply) {
