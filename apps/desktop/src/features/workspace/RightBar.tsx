@@ -1,13 +1,16 @@
 /**
- * 右侧栏（文件 + 统计 + 会话树）。
+ * 右侧栏（文件 + 统计）。
+ *
+ * 会话树视图 2026-09-24 **移除**（用户："会话树这个功能好像没什么用，去掉吧"）——
+ * 它只是把 pi 的 `get_tree` 原样铺成一棵 antd Tree，既不能切分支也没有别的动作，
+ * 而 pi 的 RPC 又没有"就地切分支"的入口（docs/02 §5.2 的 C11）。留着是纯粹的噪音：
+ * 右栏一个按钮 + 一条 `/tree` 斜杠命令 + 一个只读树。
  *
  * 对齐 DSH（docs/12 §6）：DSH 右栏是**文档/代码预览**面板，token 用量等窗口级状态归 Composer dock，
  * 不占右栏。因此默认视图是「文件」，统计降为次级入口，避免同一份数据在两处重复呈现。
  * 图标统一用 VS Code codicons（docs/13），替换此前的 emoji。
  */
 import { useEffect, useState } from 'react';
-import { Tree } from 'antd';
-import type { DataNode } from 'antd/es/tree';
 import { cmd } from '@/lib/ipc';
 import { baseName } from '@/lib/paths';
 import { clampPercent, formatCacheHitPercent, formatPercent, formatTokens } from '@/lib/tokenFormat';
@@ -19,16 +22,25 @@ import { useTabs } from '@/stores/tabs';
 import { openPreviewTab } from './EditorArea';
 import { FleetView } from './FleetView';
 
-type RightView = 'files' | 'stats' | 'tree' | 'fleet';
+type RightView = 'files' | 'stats' | 'fleet';
+
+/**
+ * Fleet（子代理）入口开关。
+ *
+ * 用户 2026-09-24："Fleet 功能暂时也隐藏掉按钮" —— 只藏**右栏那颗按钮**，
+ * 视图本身与 `fleet:*` 通道都留着（`windowEvents.emit('rightbar-view', 'fleet')`
+ * 仍可打开，门禁第 4 段就是这么进的）。要重新露出来把这个常量改回 true。
+ */
+const SHOW_FLEET_ENTRY = false;
 
 export function RightBar({ tabId }: { tabId: string | null }) {
   const [view, setView] = useState<RightView>('files');
-  // 视图也可由外部命令打开：`/session` → 统计、`/tree` → 会话树（docs/04 §7.2）。
+  // 视图也可由外部命令打开：`/session` → 统计（docs/04 §7.2）。
   // 走事件而不是把 view 提进 store：右栏视图是纯局部 UI 状态，提上去只会多一份要同步的东西。
   useEffect(
     () =>
       windowEvents.on('rightbar-view', (v) => {
-        if (v === 'files' || v === 'stats' || v === 'tree' || v === 'fleet') setView(v);
+        if (v === 'files' || v === 'stats' || v === 'fleet') setView(v);
       }),
     [],
   );
@@ -37,7 +49,6 @@ export function RightBar({ tabId }: { tabId: string | null }) {
       <div className="pg-rightbar-body">
         {view === 'files' && <FilesView tabId={tabId} />}
         {view === 'stats' && <StatsView tabId={tabId} />}
-        {view === 'tree' && <TreeView tabId={tabId} />}
         {view === 'fleet' && <FleetView tabId={tabId} />}
       </div>
       <div className="pg-rightrail">
@@ -55,20 +66,15 @@ export function RightBar({ tabId }: { tabId: string | null }) {
         >
           <Icon name="dashboard" size={15} />
         </button>
-        <button
-          className={`pg-rail-btn${view === 'tree' ? ' pg-rail-active' : ''}`}
-          title="会话树"
-          onClick={() => setView('tree')}
-        >
-          <Icon name="git-branch" size={15} />
-        </button>
-        <button
-          className={`pg-rail-btn${view === 'fleet' ? ' pg-rail-active' : ''}`}
-          title="Fleet（子代理）"
-          onClick={() => setView('fleet')}
-        >
-          <Icon name="server-process" size={15} />
-        </button>
+        {SHOW_FLEET_ENTRY ? (
+          <button
+            className={`pg-rail-btn${view === 'fleet' ? ' pg-rail-active' : ''}`}
+            title="Fleet（子代理）"
+            onClick={() => setView('fleet')}
+          >
+            <Icon name="server-process" size={15} />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -146,66 +152,6 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="pg-stat-value">{value}</span>
     </div>
   );
-}
-
-function TreeView({ tabId }: { tabId: string | null }) {
-  const [nodes, setNodes] = useState<DataNode[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!tabId) return;
-    setNodes([]);
-    void cmd<{ tree?: RawTreeNode[] }>('pi_get_tree', { tabId })
-      .then((r) => setNodes(toAntdTree(r.tree ?? [])))
-      .catch((e) => setError(String(e)));
-  }, [tabId]);
-
-  if (!tabId) return <div className="pg-fg-dim pg-rightbar-pad">无活动会话</div>;
-  if (error) return <div className="pg-fg-dim pg-rightbar-pad">树加载失败：{error}</div>;
-  return (
-    <div className="pg-tree">
-      <Tree treeData={nodes} selectable={false} blockNode defaultExpandAll showLine />
-    </div>
-  );
-}
-
-/** get_tree 节点形状：{ entry, children }（id 在 entry 内，docs/02 §5.2） */
-interface RawTreeNode {
-  id?: string;
-  entry?: { id?: string; role?: string; content?: unknown };
-  children?: RawTreeNode[];
-}
-
-function textSnippet(content: unknown): string {
-  if (typeof content === 'string') return content.slice(0, 40);
-  if (Array.isArray(content)) {
-    for (const b of content) {
-      if ((b as { type?: string }).type === 'text')
-        return ((b as { text?: string }).text ?? '').slice(0, 40);
-    }
-  }
-  return '';
-}
-
-function toAntdTree(tree: RawTreeNode[]): DataNode[] {
-  let count = 0;
-  const convert = (n: RawTreeNode): DataNode => {
-    count += 1;
-    const id = n.entry?.id ?? n.id ?? `node-${count}`;
-    const role = n.entry?.role;
-    const snippet =
-      role === 'user' || role === 'assistant' ? ` ${textSnippet(n.entry?.content)}` : '';
-    const node: DataNode = {
-      key: id,
-      title: role ? `${role} · ${id.slice(0, 6)}${snippet}` : id.slice(0, 8),
-      children: [],
-    };
-    if (count < 500 && Array.isArray(n.children)) {
-      node.children = n.children.map(convert);
-    }
-    return node;
-  };
-  return tree.map(convert);
 }
 
 /* ---------------- 文件视图：活动 tab 项目根的只读目录树（docs/04 §1.6） ---------------- */

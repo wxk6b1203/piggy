@@ -5,7 +5,7 @@
  * 钉四件事：
  *   ① 它是一条 **24px 窄行**（和工具行同一套 DisclosureRow 几何），摘要
  *      `2/3 已完成 · 写文档`，`+N` 与差异摘要放在**不可省略**的一侧；
- *   ② 默认折叠，正文留在 DOM 里（`hidden="until-found"`，本仓"折叠 ≠ 不渲染"的纪律）；
+ *   ② 默认折叠（DSH 同款：折叠 = 正文不挂载）；
  *   ③ 展开后是**清单**（三态 + 状态名 + 变化标记），不是一段 JSON；
  *   ④ **被拒的调用不许假装成功**：走 isError 分支显示拒绝原因，不显示清单。
  */
@@ -71,9 +71,8 @@ describe('TodoRow：一条 24px 的清单行', () => {
     expect(q('[data-todo-summary]')!.textContent).toBe('1/3 已完成 · 二');
     // React 把 `data-expandable={true}` 渲染成字符串 "true"（不是 "1"）
     expect(q('[data-disclosure-row]')!.getAttribute('data-expandable')).toBe('true');
-    // 默认折叠：正文留在 DOM 里但不可见（Ctrl+F 搜得到）
-    const body = q('[data-todo-body]')!;
-    expect(body.getAttribute('hidden')).toBe('until-found');
+    // 默认折叠：正文不挂载（DSH 同款）
+    expect(q('[data-todo-body]'), '折叠时清单正文还在 DOM 里').toBeNull();
   });
 
   it('并行进行中时 `+N` 报出其余的（不吞）', () => {

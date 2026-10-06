@@ -104,9 +104,26 @@ export interface CodeBlockProps {
    * `overflowing` **不在其列**：那是量出来的几何，记忆它只会在下次挂载时给出错误的高度。
    */
   memoryKey?: string | null;
+  /**
+   * 这块代码**还在流式增长**（消息末尾那个没闭合的围栏）。
+   *
+   * 只改两件事，几何与标记一个字节都不动：
+   *   · **不上色**：内容每帧都在变，shiki 每帧重跑一遍纯属白烧 CPU（落定那次会正常上色）；
+   *   · **不自动折叠**：长输出默认折叠是按"最终长度"定的，流式途中突然折起来
+   *     （用户正看着它长）是一种惊吓 —— 等落定再判（见下面的 `autoDecided`）。
+   */
+  streaming?: boolean;
 }
 
-export function CodeBlock({ code, lang, title, collapsible, wrap, memoryKey = null }: CodeBlockProps) {
+export function CodeBlock({
+  code,
+  lang,
+  title,
+  collapsible,
+  wrap,
+  memoryKey = null,
+  streaming = false,
+}: CodeBlockProps) {
   const preRef = useRef<HTMLPreElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string | null>(null);
@@ -132,14 +149,14 @@ export function CodeBlock({ code, lang, title, collapsible, wrap, memoryKey = nu
   // 记忆里已经有值（用户开过）时**不再自动折**：否则卸载重挂会把他的选择盖掉。
   const autoDecided = useRef(hasCollapsed);
   useEffect(() => {
-    if (autoDecided.current) return;
+    if (autoDecided.current || streaming) return; // 流式中不判：等这块长完再说
     autoDecided.current = true;
     if (totalLines > AUTO_COLLAPSE_LINES) setCollapsed(true);
-  }, [totalLines, setCollapsed]);
+  }, [totalLines, setCollapsed, streaming]);
 
   useEffect(() => {
     const el = preRef.current;
-    if (!el || collapsed || !langId) return;
+    if (!el || collapsed || !langId || streaming) return;
     let cancelled = false;
 
     const highlight = () => {
@@ -201,7 +218,8 @@ export function CodeBlock({ code, lang, title, collapsible, wrap, memoryKey = nu
       cancelled = true;
       io.disconnect();
     };
-  }, [shown, langId, collapsed]);
+    // `streaming` 进依赖是**必须**的：它从 true 变 false 的那一刻要补上高亮
+  }, [shown, langId, collapsed, streaming]);
 
   /**
    * 正文高度是否超过 CSS 上限 → 决定要不要给"显示更多"。

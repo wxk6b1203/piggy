@@ -290,16 +290,49 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 | 轨迹 | 7 种芯片、**无角色过滤器**、只有搜索 | 过滤按钮 + 自定义芯片 | ✅ 已重写对齐 |
 | 轨迹里的**压缩细节** | 选中 `compacted` 记录 → 详情面板「概述」页给状态/时长 + 摘要全文（`TrajectoryTable.tsx:3255-3296`）；cell 的 `text` 是摘要预览、`outputDetail` 是全文（`layout.ts:333-362`）。对话侧的 `CompactionItem` 用「已压缩 {items} 条历史记录（约 {tokens} tokens）」+ Markdown 摘要，摘要不在当前窗口时**置灰并说"压缩摘要不可用"** | 轨迹只有一行「上下文压缩」（**点不开**）；对话行只有摘要 + 此前 token | ⚠️ **有意增强**：Piggy 没有 DSH 那种详情面板，改为**行内展开**，并把 pi 条目里 DSH 没有的字段一并显示（保留边界 `firstKeptEntryId`、涉及文件 `details`、摘要调用 `usage`、`fromHook`）。DSH 的 `items`（被折叠的历史条数）pi 不记录，所以那一句改成「此前 N tok」——**不编数字**（03 §3.0f） |
 | 右栏 | 文档/代码预览面板 | 统计 KV 列表 | ✅ 默认文件树 + DSH 式 38px 文档预览 |
-| 对话里的**工具行** | 一行 24px：`DisclosureRow`（16px 前导框 + 标题 13/24）+ 2×2 圆点 + 摘要 `flex:1` 省略号，点开才是卡片（`ui-tool/.../ToolRow.module.css`、`ui-primitives/.../DisclosureRow.module.css`） | 每个工具结果是**整块卡片**（6 行 `read` = 258px、3 行 `bash` = 201px，另带 16px 上下外边距） | ✅ 已对齐（04 §5.2）。两处**有意差异**：① 折叠正文用 `hidden="until-found"` 留在 DOM 里（Ctrl+F 可搜），DSH 在分组层用 `useSearchableHidden` 达到同一目的；② DSH 的完成回合整段"过程"还能再折成一行（`TurnProcessNodeView`，33px「已完成工作 / 用时 X」），Piggy **没做**这一层（见 docs/15 §4 待决策） |
+| 对话里的**工具行** | 一行 24px：`DisclosureRow`（16px 前导框 + 标题 13/24）+ 2×2 圆点 + 摘要 `flex:1` 省略号，点开才是卡片（`ui-tool/.../ToolRow.module.css`、`ui-primitives/.../DisclosureRow.module.css`） | 每个工具结果是**整块卡片**（6 行 `read` = 258px、3 行 `bash` = 201px，另带 16px 上下外边距） | ✅ 已对齐（04 §5.2），**包括折叠语义**：2026-09-24 起与 DSH 一样是 `{open && children}`（折叠 = 正文不挂载）。运行中的行用 DSH 的 `TextShimmer` 扫光（几何不变）；思考摘要在流式时取"最后一个已完成段落的首行"（DSH `latestCompletedParagraphFirstLine`）。仍差一层：DSH 的完成回合整段"过程"还能再折成一行（`TurnProcessNodeView`，33px「已完成工作 / 用时 X」），Piggy **没做**（见 docs/15 §4 待决策） |
 | 对话里的**任务清单** | `todo_write` 有专属行（`ui-tool/.../todo-row.tsx`：清单图标 + `更新任务清单` + `n/m 已完成 · <当前任务>`，并行的用 `+N` 另行报出，展开显示与上次清单的差异 `新增/更新/移除`）；输入卡**正上方**另有计划面板（`ui-conversation/.../TodoPanel.tsx` @ `conversation.input.dock`，默认折叠、`max-height 180px`、进度 `n 已完成 · n 进行中 · n 待处理`） | 不存在（`todo_write` 只是一行普通工具窄行 + JSON 摘要） | ✅ 已对齐**几何与文案**，形态上**有意差异**：Piggy 的清单由**插件**提供，所以整套界面挂在"探测到已启用的 todo 插件"这道闸门后面（没装就一点都不出现，与 DSH 的"内置工具永远在"是两种产品立场）。另有三处小差异：① 状态标记用 codicon 字形（✓/◐/○）而不是 `StateDot`；② 清空后留一行"上一轮的任务清单已归档"（DSH 面板直接消失）；③ 头部多了个来源徽标（`条目`/`调用`/`实时`，链条走断时带 `?`）。另：插件里那条**复杂度闸门默认关闭**（要拦才显式打开），所以 Piggy 用户默认不会被它拦下。实现与门禁见 03 §2.20、04 §2.1.4 |
 | 「本轮文件改动」 | 已是 `ChangedFiles` **卡片**（C1） | 不存在 | ⬜ 待做 |
-| Markdown 渲染 | 助手正文按 **markdown** 渲染：DSH 用 `micromark + mdast → 直接出 React`（`ui-primitives/src/markdown/render.tsx`，弃用 react-markdown/remark-rehype 是为了流式缓存冻结块） | 只做围栏切分，`##`/`**` 原样显示（用户 2026-09-23 截图） | ✅ 已对齐**呈现**、有意偏离**实现**：Piggy 用 `marked.lexer()` → token → React（用户裁定"micromark 太小众"）。两者都不产生 HTML 字符串；差异只在 parser：marked 解析快 12×、栈小 10 KB gz，但**没有** KaTeX 数学、脚注、增量（流式）解析这三档 —— 前两档 Piggy 目前不用，第三档 Piggy 的流式阶段本来就是纯文本（04 §5.1） |
+| Markdown 渲染 | 助手正文按 **markdown** 渲染：DSH 用 `micromark + mdast → 直接出 React`（`ui-primitives/src/markdown/render.tsx`，弃用 react-markdown/remark-rehype 是为了流式缓存冻结块） | 只做围栏切分，`##`/`**` 原样显示（用户 2026-09-23 截图） | ✅ 已对齐**呈现**、有意偏离**实现**：Piggy 用 `marked.lexer()` → token → React（用户裁定"micromark 太小众"）。两者都不产生 HTML 字符串；差异只在 parser：marked 解析快 12×、栈小 10 KB gz，但**没有** KaTeX 数学、脚注这两档（Piggy 目前不用）；**增量（流式）解析 Piggy 自己实现了**（`IncrementalMarkdownParser`：冻结前缀 + 只重解析尾部 + 绝对偏移做键，2026-09-24），所以流式途中也渲染 markdown（04 §5.1） |
 
-| 流式实时块 | 流式文本在 **React 状态**里（会话状态持有正在流式的消息，实时尾部就是转录的最后一行）—— 切会话、滚动、虚拟化都对它没有影响 | 直写 DOM（60fps 的结构性保证，04 §4），但**文本只活在 DOM 节点里**：节点被虚拟化卸载 / 面板被摘出 DOM，那一行就空着；切走的后台 tab 的帧还被丢弃 | ⚠️ 有意偏离**实现**、已对齐**行为**（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"）：`lib/live` 的引擎把当前这一轮的文本留在 `pending`（= 内容），DOM 节点只是**视图** —— 节点摘掉只 `detach`、回来 `attach` 按 `pending` 重建；挂载点用回调 ref；后台 tab 的帧照收。真浏览器门禁第 19 段按"通道发出的字数 − 可见字数"对账（`lostOnScroll 0`、`behindAfterSwitch 21` 字）。见 04 §3.2/§4.6、15 规矩 108/109 |
+| 流式实时块 | 流式文本在 **React 状态**里（会话状态持有正在流式的消息，实时尾部就是转录的最后一行）—— 切会话、滚动、虚拟化都对它没有影响 | ✅ **已对齐**（2026-09-24 重整）：流式的这一行**就是转录里的那一行**，`message_start` 就建行进 `ids`、帧按**消息内**的 `contentIndex` 往 `live` 槽位累加、`message_end` 就地转正（id 与下标都不变）。工具行由助手消息里的 `toolCall` 块渲染（`data-state="running"`），结果按 `toolCallId` 并进同一行 | 旧实现（`lib/live` 直写 DOM）有三个结构性错误：同一内容出现两遍（"最后打印"）、两条消息按 `contentIndex` 串块（"中途输出错乱"）、工具行要等结果才出现。见 04 §3.2/§4.6、15 规矩 108/109 |
+
+### 4.1 有意偏离 DSH 的行为：**已全部清零**（2026-09-24）
+
+用户的原则："有意偏离 DSH 的行为，都对标 DSH，无需发明创造。"按这条逐个核对，
+转录/对话这条链路上**自造的规则全部删掉**，改成 DSH 的：
+
+| 曾经的"有意偏离" | 现在 | 依据（DSH 源码） |
+|---|---|---|
+| 滚轮往上 → **当场**交还控制权 + 400ms 兑现窗口（只在原地抖动才作废） | 删。意图只在**采样**（`scrollend` 或 500ms）时按"离底 ≤ 25px"重判；采样窗口内内容长高也不贴底 | `use-chat-reading.ts` 的 `onScroll`/`flushSample`；`use-scroll-follow.ts` 的 `sample()` |
+| 折叠时正文用 `hidden="until-found"` **留在 DOM 里**（Ctrl+F 可搜） | 删。折叠 = **不挂载**（`{open && children}`） | `ui-primitives/DisclosureRow.tsx` |
+| 运行中的行：自造的 opacity 呼吸 keyframe | 删。改用 DSH 的 `TextShimmer`（复制一份文字 + 移动遮罩，几何不变） | `ui-primitives/TextShimmer.tsx` + `.module.css` |
+| 思考摘要取**首行**（流式也一样） | 流式取**最后一个已完成段落的首行**，并去掉 `**` 标记；折叠行 `contain: size layout` + 24px；流式摘要右端**渐隐** | `ui-chat/chat/ReasoningRow.tsx` + `.module.css` |
+| 刻度梯跟随：自造的"最小幅度修正（不居中）" | 删。`scrollToIndex(activeIndex, 'if-needed')`：**跑出渐隐带才把它居中**，平滑滚动 | `ui-chat/chat/TurnNavigator.tsx` 的 `scrollToIndex` |
+| 未载入刻度：自造的 `scaleX(0.45)` | `scaleX(0.4)` + `opacity 0.6`（数值照抄） | `TurnNavigator.module.css` 的 `.markUnloaded` |
+| 忙碌刻度没有视觉反馈（`.is-busy` 无样式） | 补上 DSH 的脉冲（1s，1 → 0.35 → 1） | `.markBusy::before` |
+
+仍然保留的差异，都是**产品/环境**层面而不是行为层面的：
+
+| 保留项 | 理由 |
+|---|---|
+| 图标一律用 codicon（本仓图标体系），不是 DSH 的 icon 包 | 全仓一致；换图标包没有行为收益 |
+| 刻度梯支持左/右/关三态（DSH 只有右） | 本仓产品功能（docs/03 §2.2），**默认值就是 DSH 的右侧** |
+| Markdown 用 `marked`（DSH 用 micromark+mdast） | 用户 2026-09-23 裁定；两边都走 token → React，不产 HTML 字符串 |
+| 分页是客户端游标（DSH 由宿主 `loadOlder`/`loadThrough` 驱动） | Piggy 的会话文件由 Rust 直接读，没有 DSH 那层宿主服务 |
+| 状态行数字 3 位小数（DSH 整数/K 一位） | 用户 2026-09-23 明确要求（03 §3.0b） |
+| 「打开方式」会话头部那颗**带应用名** | 用户原话"稍微显著一点"；文件级那颗与 DSH 一样只有图标 |
+
+**尚未实现**（是"没做"，不是"做成了别的样子"，见 docs/15 §4）：
+① DSH 的窄窗口隐藏刻度梯（`@container (max-width: 900px)`）—— 实测本仓转录带宽度：
+1280 窗口 **789px**、1440 → 888、1512 → 932、1728 → 1066，照抄阈值会让滚动条在
+≤1460 的窗口上直接消失，而 DSH 那个阈值量的是**整窗**（1280 窗口下 ≈944px）；
+② DSH 的"已完成回合折成一行"（`TurnProcessNodeView`，33px「已完成工作 / 用时 X」）；
+③ 跨重启记住阅读位置（DSH 存进 store，Piggy 重开一律贴底）。
 
 ## 5. 改造原则（已执行）
 
-1. **保留协议/状态逻辑**——`Composer` 的 slash/图片/队列/streamingBehavior、`Transcript` 的虚拟化与 LiveBlock 直写、
+1. **保留协议/状态逻辑**——`Composer` 的 slash/图片/队列/streamingBehavior、`Transcript` 的虚拟化与流式行模型、
    stores 全部经过测试，是资产；本次只换**呈现层**（改完 33/33 测试仍全绿）。
 2. **token 数值取自 DSH 源码而非截图**——`scripts/extract-dsh-tokens.mjs` 从
    `design-platform.css` 解析亮/暗两套并输出字面值，可随 DSH 升级重新对拍。

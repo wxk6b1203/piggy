@@ -9,6 +9,7 @@
  * 内建命令在提交前被拦下就地执行——否则模型会收到字符串 `/compact`。
  */
 import { useEffect, useRef, useState } from 'react';
+import { observeComposition } from '@/lib/keyboardComposition';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { wakeIfNeeded } from '@/lib/sleep';
@@ -65,6 +66,9 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const [slash, setSlash] = useState<{ items: SlashRow[]; query: string; index: number } | null>(null);
   const [commands, setCommands] = useState<SlashRow[] | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  /* 输入法合成守卫：监听挂在 document 上（合成事件不一定落在 textarea 上），
+     所以在这里建一次、卸载时摘掉。 */
+  const [composition] = useState(() => observeComposition(document));
   const slashRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
@@ -184,6 +188,8 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     });
   };
 
+  useEffect(() => () => composition.dispose(), [composition]);
+
   // 键盘移动后把选中项滚进视野（jsdom 没有 scrollIntoView，测试里跳过）
   useEffect(() => {
     const el = slashRef.current?.querySelector('[data-active="true"]');
@@ -191,6 +197,10 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   }, [slash?.index, slash?.query]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    /* 输入法合成期一律不处理按键（`isComposing` 单独用不够：macOS 上确认候选的那次
+       keydown 是在 `compositionend` **之后**到达的，`isComposing` 已经是 false ——
+       用户报的"中文回车是选择，消息却发出去了"就是它）。见 `lib/keyboardComposition`。 */
+    if (composition.guards(e.nativeEvent)) return;
     if (slash && slash.items.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -202,7 +212,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
         moveSlash(-1);
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.nativeEvent.isComposing)) {
+      if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault();
         applySlash(slash.items[slash.index] ?? slash.items[0]);
         return;
@@ -218,7 +228,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
       void abortAndRestore();
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       // 流式中 Enter 不发送（走 Steer/Follow-up 按钮）——**内建指令除外**：
       // `/compact` 之类的动作是客户端调用，不是插进当前回合的消息。
       if (streaming && !isKnownSlashCommand(text)) return;

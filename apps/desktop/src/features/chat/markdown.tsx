@@ -30,13 +30,17 @@
  * 与 DSH 的渲染面一致（DSH 用 micromark+mdast，那是它的实现选择；
  * Piggy 这边按"marked 足够 + 依赖少"取舍）。
  *
- * ## 流式（不改）
+ * ## 流式（2026-09-24 起也渲染 markdown）
  *
- * 流式阶段仍是纯文本直写（docs/04 §5：流式中间态的 markdown 是非法文法，
- * 每个 delta 跑一遍 parser 必然抖动且浪费 CPU）。转正时这一次 parse 就是全部成本，
- * 组件 `memo` 住（文本不变就不重解析）。
+ * 早先流式阶段是纯文本直写，理由是"中间态的 markdown 是非法文法，每个 delta 跑一遍
+ * parser 必然抖动且浪费 CPU"。前半句对，后半句只对**全量** parse 成立 —— 现在走
+ * {@link IncrementalMarkdownParser}（冻结前缀 + 只重解析尾部，键 = 绝对源偏移），
+ * 解析量降到 1/10 量级，而且已经画好的块**连元素一起复用**，不会重挂。
+ * 真正的抖动只剩尾部 1~2 块里"字面符号 → 成形"那一下，这是部分渲染的固有代价。
+ * 转正那一次仍是整段 parse（引用式链接/脚注要靠它自愈），组件 `memo` 住
+ * （文本不变就不重解析）。
  */
-import { memo, useMemo, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import { marked, type Tokens, type TokensList } from 'marked';
 import { CodeBlock } from './CodeBlock';
 import { openExternalUrl } from '@/lib/externalLink';
@@ -157,17 +161,22 @@ function inlineToken(token: Tokens.Generic, key: string): ReactNode {
 
 /* ── 块 ──────────────────────────────────────────────────────────────── */
 
-function blocks(tokens: Tokens.Generic[], keyPrefix: string, memoryKey: string | null): ReactNode[] {
-  return tokens.map((t, i) => blockToken(t, `${keyPrefix}-${i}`, memoryKey));
+function blocks(
+  tokens: Tokens.Generic[],
+  keyPrefix: string,
+  memoryKey: string | null,
+  streaming = false,
+): ReactNode[] {
+  return tokens.map((t, i) => blockToken(t, `${keyPrefix}-${i}`, memoryKey, streaming));
 }
 
-function listItem(item: Tokens.ListItem, key: string, memoryKey: string | null): ReactNode {
+function listItem(item: Tokens.ListItem, key: string, memoryKey: string | null, streaming = false): ReactNode {
   const checked = item.task ? item.checked : null;
   // 列表项里的**单个 text 段**不再包 <p>（行距才不会被撑开），多块结构照常
   const inner =
     item.tokens.length === 1 && item.tokens[0]!.type === 'text'
       ? nested(item.tokens[0] as Tokens.Generic, `${key}-p`)
-      : blocks(item.tokens as Tokens.Generic[], key, memoryKey);
+      : blocks(item.tokens as Tokens.Generic[], key, memoryKey, streaming);
   return (
     <li key={key} className={item.task ? 'pg-md-task' : undefined}>
       {checked == null ? null : (
@@ -184,7 +193,12 @@ function listItem(item: Tokens.ListItem, key: string, memoryKey: string | null):
   );
 }
 
-function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null): ReactNode {
+function blockToken(
+  token: Tokens.Generic,
+  key: string,
+  memoryKey: string | null,
+  streaming = false,
+): ReactNode {
   switch (token.type) {
     case 'space':
     case 'def':
@@ -205,7 +219,7 @@ function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null
           key={key}
           start={t.ordered && t.start !== '' && Number(t.start) !== 1 ? Number(t.start) : undefined}
         >
-          {t.items.map((item, i) => listItem(item, `${key}-${i}`, memoryKey))}
+          {t.items.map((item, i) => listItem(item, `${key}-${i}`, memoryKey, streaming))}
         </Tag>
       );
     }
@@ -215,7 +229,7 @@ function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null
       const hasBlocks = t.tokens.some((x) => x.type !== 'paragraph' && x.type !== 'text');
       return (
         <blockquote key={key}>
-          {hasBlocks ? blocks(t.tokens, key, memoryKey) : <p>{nested(t, key)}</p>}
+          {hasBlocks ? blocks(t.tokens, key, memoryKey, streaming) : <p>{nested(t, key)}</p>}
         </blockquote>
       );
     }
@@ -232,7 +246,10 @@ function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null
           code={t.text}
           lang={lang || 'text'}
           title={lang || undefined}
-          // 同一个键在同一个位置永远算出同一个值（marked 的 token 顺序是确定的），
+          // 流式中的围栏**不高亮**（内容每帧都在长，shiki 每帧重跑一遍纯属白烧 CPU；
+          // 落定那一次会正常上色）。见 `CodeBlock` 的 `streaming`。
+          streaming={streaming}
+          // 同一个键在同一个位置永远算出同一个值（键 = 块的**绝对源偏移**，见 `lexSpans`），
           // 所以"卸载再挂载"能找回用户上一次的折叠状态（见 lib/rowMemory）
           memoryKey={memoryKey ? `${memoryKey}:${key}` : null}
         />
@@ -287,6 +304,173 @@ function blockToken(token: Tokens.Generic, key: string, memoryKey: string | null
 /** marked 的默认就够：GFM 全开（表格/任务列表/删除线/autolink）、不换行、同步。 */
 marked.use({ gfm: true, breaks: false, async: false });
 
+/* ── 流式：冻结前缀 + 只重解析尾部 ──────────────────────────────────────── */
+
+/**
+ * 尾部留几个块**不冻结**：它们最可能被后文改写（一段话还在长、列表还在加项）。
+ *
+ * DSH 的 `UNSTABLE_TAIL_BLOCKS` 也是 2（`ui-primitives/src/markdown/incremental.ts`）：
+ * 留 1 块时"上一块刚冻住就被改写"会偶发，留 3 块以上则每次重解析的尾巴更长、收益变小。
+ */
+const UNSTABLE_TAIL_BLOCKS = 2;
+
+/** 一个 token 加上它在**源串里的绝对偏移**。 */
+interface TokenSpan {
+  token: Tokens.Generic;
+  type: string;
+  /** 起始偏移 = 前面所有 token 的 `raw` 长度之和 */
+  start: number;
+  end: number;
+}
+
+/**
+ * 词法分析 + 绝对偏移。
+ *
+ * `marked` 的每个 token 都带 `raw`，且**累加严格等于源串长度**（实测：`sum(raw.length) ===
+ * text.length`），所以偏移不用自己数行、也不会漂。键用它而不是用下标：块的**下标**
+ * 会随前面的块合并/拆分而变，偏移不会 —— 这正是"已经画好的部分不重挂"的前提。
+ *
+ * @param text - 这一段的源串（增量解析时是**尾部**，不是整段）
+ * @param base - 这段源串在整段消息里的起始偏移
+ */
+function lexSpans(text: string, base = 0): TokenSpan[] {
+  const tokens = marked.lexer(text) as TokensList;
+  let off = base;
+  return (tokens as unknown as Tokens.Generic[]).map((token) => {
+    const start = off;
+    off += (token.raw ?? '').length;
+    return { token, type: token.type, start, end: off };
+  });
+}
+
+/** 空行不占渲染位置（`def` 也不产元素），算"块"的只有真正画出来的那些。 */
+const isBlockToken = (s: TokenSpan): boolean => s.type !== 'space' && s.type !== 'def';
+
+/**
+ * 本帧可以**冻住**到哪个偏移（绝对）。
+ *
+ * 两条约束：
+ *   ① 至少留下最后 {@link UNSTABLE_TAIL_BLOCKS} 个块继续重解析；
+ *   ② 切点必须落在**空行之后**（或文末）—— 就地切开会让"跨块的块"变义：
+ *      `标题\n---` 会被切成段落 + 分隔线、缩进代码会被切掉缩进、列表惰性续行会被切断。
+ *      切在空行之后，尾部就一次性拿到了完整的块边界。
+ *
+ * 实测（`markdown.test.tsx` 的增量用例）：setext 标题 / 未闭合围栏 / 引用定义在后面 /
+ * 列表惰性续行 / 缩进代码 / 表格混排六种构造逐字符流式 —— **冻结区 0 次变化、
+ * 尾部解析与全量解析 0 次不一致**。
+ */
+function freezePoint(spans: TokenSpan[], prevCut: number): number {
+  const blocks = spans.filter(isBlockToken);
+  if (blocks.length <= UNSTABLE_TAIL_BLOCKS) return prevCut;
+  const last = blocks[blocks.length - UNSTABLE_TAIL_BLOCKS - 1]!;
+  const after = spans.find((s) => s.start === last.end);
+  if (!after) return last.end; // 正好到文末
+  return after.type === 'space' ? after.end : prevCut;
+}
+
+/** 一帧的渲染结果：可以整体复用的冻结块 + 每帧重建的尾巴。 */
+interface IncrementalFrame {
+  frozen: ReactNode[];
+  tail: ReactNode[];
+}
+
+/**
+ * 流式 markdown 的**增量解析器**（DSH `IncrementalMarkdownParser` 的同构实现）。
+ *
+ * ## 为什么需要它
+ *
+ * 流式正文此前是纯文本（`docs/04 §5.1` 的双阶段策略），理由是"中间态的 markdown 是非法
+ * 文法，每帧全量 parse 会抖"。这条理由对**全量** parse 成立，对增量 parse 不成立：
+ *
+ * | | 5.8KB 全文 | 80 字符尾部 |
+ * |---|---|---|
+ * | `marked.lexer` | ≈541 µs/次 | ≈11 µs/次 |
+ *
+ * 而"抖"的真正来源不是解析，是**重挂**：如果每帧都把整棵树重新建一遍，已经画好的标题、
+ * 表格、代码块会跟着重建，用户看到上面在闪。所以冻结的不只是"解析结果"，还有**元素本身**
+ * （`frozen` 数组里存的是上一帧就渲染好的 React 元素，引用不变 → React 直接跳过那棵子树）。
+ *
+ * ## 代价（写清楚，别当 bug）
+ *
+ * · 尾部 1~2 块里会看到"字面符号 → 成形"的跳变：半截的 `**加粗`、没闭合的表格会先按
+ *   字面显示，补齐后变成粗体/表格（DSH 也一样，它只是把不稳定区压到 2 块）；
+ * · 引用式链接 / 脚注在流式期间是字面（定义还没到），**落定时全量重解析会自愈**
+ *   （`Markdown` 走的是整段 lexer，见它的注释）。
+ */
+export class IncrementalMarkdownParser {
+  private source = '';
+  private memoryKey: string | null = null;
+  private cut = 0;
+  private frozen: ReactNode[] = [];
+
+  /**
+   * 推进一步。
+   *
+   * @param text - 这一帧的**完整**正文（累积值，不是 delta）
+   * @param memoryKey - 围栏折叠态的记忆前缀（换行身份时要重置缓存）
+   * @returns 冻结块（可整体复用）与尾巴（每帧重建）
+   */
+  render(text: string, memoryKey: string | null): IncrementalFrame {
+    // 非追加输入（换页/换窗/编辑）或换了行身份：整个丢掉重来。
+    // `startsWith` 是**memcmp**，比重新解析便宜好几个数量级 —— 值得每帧做一次。
+    if (memoryKey !== this.memoryKey || this.cut > text.length || !text.startsWith(this.source)) {
+      this.frozen = [];
+      this.cut = 0;
+      this.memoryKey = memoryKey;
+    }
+    this.source = text;
+    let spans: TokenSpan[];
+    try {
+      spans = lexSpans(text.slice(this.cut), this.cut);
+    } catch {
+      // 畸形 markdown：这一帧退回纯文本（与 `Markdown` 的兜底同一口径：绝不白屏）
+      return { frozen: this.frozen, tail: [<p key="md-fallback">{text.slice(this.cut)}</p>] };
+    }
+    const nextCut = freezePoint(spans, this.cut);
+    // 只有**新**冻住的那几块需要渲染一次；之后它们永远复用这一份元素
+    for (const span of spans) {
+      if (span.end > nextCut) break;
+      this.frozen.push(blockToken(span.token, `md-${span.start}`, this.memoryKey, false));
+    }
+    this.cut = nextCut;
+    const tail = spans
+      .filter((s) => s.start >= this.cut)
+      .map((s) => blockToken(s.token, `md-${s.start}`, this.memoryKey, true));
+    return { frozen: this.frozen, tail };
+  }
+}
+
+/**
+ * 流式正文的 markdown 渲染（`docs/04 §5.1`）。
+ *
+ * 与 {@link Markdown} 的差别只有一个：文本还在长，所以走增量解析
+ * （冻结前缀按绝对偏移复用元素，只有尾部每帧重建）。
+ * 造型（class / 块级元素 / 代码卡片）与落定之后**完全一致** —— 转正那一刻只是把
+ * "流式那份"换成"整段 parse 的那份"，视觉上不该有跳变。
+ *
+ * @param props.text - 累积正文（每帧都在变）
+ * @param props.memoryKey - 围栏折叠态记忆前缀（同 `Markdown`）
+ */
+export const StreamingMarkdown = memo(function StreamingMarkdown({
+  text,
+  memoryKey = null,
+}: {
+  text: string;
+  memoryKey?: string | null;
+}) {
+  /* 解析器住在 ref 里：它是**渲染缓存**（冻结块 + 元素），不是状态。
+     重复调用是幂等的（同样的 text 再来一次不会重复冻结），所以 StrictMode 的双渲染安全。 */
+  const [parser] = useState(() => new IncrementalMarkdownParser());
+  const { frozen, tail } = parser.render(text, memoryKey);
+  /* ⚠️ 必须拼成**一个数组**再交给 React。
+     写成 `{frozen}{tail}`（两个数组兄弟）会让 React 按"第几个数组"给隐式键加前缀：
+     同一个块从尾部挪进冻结区时，键从 `.1:md-8` 变成 `.0:md-8` —— 在 React 眼里是
+     两个不同的键，于是**卸载重建**（实测：标题在冻结那一帧闪掉）。
+     拼成一个数组后键只有一套，块的"转正"就是一次普通的 reconcile。 */
+  const children = frozen.length === 0 ? tail : [...frozen, ...tail];
+  return <div className="pg-md pg-md-streaming">{children}</div>;
+});
+
 /**
  * Markdown 渲染组件。
  *
@@ -305,10 +489,12 @@ export const Markdown = memo(function Markdown({
 }) {
   const nodes = useMemo(() => {
     try {
-      const tokens = marked.lexer(text) as TokensList;
-      return blocks(tokens as unknown as Tokens.Generic[], 'md', memoryKey);
+      // 键用**绝对源偏移**（不是下标）：与流式那一份同口径，
+      // 于是"流式中折叠过的代码块"在转正之后还记得（`lib/rowMemory` 的键跟着一致）。
+      const spans = lexSpans(text);
+      return spans.map((s) => blockToken(s.token, `md-${s.start}`, memoryKey));
     } catch {
-      // 解析失败（畸形 markdown）**不能白屏**：退回纯文本，与流式阶段一致
+      // 解析失败（畸形 markdown）**不能白屏**：退回纯文本
       return [<p key="fallback">{text}</p>];
     }
   }, [text, memoryKey]);

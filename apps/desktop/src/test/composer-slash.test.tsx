@@ -363,3 +363,58 @@ describe('内建命令（pi 的 get_commands 不返回它们）', () => {
     expect(called('pi_prompt')).toHaveLength(0); // 流式中 Enter 依旧不发普通消息
   });
 });
+
+/**
+ * 输入法合成期不许发送（用户报："macOS 下如果输入中文，回车是选择，但是消息还是被发出去了"）。
+ *
+ * 真实现场是**时序**：macOS 上确认候选词时浏览器先发 `compositionend`、再发 `keydown` ——
+ * 那一次 `isComposing` 已经是 `false`，只查它的实现会把半成品发出去。
+ * 这里就按这个顺序造事件，断言"没发出去"。
+ */
+describe('Composer 输入法合成', () => {
+  beforeEach(() => {
+    useTabs.setState({
+      tabs: {
+        't-1': {
+          tabId: 't-1',
+          cwd: '/proj',
+          sessionFile: null,
+          sessionId: null,
+          sessionName: '会话',
+          workerState: 'ready',
+          thinkingLevel: null,
+          state: { model: { id: 'glm-5.3-flash', name: 'glm-5.3-flash', provider: 'p' } },
+        },
+      } as never,
+      order: ['t-1'],
+      activeTabId: 't-1',
+      unread: {},
+      banner: null,
+    });
+    useMessages.setState({ tabs: {} });
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async () => ({}));
+    mountDom(<SessionWorkspaceComposer tabId="t-1" />);
+  });
+  afterEach(async () => {
+    await unmountDom();
+  });
+
+  it('确认候选词的那个回车（compositionend 之后到达）不发送', async () => {
+    await type('你好');
+    await act(async () => {
+      document.dispatchEvent(new CompositionEvent('compositionstart'));
+      document.dispatchEvent(new CompositionEvent('compositionend'));
+    });
+    // 迟到的 keydown：isComposing 已经是 false
+    await press('Enter', { isComposing: false });
+    expect(called('pi_prompt'), '合成期的回车把半成品发出去了').toHaveLength(0);
+
+    // 松手之后再按回车：正常发送
+    await act(async () => {
+      textarea().dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    });
+    await press('Enter');
+    expect(called('pi_prompt')).toHaveLength(1);
+  });
+});

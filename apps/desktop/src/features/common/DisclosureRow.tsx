@@ -1,7 +1,7 @@
 /**
  * 窄行折叠（DSH `ui-primitives/src/DisclosureRow.tsx` + `DisclosureRow.module.css`）。
  *
- * 转录里**默认折起来的一行**都走这个组件：工具调用、思考、以及后续同类行。
+ * 转录里**默认折起来的一行**都走这个组件：工具调用、思考、清单、以及后续同类行。
  * 几何逐条照抄 DSH（那套数字是它的设计稿定死的，别在这里"差不多"）：
  *
  * ```text
@@ -10,23 +10,28 @@
  * 展开时前导框恒为**上箭头**；整行可点（role=button + Enter/Space）
  * ```
  *
- * 两条与 DSH 的**有意差异**：
+ * ## 折叠 = 正文**不挂载**（2026-09-24 改为与 DSH 一致）
  *
- * 1. DSH 的 `ToolRow` 只在展开时挂载正文（`{open && children}`），折叠时正文不在 DOM 里；
- *    这里用 `hidden="until-found"`（+ `beforematch`）把正文**留在 DOM 里但不可见**——
- *    于是 Ctrl+F 能搜到、读屏与复制也拿得到。这是本仓既有的一条纪律
- *    （"折叠 ≠ 不渲染"，见 CodeBlock 的 `pg-codeblock-more`），DSH 那边靠
- *    `useSearchableHidden` 在**分组**层做到了同一件事，我们把它下沉到行。
- * 2. 前导图标用 `Icon` 的 codicon 名（本仓图标体系），不引 DSH 的图标包。
+ * DSH 就是 `{open && children}`：折叠时正文不在 DOM 里。本仓此前用
+ * `hidden="until-found"` + `beforematch` 把它留在 DOM 里（想让 Ctrl+F 搜到折叠内容），
+ * 那是自己发明的路子 —— 代价是每一折叠行都要渲染一遍长正文（一屏几十个工具结果时
+ * 是实打实的 DOM 与样式开销），而且滚动搜索命中折叠区还要靠 `beforematch` 这种边缘特性。
+ * 现在照 DSH：**折叠 = 不渲染**。Ctrl+F 搜不到折叠内容，与 DSH 一致。
+ *
+ * 保留的只有一处非行为差异：前导图标用 `Icon` 的 codicon（本仓图标体系），
+ * 不引 DSH 的图标包。
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Icon } from '@/features/common/Icon';
+import { TextShimmer } from '@/features/common/TextShimmer';
 
 export interface DisclosureRowProps {
   /** 前导图标（16px 框，字形 14px） */
   icon: ReactNode;
   /** 标题（`运行命令` / `思考` / …） */
   title: string;
+  /** 这一行**正在跑**（DSH 同名 prop）：标题与折叠内容一起套文字扫光，几何不变 */
+  running?: boolean | undefined;
   /** 展开状态（受控） */
   open: boolean;
   /** 有正文可展开（false = 前导框固定显示图标、整行不可点） */
@@ -44,51 +49,10 @@ export interface DisclosureRowProps {
   children?: ReactNode;
 }
 
-/** 折叠正文：留在 DOM 里、Ctrl+F 可搜（`hidden="until-found"` + `beforematch`）。 */
-function SearchableHidden({
-  hidden,
-  reveal,
-  bodyProps,
-  children,
-}: {
-  hidden: boolean;
-  reveal: () => void;
-  bodyProps?: Record<string, string | undefined>;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (hidden) {
-      // 焦点还在里面（例如刚用键盘走到正文里的链接）就先别藏，改由 reveal 打开
-      if (el.contains(el.ownerDocument.activeElement)) {
-        reveal();
-        return;
-      }
-      el.setAttribute('hidden', 'until-found');
-    } else {
-      el.removeAttribute('hidden');
-    }
-  }, [hidden, reveal]);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // 浏览器"在页面里找到"命中折叠区时会发 beforematch → 展开它（DSH 同款）
-    const onBeforeMatch = () => reveal();
-    el.addEventListener('beforematch', onBeforeMatch);
-    return () => el.removeEventListener('beforematch', onBeforeMatch);
-  }, [reveal]);
-  return (
-    <div ref={ref} {...bodyProps}>
-      {children}
-    </div>
-  );
-}
-
 export function DisclosureRow({
   icon,
   title,
+  running = false,
   open,
   expandable,
   onToggle,
@@ -99,13 +63,8 @@ export function DisclosureRow({
   bodyProps,
   children,
 }: DisclosureRowProps) {
-  const bodyId = useId();
   const rowExpands = expandable;
   const [focused, setFocused] = useState(false);
-
-  const reveal = useCallback(() => {
-    if (!open && expandable) onToggle();
-  }, [open, expandable, onToggle]);
 
   return (
     <div className={`pg-drow${className ? ` ${className}` : ''}`} data-open={open || undefined}>
@@ -116,7 +75,6 @@ export function DisclosureRow({
         role={rowExpands ? 'button' : undefined}
         tabIndex={rowExpands ? 0 : undefined}
         aria-expanded={rowExpands ? open : undefined}
-        aria-controls={rowExpands ? bodyId : undefined}
         onFocus={rowExpands ? () => setFocused(true) : undefined}
         onBlur={rowExpands ? () => setFocused(false) : undefined}
         onClick={rowExpands ? onToggle : undefined}
@@ -148,14 +106,14 @@ export function DisclosureRow({
             </>
           )}
         </span>
-        <span className="pg-drow-title">{title}</span>
-        {keepContentWhenOpen || !open ? collapsedContent : null}
+        <TextShimmer active={running} className="pg-drow-text">
+          <TextShimmer className="pg-drow-title">{title}</TextShimmer>
+          {keepContentWhenOpen || !open ? collapsedContent : null}
+        </TextShimmer>
       </div>
-      {expandable ? (
-        <SearchableHidden hidden={!open} reveal={reveal} bodyProps={{ id: bodyId, ...bodyProps }}>
-          {children}
-        </SearchableHidden>
-      ) : null}
+      {/* DSH：折叠 = 正文不挂载（`{open && children}`）。`bodyProps` 是本仓给测试/门禁
+          留的标记，跟着正文一起出现、一起消失。 */}
+      {open && expandable ? <div {...bodyProps}>{children}</div> : null}
     </div>
   );
 }

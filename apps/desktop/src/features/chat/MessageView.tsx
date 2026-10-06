@@ -5,20 +5,34 @@
  *  - 用户 = `UserStyleBubble`（r22 / padding 10px 16px / 右对齐）；
  *  - 助手 = 整宽 markdown + 结尾操作行（`.actions { margin-top:16px; margin-left:-6px }`）。
  *
- * 另加压缩行（`compaction`）：分页从会话文件读时，压缩条目是历史里真实存在的一行
- * （docs/03 §2.19），DSH 的对话里同样有「上下文已压缩」。
+ *  ## 流式与落定是**同一个渲染器**（2026-09-24 重整）
+ *
+ *  早先流式的那些块由 `lib/live` 的 DOM 引擎另画一套，转正时再整体换成这一套 ——
+ *  于是同一行会出现两遍（用户："工具之类的会被逐步输出，最后打印"）。
+ *  现在两者走**同一份代码**：`view.live` 有内容就是流式中（文本按纯文本画、思考/工具行
+ *  与落定后同构），`view.message.content` 是权威内容。两条路产出的都是
+ *  {@link RenderBlock}，块下标就是 pi 的 `contentIndex`，所以 React key 在转正前后不变
+ *  —— 组件**不重挂**，只有 props 变（DSH 的 `status: running → settled` 同构）。
+ *
+ *  另加压缩行（`compaction`）：分页从会话文件读时，压缩条目是历史里真实存在的一行
+ *  （docs/03 §2.19），DSH 的对话里同样有「上下文已压缩」。
  */
 import { useMemo, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import type { MessageView } from '@/stores/messages';
+import type { MessageView as MessageViewRow } from '@/stores/messages';
 import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
 import { ChangedFiles, changedFilesOf } from './ChangedFiles';
+import { baseName, resolveAgainst } from '@/lib/paths';
+import { useTabs } from '@/stores/tabs';
+import { openPreviewTab } from '@/features/workspace/EditorArea';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
-import { Markdown } from './markdown';
+import { Markdown, StreamingMarkdown } from './markdown';
+import { TextShimmer } from '@/features/common/TextShimmer';
 import { ToolRow } from './ToolRow';
+import { ToolCallRow } from './ToolCallRow';
 import { TodoRow } from './TodoRow';
 import { useTodoSupported } from '@/stores/todo';
 import type { TodoItem } from '@/lib/todoModel';
@@ -27,17 +41,88 @@ import { turnFailure, type TurnFailure } from '@/lib/turnFailure';
 import { formatExactTokens } from '@/lib/tokenFormat';
 import { slotKey, useRowFlag, type RowMemory } from '@/lib/rowMemory';
 
+/**
+ * 一个**待渲染的块**：流式与落定两条路的公共形状。
+ *
+ * `index` 就是块在消息里的下标（= pi 的 `contentIndex`）：React key 与行记忆插槽都用它，
+ * 于是"流式那一行"与"转正那一行"是同一个组件实例（不重挂 → 展开态不丢、DOM 不重建）。
+ */
+type RenderBlock =
+  | { kind: 'text'; text: string; streaming: boolean }
+  | { kind: 'thinking'; text: string; streaming: boolean }
+  | { kind: 'toolCall'; callId: string; name: string; args: Record<string, unknown> | undefined }
+  | { kind: 'image'; block: ContentBlock }
+  | { kind: 'other'; block: ContentBlock };
+
+/** 权威内容 → 渲染块。 */
+function settledBlocks(content: unknown): RenderBlock[] {
+  if (!Array.isArray(content)) return [];
+  return content.map((block) => {
+    const b = block as {
+      type?: string;
+      text?: string;
+      thinking?: string;
+      id?: string;
+      name?: string;
+      arguments?: unknown;
+    };
+    switch (b.type) {
+      case 'text':
+        return { kind: 'text', text: b.text ?? '', streaming: false };
+      case 'thinking':
+        return { kind: 'thinking', text: b.thinking ?? '', streaming: false };
+      case 'toolCall':
+        return {
+          kind: 'toolCall',
+          callId: b.id ?? '',
+          name: b.name ?? 'tool',
+          args:
+            b.arguments && typeof b.arguments === 'object' && !Array.isArray(b.arguments)
+              ? (b.arguments as Record<string, unknown>)
+              : undefined,
+        };
+      case 'image':
+        return { kind: 'image', block: block as ContentBlock };
+      default:
+        return { kind: 'other', block: block as ContentBlock };
+    }
+  });
+}
+
+/** 流式槽位 → 渲染块（`contentIndex` 就是下标，空槽位跳过但**保留下标**）。 */
+function liveBlocks(blocks: readonly ({ kind: string; text: string; toolName?: string; toolCallId?: string; args?: Record<string, unknown> } | undefined)[]): RenderBlock[] {
+  return blocks.map((b) => {
+    if (!b) return { kind: 'text', text: '', streaming: true } as RenderBlock;
+    if (b.kind === 'thinking') return { kind: 'thinking', text: b.text, streaming: true };
+    if (b.kind === 'tool') {
+      return {
+        kind: 'toolCall',
+        callId: b.toolCallId ?? '',
+        name: b.toolName ?? 'tool',
+        args: b.args,
+      };
+    }
+    return { kind: 'text', text: b.text, streaming: true };
+  });
+}
+
 export function MessageView({
   view,
   call,
   baseline,
+  baselines,
+  tabId,
   memory,
 }: {
-  view: MessageView;
+  view: MessageViewRow;
   /** 该行的工具调用参数（`toolCalls[toolCallId]`，见 stores/messages.ts） */
   call?: { name: string; args?: Record<string, unknown> } | undefined;
   /** todo_write 行的**上一份**清单（差异对比；见 lib/todoModel 的 `todoBaselines`） */
   baseline?: TodoItem[] | undefined;
+  /** 助手消息里每个 `toolCall` 块的差异基线（按调用 id 查；见 `todoBaselines`） */
+  baselines?: Map<string, TodoItem[]> | null | undefined;
+  /** 会话 id：助手消息里的工具行要按它取结果索引（`toolResults`） */
+  tabId?: string | undefined;
   /**
    * 这一行的身份（tab + 行 id）：行内展开态靠它跨"虚拟化卸载"活下来
    * （见 `lib/rowMemory`；没有它 —— 轨迹视图那种孤立渲染 —— 退化为组件内 state）。
@@ -57,23 +142,43 @@ export function MessageView({
     );
   }
   if (role === 'assistant') {
-    const blocks = (Array.isArray(m.content) ? m.content : []) as ContentBlock[];
-    const full = textOf(m.content);
-    const changed = changedFilesOf(blocks);
-    const failure = turnFailure(m);
+    const blocks = view.live ? liveBlocks(view.live) : settledBlocks(m.content);
+    const full = blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('');
+    const committed = (Array.isArray(m.content) ? m.content : []) as ContentBlock[];
+    const changed = view.live ? [] : changedFilesOf(committed);
+    const failure = view.live ? null : turnFailure(m);
     return (
-      <div className="pg-message pg-assistant">
+      <div className="pg-message pg-assistant" data-streaming={view.live ? '' : undefined}>
         <div className="pg-assistant-body">
           {blocks.map((b, i) => (
-            <Block key={i} block={b} blockKey={String(i)} memory={memory} />
+            <Block
+              key={i}
+              index={i}
+              block={b}
+              tabId={tabId}
+              baselines={baselines}
+              memory={memory}
+            />
           ))}
         </div>
         {/* 失败/中断回合：pi 用普通 assistant 消息表达（content 为空 + stopReason/errorMessage）。
             没有这块卡片时，整条消息渲染出来是**一片空白**——用户看到的是"发出去没反应"。 */}
         {failure ? <TurnFailureCard failure={failure} /> : null}
-        {/* DSH 回合尾：改动文件卡片（docs/12 §3.5） */}
-        <ChangedFiles files={changed} />
-        {full.trim() ? <MessageActions text={full} message={m} /> : null}
+        {/* DSH 回合尾：改动文件卡片（docs/12 §3.5）。
+            ⚠️ 点击行为与 DSH 不同：DSH 是把文件送进**右侧预览面板**（它的右栏就是文档预览），
+            Piggy 没有那个面板，改成**开一个新标签页**（`openPreviewTab`）——
+            与右栏文件树点文件是同一条路。工具参数里的路径可能是相对的，按会话 cwd 解析。 */}
+        <ChangedFiles
+          files={changed}
+          onOpen={(path) => {
+            const cwd = tabId ? useTabs.getState().tabs[tabId]?.cwd : undefined;
+            const full = resolveAgainst(cwd, path);
+            openPreviewTab(full, full, baseName(full) || full, cwd ?? undefined);
+          }}
+        />
+        {/* 操作行（复制/时间）只在落定之后出现：流式时内容还不是最终文本，
+            而且这一行自带 16px 上边距 —— 流式中挂着会让那一行在转正时矮一截。 */}
+        {!view.live && full.trim() ? <MessageActions text={full} message={m} /> : null}
       </div>
     );
   }
@@ -187,17 +292,69 @@ export function MessageView({
   return null;
 }
 
-/** 思考行的窄行包装：受控展开 + 首行摘要（DSH `message.think`）。 */
-function ThinkingRow({ text, memory, slot }: { text: string; memory?: RowMemory | undefined; slot: string }) {
+/**
+ * 思考摘要（DSH `ReasoningRow` 的两条口径，逐条照抄）：
+ *
+ * · **落定**：取**首行**（整段思考已经写完，第一行就是它的论点）；
+ * · **流式**：取**最后一个已完成段落的首行** —— 边想边写时第一行早就滚过去了，
+ *   读者要看的是"现在想到哪"（DSH `latestCompletedParagraphFirstLine`）；
+ * · 两者都去掉 `**` 标记（摘要不是 markdown 渲染面，星号只会显脏）。
+ */
+function thinkingSummary(text: string, streaming: boolean): string {
+  const line = streaming ? latestCompletedParagraphFirstLine(text) : firstLine(text);
+  return line.replaceAll('**', '');
+}
+
+/** 最后一个**已完成**段落的首行（DSH 同名函数；末尾那个还没写完的段落不算）。 */
+function latestCompletedParagraphFirstLine(text: string): string {
+  let summary = '';
+  let paragraphStart = 0;
+  const separator = /\r?\n(?:[\t ]*\r?\n)+/g;
+  for (;;) {
+    const next = separator.exec(text);
+    const paragraphEnd = next === null ? text.length : next.index + next[0].indexOf('\n');
+    const newline = text.indexOf('\n', paragraphStart);
+    if (newline !== -1 && newline <= paragraphEnd) {
+      const candidate = text.slice(paragraphStart, newline).trim();
+      if (candidate !== '') summary = candidate;
+    }
+    if (next === null) return summary;
+    paragraphStart = next.index + next[0].length;
+  }
+}
+
+/**
+ * 思考行的窄行包装：受控展开 + 摘要（DSH `message.think` / `ReasoningRow`）。
+ *
+ * `streaming` 时正文按**纯文本**画、且**不挂载**（折叠态 = 不渲染，DSH 同款）：
+ * 思考正文动辄几千字，折叠时把它渲染出来只是白烧 CPU。
+ */
+export function ThinkingRow({
+  text,
+  streaming = false,
+  memory,
+  slot,
+}: {
+  text: string;
+  streaming?: boolean;
+  memory?: RowMemory | undefined;
+  slot: string;
+}) {
   /* 展开态**记忆在行外**：这条行滚出虚拟窗口就被卸载，`useState` 会跟着丢
      —— 用户报的"展开看完、滚上去再滚回底部就看不清过程"就是它（见 lib/rowMemory）。 */
   const [open, setOpen] = useRowFlag(slotKey(memory, slot), 'open');
-  const summary = text ? firstLine(text) : '';
+  const summary = thinkingSummary(text, streaming);
   return (
-    <div className="pg-thinkrow" data-thinking-row data-open={open || undefined}>
+    <div
+      className="pg-thinkrow"
+      data-thinking-row
+      data-state={streaming ? 'running' : 'ok'}
+      data-open={open || undefined}
+    >
       <DisclosureRow
         icon={<Icon name="lightbulb" size={14} />}
         title="思考"
+        running={streaming}
         open={open}
         expandable={text !== ''}
         onToggle={() => setOpen((v) => !v)}
@@ -208,14 +365,18 @@ function ThinkingRow({ text, memory, slot }: { text: string; memory?: RowMemory 
             <>
               <span className="pg-trow-sep" aria-hidden="true" />
               <span className="pg-trow-summary" title={summary}>
-                {summary}
+                <TextShimmer>{summary}</TextShimmer>
               </span>
             </>
           ) : null
         }
       >
         <div className="pg-thinking-body">
-          <Markdown text={text} compact memoryKey={slotKey(memory, `${slot}:md`)} />
+          {streaming ? (
+            text
+          ) : (
+            <Markdown text={text} compact memoryKey={slotKey(memory, `${slot}:md`)} />
+          )}
         </div>
       </DisclosureRow>
     </div>
@@ -275,43 +436,74 @@ function MessageActions({ text, message }: { text: string; message: AgentMessage
   );
 }
 
-function Block({ block, blockKey, memory }: { block: ContentBlock; blockKey: string; memory?: RowMemory | undefined }) {
-  const b = block as {
-    type?: string;
-    text?: string;
-    thinking?: string;
-    name?: string;
-    arguments?: unknown;
-    data?: string;
-    mimeType?: string;
-    path?: string;
-  };
-  switch (b.type) {
+function Block({
+  block,
+  index,
+  tabId,
+  baselines,
+  memory,
+}: {
+  block: RenderBlock;
+  /** 块下标（= pi 的 `contentIndex`）：React key 与记忆插槽都用它 */
+  index: number;
+  tabId?: string | undefined;
+  baselines?: Map<string, TodoItem[]> | null | undefined;
+  memory?: RowMemory | undefined;
+}) {
+  /* 同一行里可能有多个工具行/思考行：行记忆的插槽必须带块下标，否则它们会共用
+     `slotKey(memory, 'tool')` 这一个键（实测：展开一个，另一个跟着展开）。 */
+  const blockMemory = memory ? { tabId: memory.tabId, rowKey: `${memory.rowKey}\u0001${index}` } : undefined;
+  switch (block.kind) {
     case 'text':
-      /* 转正阶段渲染 **Markdown**（04 §5）。
+      /* 正文走 **Markdown**（04 §5）。
          用户 2026-09-23 的截图：`## 🔴 严重缺陷`、`**默认配置受影响**`、`---` 全是原样文本。
          核实：这一支此前只做 `splitFences()`（围栏 → 代码卡片），其余当纯文本 ——
          docs/04 §5 早就写着"Markdown 只在转正时解析一次"，但那个 parser 一直没落地。
-         流式阶段**不变**（仍是纯文本直写：流式中间态的 markdown 是非法文法，逐帧 parse 只会抖）。 */
-      return <Markdown key="text" text={b.text ?? ''} memoryKey={slotKey(memory, `text:${blockKey}:md`)} />;
+
+         流式这一支（2026-09-24 起）也渲染 markdown，只是换**增量解析**：
+         冻结前缀 + 只重解析尾部（`StreamingMarkdown`）—— 既不会每帧全量 parse，
+         也不会把已经画好的块重挂。转正那一刻换成整段 parse 的那一份（引用式链接/脚注
+         靠它自愈），两边造型一致，所以视觉上只该看到"半截符号补齐"。 */
+      return block.streaming ? (
+        <StreamingMarkdown text={block.text} memoryKey={slotKey(memory, `text:${index}:md`)} />
+      ) : (
+        <Markdown text={block.text} memoryKey={slotKey(memory, `text:${index}:md`)} />
+      );
     case 'thinking':
       // 思考行也是**窄行**（DSH `DisclosureRow` + `message.think`）：标题「思考」+ 首行摘要，
       // 展开看全文。旧版是 `<details><summary>思考</summary>`——几何与工具行不齐，
       // 而且摘要不显示"想了什么"，一行 24px 的信息量被浪费掉了。
-      // 一条消息里可能有多个思考块（`blockKey` = 块下标），所以插槽要带下标。
-      return <ThinkingRow text={b.thinking ?? ''} memory={memory} slot={`think:${blockKey}`} />;
+      return (
+        <ThinkingRow
+          text={block.text}
+          streaming={block.streaming}
+          memory={memory}
+          slot={`think:${index}`}
+        />
+      );
     case 'toolCall':
-      // DSH `AssistantMarkdown` 分派：tool-call **不在正文层渲染**——它归「工具行」
-      // （对话里由 toolResult 行表达，全量明细在轨迹视图）。docs/12 §3.3。
-      return null;
+      /* 工具调用是**一行**（DSH `ToolCallTree`）：从它出现（流式里 `toolcall_start`）
+         到结果落地是同一行、同一个组件实例，结果通过 `toolResults` 索引并进来
+         （见 `ToolCallRow` 的文件头）。早先这里 `return null`，工具行要等结果消息才出现。 */
+      if (!tabId) return null; // 孤立渲染（轨迹视图）：没有结果索引可取，交给 toolResult 行
+      return (
+        <ToolCallRow
+          tabId={tabId}
+          callId={block.callId}
+          toolName={block.name}
+          args={block.args}
+          baseline={block.callId ? baselines?.get(block.callId) : undefined}
+          memory={blockMemory}
+        />
+      );
     case 'image':
-      return <ImageBlock block={block} />;
+      return <ImageBlock block={block.block} />;
     default:
       // 未知块：透传展示原始 JSON（docs/02 §5.1）
       return (
         <details className="pg-unknown">
-          <summary>未知块 {b.type}</summary>
-          <pre className="pg-pre">{JSON.stringify(block, null, 2)}</pre>
+          <summary>未知块 {(block.block as { type?: string }).type}</summary>
+          <pre className="pg-pre">{JSON.stringify(block.block, null, 2)}</pre>
         </details>
       );
   }

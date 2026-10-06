@@ -193,14 +193,6 @@ export const BUILTIN_SLASH_COMMANDS: readonly BuiltinCommand[] = [
     },
   },
   {
-    name: 'tree',
-    description: '会话树 / 分支（打开右栏「会话树」）',
-    source: 'builtin',
-    run() {
-      windowEvents.emit('rightbar-view', 'tree');
-    },
-  },
-  {
     name: 'export',
     description: '导出当前会话为 HTML',
     source: 'builtin',

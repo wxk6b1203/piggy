@@ -109,13 +109,11 @@ describe('能力探测', () => {
 });
 
 describe('铺底与增量', () => {
-  it('seed：后端的投影说了算（含清空标记与写入次数）', () => {
+  it('seed：后端的投影说了算（清单 / 来源）', () => {
     useTodo.getState().seed('t1', {
       todos: [t('一', 'in_progress'), t('二', 'pending')],
       source: 'event',
       offset: 4096,
-      clearedByTurn: false,
-      writes: 3,
       branchy: false,
       chainBroken: false,
       scannedBytes: 100,
@@ -124,7 +122,6 @@ describe('铺底与增量', () => {
     const tab = useTodo.getState().tabs['t1']!;
     expect(tab.todos).toHaveLength(2);
     expect(tab.source).toBe('event');
-    expect(tab.writes).toBe(3);
   });
 
   it('noteCommit：新的 todo_write 替换清单，并把旧的留作差异基线', () => {
@@ -132,8 +129,6 @@ describe('铺底与增量', () => {
       todos: [t('一', 'pending'), t('二', 'pending')],
       source: 'event',
       offset: null,
-      clearedByTurn: false,
-      writes: 1,
       branchy: false,
       chainBroken: false,
       scannedBytes: 0,
@@ -155,18 +150,15 @@ describe('铺底与增量', () => {
     });
     const tab = useTodo.getState().tabs['t1']!;
     expect(tab.todos?.[0]?.status).toBe('completed');
-    expect(tab.previous?.[0]?.status).toBe('pending');
     expect(tab.source).toBe('live');
-    expect(tab.writes).toBe(2);
+    expect(tab.todos).toHaveLength(2);
   });
 
-  it('noteCommit：用户发言 = 新一轮，计划清空但留下痕迹', () => {
+  it('noteCommit：用户发言 = 新一轮（DSH 的 `turn/start`）→ 计划清空，面板随之消失', () => {
     useTodo.getState().seed('t1', {
       todos: [t('一', 'completed')],
       source: 'event',
       offset: null,
-      clearedByTurn: false,
-      writes: 1,
       branchy: false,
       chainBroken: false,
       scannedBytes: 0,
@@ -174,10 +166,9 @@ describe('铺底与增量', () => {
     });
     useTodo.getState().noteCommit('t1', { type: 'message_end', message: { role: 'user', content: [] } });
     const tab = useTodo.getState().tabs['t1']!;
+    // DSH `turn/start → null`：清掉就是清掉，**不留**"上一轮已归档"这类常驻痕迹
+    // （用户 2026-09-24："TODO 执行完了好像不会被清理掉"）
     expect(tab.todos).toBeNull();
-    expect(tab.clearedByTurn).toBe(true);
-    expect(tab.previous?.[0]?.content).toBe('一');
-    expect(tab.writes).toBe(1);
   });
 
   it('noteCommit：非 todo 的助手消息与别的工具不动清单', () => {
@@ -185,8 +176,6 @@ describe('铺底与增量', () => {
       todos: [t('一', 'pending')],
       source: 'event',
       offset: null,
-      clearedByTurn: false,
-      writes: 1,
       branchy: false,
       chainBroken: false,
       scannedBytes: 0,
@@ -197,7 +186,6 @@ describe('铺底与增量', () => {
       message: { role: 'assistant', content: [{ type: 'toolCall', id: 'x', name: 'bash', arguments: { command: 'ls' } }] },
     });
     expect(useTodo.getState().tabs['t1']!.todos).toHaveLength(1);
-    expect(useTodo.getState().tabs['t1']!.writes).toBe(1);
   });
 
   it('piggy:resync 走同一套折叠（重连后不会把清单弄丢或弄反）', () => {
@@ -216,7 +204,6 @@ describe('铺底与增量', () => {
     });
     const tab = useTodo.getState().tabs['t1']!;
     expect(tab.todos).toBeNull();
-    expect(tab.clearedByTurn).toBe(true);
   });
 });
 
@@ -265,7 +252,7 @@ describe('打开会话时的装载（含项目级插件的按需补探）', () =
     const tab = useTodo.getState().tabs['t1']!;
     expect(tab.todos).toHaveLength(2);
     expect(tab.source).toBe('event');
-    expect(tab.writes).toBe(2);
+    expect(tab.todos).toHaveLength(2);
   });
 
   it('投影读取失败 → 只记日志，不抛（少一个面板不该打断读会话）', async () => {

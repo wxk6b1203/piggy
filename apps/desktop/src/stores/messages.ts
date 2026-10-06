@@ -1,15 +1,64 @@
 /**
- * messagesStore v2（M1 多 tab，docs/03 §3.2）：结构态 per-tab normalized，
- * 只由 pi:commit 驱动；流式文本不进 React 状态（live 引擎直写 DOM）。
+ * messagesStore v2（M1 多 tab，docs/03 §3.2）：结构态 per-tab normalized。
+ *
+ * ## 流式的文本也在这里（2026-09-24 重整）
+ *
+ * 早先流式文本走 `lib/live` 的 DOM 引擎：帧直接 `appendData` 进一个 `[data-live]`
+ * 节点，绕过 React。那条路带来三类**结构性**错误，全部实测复现过（见
+ * `src/test/transcript-live.test.tsx`）：
+ *
+ * ① **两套渲染器 = 内容出现两遍**。提交（`message_end`）把权威消息交给本 store
+ *    由 React 再渲染一次，而 DOM 引擎里那一份不会自己消失 —— 用户看到"思考/运行命令
+ *    先逐步长出来，最后又打印一遍"（截图里同一行连着出现两次）。
+ * ② **块按 `contentIndex` 编号，而它在 pi 里是**每条助手消息**内重新从 0 开始的**
+ *    （`AssistantMessageEvent.contentIndex`）。一轮里第二条助手消息的思考被追加进
+ *    第一条的思考行（两段文字连成一句），它的工具调用被追加进第一条的工具行 ——
+ *    界面上是"错乱"，还**静默吃掉**一个工具行。
+ * ③ 节点身份依赖（`attach`/`detach`、虚拟化卸载、dockview 摘 DOM）本身就是一堆补丁。
+ *
+ * 现在的模型与 DSH 同构（`ui-conversation` 的 assistant Definition）：**流式的这一行
+ * 就是转录里的那一行**。`message_start` 建一个 `live` 槽位的占位行并进 `ids`；
+ * 帧按 `contentIndex` 往槽位里累加；`message_end` 只把 `message` 换成权威内容、
+ * 清掉 `live` —— **行的 id 与下标都不变**，于是 React 不重建组件、不重排、不重复。
+ *
+ * 代价是"更新不再只来自 pi:commit"（本条注释取代了旧口径）：帧会改 store。它是安全的，
+ * 因为 ① 写入只发生在 `pendingId` 那一行的 `live.blocks` 上，`ids` 身份不动；
+ * ② 每帧的订阅面只有那一行（选择器返回自己那一行的切片，其余行引用不变 → 不重渲染）。
  */
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
-import type { AgentMessage } from '@piggy/pi-protocol';
+import type { AgentMessage, Frame } from '@piggy/pi-protocol';
 import type { OutlineTurn } from '@/features/chat/turnRailItems';
 
 // keys 去重集合用 Set 存放（05 §4.4），immer 需启用 MapSet 插件
 enableMapSet();
+
+/**
+ * 一个**流式块**：`contentIndex` 槽位里的累积内容。
+ *
+ * `kind` 由块边界信号（`text_start` / `thinking_start` / `toolcall_start`）定，
+ * 之后同一槽位的 delta 只往 `text` 里追加。工具块的 `text` 是**参数 JSON 原文**
+ * （不是给人看的正文）：够完整时解析进 `args`，行摘要与提交行走同一个 `toolRowModel`。
+ */
+export interface LiveBlock {
+  kind: 'text' | 'thinking' | 'tool';
+  text: string;
+  /** 工具块：`toolcall_start` 给的名字与调用 id */
+  toolName?: string;
+  toolCallId?: string;
+  /** 工具块：参数 JSON 解析成功后的对象（半截不解析，见 {@link parseToolArgs}） */
+  args?: Record<string, unknown>;
+  /** 上次尝试解析时的（trimEnd 后）长度：避免每帧 `JSON.parse` 同一个半截串 */
+  argsLength?: number;
+}
+
+/** 工具结果（`toolResult` 消息索引；工具行要拿它和调用配对）。 */
+export interface ToolResultView {
+  toolName: string;
+  text: string;
+  isError: boolean;
+}
 
 export interface MessageView {
   id: string;
@@ -21,6 +70,32 @@ export interface MessageView {
    * 实时 `pi:commit` 追加的行没有 → `null`。
    */
   offset: number | null;
+  /**
+   * **流式中**这一行的槽位（`contentIndex` → 块）。只有 `pendingId` 那一行有；
+   * 转正时清掉，行本身留在原位（同一个 id、同一个下标）。
+   */
+  live?: (LiveBlock | undefined)[];
+}
+
+/**
+ * 参数 JSON 够完整才解析（半截 `{"comm` 不解析）。
+ *
+ * 判据是"以 `}` 结尾"且长度变了：前者说明括号可能闭合了，后者避免每帧重解析
+ * 同一个半截串（流式时同一槽位每 16ms 就被追加一次）。
+ */
+function parseToolArgs(block: LiveBlock): void {
+  if (block.kind !== 'tool') return;
+  const trimmed = block.text.trimEnd();
+  if (!trimmed.endsWith('}') || trimmed.length === block.argsLength) return;
+  block.argsLength = trimmed.length;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      block.args = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 半截 JSON（还能再长）：留着下一次
+  }
 }
 
 /**
@@ -60,6 +135,25 @@ export interface TabMessages {
    * hydrate / 分页 / 实时 commit 都经过它）比在渲染层每次重算省事，也不会漏路径。
    */
   toolCalls: Record<string, { name: string; args?: Record<string, unknown> }>;
+  /**
+   * 工具结果索引：`toolCallId → 结果`。
+   *
+   * 与 {@link TabMessages.toolCalls} 对称：助手消息里的 `toolCall` 块渲染成**一行**
+   * （`ToolRow`/`TodoRow`），结果到达时**并进那一行**（`text`/`isError` 就地更新），
+   * 而不是另起一行。于是"运行命令 · pnpm test"从工具名到达那一刻就在，一直活到结果落地
+   * —— DSH 的工具行就是这个生命周期（`tool.ts` 的 `match` 从第一个具名 delta 建行，
+   * 结果到达只改 `status`，React key 不变、不重挂）。
+   */
+  toolResults: Record<string, ToolResultView>;
+  /** 正在流式的那一行（`byId` 里的 id）；没有就是 `null` */
+  pendingId: string | null;
+  /**
+   * **权威内容的版本号**：只在 `pi:commit` 时 +1（帧不动它）。
+   *
+   * 给"从 store 现算一遍"的派生值当依赖用（例如 `todoBaselines` 要顺着消息扫一遍）。
+   * 用它而不是订阅 `byId`：流式时 `byId` 每 16ms 换一次引用，订阅它等于让转录每帧重渲染。
+   */
+  commitSeq: number;
   banner: string | null;
   hydrated: boolean;
   /* ── 分页（docs/03 §2.19）：打开会话只载入尾部一页，往上的历史按需再读 ── */
@@ -95,6 +189,9 @@ const emptyTab = (): TabMessages => ({
   queue: { steering: [], followUp: [] },
   toolRuns: {},
   toolCalls: {},
+  toolResults: {},
+  pendingId: null,
+  commitSeq: 0,
   banner: null,
   hydrated: false,
   pageCursor: null,
@@ -130,6 +227,8 @@ interface MessagesState {
   appendPage(tabId: string, rows: PageRow[], meta: { end: number; hasNewer: boolean }): number;
   /** 整段会话的轮次轮廓（刻度梯用；`null` = 没有） */
   setOutline(tabId: string, turns: OutlineTurn[] | null): void;
+  /** 一帧流式数据（`pi:frame`）：往**流式那一行**的槽位里累加 */
+  applyFrame(tabId: string, frame: Frame): void;
   applyCommit(tabId: string, ev: { type: string } & Record<string, unknown>): void;
   remove(tabId: string): void;
 }
@@ -174,6 +273,27 @@ function indexToolCalls(tab: TabMessages, m: AgentMessage): void {
   }
 }
 
+/** `toolResult` 消息 → `toolResults` 索引（工具行就地把结果接上，见类型注释）。 */
+function indexToolResult(tab: TabMessages, m: AgentMessage): void {
+  const r = m as { toolCallId?: string; toolName?: string; content?: unknown; isError?: boolean };
+  if (!r.toolCallId) return;
+  tab.toolResults[r.toolCallId] = {
+    toolName: r.toolName ?? '',
+    text: contentText(m),
+    isError: r.isError === true,
+  };
+}
+
+/**
+ * 把一条消息登记进 tab；去重命中、角色不该显示、**或者它的结果已经并进调用行**时返回 `null`。
+ *
+ * 抽出来是为了让"追加"（新消息）与"预置"（更早的一页）走**同一套**去重键与行构造，
+ * 两边各写一遍就会分叉（历史上分页最典型的 bug 就是首尾重复一行）。
+ *
+ * 工具结果**不单独成行**：它属于上一条助手消息里那个 `toolCall` 块（那一行已经在了，
+ * 只是还没有结果）。只有调用**不在当前窗口**里时（分页从半途开始、`get_messages` 兜底
+ * 路径）才退化成单独一行 —— 那时没有别的地方能显示它。
+ */
 function register(tab: TabMessages, m: AgentMessage, offset: number | null = null): string | null {
   const role = (m as { role?: string }).role;
   if (!role || role === 'system') return null;
@@ -181,9 +301,14 @@ function register(tab: TabMessages, m: AgentMessage, offset: number | null = nul
   if (role === 'assistant') indexToolCalls(tab, m);
   const key = tsKey(m);
   if (tab.keys.has(key)) return null;
+  tab.keys.add(key);
+  if (role === 'toolResult') {
+    const callId = (m as { toolCallId?: string }).toolCallId;
+    indexToolResult(tab, m);
+    if (callId && tab.toolCalls[callId]) return null; // 并进调用行
+  }
   const id = nextId(role);
   tab.byId[id] = { id, role, message: m, offset };
-  tab.keys.add(key);
   return id;
 }
 
@@ -202,6 +327,102 @@ function pushRow(tab: TabMessages, row: PageRow): boolean {
   return true;
 }
 
+/**
+ * 换整页（打开会话 / 换窗 / 退回 `get_messages`）：行、去重键与**两个索引**一起重置。
+ *
+ * 索引必须跟着清：`toolCalls` 是"这个调用在窗口里"的判据（`register` 靠它决定
+ * 工具结果并进哪一行）。留着上一窗口的条目，换窗之后那些"调用不在窗口里"的结果行
+ * 会被误判成"已经并过了"而**整行消失**（分页 + 工具密集的会话里必现）。
+ */
+function resetRows(tab: TabMessages): void {
+  tab.byId = {};
+  tab.ids = [];
+  tab.keys = new Set();
+  tab.toolCalls = {};
+  tab.toolResults = {};
+  tab.pendingId = null;
+}
+
+/**
+ * 流式槽位 → 内容块（只在"这一轮没有正常转正"这种异常路径上用，见 {@link beginPending}）。
+ *
+ * 形状与 pi 的 `AssistantMessage.content` 对齐，于是它可以原样交给 `MessageView` 渲染。
+ */
+function materializeLive(blocks: readonly (LiveBlock | undefined)[]): unknown[] {
+  const out: unknown[] = [];
+  for (const b of blocks) {
+    if (!b) continue;
+    if (b.kind === 'text') out.push({ type: 'text', text: b.text });
+    else if (b.kind === 'thinking') out.push({ type: 'thinking', thinking: b.text });
+    else out.push({ type: 'toolCall', id: b.toolCallId ?? '', name: b.toolName ?? 'tool', arguments: b.args ?? {} });
+  }
+  return out;
+}
+
+/**
+ * 开一条流式的助手行（`message_start`）：占位内容 + `live` 槽位，**行立即进 `ids`**。
+ *
+ * 行进得早是这套模型的关键：`message_end` 转正时只是把 `message` 换掉、`live` 清掉，
+ * id 与下标都不动，于是 React 不重挂、不重排（DSH 的 `assistant-step` 同构：
+ * 流式与落定是同一个 node，只有 `status` 变）。
+ */
+function beginPending(tab: TabMessages, m: AgentMessage): void {
+  // 上一轮如果还留着没转正的行（掉了 message_end）：把它**就地落定**（内容照用户看到的存下来）
+  // 再开新的一行 —— 直接丢掉等于把已经显示出来的字吃掉。
+  const staleId = tab.pendingId;
+  const stale = staleId ? tab.byId[staleId] : undefined;
+  if (stale) {
+    stale.message = {
+      role: 'assistant',
+      content: materializeLive(stale.live ?? []),
+      timestamp: (stale.message as { timestamp?: number }).timestamp,
+    } as AgentMessage;
+    delete stale.live;
+    tab.pendingId = null;
+  }
+  const id = nextId('assistant');
+  tab.byId[id] = {
+    id,
+    role: 'assistant',
+    message: { ...(m ?? {}), role: 'assistant', content: [] } as AgentMessage,
+    offset: null,
+    live: [],
+  };
+  tab.ids.push(id);
+  tab.pendingId = id;
+}
+
+/**
+ * 转正（`message_end`）：把权威消息放进**同一行**，清掉流式槽位。
+ *
+ * @returns 是否吃掉了这一条（`true` = 已经落在 pending 行上，调用方不要再新增一行）
+ */
+function finishPending(tab: TabMessages, m: AgentMessage): boolean {
+  const id = tab.pendingId;
+  const row = id ? tab.byId[id] : undefined;
+  if (!row) return false;
+  row.message = m;
+  delete row.live;
+  tab.pendingId = null;
+  /* 顺手补两件 `register()` 会做的事：**调用索引**与**去重键**。流式那一行是
+     `beginPending` 建的、没走过 `register`，少了这两步会出两种错：
+       · 没有 `toolCalls[callId]` → 随后的 `toolResult` 被当成"调用不在窗口里"，
+         于是**又**渲染出一行工具行（同一个调用出现两行）；
+       · 没有去重键 → 重载同一页（换窗回来 / resync）时这一条会再插一次。 */
+  indexToolCalls(tab, m);
+  tab.keys.add(tsKey(m));
+  return true;
+}
+
+/** 撤掉流式的这一行（resync / 换整页这类"权威数据要重来"的路径用它）。 */
+function dropPending(tab: TabMessages): void {
+  const id = tab.pendingId;
+  if (!id) return;
+  delete tab.byId[id];
+  tab.ids = tab.ids.filter((rowId) => rowId !== id);
+  tab.pendingId = null;
+}
+
 export const useMessages = create<MessagesState>()(
   immer((set, get) => ({
     tabs: {},
@@ -218,9 +439,7 @@ export const useMessages = create<MessagesState>()(
     hydrate(tabId, messages) {
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
-        tab.byId = {};
-        tab.ids = [];
-        tab.keys = new Set();
+        resetRows(tab);
         for (const m of messages) {
           pushMessage(tab, m);
         }
@@ -239,9 +458,7 @@ export const useMessages = create<MessagesState>()(
     hydratePage(tabId, rows, meta) {
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
-        tab.byId = {};
-        tab.ids = [];
-        tab.keys = new Set();
+        resetRows(tab);
         for (const row of rows) {
           pushRow(tab, row);
         }
@@ -311,16 +528,65 @@ export const useMessages = create<MessagesState>()(
       });
     },
 
+    /**
+     * 一帧流式数据（`pi:frame`，≤60Hz）。
+     *
+     * 只碰 `pendingId` 那一行的 `live` 槽位：
+     *   · `signals` 先跑（块边界：`*_start` / `toolcall_start`）—— 建槽位、定块的形状；
+     *   · 再按 `contentIndex` 往对应槽位追加 delta。
+     *
+     * 槽位编号就是 pi 的 `contentIndex`，**每条助手消息从 0 重新开始**
+     * （这正是旧 DOM 引擎按 `contentIndex` 全局编号时"两条消息串成一行"的根因）。
+     */
+    applyFrame(tabId, frame) {
+      set((s) => {
+        const tab = s.tabs[tabId];
+        if (!tab || tab.hasNewer) return; // 换窗期间窗口不在尾部：不建流式行（见 message_start）
+        if (!tab.pendingId) return; // 没有流式行（帧走在 message_start 前）：丢掉，别造半截节点
+        const row = tab.byId[tab.pendingId];
+        if (!row) return;
+        const blocks = (row.live ??= []);
+        const ensure = (
+          ci: number,
+          kind: LiveBlock['kind'],
+          toolName?: string,
+          toolCallId?: string,
+        ): LiveBlock => {
+          const exist = blocks[ci];
+          if (exist) return exist;
+          const fresh: LiveBlock = { kind, text: '', toolName, toolCallId };
+          blocks[ci] = fresh;
+          return fresh;
+        };
+        for (const sig of frame.signals ?? []) {
+          const s2 = sig as { type?: string; contentIndex?: number; toolName?: string; id?: string };
+          const ci = s2.contentIndex ?? 0;
+          if (s2.type === 'text_start') ensure(ci, 'text');
+          else if (s2.type === 'thinking_start') ensure(ci, 'thinking');
+          else if (s2.type === 'toolcall_start') ensure(ci, 'tool', s2.toolName ?? 'tool', s2.id);
+        }
+        for (const d of frame.text ?? []) ensure(d.contentIndex, 'text').text += d.delta ?? '';
+        for (const d of frame.thinking ?? []) ensure(d.contentIndex, 'thinking').text += d.delta ?? '';
+        for (const d of frame.toolArgs ?? []) {
+          const b = ensure(d.contentIndex, 'tool');
+          b.text += d.delta ?? '';
+          parseToolArgs(b);
+        }
+      });
+    },
+
     applyCommit(tabId, ev) {
       const e = ev as { type: string } & Record<string, unknown>;
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
+        tab.commitSeq += 1;
         switch (e.type) {
           case 'message_start': {
-            const role = ((e as unknown as { message?: AgentMessage }).message as { role?: string })?.role;
-            if (role === 'assistant') {
-              // 实时块清屏由 live 引擎在渲染侧处理（转正提交即替换）
-            }
+            // 换窗期间（`hasNewer`）窗口不在尾部：流式那一行会出现在**几轮之前**的位置上
+            // （用户正在看历史）。回到最新时整页重载，那时自然带上。
+            if (tab.hasNewer) break;
+            const m = (e as unknown as { message?: AgentMessage }).message;
+            if ((m as { role?: string })?.role === 'assistant') beginPending(tab, m as AgentMessage);
             break;
           }
           case 'message_end': {
@@ -328,6 +594,8 @@ export const useMessages = create<MessagesState>()(
             // （用户正在看几轮之前的历史）。回到最新时整页重载，那时自然带上。
             if (tab.hasNewer) break;
             const m = (e as unknown as { message: AgentMessage }).message;
+            // 助手消息：落进**已经在显示的那一行**（不新增行、不改下标）
+            if ((m as { role?: string })?.role === 'assistant' && finishPending(tab, m)) break;
             pushMessage(tab, m);
             break;
           }
@@ -370,6 +638,9 @@ export const useMessages = create<MessagesState>()(
             tab.banner = null;
             break;
           case 'piggy:resync': {
+            // resync 是**权威全量**（worker 崩/休眠后补齐上下文）：流式那一行连同它的
+            // 半截文本一起撤掉 —— 它要么在 entries 里以权威消息的身份回来，要么本来就没落盘。
+            dropPending(tab);
             const entries =
               (e as unknown as { entries?: Array<{ type: string; message?: AgentMessage }> }).entries ?? [];
             for (const entry of entries) {
@@ -398,4 +669,21 @@ const EMPTY = emptyTab();
 Object.freeze(EMPTY);
 export function useTabMsg<T>(tabId: string | null, sel: (t: TabMessages) => T): T {
   return useStore(useMessages, (s) => sel((tabId ? s.tabs[tabId] : null) ?? EMPTY));
+}
+
+/**
+ * 一行的切片订阅（转录里每个行组件用它）。
+ *
+ * 选择器**只返回这一行自己的对象**：immer 让没改到的行保持引用不变，于是流式那 60Hz
+ * 的写入只让那一行重渲染（DSH 的 seat 订阅自己的 node，同构）。
+ */
+export function useRowMsg(tabId: string | null, rowId: string): MessageView | undefined {
+  return useStore(useMessages, (s) => (tabId ? s.tabs[tabId]?.byId[rowId] : undefined));
+}
+
+/** 工具结果切片（工具行用它就地接上结果）。 */
+export function useToolResult(tabId: string | null, callId: string | undefined): ToolResultView | undefined {
+  return useStore(useMessages, (s) =>
+    tabId && callId ? s.tabs[tabId]?.toolResults[callId] : undefined,
+  );
 }

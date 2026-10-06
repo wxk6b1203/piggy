@@ -121,10 +121,6 @@ export interface TodoProjection {
   source: 'event' | 'call' | null;
   /** 那次写入在会话文件里的字节偏移 */
   offset: number | null;
-  /** 写入之后又开始了新的一轮（DSH 的 `turn/start` 清空规则） */
-  clearedByTurn: boolean;
-  /** 整段会话里见过几次整表写入 */
-  writes: number;
   /** 文件有分支（活动分支比全部条目短） */
   branchy: boolean;
   /**
@@ -151,8 +147,6 @@ export async function loadSessionTodo(sessionFile: string): Promise<TodoProjecti
     todos,
     source: raw.source === 'event' || raw.source === 'call' ? raw.source : null,
     offset: typeof raw.offset === 'number' ? raw.offset : null,
-    clearedByTurn: raw.clearedByTurn === true,
-    writes: typeof raw.writes === 'number' ? raw.writes : 0,
     branchy: raw.branchy === true,
     chainBroken: raw.chainBroken === true,
     scannedBytes: typeof raw.scannedBytes === 'number' ? raw.scannedBytes : 0,

@@ -60,6 +60,19 @@ export function domContainer(): HTMLDivElement {
   return container;
 }
 
+/**
+ * 用新的 props 重渲染同一个根（"流式又长了一帧"这类场景就靠它）。
+ *
+ * 与 `mountDom` 的区别是**根不变**：`useRef` / `useState` 都活着 ——
+ * 这正是流式增量渲染要测的东西（冻结块的元素身份必须跨帧保持）。
+ */
+export function rerender(node: React.ReactNode): void {
+  if (!root) throw new Error('dom-render: 请先调用 mountDom()');
+  act(() => {
+    root!.render(node);
+  });
+}
+
 /** 卸载 + 跑空 React 队列 + 摘掉容器。测试的 afterEach 里 `await` 它。 */
 export async function unmountDom(): Promise<void> {
   await act(async () => {

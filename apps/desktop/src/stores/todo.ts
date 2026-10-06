@@ -16,8 +16,15 @@
  *
  * ## 清空规则（DSH `turn/start`）
  *
- * 用户发新消息 = 新一轮开始 → 计划面板清空（DSH `src/index.ts:140`：`turn/start` → `null`）。
- * 这不是"删掉记录"：`clearedByTurn` 与 `writes` 都留着，界面能说清"上一轮有过一份清单"。
+ * ```
+ * todo/write → 换成新清单
+ * turn/end   → **保留**（做完的清单继续看得见）
+ * turn/start → null（下一次发消息时才清掉）
+ * ```
+ *
+ * 与 DSH `packages/todo/tool-todo/src/index.ts:128` 的投影逐条一致。
+ * ⚠️ 清空之后界面**什么都不渲染**（面板整个消失）—— 曾经在这里留过一条常驻的
+ * "上一轮的任务清单已归档"，用户 2026-09-24 报"TODO 执行完了好像不会被清理掉"就是它。
  */
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
@@ -30,24 +37,15 @@ import { isTurnStart, todosFromMessage, type TodoItem } from '@/lib/todoModel';
 export interface TabTodo {
   /** 当前计划（`null` = 没有 / 已被新一轮清空） */
   todos: TodoItem[] | null;
-  /** 上一次写入的清单（差异对比用） */
-  previous: TodoItem[] | null;
   /** 这条结论从哪来 */
   source: 'event' | 'call' | 'live' | null;
-  /** 写入之后又开始了新的一轮 */
-  clearedByTurn: boolean;
-  /** 本会话见过几次整表写入 */
-  writes: number;
   /** 链条走断（结论按文件序得出，强度较低） */
   chainBroken: boolean;
 }
 
 const emptyTab = (): TabTodo => ({
   todos: null,
-  previous: null,
   source: null,
-  clearedByTurn: false,
-  writes: 0,
   chainBroken: false,
 });
 
@@ -78,20 +76,14 @@ interface TodoState {
 function foldMessage(tab: TabTodo, message: AgentMessage | undefined): void {
   if (!message) return;
   if (isTurnStart(message)) {
-    if (tab.todos !== null) {
-      tab.previous = tab.todos;
-      tab.todos = null;
-      tab.clearedByTurn = true;
-    }
+    // DSH `turn/start`：清掉当前计划。**不留**"上一轮已归档"这类常驻提示（面板直接消失）。
+    tab.todos = null;
     return;
   }
   const list = todosFromMessage(message);
   if (list === null) return;
-  if (tab.todos !== null) tab.previous = tab.todos;
   tab.todos = list;
   tab.source = 'live';
-  tab.clearedByTurn = false;
-  tab.writes += 1;
 }
 
 export const useTodo = create<TodoState>()(
@@ -131,10 +123,7 @@ export const useTodo = create<TodoState>()(
       set((s) => {
         const tab = (s.tabs[tabId] ??= emptyTab());
         tab.todos = projection.todos;
-        tab.previous = null;
         tab.source = projection.source;
-        tab.clearedByTurn = projection.clearedByTurn;
-        tab.writes = projection.writes;
         tab.chainBroken = projection.chainBroken;
       });
     },

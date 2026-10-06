@@ -1,10 +1,11 @@
 /**
  * per-tab 事件接线（docs/03 §2.14）：幂等挂载，tab 关闭时拆除。
- * 帧：一律进实时块引擎（后台 tab 只是没有可见节点，文本照攒，见下面的说明）；
- * commit：一律入 per-tab store；后台 settled → 未读徽标。
+ *
+ * 帧 → `messagesStore.applyFrame`（写进**流式那一行**的槽位）；
+ * commit → `applyCommit`（同一行转正 / 新行入列 / 分页状态）；
+ * 后台 tab 一样收（内容不丢，切回来不会缺一段）。
  */
 import { on, cmd } from '@/lib/ipc';
-import { liveFor, resetLive } from '@/lib/live';
 import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
 import { useTodo } from '@/stores/todo';
@@ -31,27 +32,25 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
          * 后台 tab 的帧**也收**。
          *
          * 早先这里写着 `if (activeTabId === tabId)` —— 后台 tab 的帧直接丢弃（当时的理由：
-         * "只给活动 tab 做视觉，省掉后台的 DOM 工作"）。但实时块的文本就是**内容**：
-         * 切走那段时间的增量一丢，切回来时那一轮就缺一段（同一个 tab 内看起来像"流式重启"），
-         * 而 DSH 的实时尾部挂在每个会话自己的状态里，不存在"切走就丢字"。
-         * 现在的代价只是"往摘出文档的节点上追加文本"（`lib/live` 的 `attach`/`detach`：
-         * 没有节点就只累积字符串），没有布局，也没有多余的重渲染。
+         * "只给活动 tab 做视觉"）。但流式的文本就是**内容**：切走那段时间的增量一丢，
+         * 切回来时那一轮就缺一段（同一个 tab 内看起来像"流式重启"），而 DSH 的流式内容
+         * 挂在每个会话自己的状态里，不存在"切走就丢字"。
+         *
+         * 现在没有可见节点时只是往 store 里累积字符串（不触发任何布局）——
+         * `lib/live` 那套 attach/detach 与它带来的节点身份问题一起消失了。
          */
-        liveFor(tabId).handleFrame(frame);
+        useMessages.getState().applyFrame(tabId, frame);
       }),
     );
     un.push(
       await on(`pi:commit:${tabId}`, (ev: { type: string }) => {
         /*
-         * 一轮的边界（实时块的累积文本在这一刻作废）**在这里**认，不在渲染侧：
-         * · 必须在 `applyCommit` **之前** —— `agent_start` 之后到来的帧属于新一轮，
-         *   清晚了就把新一轮开头的字清掉了（真浏览器探针实测：同一 tick 里发
-         *   `agent_start` + 帧，渲染侧那次 reset 会把刚收到的帧抹掉，那一行空着）；
-         * · 事件层是唯一有**顺序保证**的地方（`agent_start` 与紧随其后的帧走同一条 IPC，
-         *   到达顺序即发送顺序），渲染侧只能"下一帧再清"，没有这个保证。
-         * 文本的权威副本这时已经在 store 里（上一轮以 `agent_settled` 收尾），清掉不丢内容。
+         * 一轮的边界（流式那一行的生死）在**事件层**认，不在渲染侧：
+         * `message_start` 建行、`message_end` 转正都必须与帧走在同一条通道上
+         * （`agent_start` 与紧随其后的帧走同一条 IPC，到达顺序即发送顺序）。
+         * 渲染侧只能"下一帧再清"，没有这个保证 —— 探针实测过：清晚了会把新一轮
+         * 开头已经收到的帧抹掉，那一行最后是空的。
          */
-        if (ev.type === 'agent_start') resetLive(tabId);
         useMessages.getState().applyCommit(tabId, ev);
         // 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
         useTodo.getState().noteCommit(tabId, ev);

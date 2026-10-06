@@ -35,11 +35,7 @@ if (import.meta.env.DEV) {
     import('@/lib/commands'),
     import('@/features/workspace/EditorArea'),
     import('@/features/common/monaco-pool'),
-    // 实时块引擎（`lib/live`）：`ui:startup` 要断言"流式的容器还挂在**当前这个** DOM 节点上"
-    // —— 引擎把文本写进哪个节点，从 DOM 上是看不出来的（看不见的节点同样能累积文本），
-    // 而"写进了被摘掉的那个节点"正是"流式不输出、结束才一次性出现"的成因。
-    import('@/lib/live'),
-  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool, live]) => {
+  ]).then(([tabs, messages, trajectory, fleet, todo, commands, editor, pool]) => {
     (globalThis as Record<string, unknown>).__piggyStores = {
       useTabs: tabs.useTabs,
       useMessages: messages.useMessages,
@@ -52,8 +48,6 @@ if (import.meta.env.DEV) {
     (globalThis as Record<string, unknown>).__piggyEditor = editor;
     // Monaco 实例池：`ui:startup` 第 10 段要读**应用自己那一份**池子的存活数
     (globalThis as Record<string, unknown>).__piggyMonacoPool = pool;
-    // 实时块引擎（见上）
-    (globalThis as Record<string, unknown>).__piggyLive = live;
   });
   // mock 后端（纯浏览器/mock IPC）的启动调用记录：`ui:startup` 第 8 段要断言
   // "点「打开方式」时送给宿主的到底是哪个应用、哪个目录"。同样必须拿**应用自己那一份**

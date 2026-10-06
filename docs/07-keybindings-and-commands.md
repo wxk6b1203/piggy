@@ -59,7 +59,7 @@ flowchart LR
 | `Cmd/Ctrl+E` | `thinking.cycle` | 循环 thinking 级别（pi 习惯为 Ctrl+E 展开/折叠工具，GUI 中改为 thinking；可在设置换绑回 `tools.toggleExpand`） |
 | `Cmd/Ctrl+R` | `session.rename` | 重命名 |
 | `Cmd/Ctrl+Shift+K` | `session.compact` | 手动压缩 |
-| `Cmd/Ctrl+G` | `session.tree` | 打开会话树（右栏聚焦） |
+| ~~`Cmd/Ctrl+G`~~ | ~~`session.tree`~~ | **已移除**（2026-09-24）：会话树视图删掉——`get_tree` 只读、没有就地切分支的 RPC 入口（02 §5.2 C11），留着是噪音 |
 | `Cmd/Ctrl+Shift+B` | `session.branch-here` | 从选中消息 fork |
 | `Cmd/Ctrl+J` | `terminal.toggle` | bash 直执行面板 |
 | （未绑定） | `openin.pick` | 打开方式：在外部应用（VS Code/终端/访达…）里打开当前会话的工作目录。**故意不给默认键位** —— DSH 也只有会话头部那颗胶囊，与其编一个占用键位的组合，不如让它只在命令面板里可达 |

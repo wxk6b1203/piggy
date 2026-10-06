@@ -6,7 +6,7 @@
  *   ① **没插件却显示 todo**（会让用户以为 Piggy 自带任务清单）→ `supported=false` 时
  *      整个组件返回 `null`，DOM 里连容器都不该有；
  *   ② **新一轮开始后还挂着上一轮的计划**（DSH 的 `turn/start` 会清空投影）→
- *      清空后只留一句"上一轮已归档"，不显示旧条目、也不假装从来没有过。
+ *      清空（下一轮开始）后**整个面板不渲染** —— DSH `todos.length === 0 → null`。
  *
  * 另外把几何（DSH TodoPanel.module.css）里的关键数字也断言下来：面板默认折叠、
  * 列表 `max-height: 180px`、项内 gap 10px —— 这些是"面板不把输入框顶出屏幕"的保证。
@@ -46,10 +46,7 @@ function setTab(
     tabs: {
       [tabId]: {
         todos: state.todos ?? null,
-        previous: null,
         source: state.source ?? 'event',
-        clearedByTurn: state.clearedByTurn ?? false,
-        writes: state.writes ?? 1,
         chainBroken: state.chainBroken ?? false,
       },
     },
@@ -132,18 +129,17 @@ describe('TodoPanel：输入卡正上方的计划', () => {
     expect(badge.getAttribute('title')).toContain('文件顺序');
   });
 
-  it('新一轮开始后：不显示旧条目，但说清"上一轮已归档"', () => {
-    setTab('t1', { todos: null, clearedByTurn: true, writes: 2 });
+  it('新一轮开始（计划被清空）→ 面板**整个消失**（DSH `todos.length === 0 → null`）', () => {
+    // 曾经这里留过一条常驻的"上一轮的任务清单已归档" —— 用户 2026-09-24 报
+    // "TODO 执行完了好像不会被清理掉"就是它：清空是**设计**，留痕才是 bug。
+    setTab('t1', { todos: null });
     mountDom(<TodoPanel tabId="t1" />);
-    const panel = q('[data-todo-panel]')!;
-    expect(panel.getAttribute('data-todo-state')).toBe('cleared');
-    expect(q('[data-todo-cleared]')!.textContent).toContain('上一轮');
-    expect(q('[data-todo-panel-list]')).toBeNull();
-    expect(qa('.pg-todo-panel-item').length).toBe(0);
+    expect(q('[data-todo-panel]'), '清单空了面板还在（又留了常驻痕迹？）').toBeNull();
+    expect(q('[data-todo-cleared]')).toBeNull();
   });
 
-  it('从来没写过（writes=0）→ 清空态也不显示（没东西可归档）', () => {
-    setTab('t1', { todos: null, clearedByTurn: false, writes: 0 });
+  it('从来没有计划（todos=null）→ 不显示', () => {
+    setTab('t1', { todos: null });
     mountDom(<TodoPanel tabId="t1" />);
     expect(q('[data-todo-panel]')).toBeNull();
   });

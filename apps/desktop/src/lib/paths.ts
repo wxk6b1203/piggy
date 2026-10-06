@@ -40,3 +40,26 @@ export function splitPath(p: string): { dir: string; name: string } {
   if (cut < 0) return { dir: '', name: p };
   return { dir: p.slice(0, cut + 1), name: p.slice(cut + 1, end) };
 }
+
+/** 是不是绝对路径（POSIX 的 `/`、Windows 的 `C:\` 与 UNC 的 `\\`）。 */
+export function isAbsolutePath(p: string): boolean {
+  if (p.startsWith('/') || p.startsWith('\\')) return true;
+  return /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/**
+ * 把工具参数里的路径解析成**绝对路径**。
+ *
+ * 工具参数里的路径两种都可能出现：`src/stores/messages.ts`（相对会话 cwd）与
+ * `/tmp/render-test.py`（绝对）。预览面板读文件用的是绝对路径，所以这里补一层解析。
+ *
+ * @param cwd - 会话工作目录；拿不到时只能原样返回（预览会报"读不到"）
+ * @param path - 工具参数里的路径
+ */
+export function resolveAgainst(cwd: string | null | undefined, path: string): string {
+  if (!path) return path;
+  if (isAbsolutePath(path)) return path;
+  if (!cwd) return path;
+  const sep = cwd.includes('\\') && !cwd.includes('/') ? '\\' : '/';
+  return cwd.replace(/[\\/]+$/, '') + sep + path.replace(/^\.?[\\/]/, '');
+}

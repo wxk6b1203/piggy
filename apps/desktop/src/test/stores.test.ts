@@ -15,17 +15,37 @@ function resetStore() {
 describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
   beforeEach(resetStore);
 
-  it('message_end → append（user/assistant/toolResult 各归位）', () => {
+  it('message_end → append（工具结果并进调用行，不另起一行）', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
     s.applyCommit(TAB, fixture('event_message_end_user.json') as never);
     s.applyCommit(TAB, fixture('event_message_end_assistant_toolcall.json') as never);
     s.applyCommit(TAB, fixture('event_message_end_toolresult.json') as never);
     const tab = useMessages.getState().tabs[TAB]!;
-    expect(tab.ids.length).toBe(3);
+    /* 两行：user + assistant。工具结果**不是**第三行 —— 它属于上一条助手消息里那个
+       `toolCall` 块（那一行已经在了），按 `toolCallId` 并进 `toolResults` 索引
+       （见 stores/messages.ts 的 `register`）。这样工具行从调用一出现就在，
+       结果到达只改状态，不再"长出来一次、结果到了又打一遍"。 */
+    expect(tab.ids.length).toBe(2);
     expect(tab.byId[tab.ids[0]!]!.role).toBe('user');
     expect(tab.byId[tab.ids[1]!]!.role).toBe('assistant');
-    expect(tab.byId[tab.ids[2]!]!.role).toBe('toolResult');
+    const callId =
+      (tab.byId[tab.ids[1]!]!.message as { content: { type: string; id?: string }[] }).content.find(
+        (b) => b.type === 'toolCall',
+      )?.id ?? '';
+    expect(callId, '夹具里没有 toolCall 块，这条断言失去意义').not.toBe('');
+    expect(tab.toolCalls[callId]?.name, 'toolCalls 索引没建起来').toBeTruthy();
+    expect(tab.toolResults[callId], '工具结果没并进索引').toBeTruthy();
+  });
+
+  it('调用**不在**窗口里时，工具结果退化成单独一行（分页从半途开始）', () => {
+    const s = useMessages.getState();
+    s.ensure(TAB);
+    // 只来结果、没有那条助手消息（真实场景：窗口从半途开始）
+    s.applyCommit(TAB, fixture('event_message_end_toolresult.json') as never);
+    const tab = useMessages.getState().tabs[TAB]!;
+    expect(tab.ids, '调用不在窗口里，结果行必须自己站出来').toHaveLength(1);
+    expect(tab.byId[tab.ids[0]!]!.role).toBe('toolResult');
   });
 
   it('换窗期间（hasNewer）不把新消息塞进窗口；回到尾部后照常追加', () => {

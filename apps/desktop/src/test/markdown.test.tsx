@@ -11,7 +11,8 @@
  *      分隔线 / 链接 / 表格 / 围栏（→ 同一块代码卡片）；
  *   ② 安全：原始 HTML **按纯文本**渲染（不进 DOM）、URL 白名单（`javascript:` / `file:` /
  *      相对路径一律降级成纯文本）；
- *   ③ 流式不变：流式阶段仍是纯文本（解析只在转正发生）；
+ *   ③ 流式**增量**渲染：冻结前缀的 DOM 节点跨帧**是同一个节点**（不是"内容一样"，是身份一样）、
+ *      尾部照常跟着长、非追加输入整段重置、六种"跨块的块"在切点处不变义；
  *   ④ 畸形输入不白屏（parser 抛错时退回纯文本）。
  */
 import { describe, expect, it, vi, afterEach } from 'vitest';
@@ -27,10 +28,29 @@ vi.mock('@/lib/feedback', () => ({
   confirm: vi.fn(),
 }));
 
-import { Markdown, safeUrl } from '@/features/chat/markdown';
+import { Markdown, StreamingMarkdown, safeUrl } from '@/features/chat/markdown';
 import { MessageView } from '@/features/chat/MessageView';
 import { isExternalUrlAllowed } from '@/lib/externalLink';
-import { domContainer, mountDom, unmountDom } from './dom-render';
+import { domContainer, mountDom, rerender, unmountDom } from './dom-render';
+
+/**
+ * 把一段文本逐块"流"进来（每次重新渲染同一个 `<StreamingMarkdown>`）。
+ * @returns 每一帧的根元素（`.pg-md-streaming`）
+ */
+async function streamFrames(text: string, chunk: number): Promise<HTMLElement[]> {
+  const frames: HTMLElement[] = [];
+  mountDom(<StreamingMarkdown text={text.slice(0, chunk)} />);
+  frames.push(domContainer().querySelector('.pg-md-streaming')!);
+  for (let i = chunk * 2; i <= text.length + chunk; i += chunk) {
+    const next = text.slice(0, Math.min(i, text.length));
+    await act(async () => {
+      rerender(<StreamingMarkdown text={next} />);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    frames.push(domContainer().querySelector('.pg-md-streaming')!);
+  }
+  return frames;
+}
 
 afterEach(async () => {
   await unmountDom();
@@ -206,5 +226,127 @@ describe('externalLink：前后端白名单一致', () => {
       expect(isExternalUrlAllowed(`${s.toUpperCase()}:x`)).toBe(true);
     }
     expect(isExternalUrlAllowed('javascript:alert(1)')).toBe(false);
+  });
+});
+
+/**
+ * 流式**增量**渲染（2026-09-24）。
+ *
+ * 口径：流式正文也渲染 markdown，但走"冻结前缀 + 只重解析尾部"（`StreamingMarkdown`）。
+ * 这里锁四件事，其中第 ① 条是这份实现的**全部意义**：
+ *
+ *   ① **冻结块的 DOM 节点跨帧是同一个节点**（`toBe` 而不是"内容相等"）——
+ *      只比内容的话，"每帧整棵重建、恰好长得一样"也会绿，而那正是用户看到的闪烁；
+ *   ② 还在长的尾部照常更新（同一段话越写越长）；
+ *   ③ 非追加输入（换窗/编辑把文本换掉）整段重置，不出现重影；
+ *   ④ 六种"跨块的块"在切点处不变义（setext 标题 / 未闭合围栏 / 引用定义在后面 /
+ *      列表惰性续行 / 缩进代码 / 表格混排）—— 切点落在空行之后就是为了它们。
+ */
+describe('StreamingMarkdown：冻结前缀 + 只重解析尾部', () => {
+  const DOC = [
+    '# 流式标题',
+    '',
+    '第一段 **加粗** 与 `code`。',
+    '',
+    '- 列表项一',
+    '- 列表项二',
+    '',
+    '```ts',
+    'const a = 1;',
+    '```',
+    '',
+    '| 列 | 值 |',
+    '| -- | -- |',
+    '| a  | 1  |',
+    '',
+    '最后一段：**收尾**。',
+    '',
+  ].join('\n');
+
+  it('已经冻结的块跨帧**是同一个 DOM 节点**（不是"内容一样"）', async () => {
+    const frames = await streamFrames(DOC, 6);
+    // 第一帧就画出了标题（h1）
+    expect(frames[0]!.querySelector('h1')!.textContent).toBe('流式标题');
+    const firstTitle = frames[0]!.querySelector('h1')!;
+    const lastTitle = frames.at(-1)!.querySelector('h1')!;
+    expect(lastTitle, '标题在后续帧里被重挂了（用户会看到上面在闪）').toBe(firstTitle);
+    // 标题的**文本节点**也应当是同一个（没有重建）
+    expect(lastTitle.firstChild).toBe(firstTitle.firstChild);
+  });
+
+  it('尾部还在长：同一个段落节点里文字越写越长，落定后不再变', async () => {
+    const frames = await streamFrames('前言。\n\n第二段正在**长', 4);
+    const last = frames.at(-1)!;
+    // 最后一段（还没闭合的加粗）在末尾，且是同一个 <p> 节点在长
+    const p = last.querySelectorAll('p');
+    expect(p.length).toBeGreaterThan(0);
+    expect(last.textContent).toContain('第二段正在');
+    expect(last.textContent, '半截的 ** 不该消失（它是内容）').toContain('**');
+  });
+
+  it('非追加输入（文本被整段换掉）→ 整段重置，不出现上一份的残留', async () => {
+    mountDom(<StreamingMarkdown text={'# 旧的一篇\n\n旧正文。'} />);
+    const before = domContainer().querySelector('.pg-md-streaming')!;
+    expect(before.textContent).toContain('旧正文');
+    await act(async () => {
+      rerender(<StreamingMarkdown text={'# 新的一篇\n\n新正文。'} />);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const after = domContainer().querySelector('.pg-md-streaming')!;
+    expect(after.textContent).toContain('新正文');
+    expect(after.textContent, '换窗之后旧内容还挂在树上').not.toContain('旧正文');
+  });
+
+  it('六种"跨块的块"：冻结区逐帧不变、尾部结构与全量解析一致', async () => {
+    const cases = [
+      '# A\n\n第一段。\n\n二级标题\n---\n\n后面一段。\n',
+      '# A\n\n说明：\n\n```ts\nconst a = 1;\nconst b = 2;\n',
+      '看这个 [链接][r]。\n\n别的段落。\n\n[r]: https://example.com\n',
+      '- 第一项\n  继续\n- 第二项\n\n段落。\n',
+      '段落一。\n\n    缩进代码\n    第二行\n\n段落二。\n',
+      '# A\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- x\n- y\n\n```go\nfunc f() {}\n```\n\n> 引用\n\n结束。\n',
+    ];
+    for (const doc of cases) {
+      const frames = await streamFrames(doc, 3);
+      /* 冻结区的**节点身份**：每个位置上的第一个节点，从它出现的那一帧到最后一帧
+         必须是同一个 DOM 节点。只比 textContent 会漏掉"整棵重建但内容恰好一样"，
+         而那正是用户看到的闪烁。 */
+      const streamRoot = frames.at(-1)!;
+      for (let i = 0; i < streamRoot.children.length; i += 1) {
+        const appeared = frames.find((f) => f.children[i]);
+        if (!appeared) continue;
+        expect(
+          streamRoot.children[i],
+          `构造「${doc.slice(0, 10)}…」的第 ${i} 个块在后续帧里被重挂了`,
+        ).toBe(appeared.children[i]);
+      }
+      // 结构与全量解析一致（标签序列）—— 先抓住流式那一份，`render()` 会把它换掉
+      const streamTags = [...streamRoot.children].map((c) => c.tagName).join(',');
+      const full = render(doc);
+      expect(streamTags, '流式与全量的块序列不一致').toBe(
+        [...full.children].map((c) => c.tagName).join(','),
+      );
+      await unmountDom();
+    }
+  });
+
+  it('安全口径与落定一致：原始 HTML 仍然一个字都不进 DOM', async () => {
+    mountDom(<StreamingMarkdown text={'前 <script>window.__x = 1</script> 后'} />);
+    const root = domContainer().querySelector('.pg-md-streaming')!;
+    expect(root.querySelector('script')).toBeNull();
+    expect(root.textContent).toContain('<script>');
+    expect((globalThis as { __x?: number }).__x).toBeUndefined();
+  });
+
+  it('围栏代码块在流式期间不上色（不每帧重跑 shiki），落定后才上色', async () => {
+    mountDom(<StreamingMarkdown text={'```ts\nconst a = 1;\n```'} />);
+    const live = domContainer().querySelector('.pg-codeblock')!;
+    expect(live.querySelector('.shiki'), '流式围栏不该已经上色').toBeNull();
+    // 同一段文本交给落定的 Markdown：走正常高亮路径（异步，等一轮微任务）
+    await act(async () => {
+      rerender(<Markdown text={'```ts\nconst a = 1;\n```'} />);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(domContainer().querySelector('.pg-codeblock')).toBeTruthy();
   });
 });

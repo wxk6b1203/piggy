@@ -149,10 +149,12 @@ describe('工具行（含正文的代码块）', () => {
   });
 
   it('正文代码块的"长输出默认折叠"不许把用户展开过的又折回去', async () => {
-    // 超过自动折叠阈值的长输出：挂载时自动折上
+    // 超过自动折叠阈值的长输出：代码卡片挂上来的那一刻自动折上
     const lines = Array.from({ length: AUTO_COLLAPSE_LINES + 10 }, (_, i) => `line ${i + 1}`);
     const view = toolView('r1', lines.join('\n'));
     mount(view, { tabId: TAB, rowKey: 'r1' });
+    // 折叠 = 不挂载（DSH 同款）：先把这一行点开，那块代码卡片才会出现
+    await click(head());
     await act(async () => {
       await new Promise((r) => setTimeout(r, 5));
     });
@@ -160,8 +162,7 @@ describe('工具行（含正文的代码块）', () => {
     const barBtn = () => domContainer().querySelector<HTMLButtonElement>('.pg-codeblock-btn')!;
     expect(body().hasAttribute('data-collapsed'), '长输出应当自动折上').toBe(true);
 
-    // 用户点开（外层行 + 代码块）→ 卸载 → 重挂：两个都还得是开着的
-    await click(head());
+    // 用户点开代码块 → 卸载 → 重挂：两个都还得是开着的
     await click(barBtn());
     expect(body().hasAttribute('data-collapsed')).toBe(false);
 

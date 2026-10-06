@@ -131,7 +131,12 @@ await page.addInitScript(() => {
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.dv-tab', { timeout: 15000 });
 await page.waitForTimeout(800);
-await page.click('.pg-rail-btn[title="Fleet（子代理）"]');
+/* Fleet 的**右栏按钮已按用户要求隐藏**（2026-09-24），所以这里从事件总线进去：
+   视图本身与 `fleet:*` 通道都还在，只是不再占一颗按钮。 */
+await page.evaluate(async () => {
+  const { windowEvents } = await import('/src/lib/windowEvents.ts');
+  windowEvents.emit('rightbar-view', 'fleet');
+});
 await page.waitForSelector('.pg-fleet', { timeout: 5000 });
 
 const fleet = await page.evaluate(async () => {
@@ -349,25 +354,32 @@ const fleet = await page.evaluate(async () => {
         .scrollHeight,
     );
 
-    // 折叠时正文**在 DOM 里但不可见**（Ctrl+F / 复制拿得到）
+    /* 折叠 = 正文**不挂载**（DSH `DisclosureRow` 的 `{open && children}`）：
+       所以这里量的是"正文节点在不在"，不是"藏没藏起来"。 */
+    const bodyState = () => {
+      const body = first?.querySelector('[data-tool-body]');
+      if (!body) return 'absent';
+      return body.hasAttribute('hidden') ? 'hidden' : 'mounted';
+    };
     const collapsed = {
-      hiddenAttr: firstBody?.getAttribute('hidden') ?? null,
+      state: bodyState(),
       display: firstBody ? getComputedStyle(firstBody).display : null,
       textLen: (firstBody?.textContent ?? '').length,
       hasCard: !!firstBody?.querySelector('.pg-codeblock'),
     };
-    // 点开第一行：正文可见 + 卡片真出现；再点回去
+    // 点开第一行：正文挂上 + 卡片真出现；再点回去
     heads[0]?.click();
     await new Promise((r) => setTimeout(r, 200));
     const expanded = {
-      hiddenAttr: first?.querySelector('[data-tool-body]')?.hasAttribute('hidden') ?? null,
+      state: bodyState(),
       aria: heads[0]?.getAttribute('aria-expanded') ?? null,
       cardH: h(first?.querySelector('.pg-codeblock')),
       rowH: h(first),
+      cards: toolRows.filter((r) => r.querySelector('.pg-codeblock')).length,
     };
     heads[0]?.click();
     await new Promise((r) => setTimeout(r, 150));
-    const reCollapsed = first?.querySelector('[data-tool-body]')?.getAttribute('hidden') ?? null;
+    const reCollapsed = bodyState();
 
     return {
       count: toolRows.length,
@@ -382,7 +394,8 @@ const fleet = await page.evaluate(async () => {
       expanded,
       reCollapsed,
       scrollHeightAll,
-      hasCardInDom: toolRows.some((r) => r.querySelector('.pg-codeblock')),
+      // 展开那一刻真的挂上了代码卡片（折叠态一个都没有是**对的**）
+      cardsWhenExpanded: expanded.cards,
     };
   })();
 
@@ -2248,7 +2261,7 @@ const pagingTail = await page.evaluate(async () => {
   let streaming = true;
   const sampler = (async () => {
     while (streaming) {
-      const live = tr.querySelector('.pg-live');
+      const live = tr.querySelector('[data-streaming]');
       streams.push({
         active: wrap.querySelector('[data-rail-mark].is-active')?.getAttribute('data-rail-mark') ?? '-',
         bottom: wrap.querySelector('[data-to-bottom]') ? 1 : 0,
@@ -2276,6 +2289,23 @@ const pagingTail = await page.evaluate(async () => {
     const b = Number(streams[i].active);
     if (Number.isFinite(a) && Number.isFinite(b) && b < a) activeRegressions += 1;
   }
+  /* 梯子自己滚：DSH 的跟随是**平滑**的（`preferredScrollBehavior`），一次移动会跨好几帧 ——
+     所以判据不能是"值变过几次"，而是"**方向反转过几次**"。用户报的"疯狂跳动"就是反转
+     （实测 592 → 311 → 521），而平滑推进是单调的。 */
+  let railTopReversals = 0;
+  let railTopDir = 0;
+  let railTopPrev = null;
+  for (const x of streams) {
+    if (railTopPrev !== null) {
+      const delta = x.railTop - railTopPrev;
+      if (Math.abs(delta) >= 1) {
+        const dir = Math.sign(delta);
+        if (railTopDir !== 0 && dir !== railTopDir) railTopReversals += 1;
+        railTopDir = dir;
+      }
+    }
+    railTopPrev = x.railTop;
+  }
   const streamCheck = {
     samples: streams.length,
     activeFlips: flipsOf((x) => x.active),
@@ -2283,6 +2313,7 @@ const pagingTail = await page.evaluate(async () => {
     activeTrail: streams.map((x) => x.active).filter((v, i, a) => i === 0 || a[i - 1] !== v),
     bottomEver: streams.some((x) => x.bottom === 1),
     railTopFlips: flipsOf((x) => x.railTop),
+    railTopReversals,
     gapMax: Math.max(...streams.map((x) => x.gap)),
     liveMonotonic: liveLens.every((n, i) => i === 0 || n >= liveLens[i - 1]),
     liveLen: liveLens.length ? [Math.min(...liveLens), Math.max(...liveLens)] : null,
@@ -2721,21 +2752,22 @@ const dblClickOpen = await page.evaluate(async () => {
   };
 });
 
-/* ---------- 19. 实时块必须绑在"当前那个"节点上（用户 2026-09-23 报："有时候不会滚动输出？会等到完成后再全部输出"）
+/* ---------- 19. 流式的内容**在 store 里**，DOM 只是它的视图（用户 2026-09-23 报：
+ *   "有时候不会滚动输出？会等到完成后再全部输出"）
  *
  * 现场（真浏览器探针，先复现后修）：实时行是转录的**最后一行**、由虚拟化渲染。
- * 读者往上滚出窗口、或这一轮在窗口外开始流式，这个节点就会被卸载；回到窗口时
- * React 给的是**另一个新节点**。早先挂载点由 `useEffect(…, [tabId, streaming])` 决定
- * —— 节点换了 effect 不会再跑，引擎从此往被摘掉的那个节点写字：界面上那一行空着，
+ * 读者往上滚出窗口、或这一轮在窗口外开始流式，这个节点就会被卸载。旧实现把文本写进
+ * **DOM 节点**（`lib/live`），节点一换就写到了看不见的地方：界面上那一行空着，
  * 直到这一轮结束、`message_end` 把整段消息交给 store 才一次性出现。切走另一个会话
  * 再切回同理（后台 tab 的帧以前被 `if (activeTabId === tabId)` 直接丢弃）。
  *
- * 这一段量三件只有真浏览器能量的事：
- *   ① 实时行的文本长在**当前**那个节点上（引擎的 container === DOM 里的 .pg-live）；
- *   ② 滚出虚拟窗口再回来：卸载期间的字一个不丢；
- *   ③ 切到另一个会话再切回：通道上发出的字数与可见字数之差 ≈ 0（不是"整段丢"）。
+ * 现在内容活在 `stores/messages` 的 `live` 槽位里，节点只是视图（`detach` 这件事
+ * 根本不存在了）。这一段量三件只有真浏览器能量的事：
+ *   ① 实时行的文本长在**当前**那个节点上（滚出虚拟窗口再回来，字数不减）；
+ *   ② 切到另一个会话再切回：通道上发出的字数与可见字数之差 ≈ 0（不是"整段丢"）；
+ *   ③ 一轮结束时 `data-streaming` 撤掉、内容由**同一行的**提交形态接管，且不重复。
  *
- * 判据用"通道发出的字数"（`__piggyMock.mockOn` 订阅的是与引擎**同一条**事件通道），
+ * 判据用"通道发出的字数"（`__piggyMock.mockOn` 订阅的是与应用**同一条**事件通道），
  * 所以它不依赖 mock 的分片节奏，也不怕 setTimeout 抖动。
  */
 const liveBind = await page.evaluate(async () => {
@@ -2743,7 +2775,6 @@ const liveBind = await page.evaluate(async () => {
   const stores = globalThis.__piggyStores;
   const mock = globalThis.__piggyMock;
   const editor = globalThis.__piggyEditor;
-  const live = globalThis.__piggyLive;
 
   // 自己建一个会话标签：不依赖前面几段留下的状态（第 18 段做过 closeAllTabs）
   const snap = await mock.mockInvoke('tab_create', { cwd: '/Users/mock/proj' });
@@ -2761,9 +2792,8 @@ const liveBind = await page.evaluate(async () => {
   );
   await sleep(300);
   const tr = () => document.querySelector(`[data-tab-id="${tabId}"] .pg-transcript`);
-  const liveEl = () => tr()?.querySelector('.pg-live') ?? null;
-  const eng = live.liveFor(tabId);
-  // 文本长度含 "assistant ▌"（11 字）：比较两次数值时它会抵消
+  const liveEl = () => tr()?.querySelector('[data-streaming]') ?? null;
+  // 文本长度取流式那一行的**正文**（提交之后同一行还在，标记会换）
   const textLen = () => (liveEl()?.textContent ?? '').length;
   tr().scrollTop = tr().scrollHeight;
   await sleep(200);
@@ -2787,7 +2817,6 @@ const liveBind = await page.evaluate(async () => {
   await sleep(300);
   const backLen = textLen();
   const sentBack = sent;
-  const boundAfterScroll = eng.container === liveEl();
   const lostOnScroll = sentBack - sentOut - Math.max(0, backLen - outLen);
 
   /* ② 切到另一个会话再切回来：切走那一段的帧不许丢 */
@@ -2799,12 +2828,17 @@ const liveBind = await page.evaluate(async () => {
   await sleep(600);
   const backLen2 = textLen();
   const sentBack2 = sent;
-  const boundAfterSwitch = eng.container === liveEl();
-  const behindAfterSwitch = sentBack2 - Math.max(0, backLen2 - 11);
+  const behindAfterSwitch = sentBack2 - backLen2;
 
   await sleep(1400); // 让这一轮流完（streamFor 3.4s）
   const streamingDone = stores.useMessages.getState().tabs[tabId]?.streaming === false;
   const liveGoneAtEnd = liveEl() === null;
+  // 转正之后：那一行还在，文本一字不少，而且**只出现一次**（不许"最后又打印一遍"）
+  const streamed = '流式渲染性能压测流。';
+  const visible = tr().textContent ?? '';
+  const occurrences = visible.split(streamed).length - 1;
+  const committedLen = (visible.match(/流式渲染性能压测流。/g) ?? []).length * streamed.length;
+  const lastRowText = (tr().querySelector('.pg-vrow:last-of-type')?.textContent ?? '').length;
   un?.();
 
   return {
@@ -2815,15 +2849,17 @@ const liveBind = await page.evaluate(async () => {
     sentOut,
     sentBack,
     lostOnScroll,
-    boundAfterScroll,
     detachedWhileAway,
     focusOk,
     backLen2,
     sentBack2,
     behindAfterSwitch,
-    boundAfterSwitch,
     streamingDone,
     liveGoneAtEnd,
+    sentTotal: sent,
+    committedLen,
+    occurrences,
+    lastRowText,
   };
 });
 
@@ -2837,10 +2873,11 @@ const liveBind = await page.evaluate(async () => {
  * `wheel(0,-25)`×4 之后每 25ms 采一次，`gap` **恒为 0**、位置只是跟着内容往上长
  * —— 滚轮在手感上完全没反应。
  *
- * 改法：判据换成"这次滚动背后有没有读者的手势"（滚轮/触摸/拖滚动条，窗口 400ms）：
- * 有手势 → 只认几何（到不了底就是不跟随）；没手势 → 老规则（换页锚定那类照旧）。
- * 另加：引擎的 rAF 贴底也跟跟随意图走（`lib/live` 的 `setFollowing`），
- * 否则它自己就每帧把人拽回去。
+ * 改法：上滚手势**当场**交还控制权（`useTranscriptScroll` 的滚轮分支），并在 400ms 的
+ * 兑现窗口内不许被"贴着底"的 25px 容差反悔 —— 一格滚轮正好 25px 上下，容差会把每一格
+ * 都吞掉。跟随意图只有一个属主（`TranscriptReading`），贴底只有一条路径
+ * （`ScrollFollow.toBottom` 在 `following` 为假时根本不会被调用），所以不存在
+ * "引擎自己每帧把人拽回去"那类第二只手。
  *
  * 这一段必须用**真滚轮**（Playwright 的 `mouse.wheel`）：合成 `WheelEvent` 不会真的滚动。
  * 位置必须"留在原地"而 gap 继续变大 —— 那才证明是内容在长、读者没被拽走。
@@ -2893,6 +2930,9 @@ const wheelHold = await (async () => {
       nudge.push(await read());
     }
   }
+  /* 跟随意图在**采样落地**时结算（DSH：`scrollend` 或 500ms 的窗口）——
+     这里等一小会儿再读，否则量到的是"窗口还没到"的中间态（不是判定结果）。 */
+  await page.waitForTimeout(550);
   const afterNudge = await read();
   // 内容继续长 1.1s：位置必须留在原地（gap 只会变大），且「回到底部」必须出现
   const hold = [];
@@ -2982,15 +3022,20 @@ const liveRows = await page.evaluate(async (id) => {
       expandable: el.querySelector('[data-disclosure-row]')?.hasAttribute('data-expandable') ?? null,
     };
   };
-  const live = tr.querySelector('.pg-live');
+  const live = tr.querySelector('[data-streaming]');
   const thinkBody = live?.querySelector('[data-thinking-body]') ?? null;
   const out = {
     liveThinking: box(live?.querySelector('[data-thinking-row]') ?? null),
     liveTool: box(live?.querySelector('[data-tool-row]') ?? null),
     liveToolVariant: live?.querySelector('[data-tool-row]')?.getAttribute('data-variant') ?? null,
-    liveText: (live?.querySelector('.pg-live-text')?.textContent ?? '').slice(0, 24),
+    liveText: (live?.querySelector('.pg-md-streaming')?.textContent ?? '').slice(0, 24),
+    /* 流式正文也渲染 markdown（增量解析，docs/04 §5.1）：标题与粗体在**流式中**就该成形，
+       而不是等落定才出现；同时"已冻结的块"不许重建（单测按 DOM 节点身份钉死）。 */
+    liveHeading: live?.querySelector('h1,h2,h3')?.textContent ?? null,
+    liveBold: live?.querySelector('.pg-md-streaming strong')?.textContent ?? null,
     // 折叠：正文挂着 `hidden` 且不占高度
-    thinkBodyHidden: thinkBody ? thinkBody.hasAttribute('hidden') : null,
+    // 折叠 = 不挂载（DSH 同款）：正文节点不该存在
+    thinkBodyHidden: thinkBody ? (thinkBody.hasAttribute('hidden') ? 'hidden' : 'mounted') : 'absent',
     thinkBodyH: thinkBody ? Math.round(thinkBody.getBoundingClientRect().height) : null,
     // 旧标记必须没了（退回去就是红的）
     oldChip: tr.querySelectorAll('.pg-live-toolchip').length,
@@ -3341,8 +3386,9 @@ if (td.reCollapsed?.listPresent) bad.push('任务清单：再点一下应折回�
 
 /* 工具窄行：把"空间利用率"变成可断言的真几何。
    用户报的是"多工具消息时主工作区空间利用率非常低" —— 修之前实测一个 6 行 read 结果占 258px、
-   3 行 bash 占 201px，DSH 的一行是 24px。这里钉住：行高 24、连续三行 ≤ 76、折叠时正文在 DOM
-   里但不可见、点开出现代码卡片。任何一条退化（例如又把卡片整块铺开）都会红。 */
+   3 行 bash 占 201px，DSH 的一行是 24px。这里钉住：行高 24、连续三行的总高 = DSH 的节奏
+   （24×3 + 6×2 = **84px**，行间 6px 是 DSH 的 process flow gap）、折叠时正文**不挂载**、
+   点开出现代码卡片。任何一条退化（例如又把卡片整块铺开、或间距被写成 16px）都会红。 */
 const cp2 = fleet.compact ?? {};
 if (cp2.headH == null) {
   bad.push('工具窄行：一行都没渲染出来（hydrate 之后找不到 [data-tool-row]）★');
@@ -3354,8 +3400,10 @@ if (cp2.headH == null) {
   if (cp2.thinkHeadH == null || cp2.thinkHeadH > 26) {
     bad.push(`工具窄行：思考行高 ${cp2.thinkHeadH}px（应为 24px 的窄行）★`);
   }
-  if (cp2.threeRowSpan > 76) {
-    bad.push(`工具窄行：连续三行占了 ${cp2.threeRowSpan}px（应 ≤76）★`);
+  if (cp2.threeRowSpan > 88) {
+    bad.push(
+      `工具窄行：连续三行占了 ${cp2.threeRowSpan}px（DSH 的节奏是 24×3 + 6×2 = 84）★`,
+    );
   }
   if (cp2.firstTitle !== '读取') {
     bad.push(`工具窄行：第一行标题是 ${JSON.stringify(cp2.firstTitle)}，应为「读取」（pi 的 read）★`);
@@ -3369,17 +3417,16 @@ if (cp2.headH == null) {
   if (!/pnpm test -- --grep boundary-1/.test(cp2.bashSummary ?? '')) {
     bad.push(`工具窄行：bash 行的摘要没显示命令（读到 ${JSON.stringify(cp2.bashSummary)}）★`);
   }
-  if (!cp2.collapsed?.hasCard || cp2.collapsed.textLen < 10) {
-    bad.push('工具窄行：折叠时正文**不在 DOM 里**（折叠 ≠ 不渲染是本仓纪律）★');
-  }
-  if (cp2.collapsed?.hiddenAttr !== 'until-found' || cp2.collapsed?.display !== 'none') {
+  /* 折叠 = 正文**不挂载**（DSH `DisclosureRow` 的 `{open && children}`，2026-09-24 对齐）：
+     判据是"折叠时正文节点根本不存在"，而不是"存在但藏起来"。 */
+  if (cp2.collapsed?.state !== 'absent' || cp2.collapsed?.hasCard || cp2.collapsed?.textLen > 0) {
     bad.push(
-      `工具窄行：折叠时正文没有藏住（hidden=${String(cp2.collapsed?.hiddenAttr)} display=${String(cp2.collapsed?.display)}）★`,
+      `工具窄行：折叠时正文还挂在 DOM 里（state=${String(cp2.collapsed?.state)} 卡片=${String(cp2.collapsed?.hasCard)} 字数=${String(cp2.collapsed?.textLen)}）★`,
     );
   }
-  if (cp2.expanded?.hiddenAttr !== false || cp2.expanded?.aria !== 'true') {
+  if (cp2.expanded?.state !== 'mounted' || cp2.expanded?.aria !== 'true') {
     bad.push(
-      `工具窄行：点开后正文没显示（hidden=${String(cp2.expanded?.hiddenAttr)} aria=${String(cp2.expanded?.aria)}）★`,
+      `工具窄行：点开后正文没挂上（state=${String(cp2.expanded?.state)} aria=${String(cp2.expanded?.aria)}）★`,
     );
   }
   if (!(cp2.expanded?.cardH > 40)) {
@@ -3388,10 +3435,12 @@ if (cp2.headH == null) {
   if (cp2.expanded?.rowH <= cp2.headH) {
     bad.push(`工具窄行：展开后行高没变大（${String(cp2.expanded?.rowH)} ≤ ${String(cp2.headH)}）★`);
   }
-  if (cp2.reCollapsed !== 'until-found') {
-    bad.push(`工具窄行：再点一次没有收回去（hidden=${String(cp2.reCollapsed)}）★`);
+  if (cp2.reCollapsed !== 'absent') {
+    bad.push(`工具窄行：再点一次没有收回去（正文 state=${String(cp2.reCollapsed)}）★`);
   }
-  if (!cp2.hasCardInDom) bad.push('工具窄行：一个代码卡片都不在 DOM 里（内容被吞了）★');
+  if (!(cp2.cardsWhenExpanded >= 1)) {
+    bad.push(`工具窄行：展开那一刻也没有代码卡片（读到 ${String(cp2.cardsWhenExpanded)}）—— 内容被吞了 ★`);
+  }
 }
 
 /* Markdown 渲染：助手回答里的记号必须真的变成元素。
@@ -4320,36 +4369,32 @@ if (sc.activeRegressions > 0) {
   bad.push(`分页：流式中当前刻度倒退了 ${sc.activeRegressions} 次 —— 贴底跟随时只许前进 ★`);
 }
 if (sc.bottomEver) bad.push('分页：流式中"回到底部"冒出来过 —— 跟随被自己贴的底弄丢了 ★');
-if (sc.railTopFlips > 1) {
-  bad.push(`分页：流式中梯子自己滚了 ${sc.railTopFlips} 次（应当只在新增一轮时动一次）★`);
+if (sc.railTopReversals > 1) {
+  bad.push(
+    `分页：流式中梯子自己滚时方向反转了 ${sc.railTopReversals} 次（原始翻转 ${sc.railTopFlips} 次）` +
+      '—— 跟随在来回跳（DSH 的 `scrollToIndex(…, "if-needed")` 只会朝一个方向推进）★',
+  );
 }
 if (sc.gapMax > 25) bad.push(`分页：流式中离底最多 ${sc.gapMax}px —— 没贴住 ★`);
 if (!sc.liveMonotonic) {
   bad.push(`分页：流式文本长度不是单调增长（${sc.liveLen?.join(' → ')}）—— 实时块被反复重置 ★`);
 }
 
-/* 实时块绑在"当前那个"节点上（用户 2026-09-23 报："有时候不会滚动输出？会等到完成后再全部输出"）。
-   判据是"通道上发出去的字数"对"可见实时块里的字数"，所以与 mock 的分片节奏、setTimeout
-   抖动都无关；阈值给得比故障量级（滚走 400ms ≈ 250 字 / 切走 700ms ≈ 440 字）宽得多。 */
+/* 流式的内容在 store 里、DOM 只是视图（用户 2026-09-23 报："有时候不会滚动输出？会等到完成后再全部输出"）。
+   判据是"通道上发出去的字数"对"可见字数"，所以与 mock 的分片节奏、setTimeout 抖动都无关。 */
 if (!liveBind.unmounted) {
   bad.push('实时块：往上滚之后实时行没有被虚拟化卸载 —— 这一段没测到东西（前置不成立）★');
-}
-if (!liveBind.boundAfterScroll) {
-  bad.push('实时块：滚出窗口再回来，引擎写的是**另一个**节点（可见那一行会一直空着）★');
 }
 if (liveBind.lostOnScroll > 60) {
   bad.push(
     `实时块：滚出窗口期间丢了 ${liveBind.lostOnScroll} 个字（通道发了 ${liveBind.sentBack - liveBind.sentOut}）` +
-      '—— 节点摘掉时把累积文本也清了 ★',
+      '—— 内容还挂在 DOM 上？（内容必须在 store 里，节点只是视图）★',
   );
 }
 if (!liveBind.detachedWhileAway) {
   bad.push('实时块：切到另一个会话时旧转录还留着 —— 这一段没造出"面板被摘出 DOM"（前置不成立）');
 }
 if (liveBind.focusOk !== true) bad.push('实时块：切回原会话失败（focusSessionTab 返回 false）★');
-if (!liveBind.boundAfterSwitch) {
-  bad.push('实时块：切走再切回之后，引擎绑的不是当前可见的那个节点 ★');
-}
 if (liveBind.behindAfterSwitch > 90) {
   bad.push(
     `实时块：切走再切回之后可见文本落后 ${liveBind.behindAfterSwitch} 字` +
@@ -4358,11 +4403,25 @@ if (liveBind.behindAfterSwitch > 90) {
 }
 if (liveBind.backLen <= liveBind.outLen) {
   bad.push(
-    `实时块：回到底部之后实时块没有把"卸载期间"的字补上（出去 ${liveBind.outLen} → 回来 ${liveBind.backLen}）★`,
+    `实时块：回到底部之后没有把"卸载期间"的字补上（出去 ${liveBind.outLen} → 回来 ${liveBind.backLen}）★`,
   );
 }
 if (!liveBind.streamingDone) bad.push('实时块：这一段跑完之后 streaming 没有回到 false ★');
-if (!liveBind.liveGoneAtEnd) bad.push('实时块：这一轮结束后实时行没有撤掉（会与转正的消息重复）★');
+if (!liveBind.liveGoneAtEnd) {
+  bad.push('实时块：这一轮结束后 `data-streaming` 没撤掉（那一行还标着"流式中"）★');
+}
+if (liveBind.committedLen !== liveBind.sentTotal) {
+  bad.push(
+    `实时块：转正之后可见的流式文本是 ${liveBind.committedLen} 字，通道发了 ${liveBind.sentTotal} 字` +
+      '—— 少了（丢字）或多了（同一内容打印了两遍）★',
+  );
+}
+if (liveBind.occurrences < liveBind.sentTotal / 40 - 1) {
+  bad.push(
+    `实时块：转正之后那段文本只出现了 ${liveBind.occurrences} 次（通道发了 ${liveBind.sentTotal} 字）` +
+      '—— 提交之后那一行不完整 ★',
+  );
+}
 
 /* 流式中手动往上滚：读者说了算（用户 2026-09-23 报"会被自动跳到最底下"） */
 if (!wheelHold.bottom || wheelHold.bottom.gap > 25) {
@@ -4397,16 +4456,19 @@ if ((wheelHold.stillFollowing?.gap ?? 999) > 25) {
 }
 
 /* 实时块里的思考/工具：与提交行同一套窄行（用户 2026-09-23："工具/思考等默认折叠"） */
+/* ⚠️ 旧标记这条要**排在最前**：它一红就说明整段退回了改造前的样子（思考是裸 details、
+   工具是 ⚙ 芯片），此时下面的"窄行"断言只会报一句"没建出来"，说不清现场（红检实测过）。 */
+if (liveRows.oldChip || liveRows.oldDetails) {
+  bad.push(
+    `实时行：还在用旧标记（⚙ 芯片 ${liveRows.oldChip} 个 / 原生 details ${liveRows.oldDetails} 个）` +
+      '—— 实时块没走窄行 ★',
+  );
+}
 if (!liveRows.liveThinking || !liveRows.liveTool) {
   bad.push(
     `实时行：思考/工具行没建出来（think=${JSON.stringify(liveRows.liveThinking)}，tool=${JSON.stringify(liveRows.liveTool)}）★`,
   );
 } else {
-  if (liveRows.oldChip || liveRows.oldDetails) {
-    bad.push(
-      `实时行：还在用旧标记（⚙ 芯片 ${liveRows.oldChip} 个 / 原生 details ${liveRows.oldDetails} 个）★`,
-    );
-  }
   if (!(liveRows.liveThinking.h > 0 && liveRows.liveThinking.h <= 26)) {
     bad.push(`实时行：思考行高 ${liveRows.liveThinking.h}px（提交行是 24px 的窄行）★`);
   }
@@ -4423,9 +4485,10 @@ if (!liveRows.liveThinking || !liveRows.liveTool) {
       `实时行：思考摘要不是首行（读到「${liveRows.liveThinking.summary}」）—— 折叠摘要要不出来 ★`,
     );
   }
-  if (liveRows.thinkBodyHidden !== true || liveRows.thinkBodyH !== 0) {
+  /* 折叠 = 正文不挂载（DSH 同款）：`[data-thinking-body]` 应当**不在 DOM 里** */
+  if (liveRows.thinkBodyHidden !== 'absent') {
     bad.push(
-      `实时行：思考正文默认没折起来（hidden=${liveRows.thinkBodyHidden}，高 ${liveRows.thinkBodyH}px）★`,
+      `实时行：思考正文默认没折起来（正文节点=${JSON.stringify(liveRows.thinkBodyHidden)}）★`,
     );
   }
   if (liveRows.liveToolVariant !== 'edit') {
@@ -4450,6 +4513,15 @@ if (!liveRows.liveThinking || !liveRows.liveTool) {
       `实时行：工具行 ${liveRows.liveTool.h}px ≠ 提交行 ${liveRows.committedTool?.h}px —— 两套几何 ★`,
     );
   }
+}
+/* 流式正文的部分 markdown：`streamMixed` 的正文以 `## 流式标题` + `**加粗**` 开头，
+   流式途中这两样就该成形（增量解析冻结前缀 + 只重解析尾部，见 features/chat/markdown.tsx）。
+   退回去就是"一串井号星号一直挂到落定"—— 用户报的"最后打印"的下一层。 */
+if (liveRows.liveHeading !== '流式标题') {
+  bad.push(`流式正文：标题没在流式中成形（读到 ${JSON.stringify(liveRows.liveHeading)}）★`);
+}
+if (liveRows.liveBold !== '加粗') {
+  bad.push(`流式正文：粗体没在流式中成形（读到 ${JSON.stringify(liveRows.liveBold)}）★`);
 }
 
 /* 页面错误一条都不许有。其中 `ResizeObserver loop completed with undelivered notifications`

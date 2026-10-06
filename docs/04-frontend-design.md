@@ -60,7 +60,7 @@
 
 ### 1.4 上下文跟随规则（工作区的核心语义）
 
-1. **上下文跟随活动 tab**：右栏/底栏/状态栏展示的都是活动 tab 的项目与会话（文件树=活动 tab 的项目 cwd；变更/统计/会话树=活动会话）；
+1. **上下文跟随活动 tab**：右栏/底栏/状态栏展示的都是活动 tab 的项目与会话（文件树=活动 tab 的项目 cwd；统计=活动会话）；
 2. 会话 tab 被工具 tab/预览 tab 覆盖时：**保留上一个会话 tab 的只读上下文**（与 VS Code 编辑器失焦行为一致）；
 3. 后台 tab 的事件只进 store 与徽标，绝不触碰当前上下文的 UI（05 §3 前提）；
 4. 左侧栏的"会话视图"不随 tab 切换重置（它是导航面，不是上下文面）。
@@ -103,8 +103,8 @@
 |---|---|---|
 | 文件 | 活动 tab 项目的**只读**目录树（懒加载展开）+ 文件类型图标（Seti 子集，10 §4）；点击开预览 tab；M4 可选"快捷编辑"（00 NG4 边界内） | fs scope 需用户授权项目目录（08 §6） |
 | 变更 | 活动会话的 `edit`/`write` 工具调用聚合为会话级 changeset：文件分组 + diff 列表 + 复制 patch；点击开 diff 预览 tab（Monaco DiffEditor，10 §2.1） | 数据源=转录流内已有 diff，零额外进程 |
-| 子代理 | 06 §5 统一 Fleet 视图（B 层快照 + A 层 lane 摘要）；可展开为工具 tab 大图 | M3 |
-| 会话树 | `get_tree` 分支图（自绘 SVG 缩略 + antd Tree 详情）+ fork/clone 入口 | 原 §4.5 的分支树移入 |
+| 子代理 | 06 §5 统一 Fleet 视图（B 层快照 + A 层 lane 摘要）。⚠️ **2026-09-24 起入口按钮隐藏**（用户："Fleet 功能暂时也隐藏掉按钮"）：视图与 `fleet:*` 通道都在，`RightBar.tsx` 的 `SHOW_FLEET_ENTRY = false` 控制露不露；门禁第 4 段改从事件总线（`rightbar-view`）进入 | M3 |
+| ~~会话树~~ | **2026-09-24 移除**（用户："会话树这个功能好像没什么用"）：只读树 + 没有就地切分支的 RPC 入口，留着只是噪音。`get_tree` 通道仍在（Rust 侧 `sessions/tree.rs` 不动） | 原 §4.5 的分支树移入 |
 | 统计 | `get_session_stats`：tokens/cost 图表、上下水位条、压缩历史 | |
 | Widgets | extension `setWidget` 面板（02 §8；aboveEditor/belowEditor 语义降级为 Composer 上/下常驻插槽） | |
 
@@ -410,11 +410,27 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
   `[role="dialog"]` 找元素的，留着的这个会**先被选中**——门禁当场红在插件页那一段
   （拿到的是空字符串）。顺带也不再让 35KB 全文一直挂在 DOM 上。
 
+### 2.5b 转录的垂直节奏（2026-09-24 统一）
+
+用户报"输出有时候行间距很大，有时候很小"。根因是**间距写在谁身上**不统一：
+
+| | 修之前 | 现在（= DSH） |
+|---|---|---|
+| 转录行之间 | `.pg-message` 16px、`.pg-user-row`/`.pg-compaction` 各写各的 → 同一屏里 **16px 与 32px 交替** | 所有行统一 `margin-block: 6px`（相邻两行 **12px**）= DSH 的 response flow gap |
+| 助手正文里：正文 ↔ 窄行 | `> * + * { margin-top }` 被 `.pg-trow { margin: 0 }` 顶掉 → **0px**（正文贴着工具行） | `gap: 6px` 打底 + 正文 `.pg-md { margin-block: 6px }` → **12px** |
+| 助手正文里：窄行 ↔ 窄行 | 同上，时而 0 时而 16 | **6px**（DSH 的 process flow gap） |
+| 改动文件卡片 | — | 4px（DSH `.card { margin-top: 4px }`） |
+| 消息操作行 | — | 16px（DSH `.actions { margin-top: 16px }`） |
+
+两条纪律：**间距挂在容器上（`gap`），不要挂在子元素的兄弟选择器上**（窄行自己有
+`margin: 0`，兄弟选择器写的间距会被顶掉）；**同一种行只许有一处写间距**。
+
 ### 2.6 会话预览滚动条（`TurnRail`）
 
 主会话区一侧的**固定间距刻度梯**：一条刻度 = 一轮对话（用户提问 + 它的回答），
-**覆盖整段会话**——没载入的那些画成虚线并可点击（换窗过去，§2.1.1）。
-梯子比可视带宽时在内部滚动，跟随当前刻度只做**最小幅度**修正（不居中，见 §2.1.1）。
+**覆盖整段会话**——没载入的那些画成更短更暗的实心刻度并可点击（换窗过去，§2.1.1）。
+梯子比可视带宽时在内部滚动；跟随照抄 DSH：当前刻度跑出渐隐带（上下各 24px）时
+把它**居中**（平滑滚动，尊重 `prefers-reduced-motion`），在带子里则一动不动。
 参数与状态全部照抄 DSH `ui-chat/src/client/chat/TurnNavigator`（docs/12 §3）：
 
 | 状态 | 形状 | 颜色 |
@@ -474,7 +490,7 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
  │   │   └─ <MessageView/>       自研：按消息类型分发
  │   │       ├─ <TextBlock/>     <ThinkingBlock/> <ToolCard/> <ImageBlock/>…
  │   │       ├─ 压缩行            文件里的 `compaction` 条目（DSH 的「上下文已压缩」）
- │   │       └─ <LiveBlock/>     仅活动消息拥有（瞬态通道挂载点）
+ │   │       └─ （流式的那一行就是上面这一行：`live` 槽位装着还没落定的块）
  │   ├─ 「回到底部」              离开底部才出现的 34px 圆形按钮（DSH `chat.toBottom`）
  │   └─ <CompactorBanner/> <RetryToast/> …（生命周期横幅）
  └─ <Composer/>                  自研 + antd Upload 粘贴/拖拽
@@ -495,6 +511,24 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
 `ensureTab` 里同理 —— "装过就不再装"（`loadTail` → `hydratePage` 会重置该标签的消息）。
 
 **antd 边界铁律**（01 §3.4）：`Transcript` 子树（除横幅类一次性组件）、`TabStrip`、`ViewRail`、`StatusBar`、`CommandPalette` 禁止引入 antd 组件；代码评审以 lint 规则固化（`no-restricted-imports` 按目录白名单，08 §4）。
+### 2.1.0 转录的代码分工（2026-09-24 重整）
+
+`Transcript.tsx` 曾经是一个 730 行的组件，里面同时住着五套机制：虚拟化容器、实时块挂载点、
+分页装载、贴底跟随状态机、刻度梯宿主。每一套都是为某一个具体 bug 打的补丁
+（`pinnedTopRef` / `pinnedHeightRef` / `readerGestureRef` / `readerUpRef` / `attachLive`），
+合起来没人能说清"现在到底跟不跟"。现在按 DSH 的分层拆成四个文件，各自只有一个职责：
+
+| 文件 | 职责 | DSH 对应 |
+|---|---|---|
+| `features/chat/Transcript.tsx` | **薄视图**：行源（store 的 `ids`）→ 虚拟化 → `Row`/`MessageView`；按钮与刻度梯 | `ChatView.tsx` |
+| `features/chat/useTranscriptScroll.ts` | **决策**：跟不跟、读到哪一行、翻页/跳轮的时序（`TranscriptReading` 类 + 一个 hook） | `use-chat-scroll.ts` + `use-chat-reading.ts` + `use-chat-navigation.ts` |
+| `features/chat/transcriptViewport.ts` | **DOM 属主**：监听器、几何、读者锚点、翻页补偿（`TranscriptViewport` 类） | `use-chat-viewport.ts` |
+| `features/chat/scrollFollow.ts` | **跟随控制器**：`following` / 阈值 / 未落地的平滑滚动（`ScrollFollow` 类，纯逻辑可单测） | `use-scroll-follow.ts` |
+| `features/chat/transcriptScroll.ts` | **纯几何**：容差、锚点口径、高度差兜底 | （DSH 无独立文件） |
+
+两条不变量：**决策层不写 `scrollTop`**（只有 `TranscriptViewport` 写），
+**视图层不认识"跟随"**（只有一个 `following` 布尔与三个回调）。
+
 ### 2.1.1 转录的分页与滚动（2026-09-23 用户反馈）
 
 三条反馈对应三处改动（实现细节见 03 §2.19 / §3.0d）：
@@ -537,16 +571,16 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
    于是跟随原地保持、下一帧贴底把人拽回去；实时块引擎自己那条 rAF 贴底（离底 <120px 就贴）
    又在同一侧加了一脚。修复前真浏览器实测：`wheel(0,-25)`×4 之后 `gap` **恒为 0**。
    三处一起改：
-   · **归因要看手势**：滚轮 / 触摸 / 拖滚动条打时间戳，读者往上滚时**立刻**交还控制权，
-     并记下起点位置；随后那次采样必须**兑现**这个手势（位置真的往上走了一格），
-     不许被"贴着底"的 25px 容差反悔 —— 一格滚轮正好 25px 上下，容差会把每一格都吞掉，
-     读者永远翻不上去（门禁实测 4 格全被按回底部）；
-   · **引擎听意图**：`lib/live` 的 `setFollowing(next)`（`attach` 时同步），
-     读者接管之后它一个像素都不许自己滚；
+   · **归因照 DSH**：位置相对"上一次被认可的位置"变了才算读者滚的；意图只在采样
+     （`scrollend` 或 500ms）时按"离底 ≤ 25px"重判。**采样窗口内谁都不许贴底**
+     （`reconcile` 见到 pending 直接返回），所以内容长高不会把读者拽回去；
+     早期这里写过一条 DSH 没有的"上滚手势立刻交还 + 400ms 兑现窗口"，2026-09-24 已删；
+   · **只有一条贴底路径**：跟随意图由 `TranscriptReading` 独占（`ScrollFollow`），
+     `following` 为假时 `toBottom` 根本不会被调用 —— 不存在"第二只手"自己滚；
    · **没有手势才用老规则**：换页锚定、内容长高那两类照旧（那条规则不能删）。
    门禁第 20 段用**真滚轮**量：第一次 `wheel(0,-25)` 就出现「回到底部」，
    之后 1.1s 内容长 288px 而位置**一动不动**（`movedDuringHold 0`），
-   滚回底部跟随自己回来（`gap 0`）。刻画见 `lib/live` 文件头纪律 ③ 与 15 规矩 110。
+   滚回底部跟随自己回来（`gap 0`）。刻画见 `features/chat/scrollFollow.ts` 与 15 规矩 110。
 5. **刻度梯覆盖整段会话**（用户 2026-09-23 第二轮反馈"预览滚动条好像不是全部的预览"）：
    梯子画**全部已知轮次**（会话文件的轮次轮廓 `session_outline`），轮次号是**全会话的绝对编号**，
    不随分页窗口漂。预览框对未载入的轮次也照常显示（轮廓里带了提示语与回答摘要）。
@@ -557,10 +591,11 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
    配套地，页的粒度也改成"50 行 **且** 5 轮"（03 §2.19），打开就能看到最近几轮。
    点未载入的刻度 → **换窗**过去（只读那一页），随后出现「回到最新」回到会话尾部。
    两条实测纪律：
-   · 梯子内部的自动跟随改成**最小幅度**（只在当前刻度跑出可视带时把它拉回来），
-     不再像 DSH 那样"居中"——Piggy 的刻度是固定 10px 间距（有意的差异，§2.6），
-     100 轮的梯子有 1000px、装进 420px 的带子里，居中意味着每十几轮整体跳 ~200px
-     （用户报的"预览滚动条在疯狂跳动"；实测梯子滚动 592 → 311 → 521）；
+   · 梯子内部的自动跟随 **= DSH 的 `scrollToIndex(activeIndex, 'if-needed')`**：
+     只在当前刻度跑出渐隐带时把它居中（平滑）。⚠️ 2026-09-23 曾因"疯狂跳动"把它改成
+     "最小幅度修正"，2026-09-24 按用户要求（"有意偏离 DSH 的行为，都对标 DSH"）改回 DSH；
+     实测那次跳动是**每格都居中**造成的（592 → 311 → 521），而 DSH 的 `if-needed` 在
+     42 格可视带里每十几轮才动一次；
    · "到底了"取的是**已载入窗口**的最后一条**已载入**刻度，不是整个列表的最后一条：
      换窗到中间时下面还有未载入的更新轮次，取错了高亮会丢到没载入的地方。
 5. **流式时不许闪**（用户第二轮反馈"还是疯狂闪动"，真凶在这里）：贴底跟随时内容每帧都在长高，
@@ -579,8 +614,9 @@ pi 的 `isLocalPath` 只看前缀，所以 `@scope/pkg` 这种裸包名会被当
    在错实现下照样绿）+ 浏览器门禁按帧采样断言（当前刻度倒退 0 次、跟随丢 0 次、
    梯子自己滚 ≤1 次、离底 ≤25px、实时文本长度单调不减）。
 6. **转录区里不再有 ResizeObserver**（用户第五轮还在偶发那条循环报错）。
-   实时块的成长**引擎自己就贴底**（`lib/live.ts` 的 `follow()`：离底 <120px 就 rAF 贴），
-   再叠一个 60Hz 的观察者纯属重复，而且正是"回调 → 布局变 → 回调"的级联燃料。
+   内容长高的信号已经由虚拟化器自己的测量值给了（`getTotalSize()` 变化 → React 必然重渲染
+   → 布局阶段里贴底），再叠一个 60Hz 的观察者纯属重复，而且正是
+   "回调 → 布局变 → 回调"的级联燃料。
    现在贴底改由**布局阶段**驱动：`useLayoutEffect` 盯 `virtualizer.getTotalSize()`
    （行被测量、消息到达、实时块长高都会让它变），并且 `pinToBottom` 自己幂等
    （已贴底差 ≤1px 就只刷新记录、不写 `scrollTop`）。
@@ -654,25 +690,52 @@ interface MessagesState {
 - 更新**只**来自 `pi:commit`（message_end / tool_execution_end / turn_end…）——低频、权威；
 - `AgentMessageView` = pi 权威消息 + UI 派生字段（折叠态、高亮标记等）分离存储，避免污染协议对象。
 
-### 3.2 瞬态：live（一轮的文本 + 它的视图）
+### 3.2 流式的这一行**就是**转录里的那一行（2026-09-24 重整）
 
-实现是 `lib/live.ts` 的 **per-tab 引擎**（不是全局 liveStore）：每个 contentIndex 一块
-（text / thinking / tool），文本帧直接 `appendData` 进 DOM，绕过 React 渲染与 GC 压力
-—— 这是流式 60fps 的结构性保证，而非微优化。
+`message_start`（助手）时 `messagesStore` 就建出这一行并进 `ids`，行里带一个 `live`
+槽位（`contentIndex → {kind, text}`）；帧只往槽位里累加；`message_end` 把权威内容填进
+**同一行**、清掉槽位。**行的 id 与下标都不变**，于是 React 不重挂、不重排、也不重复
+（DSH 的 `assistant-step` 同构：流式与落定是同一个 node，只有 `status` 变）。
 
-**但"不保存文本"是错的**（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"
-之后改的口径）：
+这一段换掉了 `lib/live` 的 **DOM 引擎**（每块一个 DOM 节点、帧直接 `appendData`）。
+那条路有三个**结构性**错误，2026-09-24 全部实测复现（`src/test/transcript-live.test.tsx`）：
 
-- 每块在 `pending` 里留一份 `{kind, label, text}`（**当前这一轮**的累积，一轮边界 `reset`）
-  —— 它是内容，DOM 节点只是它的一个渲染目标；
-- 节点被摘掉（虚拟化把实时行滚出窗口、dockview 把面板摘出 DOM）只 `detach()`：断开视图，
-  **一个字都不清**；节点回来 `attach()` 按 `pending` 原样重建（thinking 折叠块与工具名一起）；
-- 挂载点由**回调 ref** 给（节点的生死由 React 报，不由 effect 的依赖猜）；
-- 一轮的边界由**事件层**认：`tabEvents` 收到 `agent_start` 时、`applyCommit` **之前**
-  `reset`（那里有 IPC 的顺序保证 —— 清晚了就把新一轮开头已经收到的帧清掉了；
-  渲染侧"下一帧再清"没有这个保证，探针实测过那一行会空着）。
+| # | 现场 | 根因 |
+|---|---|---|
+| ① | 用户："工具之类的会被逐步输出，最后打印，这就非常诡异了" | 提交只往 store 加行，DOM 引擎里那一份不会自己消失 → **同一内容出现两遍** |
+| ② | 用户："中途输出出现了错乱" | 块按 `contentIndex` 全局编号，而它在 pi 里是**每条助手消息从 0 重新开始**的 → 第二条消息的思考追加进第一条的思考行（两段连成一句）、工具调用追加进第一条的工具行（**静默吃掉**一个工具行） |
+| ③ | 工具要等执行完才出现 | 工具行由 `toolResult` **消息**渲染，助手消息里的 `toolCall` 块 `return null` |
 
-为什么必须这样，以及"长度断言测不出来"这件事，见 §4.6。
+（流式正文的渲染另有一条演进：2026-09-24 起**流式途中也渲染 Markdown**，走增量解析，
+见 §5.1 —— 那时它还是纯文本。）
+
+复现记录（同一轮两次助手消息 + 一次工具执行，全部走真实帧通道）：
+
+```
+转正行 0  思考 · 先看看目录里有什么          ← 第一条助手消息（React 渲染）
+转正行 1  运行命令 · ls -la                  ← 工具结果（React 渲染）
+实时行    思考 · 先看看目录里有什么现在读源码  ← ① 与行 0 重复；② 两条消息的思考连成一句
+实时行    运行命令 · ls -la                  ← ③ read 的调用被并进 bash 那一行，整行消失
+```
+
+现在的三条口径：
+
+- **内容在 store，DOM 只是视图**：帧写的是 `byId[pendingId].live[contentIndex]`，
+  节点被虚拟化卸载 / 面板被摘出 DOM 都无所谓 —— 重新渲染时按槽位重建
+  （"节点身份"这类 bug 从结构上消失，`attach`/`detach`/回调 ref 那一套也不用存在了）；
+- **槽位编号是消息内的** `contentIndex`：与 pi 的 `AssistantMessage.content` 下标一一对应，
+  所以转正前后 React key 不变；
+- **一轮的边界由事件层认**：`message_start` 建行、`message_end` 就地转正、`agent_start`
+  把掉队的流式行落定（`tabEvents` 里按到达顺序处理，那里有 IPC 的顺序保证）。
+
+**单帧代价**：一次 store 写入 + 一次 `appendData` 级别的字符串拼接；订阅面只有那一行
+（行组件用 `useRowMsg` 选自己那一行的切片，immer 让其余行引用不变）。
+转录本体与虚拟化器**不会**因为一个 token 重渲染：`ids` 的身份只在结构变化时变。
+
+**工具行是一行、不是两行**：助手消息里的 `toolCall` 块从它出现（`toolcall_start`）就渲染成
+`ToolRow`（`data-state="running"`），结果到达时按 `toolCallId` **并进同一行**
+（`toolResults` 索引），React key 不变、不重挂 —— DSH 的工具行就是这个生命周期。
+结果**不在当前窗口**时（分页从半途开始）才退化成单独一行。
 
 ### 3.3 store 之外的规则
 
@@ -687,33 +750,37 @@ interface MessagesState {
 ```
 pi:frame:{tabId}（≤60Hz）
   → lib/ipc 帧解码（zod 轻校验：只校验 envelope，不校验文本内容）
-  → liveFor(tabId).handleFrame(frame)          // 直写，无 React 渲染
-      signals        → 建块（text / thinking / tool）并把块的形状记进 pending
-      TextDelta      → appendData(item.s) + pending 累积          // 文本节点追加，O(1)
-      ThinkingDelta  → thinking 块同上（折叠态下只更新计数徽标）
-      ToolArgsDelta  → 只记形状（不渲染；toolcall_end 才展示）
-      usage          → 缓存在引擎里（限 1Hz 节流回调）
-  → follow()：离底 <120px 且**有布局**时才 rAF 贴底
+  → messagesStore.applyFrame(tabId, frame)      // 写进**流式那一行**的 live 槽位
+      signals        → 建槽位（text / thinking / tool），定块的形状
+      text/thinking  → live[contentIndex].text += delta
+      toolArgs       → 同上（原始 JSON）；够完整时解析一次供摘要用（toolRowModel）
+      usage          → 不消费（状态栏走 get_session_stats）
+  → React：只有那一行重渲染（行切片订阅）
+  → useTranscriptScroll 的内容提交对账：还在跟随就贴底（决定要不要写 scrollTop）
 ```
 
 ⚠️ **后台 tab 的帧照收**（2026-09-23 改）：以前 `tabEvents` 里写着
 `if (activeTabId === tabId)`，切走那段时间的增量直接丢 —— 切回来那一轮缺一段。
-现在没有可见节点时只累积字符串（或写进被摘出文档的节点，无布局），内容不丢。
+现在没有可见节点时只是往 store 里累积字符串（不触发任何布局）。
 
 ### 4.2 帧内工作量上界
 
-单帧工作 = N 个 `appendData`（N ≤ 该 16ms 内到达的帧合并后的项数，由 Rust 合帧器保证 ≤60 帧/秒）+ 一次 rAF。**与历史消息数无关**（实时块独立于虚拟化窗口）、**与输出 token 速率近似无关**（合帧器削峰）。这就是"任何一帧的工作量有上界"的准确含义。
+单帧工作 = 1 次 store 写入（N 个槽位的字符串追加，N ≤ 该 16ms 内到达的帧合并后的项数，
+由 Rust 合帧器保证 ≤60 帧/秒）+ 那一行的重渲染。**与历史消息数无关**
+（转录的 `ids` 身份不动，虚拟化器不重算）、**与输出 token 速率近似无关**（合帧器削峰）。
+这就是"任何一帧的工作量有上界"的准确含义。
 
-### 4.3 实时块转正（commit）
+### 4.3 流式行转正（commit）
 
 `message_end` 到达（`pi:commit` 通道）：
 
-1. 实时块**撤下来**：`streaming` 翻转 → 那一行离开 `rowIds`，节点随之卸载（`detach`）；
-   `pending` 的清理在新一轮的 `agent_start`（事件层，见 §3.2）—— 这时文本的权威副本
-   早已在 store 里，清掉不丢内容；
-2. messagesStore 批量提交权威消息（immer patch）；
-3. 虚拟化行立即包含新 `MessageView`（DOM 结构等价替换，视觉无跳变：实时块与新行使用同一 CSS 类，高度差异由虚拟器 measure 修正）；
-4. 焦点滚动策略：用户在底部 1 屏内 → 自动跟随；用户上滚 → 暂停跟随并显示"回到底部"浮标。
+1. 权威消息填进**流式那一行**（`finishPending`）：`message = m`、清 `live`、补
+   `toolCalls` 索引与去重键。**行的 id 与下标都不变** —— 没有"撤下来再放上去"这一步，
+   也就没有闪烁与重复；
+2. 于是 React 只是把同一行的 props 换掉：文本从纯文本（`<p class="pg-live-text">`）
+   变成 markdown（`Markdown`）、思考/工具行从流式形态换成落定形态（同一套组件）；
+3. 焦点滚动策略：内容长高时**跟随意图**说了算（`following` 为真才贴底；
+   读者接管过就不动他的位置，右下角给「回到底部」）。
 
 ### 4.4 工具执行增量
 
@@ -730,42 +797,71 @@ pi:frame:{tabId}（≤60Hz）
   **跨重启**仍未做（DSH 把阅读位置存进 store，重开会话回到原位；Piggy 重开一律贴底）；
   另外"跳到很久以前的某一轮"仍只能一页页往上翻；
 - "考古模式"（右栏或抽屉）：`get_entries` 游标分页（每次 200 条，向上滚动加载），只读渲染；
-- 分支树（`get_tree`）用自绘 SVG 缩略图 + antd Tree 详情，点击分支节点提示"将切换活动分支（branch 导航）"——走 `switch_session`/fork 语义【契约验证 C11：RPC 的分支切换入口。rpc.md 只提供 fork/clone/switch；就地 branch 导航（TUI 的 `/tree`）若 RPC 未暴露，则用 fork 等价实现并在 UI 措辞区分】。
+- 分支树：**2026-09-24 移除**。原计划是 `get_tree` + 自绘缩略图，但 RPC 只有 fork/clone/switch、**没有**就地分支导航（02 §5.2 的 C11），于是它只能是一棵点不动的只读树。真要做，得先有"就地切分支"的协议入口。
 
-### 4.6 节点只是视图（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"）
+### 4.6 流式的内容活在 store 里（2026-09-23 用户报"有时候不会滚动输出？会等到完成后再全部输出"）
 
-现场：实时行是转录的**最后一行**、由虚拟化渲染。读者往上滚出窗口、或这一轮在窗口外开始
-流式，这个节点就会被**卸载**；回到窗口时 React 给的是**另一个新节点**。
-挂载点早先由 `useEffect(…, [tabId, streaming])` 决定 —— 节点换了 effect 不会再跑，
-引擎从此往被摘掉的那个节点写字。实测序列（真 Chromium 探针）：
+那段历史的现场：实时行是转录的**最后一行**、由虚拟化渲染。读者往上滚出窗口、或这一轮在
+窗口外开始流式，这个节点就会被**卸载**；回到窗口时 React 给的是**另一个新节点**。
+当时的 `lib/live` 把累积文本写进 **DOM 节点**，挂载点换了 effect 不会再跑，引擎从此往被摘掉的
+那个节点写字。实测序列（真 Chromium 探针）：
 
 ```
 … 15/15 → -1/20 -1/25 -1/35 -1/40 → 40/40 45/45 48/48     修复后（回来时补齐）
 … 15/15 → -1/20 -1/25 -1/35 -1/40 → 11 11 11             修复前（那一行只剩 "assistant ▌"）
 ```
 
-修复前的表现正是用户说的："不输出"，然后 `message_end` 把整段消息交给 store，一次性出现。
+2026-09-24 的重整把这条**结构性地**去掉了：内容活在 `messagesStore` 的 `live` 槽位里
+（§3.2），DOM 只是它的视图。节点卸不卸载、换不换，都与内容无关 —— 不存在"写到被摘掉的
+节点上"这种状态，也不需要 `attach`/`detach`/回调 ref 那一套补丁。
 
-三条纪律（写在 `lib/live.ts` 文件头）：
+留下的两条纪律（与实现无关，是这个界面本身的约束）：
 
-1. **文本是内容，节点只是视图**：`detach` 只丢视图，`attach` 按 `pending` 重建；
-2. **挂载点用回调 ref**：节点的生死由 React 报，不由 effect 的依赖猜；
-3. **没有布局就没有"底部"**：`clientHeight === 0` 时不写 `scrollTop`
-   （0/0/0 会被读成"已经贴着底"，对后台 tab 是白做工，对可见性切换是假基线）。
+1. **没有布局就没有"底部"**：`clientHeight === 0` 时不许写 `scrollTop`，也不许采样
+   （0/0/0 会被读成"已经贴着底"：对后台 tab 是白做工，对可见性切换是假基线）
+   —— `TranscriptViewport.readMetrics()` 在这种时刻返回 `null`，所有读写路径因此变成空操作；
+2. **一轮的边界由事件层认**（`message_start` / `message_end` / `agent_start`），
+   渲染侧只能"下一帧再清"，没有到达顺序的保证。
 
-⚠️ **这类 bug 的断言必须是"身份"而不是"长度"**：绑定错了的时候，DOM 上完全看不出来
-（那一行空着，而文本在一个已经摘掉的节点里继续长）。所以门禁第 19 段的判据是
-`引擎的 container === document 里那个 .pg-live`，以及"通道发出的字数 − 可见字数"。
-docs/15 规矩 108/109。
+守在上面的断言：门禁第 19 段按"**通道发出的字数 − 可见字数**"对账（与分片节奏、
+`setTimeout` 抖动无关），并在这一轮结束时要求 `data-streaming` 撤掉、那段文本在转录里
+**只出现一次**（"实时一份 + 提交一份"就是用户报的"最后打印"）。单测见
+`transcript-live.test.tsx`（两条助手消息不串块、工具行不被吞、转正不重挂）。
 
 ## 5. Markdown 与富内容渲染
 
-### 5.1 双阶段策略
+### 5.1 流式**也**渲染 Markdown（增量解析）
 
-- **流式阶段（LiveBlock）**：纯文本直写。**不做 Markdown 解析**——流式中间态的 Markdown 是
-  非法文法（半截的 `**`、没闭合的围栏），每个 delta 跑一遍 parser 必然抖动且浪费 CPU；
-- **转正阶段（`features/chat/markdown.tsx`）**：`marked.lexer()` → **token 树 → React 元素**。
-  按块拆成独立元素，`memo` 住（文本不变就不重解析；虚拟化下只有可见行会 parse）。
+两段都渲染 Markdown，只是走不同的解析路径：
+
+- **流式阶段（`live` 槽位）** → `StreamingMarkdown`：**冻结前缀 + 只重解析尾部**
+  （`IncrementalMarkdownParser`，DSH `ui-primitives/src/markdown/incremental.ts` 的同构实现）。
+  每帧只 lex 最后 1~2 个块，已经画好的块**连 React 元素一起复用**；
+- **转正阶段** → `Markdown`：`marked.lexer()` 整段 → token 树 → React 元素，`memo` 住
+  （文本不变就不重解析）。引用式链接 / 脚注在流式期间是字面，靠这一次全量解析自愈。
+
+> 早期的口径是"流式纯文本、转正才 parse"，理由是"中间态的 Markdown 是非法文法，
+> 每个 delta 跑一遍 parser 必然抖动且浪费 CPU"。前半句对，后半句只对**全量** parse 成立
+> （2026-09-24 修正）：5.8KB 全文 ≈ **541 µs/次**，80 字符尾部 ≈ **11 µs/次**；
+> 1.47KB 文档按 24 字符/帧流式，解析字符数少 **90.4%**。而"抖"的真正来源不是解析、
+> 是**重挂** —— 每帧重建整棵树会让上面已经画好的标题/表格一起闪。
+
+三条实现约束（都不是可选项）：
+
+1. **键 = 块的绝对源偏移**（`marked` 的 token 带 `raw`，累加严格等于源串长度，实测过）。
+   用下标不行：前面的块一合并/拆分，后面所有下标都变 → 全部重挂；
+2. **切点必须落在空行之后**（或文末）：就地切开会让"跨块的块"变义（`标题\n---` 被切成段落 +
+   分隔线、缩进代码丢掉缩进、列表惰性续行被切断）。单测把 setext / 未闭合围栏 /
+   引用定义在后面 / 惰性续行 / 缩进代码 / 表格混排六种构造逐个流式跑，判据是
+   **冻结区的 DOM 节点身份不变**（不是"内容一样"——整棵重建但内容恰好一样正是要拦的那种）；
+3. **冻结段与尾部要拼成同一个数组**再交给 React。写成 `{frozen}{tail}` 两个数组兄弟时，
+   React 会按"第几个数组"给隐式键加前缀，同一个块从尾部挪进冻结区就变成换键 → 卸载重建
+   （实测：标题在冻结那一帧闪掉）。
+
+代价（**固有**，不是 bug）：尾部 1~2 块里会看到"字面符号 → 成形"的跳变 —— 半截的 `**加粗`、
+没闭合的表格先按字面显示，补齐后变成粗体/表格。DSH 也一样，它只是把不稳定区压到 2 块。
+另外**流式中的围栏代码块不上色**（内容每帧都在变，shiki 每帧重跑一遍纯属白烧 CPU），
+也不做"长输出默认折叠"的自动判定（等这块长完再判）—— 见 `CodeBlock` 的 `streaming`。
 
 **为什么是 marked，且只当 parser 用**（2026-09-23 用户："直接用 marked，micromark 太小众了"）：
 
@@ -845,15 +941,15 @@ micromark+mdast 是 **5.19 ms**（12×）；打包后 parser 栈 min+gzip
   `toolCalls` 索引（`toolCallId → {name, args}`，三条路径都会经过它：hydrate / 分页 / 实时）。
   索引断掉时**退到结果首行**并标 `data-summary-source="result"`——绝不编一个命令出来；
 - 失败行取**结果首行**并标红（DSH 的 `errorSummary`）；
-- **折叠 ≠ 不渲染**：正文用 `hidden="until-found"` + `beforematch` 留在 DOM 里，
-  Ctrl+F 能搜到、读屏与复制拿得到（本仓纪律，规矩 21）。DSH 是在**分组**层做这件事
-  （`useSearchableHidden`），Piggy 没有分组层，就把它下沉到行——这是**有意差异**，
-  也意味着折叠时 shiki 不会白跑（`IntersectionObserver` 见不到隐藏元素）。
+- **折叠 = 正文不挂载**（2026-09-24 改为与 DSH 一致）：DSH 的 `DisclosureRow` 就是
+  `{open && children}`。本仓此前用 `hidden="until-found"` 把正文留在 DOM 里（想让 Ctrl+F
+  搜到折叠内容），那是自己发明的路子，代价是每个折叠行都要渲染一遍长正文；
+  现在折叠时那块代码卡片**根本不存在**（`IntersectionObserver`/shiki 自然也都不跑）。
 
 实测（真浏览器，同一段 3 轮 / 9 个工具的会话）：单行 **24px**、连续三行 **72px**；
 改之前一个 6 行 `read` 结果占 **258px**、3 行 `bash` 占 **201px**（每块还带 16px 上下外边距）。
-门禁 `ui:startup` 的 `compact` 段把这些数字钉住（行高 ≤26、三行 ≤76、折叠时正文仍在 DOM
-里且 `display:none`、点开出现代码卡片、再点收起）。
+门禁 `ui:startup` 的 `compact` 段把这些数字钉住（行高 ≤26、三行 ≤76、折叠时正文**不在
+DOM 里**、点开出现代码卡片、再点收起）。
 
 **什么**是这块卡片：`inferToolLang()` 按内容认 diff、按 toolName 认 shell，其余纯文本 ——
 三者都拿到折叠 / 行数 / 复制 / 超高展开。已知缺口：pi 的 toolResult **不含路径**

@@ -12,7 +12,7 @@
  *
  * 这里锁四件事：
  *   ① 行模型（标题/摘要/变体）按 DSH 的表 + pi 的真实参数键推导；
- *   ② 默认**折叠**且正文留在 DOM 里但不可见（本仓"折叠 ≠ 不渲染"的纪律）；
+ *   ② 默认**折叠**（DSH 同款：折叠 = 正文不挂载，展开才渲染）；
  *   ③ 点一下/按回车能展开，展开后还是原来那块代码卡片；
  *   ④ 失败行的摘要取结果首行并标红（DSH 的 `errorSummary`）。
  */
@@ -106,16 +106,12 @@ describe('工具窄行渲染', () => {
     expect(row.querySelector('.pg-trow-summary')!.getAttribute('data-summary-source')).toBe('args');
   });
 
-  it('折叠 ≠ 不渲染：正文留在 DOM 里但不可见（Ctrl+F / 复制拿得到）', () => {
+  it('折叠 = 正文**不挂载**（DSH `{open && children}`）—— 那一块代码卡片根本不存在', () => {
     mountDom(
       <MessageView view={toolView('bash', 'c1', 'PASS 12 tests\n更多输出') as never} call={CALL} />,
     );
-    const body = domContainer().querySelector('[data-tool-body]')!;
-    expect(body).not.toBeNull();
-    expect(body.getAttribute('hidden')).toBe('until-found');
-    // 内容真的在（不是被 slice 掉）
-    expect(body.textContent).toContain('更多输出');
-    expect(body.querySelector('.pg-codeblock')).not.toBeNull();
+    expect(domContainer().querySelector('[data-tool-body]'), '折叠时正文还在 DOM 里').toBeNull();
+    expect(domContainer().querySelector('.pg-codeblock')).toBeNull();
   });
 
   it('点一下展开：正文可见，再点收起', async () => {
@@ -128,11 +124,11 @@ describe('工具窄行渲染', () => {
       head.click();
     });
     expect(head.getAttribute('aria-expanded')).toBe('true');
-    expect(domContainer().querySelector('[data-tool-body]')!.hasAttribute('hidden')).toBe(false);
+    expect(domContainer().querySelector('[data-tool-body]'), '展开之后正文没挂上').not.toBeNull();
     await act(async () => {
       head.click();
     });
-    expect(domContainer().querySelector('[data-tool-body]')!.getAttribute('hidden')).toBe('until-found');
+    expect(domContainer().querySelector('[data-tool-body]'), '收起之后正文还留着').toBeNull();
   });
 
   it('键盘可达：Enter / Space 都能展开（DSH `DisclosureRow` 同款）', async () => {
@@ -190,12 +186,12 @@ describe('思考行也是窄行', () => {
     const row = root.querySelector('[data-thinking-row]')!;
     expect(row.textContent).toContain('思考');
     expect(row.querySelector('.pg-trow-summary')!.textContent).toBe('先确认入口。');
-    const body = root.querySelector('[data-thinking-body]')!;
-    expect(body.getAttribute('hidden')).toBe('until-found');
-    expect(body.textContent).toContain('第二行思考内容。');
+    expect(root.querySelector('[data-thinking-body]'), '折叠时思考正文还在 DOM 里').toBeNull();
     await act(async () => {
       (root.querySelector('[data-disclosure-row]') as HTMLElement).click();
     });
-    expect(row.querySelector('[data-thinking-body]')!.hasAttribute('hidden')).toBe(false);
+    const body = row.querySelector('[data-thinking-body]')!;
+    expect(body).not.toBeNull();
+    expect(body.textContent).toContain('第二行思考内容。');
   });
 });

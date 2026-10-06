@@ -100,7 +100,6 @@ vi.mock('@tanstack/react-virtual', async () => {
 });
 
 import { Transcript } from '@/features/chat/Transcript';
-import { liveFor } from '@/lib/live';
 import { ensureTabListeners } from '@/lib/tabEvents';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
@@ -196,6 +195,18 @@ function scroller(): HTMLDivElement {
   return el;
 }
 
+/**
+ * 装上假几何，并让**虚拟化器报出同样的可视高度**。
+ *
+ * 真机上这两个数是同一个元素的（虚拟化器内部那个观察者量的就是它），而"布局回来没回来"
+ * 这条信号由虚拟化器提供（见 `useTranscriptScroll` 的收尾 effect）——
+ * 所以测试也必须两个一起给，否则量到的是"面板不在前台"那一幕。
+ */
+async function setGeometry(el: HTMLElement, scrollHeight = 2000, clientHeight = 400) {
+  fakeGeometry(el, scrollHeight, clientHeight);
+  await setScrollerSize(clientHeight);
+}
+
 /** 面板可见性：滚动容器有没有真实布局（见 `scrollerSize` 的说明）。 */
 async function setScrollerSize(height: number) {
   await act(async () => {
@@ -212,11 +223,22 @@ async function emitCommit(ev: Record<string, unknown>) {
   });
 }
 
+/** 从 `pi:frame:{tab}` 通道推一帧（走 `tabEvents` 的真实接线）。 */
+async function emitFrame(frame: Record<string, unknown>) {
+  await act(async () => {
+    busListen.get(`pi:frame:${TAB}`)?.({ payload: frame });
+    await new Promise((r) => setTimeout(r, 10));
+  });
+}
+
 /** 派发一次滚动（React 的 scroll 监听是非 passive 的普通监听，可直接触发）。 */
 async function scrollTo(el: HTMLElement, top: number) {
   await act(async () => {
     el.scrollTop = top;
     el.dispatchEvent(new Event('scroll', { bubbles: false }));
+    /* 真浏览器在一次滚动停下来之后会发 `scrollend` —— 跟随意图就是在那时结算的
+       （DSH 的 `ChatReading.onScrollEnd`）。少了它，测试量到的是"采样窗口还没到"的中间态。 */
+    el.dispatchEvent(new Event('scrollend'));
     await new Promise((r) => setTimeout(r, 10));
   });
 }
@@ -276,7 +298,7 @@ describe('打开会话贴在结尾', () => {
     // 几何要在"贴底那一帧"之前装上：组件在 hydrated 之后用 rAF 贴底，
     // 先 fakeGeometry 再等帧，量到的才是它真的滚到底了。
     const el = scroller();
-    fakeGeometry(el);
+    await setGeometry(el);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -365,7 +387,7 @@ describe('回到底部', () => {
     mountDom(<Transcript tabId={TAB} />);
     await flush();
     const el = scroller();
-    fakeGeometry(el);
+    await setGeometry(el);
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
@@ -389,7 +411,7 @@ describe('回到底部', () => {
     mountDom(<Transcript tabId={TAB} />);
     await flush();
     const el = scroller();
-    fakeGeometry(el);
+    await setGeometry(el);
     await scrollTo(el, 1580); // 距底 20px
     expect(q('[data-to-bottom]')).toBeNull();
     await scrollTo(el, 1500); // 距底 100px
@@ -488,7 +510,7 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
     seedTurns(40);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
+    await setGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -498,7 +520,7 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
     expect(q('[data-rail-mark].is-active')?.getAttribute('data-rail-mark')).toBe('40');
 
     // 模拟流式：内容先长高 400px，随后那次 scroll 事件才被处理（位置仍是我们设的 1600）
-    fakeGeometry(el, 2400, 400);
+    await setGeometry(el, 2400, 400);
     await scrollTo(el, 1600);
 
     // 此刻距底 400px —— 只看几何会判成"读者滚上去了"（修复前就是这样：实测当前刻度 60 → 58，
@@ -511,7 +533,7 @@ describe('流式时"跟随"不许被自己贴的底弄丢（DSH movedByReader）
     seedTurns(4);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400);
+    await setGeometry(el, 2000, 400);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -542,7 +564,7 @@ describe('面板不在前台（被 dockview 摘出 DOM）时的几何', () => {
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
     // 被摘出 DOM：三个读数都是 0（真机实测），先按这个状态挂载
-    fakeGeometry(el, 0, 0);
+    await setGeometry(el, 0, 0);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -562,7 +584,7 @@ describe('面板不在前台（被 dockview 摘出 DOM）时的几何', () => {
     expect(q('[data-to-bottom]'), '跟随意图被一对 0 的假基线判死了').toBeNull();
 
     // 回到前台：元素自己保住了位置（0），但内容已经长高 → 必须贴到**新的**底
-    fakeGeometry(el, 2640, 400);
+    await setGeometry(el, 2640, 400);
     await setScrollerSize(400);
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -575,7 +597,7 @@ describe('面板不在前台（被 dockview 摘出 DOM）时的几何', () => {
     seed(30);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2640, 400);
+    await setGeometry(el, 2640, 400);
     await flush();
     await setScrollerSize(400);
     await act(async () => {
@@ -589,9 +611,9 @@ describe('面板不在前台（被 dockview 摘出 DOM）时的几何', () => {
     // 面板被摘出去（几何全 0）→ 回来。⚠️ 位置**不会**自己回来：实测 Chrome 把摘出
     // 文档的元素再挂回来时 scrollTop 归 0（只有 display:none 才保留），所以这里
     // 显式把它按浏览器的行为清掉 —— 组件必须靠自己的锚点记回来。
-    fakeGeometry(el, 0, 0);
+    await setGeometry(el, 0, 0);
     await setScrollerSize(0);
-    fakeGeometry(el, 2640, 400);
+    await setGeometry(el, 2640, 400);
     el.scrollTop = 0;
     await setScrollerSize(400);
     await act(async () => {
@@ -607,7 +629,7 @@ describe('贴底是幂等的（否则会与测量互相触发）', () => {
     seed(12);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
+    await setGeometry(el, 2000, 400); // 几何要在"贴底那一帧"之前装好
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -697,7 +719,7 @@ describe('向下续页（换窗之后往下滚不再撞墙）', () => {
     mountDom(<Transcript tabId={TAB} />);
     await flush();
     const el = scroller();
-    fakeGeometry(el, 1200, 400); // 内容 1200，视口 400
+    await setGeometry(el, 1200, 400); // 内容 1200，视口 400
 
     /** 滚轮手势（组件只认 wheel：程序化滚动不许触发续页，否则会级联读完整段）。 */
     const wheel = async () => {
@@ -736,7 +758,7 @@ describe('向下续页（换窗之后往下滚不再撞墙）', () => {
     mountDom(<Transcript tabId={TAB} />);
     await flush();
     const el = scroller();
-    fakeGeometry(el, 1200, 400);
+    await setGeometry(el, 1200, 400);
     // 反复"贴到底部"（程序化）：一次都不该续页
     for (let i = 0; i < 5; i += 1) await scrollTo(el, 800);
     expect(
@@ -747,84 +769,63 @@ describe('向下续页（换窗之后往下滚不再撞墙）', () => {
 });
 
 /**
- * 实时块（流式）与虚拟化的交接。
+ * 流式那一行与虚拟化的交接（2026-09-24 重整之后的等价口径）。
  *
  * 起因（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」）：
  * 实时行是转录的**最后一行**，由虚拟化渲染。读者往上滚出窗口、或它在窗口外时这一轮开始流式，
- * 这个节点就会被卸载；回到底部时 React 给的是**另一个新节点**。
- * 早先挂载点由 `useEffect(…, [tabId, streaming])` 决定 —— 节点换了 effect 不会再跑，
- * 引擎从此往被摘掉的那个节点写字，界面上那一行一直是空的，直到 `message_end`
- * 把整段消息交给 store 才一次性出现。
+ * 这个节点就会被卸载。旧实现把文本写进 DOM 节点，节点一换就写到了看不见的地方
+ * —— 界面上那一行从那一刻起空着，直到 `message_end` 把整段消息交给 store 才一次性出现。
  *
- * 这里把"渲染窗口"当成虚拟化器（真机 = 视口 + overscan），确定性地造出那次卸载/重挂。
+ * 现在**内容在 store 里**（`stores/messages` 的 `live` 槽位），DOM 只是它的视图：
+ * 行被卸载多少次都无所谓，重新渲染时按槽位重建。这里把"渲染窗口"当成虚拟化器
+ * （真机 = 视口 + overscan），确定性地造出那次卸载/重挂。
  */
-describe('实时块绑在**当前**那个节点上（虚拟化卸载/重挂）', () => {
-  it('实时行滚出窗口再滚回来：文本继续长在可见节点上，不许空着', async () => {
+describe('流式那一行被虚拟化卸载再挂回来', () => {
+  it('卸载期间的字一个不丢，重新渲染时按槽位重建', async () => {
     seed(30);
     mountDom(<Transcript tabId={TAB} />);
     await setScrollerSize(400);
     await flush();
-    const live = liveFor(TAB);
+    await ensureTabListeners(TAB);
 
-    // 一轮开始 → 末尾出现实时行（真机上这行是 `agent_start` 提交带来的）
-    await act(async () => {
-      useMessages.getState().applyCommit(TAB, { type: 'agent_start' } as never);
-    });
+    await emitCommit({ type: 'agent_start' });
+    await emitCommit({ type: 'message_start', message: { role: 'assistant', content: [] } });
     await flush();
-    await act(async () => {
-      live.handleFrame({ signals: [{ type: 'text_start', contentIndex: 0 }] });
-      live.handleFrame({ text: [{ contentIndex: 0, delta: '前半段' }] });
-    });
-    expect(q('.pg-live')?.textContent).toContain('前半段');
+    await emitFrame({ text: [{ contentIndex: 0, delta: '前半段' }] });
+    expect(q('.pg-md-streaming')?.textContent).toContain('前半段');
 
-    // 读者往上滚：实时行离开渲染窗口（真机 = 虚拟化把它卸载）
+    // 读者往上滚：实时那一行离开渲染窗口（真机 = 虚拟化把它卸载）
     await setWindow(0, 5);
-    expect(q('.pg-live')).toBeNull();
-    // 不在窗口里的帧照收（内容不丢）
-    await act(async () => {
-      live.handleFrame({ text: [{ contentIndex: 0, delta: '中间段' }] });
-    });
+    expect(q('.pg-md-streaming')).toBeNull();
+    // 不在窗口里的帧照收（内容进 store，不依赖 DOM）
+    await emitFrame({ text: [{ contentIndex: 0, delta: '中间段' }] });
 
-    // 回到底部：实时行重新渲染 —— 它必须是引擎的视图，而不是一个空壳
+    // 回到底部：那一行重新渲染 —— 文本必须原样在这儿（不是从节点里读，是从 store 里读）
     await setWindow(0, Number.POSITIVE_INFINITY);
-    const node = q('.pg-live');
-    expect(node, '回到窗口后没有实时行').toBeTruthy();
-    expect(node!.textContent, '实时行重挂之后是空的 —— 引擎写进了被摘掉的那个节点').toContain(
-      '前半段中间段',
-    );
-    // 之后的增量继续落在可见节点上
-    await act(async () => {
-      live.handleFrame({ text: [{ contentIndex: 0, delta: '后半段' }] });
-    });
-    expect(q('.pg-live')!.textContent).toContain('前半段中间段后半段');
+    expect(q('.pg-md-streaming')?.textContent, '重挂之后流式的字不在了').toContain('前半段中间段');
+    await emitFrame({ text: [{ contentIndex: 0, delta: '后半段' }] });
+    expect(q('.pg-md-streaming')!.textContent).toContain('前半段中间段后半段');
   });
 
-  it('新一轮开始清掉上一轮的残留（边界在**事件层**：`agent_start` 一到就清，早于新帧）', async () => {
+  it('新一轮开始：上一轮的流式内容不会漏到这一轮（边界在**事件层**）', async () => {
     seed(4);
     mountDom(<Transcript tabId={TAB} />);
     await setScrollerSize(400);
     await flush();
-    await ensureTabListeners(TAB); // 装上真实接线（pi:commit / pi:frame …）
-    const live = liveFor(TAB);
+    await ensureTabListeners(TAB);
     await emitCommit({ type: 'agent_start' });
-    await flush();
-    await act(async () => {
-      live.handleFrame({ text: [{ contentIndex: 0, delta: '上一轮' }] });
-    });
-    expect(q('.pg-live')?.textContent).toContain('上一轮');
+    await emitCommit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    await emitFrame({ text: [{ contentIndex: 0, delta: '上一轮' }] });
+    expect(q('.pg-md-streaming')?.textContent).toContain('上一轮');
 
-    // 一轮结束（实时块转正）→ 新一轮开始：`agent_start` 一到就把累积文本清掉
-    await emitCommit({ type: 'agent_settled' });
-    await flush();
-    expect(q('.pg-live')).toBeNull();
+    // 上一轮没有 message_end（异常路径）就开始了新一轮：累积文本属于**新的一行**
     await emitCommit({ type: 'agent_start' });
+    await emitCommit({ type: 'message_start', message: { role: 'assistant', content: [] } });
     await flush();
-    expect(q('.pg-live')!.textContent).not.toContain('上一轮');
-    await act(async () => {
-      live.handleFrame({ text: [{ contentIndex: 0, delta: '这一轮' }] });
-    });
-    expect(q('.pg-live')!.textContent).toContain('这一轮');
-    expect(q('.pg-live')!.textContent).not.toContain('上一轮');
+    await emitFrame({ text: [{ contentIndex: 0, delta: '这一轮' }] });
+    const texts = Array.from(domContainer().querySelectorAll('.pg-md-streaming')).map((el) => el.textContent);
+    expect(texts.join('|')).toContain('这一轮');
+    expect(texts.join('|'), '两轮的流式文本串在了一起').not.toMatch(/上一轮.*这一轮/);
   });
 });
 
@@ -832,15 +833,19 @@ describe('实时块绑在**当前**那个节点上（虚拟化卸载/重挂）',
  * 流式中"手动往上滚"必须真的把控制权拿走（用户 2026-09-23 报：
  * "一直向下滚动，我希望手动向上翻滚时，不会被自动跳到最底下"）。
  *
- * 现场：`nextFollowingFromSample` 的第 2 条规则是"内容比上次采样更高 → 是内容把底推走的，
- * 继续跟随"（它救的是 `loadTail` 换页时浏览器滚动锚定造成的假位置）。可流式时内容
- * **每 16ms 长高一次**，于是读者滚轮那次采样也命中这条规则 → 跟随原地保持 →
- * 下一帧贴底把人拽回去。真浏览器实测（修复前）：`wheel(0,-25)`×4 之后每 25ms 采样，
- * `gap` 恒为 0、位置一路跟着内容往上长 —— 滚轮在手感上完全没反应。
+ * 这条现在**完全按 DSH 的口径**判，没有自定义规则：
  *
- * 判据换成"这次滚动背后有没有读者的手势"：有手势只认几何，没手势才用老规则。
+ * ```
+ * 读者动过（movedByReader）→ 采样（scrollend 或 500ms）→ following = 离底 ≤ 25px ?
+ * 采样窗口内（pending）        → 谁都不许贴底（连内容长高也不行）
+ * ```
+ *
+ * 关键在于"离底"用的是**采样那一刻**的几何：流式时内容每 16ms 长高一次，读者的位移
+ * 一旦被内容推得超过容差，`nearBottom` 就是假 —— 跟随当场交还。真浏览器实测（旧实现）：
+ * 判据是"内容比上次采样更高 → 继续跟随"，于是每次采样都命中那条规则，`gap` 恒为 0、
+ * 位置一路被内容推着走，滚轮在手感上完全没反应。
  */
-describe('流式中的回滚：读者手势说了算', () => {
+describe('流式中的回滚：DSH 的采样口径', () => {
   function seedRows(n: number) {
     useMessages.getState().hydratePage(
       TAB,
@@ -849,7 +854,7 @@ describe('流式中的回滚：读者手势说了算', () => {
     );
   }
 
-  /** 真滚轮（jsdom 不会自己滚，所以手势与位置分开造：先 wheel，再改位置 + 派发 scroll）。 */
+  /** 真滚轮（jsdom 不会自己滚，所以手势与位置分开造：先 wheel，再改位置 + 派发 scroll/scrollend）。 */
   async function wheelUp(el: HTMLElement, deltaY: number) {
     await act(async () => {
       el.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: false }));
@@ -861,22 +866,22 @@ describe('流式中的回滚：读者手势说了算', () => {
     seedRows(40);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400);
+    await setGeometry(el, 2000, 400);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
     expect(el.scrollTop, '组件应当已经贴到底').toBe(1600);
 
-    // 流式中：内容先长高，读者同时往上滚（滚轮手势在手）
-    fakeGeometry(el, 3400, 400);
+    // 流式中：内容先长高，读者同时往上滚（位移远超容差 → 采样判"不跟"）
+    await setGeometry(el, 3400, 400);
     await wheelUp(el, -300);
     await scrollTo(el, 1300);
     expect(q('[data-to-bottom]'), '读者滚上去了，跟随却没交还（下一帧就会被拽回底部）').toBeTruthy();
 
     // 内容继续长高 + 新消息落地：位置必须留在读者那里
     const keep = el.scrollTop;
-    fakeGeometry(el, 4200, 400);
+    await setGeometry(el, 4200, 400);
     await scrollTo(el, keep);
     await act(async () => {
       useMessages.getState().applyCommit(TAB, {
@@ -892,25 +897,28 @@ describe('流式中的回滚：读者手势说了算', () => {
     expect(q('[data-to-bottom]'), '交还之后按钮不许自己消失').toBeTruthy();
   });
 
-  it('小滚轮一格（25px，正好在"贴着底"的容差内）也必须交还 —— 容差不许吞掉读者的手势', async () => {
+  it('容差就是容差：离底 ≤25px 的位移仍算跟随（DSH `nearBottom`），超了就交还', async () => {
     seedRows(40);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400);
+    await setGeometry(el, 2000, 400);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
     expect(el.scrollTop).toBe(1600);
 
-    // 内容在长高（流式），读者只滚了一格：25px。老口径会把它当成"还贴着底"，
-    // 于是下一次贴底把这一格吞掉 —— 门禁实测 4 格连滚都被按回底部（gap 一路 0）。
-    fakeGeometry(el, 3400, 400);
-    await wheelUp(el, -25);
-    await scrollTo(el, 1575);
-    expect(q('[data-to-bottom]'), '25px 的上滚被容差吞掉了（读者翻不上去）').toBeTruthy();
+    // ① 容差内：离底 20px，采样之后仍算"贴着底"，不出现「回到底部」
+    await scrollTo(el, 1580);
+    expect(q('[data-to-bottom]'), '距底 20px 应当仍算贴着底').toBeNull();
+
+    // ② 超容差：离底 40px → 采样判定交还
+    await scrollTo(el, 1560);
+    expect(q('[data-to-bottom]'), '离底 40px 之后跟随没交还').toBeTruthy();
+
+    // ③ 交还之后，内容继续长高也不许把读者拽回底部（用户报的那件事）
     const keep = el.scrollTop;
-    fakeGeometry(el, 3800, 400);
+    await setGeometry(el, 3800, 400);
     await scrollTo(el, keep);
     await act(async () => {
       useMessages.getState().applyCommit(TAB, {
@@ -922,14 +930,14 @@ describe('流式中的回滚：读者手势说了算', () => {
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
     });
-    expect(el.scrollTop, '一格上滚之后又被拽回底部').toBe(keep);
+    expect(el.scrollTop, '交还之后内容一长高又把读者拽回去了').toBe(keep);
   });
 
   it('滚回底部之后跟随自己回来（下一次长高又贴底）', async () => {
     seedRows(40);
     mountDom(<Transcript tabId={TAB} />);
     const el = scroller();
-    fakeGeometry(el, 2000, 400);
+    await setGeometry(el, 2000, 400);
     await flush();
     await act(async () => {
       await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -943,7 +951,7 @@ describe('流式中的回滚：读者手势说了算', () => {
     expect(q('[data-to-bottom]'), '滚到底了跟随却没回来').toBeNull();
 
     // 再长高 → 又贴到新的底
-    fakeGeometry(el, 2400, 400);
+    await setGeometry(el, 2400, 400);
     await act(async () => {
       useMessages.getState().applyCommit(TAB, {
         type: 'message_end',

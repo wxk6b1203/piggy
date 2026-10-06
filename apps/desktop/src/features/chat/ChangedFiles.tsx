@@ -4,6 +4,9 @@
  * ⚠️ 不是一行 chips——DSH 已在 commit `f937f4e23b` 删掉旧的 `本轮文件改动` 行，
  * 换成这张回合尾卡片，标题 `已编辑 {count} 个文件`（折叠阈值 4 行）。
  *
+ * 交互差异：点击是**开一个新标签页**（Piggy 没有 DSH 那种右栏预览面板），
+ * 由 `MessageView` 传 `onOpen` 进来（`openPreviewTab`，与右栏文件树同一条路）。
+ *
  * 数据来源差异：DSH 由宿主服务端读 `ChangesSummary`；Piggy 从转录流里的
  * `edit` / `write` 类工具调用就地聚合（零额外进程，docs/04 §1.6 同一思路），
  * 因此只有**文件计数**是确定的，`+N/-M` 行数增量不臆造、直接不显示。
@@ -69,7 +72,9 @@ export function ChangedFiles({ files, onOpen }: { files: ChangedFile[]; onOpen?:
         </span>
         <span className="pg-cf-titles">
           <span className="pg-cf-title">已编辑 {files.length} 个文件</span>
-          <span className="pg-cf-stat">在侧边栏预览</span>
+          {/* DSH 这句写的是「在侧边栏预览」——它的右栏就是文档预览面板。
+              Piggy 没有那个面板，点击是**开一个新标签页**，所以这句照实写。 */}
+          <span className="pg-cf-stat">在标签页中打开</span>
         </span>
       </button>
 

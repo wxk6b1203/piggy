@@ -1768,15 +1768,25 @@ if (typeof window !== 'undefined' && isMock) {
     async streamFor(totalMs: number, chunkMs = 16, tabId = TAB): Promise<number> {
       const start = performance.now();
       emit(`pi:commit:${tabId}`, { type: 'agent_start' });
+      /* 一轮 = `message_start` … 帧 … `message_end`（与真机 pi 的事件顺序一致）。
+         少了 message_start，帧会被丢掉（流式那一行是它建出来的，见 stores/messages.ts）。 */
+      emit(`pi:commit:${tabId}`, { type: 'message_start', message: { role: 'assistant', content: [] } });
       let i = 0;
+      let text = '';
       while (performance.now() - start < totalMs) {
+        const delta = '流式渲染性能压测流。';
+        text += delta;
         emit(`pi:frame:${tabId}`, {
-          text: [{ contentIndex: 0, delta: '流式渲染性能压测流。' }],
+          text: [{ contentIndex: 0, delta }],
           usage: { totalTokens: 1000 + i },
         });
         i += 1;
         await new Promise((r) => setTimeout(r, chunkMs));
       }
+      emit(`pi:commit:${tabId}`, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text }], timestamp: Date.now() },
+      });
       emit(`pi:commit:${tabId}`, { type: 'agent_settled' });
       return i;
     },
@@ -1788,17 +1798,43 @@ if (typeof window !== 'undefined' && isMock) {
     async streamMixed(totalMs: number, chunkMs = 16, tabId = TAB): Promise<void> {
       const start = performance.now();
       emit(`pi:commit:${tabId}`, { type: 'agent_start' });
+      emit(`pi:commit:${tabId}`, { type: 'message_start', message: { role: 'assistant', content: [] } });
       emit(`pi:frame:${tabId}`, { signals: [{ type: 'thinking_start', contentIndex: 0 }] });
       emit(`pi:frame:${tabId}`, { thinking: [{ contentIndex: 0, delta: '先读一下 stores/messages.ts\n第二行思考' }] });
-      emit(`pi:frame:${tabId}`, { signals: [{ type: 'toolcall_start', contentIndex: 1, toolName: 'edit' }] });
+      emit(`pi:frame:${tabId}`, { signals: [{ type: 'toolcall_start', contentIndex: 1, id: 'live-edit', toolName: 'edit' }] });
       emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: '{"file_path":"src/stores/mes' }] });
       emit(`pi:frame:${tabId}`, { toolArgs: [{ contentIndex: 1, delta: 'sages.ts","old_string":"a","new_string":"b"}' }] });
+      /* 正文从 markdown 开头流：门禁据此断言"流式途中标题/粗体已经成形"
+         （部分渲染 markdown，`features/chat/markdown.tsx` 的增量解析）。 */
+      const head = '## 流式标题\n\n这是 **加粗** 的正文：';
+      emit(`pi:frame:${tabId}`, { text: [{ contentIndex: 2, delta: head }] });
       let i = 0;
+      let text = head;
       while (performance.now() - start < totalMs) {
-        emit(`pi:frame:${tabId}`, { text: [{ contentIndex: 2, delta: '正文流。' }], usage: { totalTokens: 1000 + i } });
+        const delta = '正文流。';
+        text += delta;
+        emit(`pi:frame:${tabId}`, { text: [{ contentIndex: 2, delta }], usage: { totalTokens: 1000 + i } });
         i += 1;
         await new Promise((r) => setTimeout(r, chunkMs));
       }
+      /* 转正：与流式帧里那份参数一致（同一行，不重挂） */
+      emit(`pi:commit:${tabId}`, {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: '先读一下 stores/messages.ts\n第二行思考' },
+            {
+              type: 'toolCall',
+              id: 'live-edit',
+              name: 'edit',
+              arguments: { file_path: 'src/stores/messages.ts', old_string: 'a', new_string: 'b' },
+            },
+            { type: 'text', text },
+          ],
+          timestamp: Date.now(),
+        },
+      });
       emit(`pi:commit:${tabId}`, { type: 'agent_settled' });
     },
     /** S3：hydrate n 条消息，返回耗时 ms（对应"打开大会话"路径） */

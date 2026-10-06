@@ -7,7 +7,7 @@
  * `C:\Users\x\proj` 会被当成一段，项目分组标题/标签页标题直接显示整条路径。
  */
 import { describe, expect, it } from 'vitest';
-import { baseName, lastSeparator, splitPath } from '@/lib/paths';
+import { baseName, lastSeparator, resolveAgainst, splitPath } from '@/lib/paths';
 
 describe('baseName（POSIX 与 Windows 路径都要认）', () => {
   it('POSIX 路径', () => {
@@ -60,5 +60,25 @@ describe('会话分组标题（Windows 上过去会显示整条路径）', () =>
     expect(groupLabel('C:\\Users\\x\\proj')).toBe('proj');
     // 取不到末段时不至于显示空标题（回退整串）
     expect(groupLabel('')).toBe('');
+  });
+});
+
+/** 把工具参数里的相对路径解析成绝对路径（预览面板要绝对路径才读得到文件）。 */
+describe('resolveAgainst', () => {
+  it('相对路径接在会话 cwd 后面（多余的 ./ 与重复分隔符都收掉）', () => {
+    expect(resolveAgainst('/Users/x/proj', 'src/a.ts')).toBe('/Users/x/proj/src/a.ts');
+    expect(resolveAgainst('/Users/x/proj/', './src/a.ts')).toBe('/Users/x/proj/src/a.ts');
+    expect(resolveAgainst('C:\\Users\\x\\proj', 'src\\a.ts')).toBe('C:\\Users\\x\\proj\\src\\a.ts');
+  });
+
+  it('绝对路径原样返回（POSIX / Windows 盘符 / UNC）', () => {
+    expect(resolveAgainst('/Users/x/proj', '/tmp/a.py')).toBe('/tmp/a.py');
+    expect(resolveAgainst('C:\\p', 'D:\\other\\a.ts')).toBe('D:\\other\\a.ts');
+    expect(resolveAgainst('/p', '\\\\server\\share\\a.ts')).toBe('\\\\server\\share\\a.ts');
+  });
+
+  it('没有 cwd 时原样返回（预览会老实报读不到，不编一个路径）', () => {
+    expect(resolveAgainst(null, 'src/a.ts')).toBe('src/a.ts');
+    expect(resolveAgainst('', 'src/a.ts')).toBe('src/a.ts');
   });
 });

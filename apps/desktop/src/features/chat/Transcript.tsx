@@ -1,103 +1,124 @@
 /**
- * 会话转录（docs/04 §2.1）：虚拟化 + per-tab 实时块挂载点 + 预览滚动条（§2.6）
- * + 分页（§2.1.1，docs/03 §2.19）。
+ * 会话转录（docs/04 §2.1）：虚拟化行 + 分页 + 贴底跟随（§2.1.1）+ 预览滚动条（§2.6）。
  *
- * 预览滚动条挂在**这里**而不是会话工作区：它要的东西全在这个组件手里——
- * 滚动容器、虚拟化器（"第几行在阅读线上"与"跳到第几行"都靠它）。
- * 放到上层就得把这些再往外提一层，多一份需要同步的状态。
+ * ## 这个组件现在只做四件事
  *
- * ## 打开即贴底（`followingTail`）
+ * ```
+ * 行源（store 的 ids，含流式那一行）→ 虚拟化 → Row/MessageView
+ * 滚动策略 → useTranscriptScroll（阅读意图 + 历史导航，决策都在那边）
+ * 位置读写 → TranscriptViewport（DOM 与几何的属主）
+ * 刻度梯 → TurnRail（数据来自 turnRailItems，当前轮次由阅读线算）
+ * ```
  *
- * 长会话打开时如果停在开头，用户每次都得先滚到底——所以**默认跟随尾部**
- * （DSH `ScrollFollow` 的初始 `followingTail`）：第一页灌进来就贴底，
- * 之后新内容继续贴底，直到**读者自己往上滚**才交还控制权，
- * 此时右下角出现「回到底部」（DSH `chat.toBottom`）。
+ * 它**不再**直接写 `scrollTop`、不再持有跟随意图的 ref、也不再往 DOM 里直写流式文本：
+ * 那三件事分别归 `TranscriptViewport`、`useTranscriptScroll` 与 store
+ * （见各自的文件头）。历史上这里塞过 `pinnedTopRef` / `pinnedHeightRef` /
+ * `readerGestureRef` / `readerUpRef` / `attachLive` 五套机制，每一套都为某一个具体 bug
+ * 打补丁，合起来没人能说清"现在到底跟不跟"。
+ *
+ * ## 流式的行就是转录里的那一行
+ *
+ * 行源是 store 的 `ids`：`message_start` 时那一行**已经进来了**（`live` 槽位装着流式块），
+ * `message_end` 只是把权威内容填进同一行。于是没有"实时块"与"提交行"两套 DOM，
+ * 也就没有重复、没有下标漂移、没有"最后又打印一遍"（见 `stores/messages.ts` 文件头）。
  *
  * ## 分页
  *
- * 打开只载入尾部一页；上面还有历史时，转录顶端出现「加载更早」
- * （DSH `chat.loadOlder`），加载中显示「载入历史…」。翻页**不许跳**：
- * 先把当前的 `scrollTop` / `scrollHeight` 记下来，DOM 更新后按高度差补回去
- * （纯函数 `scrollTopAfterPrepend`，几何口径有单测）。
+ * 打开只载入尾部一页；上面还有历史时顶端出现「加载更早」（DSH `chat.loadOlder`），
+ * 加载中显示「载入历史…」。翻页**不许跳**：位置补偿在 `TranscriptViewport.preserve`
+ * （按行锚点还位置，行高变了也不会把读者带到别的行上）。换窗之后
+ * （`hasNewer`）右下角并排「继续往下」与「回到最新」。
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
-import { liveFor } from '@/lib/live';
-import { loadNewer, loadOlder, loadTail, loadWindowAt } from '@/lib/transcriptPage';
-import { toast } from '@/lib/feedback';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
 import { useTodoSupported } from '@/stores/todo';
-import { useTabs } from '@/stores/tabs';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
 import { todoBaselines, type TodoItem } from '@/lib/todoModel';
-import {
-  activeTurnOf,
-  findRowIndexByOffset,
-  mergeRailItems,
-  type RailItem,
-  type RailSourceRow,
-} from './turnRailItems';
+import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItems';
 import { TurnRail } from './TurnRail';
-import {
-  isAtTail,
-  nextFollowingFromSample,
-  readerAnchorOf,
-  readerTopFrom,
-  scrollTopAfterPrepend,
-  type ReaderAnchor,
-} from './transcriptScroll';
-
-const LIVE_ID = '__live__';
-
-/**
- * 读者"想往上"的意图有效期（ms）。
- *
- * 一次向上滚轮会**立刻**交还控制权（见 `readerUpRef`），但"交还"要能扛住随后那次采样：
- * 位置刚走了 25px 时几何上仍算"贴着底"（25px 容差），按老规则会当场把跟随还回来 →
- * 下一帧又把读者拽回去。所以手势期间**不许**用容差反悔；等位置真的往上走了一格
- * （或手势超过这个窗口还没走成）才结束这次手势，之后才回到"贴底就跟随"的常规规则。
- * 400ms 是因为 macOS 的惯性滚动会在手指离开后继续发一堆 wheel 事件。
- */
-const READER_GESTURE_MS = 400;
-
-/** 从 store 的一个 tab 里取出刻度需要的行原料（跳转落位时重新读一次）。 */
-function railRowsOf(tab: { ids: string[]; byId: Record<string, { role: string; message: unknown; offset: number | null }> } | undefined): RailSourceRow[] {
-  if (!tab) return [];
-  return tab.ids.map((id) => {
-    const row = tab.byId[id];
-    return {
-      role: row?.role ?? '',
-      content: (row?.message as { content?: unknown })?.content,
-      offset: row?.offset ?? null,
-    };
-  });
-}
+import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
+import { railRowsFor, useTranscriptScroll } from './useTranscriptScroll';
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  /** 内容层（高度 = 虚拟总高）：测行高会改它，贴底要盯着它。 */
-  const innerRef = useRef<HTMLDivElement>(null);
   const ids = useTabMsg(tabId, (t) => t.ids);
-  const streaming = useTabMsg(tabId, (t) => t.streaming);
-  const byId = useTabMsg(tabId, (t) => t.byId);
+  const hydrated = useTabMsg(tabId, (t) => t.hydrated);
   const hasMore = useTabMsg(tabId, (t) => t.hasMore);
   const loadingOlder = useTabMsg(tabId, (t) => t.loadingOlder);
-  const outline = useTabMsg(tabId, (t) => t.outline);
-  const pageCursor = useTabMsg(tabId, (t) => t.pageCursor);
   const hasNewer = useTabMsg(tabId, (t) => t.hasNewer);
   const loadingNewer = useTabMsg(tabId, (t) => t.loadingNewer);
-  const hydrated = useTabMsg(tabId, (t) => t.hydrated);
-  // 换窗期间（hasNewer）窗口不在尾部：实时块挂上去会出现在**几轮之前**的位置。
-  // 用 `useMemo` 稳住身份：读者锚点的还原要按行键在它里面找下标（`indexOf`），
-  // 而每次渲染新建一个数组会让下面那些以它作依赖的回调每帧换新。
-  const rowIds = useMemo(
-    () => (streaming && !hasNewer ? [...ids, LIVE_ID] : ids),
-    [streaming, hasNewer, ids],
-  );
+  const outline = useTabMsg(tabId, (t) => t.outline);
+  /* 权威内容的版本号（帧不动它）：派生值要"消息变了就重算"，但不能因此每帧重渲染
+     —— 订阅 `byId` 就是每帧重渲染（见 stores/messages.ts 的 `commitSeq`）。 */
+  const commitSeq = useTabMsg(tabId, (t) => t.commitSeq);
   const todoOn = useTodoSupported();
+  const railPlacement = useAppConfig((s) => s.railPlacement);
+
+  /** 滚动容器的属主（DOM + 几何 + 锚点）；生命周期与这个组件一样长。 */
+  const [viewport] = useState(() => new TranscriptViewport());
+
+  const virtualizer = useVirtualizer({
+    count: ids.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 88,
+    overscan: 6,
+    getItemKey: (i) => ids[i] ?? `row-${i}`,
+  });
+
+  /* 行几何的适配器：**只造一次**，里面读最新的 ids 与虚拟化器。
+     不把 `virtualizer` 放进依赖：它的实例在真机上是稳定的，但"依赖一个会换引用的对象"
+     会让下面的 attach effect 每次渲染都重跑（重挂监听器、丢掉归因基线），
+     而这类"看起来只是多跑一次"的重挂正是最难查的那种间歇性 bug。 */
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
+  const virtRef = useRef(virtualizer);
+  virtRef.current = virtualizer;
+  const [geometry] = useState<RowGeometry>(() => ({
+    indexOf: (key) => {
+      const i = idsRef.current.indexOf(key);
+      return i < 0 ? null : i;
+    },
+    startOf: (index) => virtRef.current.getOffsetForIndex(index, 'start')?.[0] ?? null,
+    items: () => virtRef.current.getVirtualItems(),
+    totalSize: () => virtRef.current.getTotalSize(),
+    // 兜底（见 `RowGeometry.scrollTo`）：行还没测量时按虚拟化器的估计滚过去
+    scrollTo: (index) => virtRef.current.scrollToIndex(index, { align: 'start' }),
+  }));
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    viewport.attach(el, geometry);
+    return () => viewport.detach();
+  }, [viewport, geometry]);
+
+  const scroll = useTranscriptScroll(viewport, {
+    tabId,
+    ready: hydrated,
+    rowCount: ids.length,
+    totalSize: virtualizer.getTotalSize(),
+    // 面板被 dockview 摘出 DOM 时虚拟化器报 0（它内部那个观察者量的）：
+    // 这个值同时是"内容变了"和"重新有布局了"的信号（见 useTranscriptScroll 的两条 effect）
+    layoutHeight: virtualizer.scrollRect?.height ?? 0,
+    hasMore,
+    loadingOlder,
+    hasNewer,
+    loadingNewer,
+  });
+
+  /* 刻度梯：整段会话的轮次轮廓（文件扫出来的）+ 已载入的行（真实行覆盖轮廓）。
+     于是"预览全部、展示部分"同时成立（DSH `mergeTurnRailItems` 同构）。 */
+  const railRows = useMemo<RailSourceRow[]>(
+    () => railRowsFor(tabId),
+    // ids/commitSeq 变了就要重算（`railRowsFor` 直接读 store，所以这里显式列依赖）
+    [tabId, ids, commitSeq],
+  );
+  const railItems = useMemo(() => mergeRailItems(outline, railRows), [outline, railRows]);
+
   /**
    * 每一条 `todo_write` 的**上一份清单**（差异对比的基线，DSH 的 `todoHistory`）。
    *
@@ -106,504 +127,32 @@ export function Transcript({ tabId }: { tabId: string }) {
    * 没探测到 todo 能力时不算（一个字节都不多花）。
    */
   const baselines = useMemo(
-    () => (todoOn ? todoBaselines(ids.map((id) => byId[id]).filter(Boolean) as MessageViewT[]) : null),
-    [todoOn, ids, byId],
-  );
-  const railPlacement = useAppConfig((s) => s.railPlacement);
-
-  /**
-   * 跟随尾部：`ref` 给滚动/尺寸回调读（它们不该因意图变化而重挂），
-   * `state` 只驱动「回到底部」按钮的显隐。
-   *
-   * ⚠️ 意图变化必须**同时**告诉实时块引擎（`lib/live` 的 `setFollowing`）：
-   * 引擎自己有一条 rAF 贴底（`follow()`，离底 <120px 就贴），读者一接管它就成了
-   * "每帧把读者拽回底部"的元凶 —— 用户 2026-09-23 报的"手动向上翻滚时会被自动跳到最底下"
-   * 就是它（实测：滚轮往上 120px 之后每一帧都被贴回，`gap` 恒为 0）。
-   */
-  const followingRef = useRef(true);
-  const [following, setFollowingState] = useState(true);
-  const setFollowing = useCallback(
-    (next: boolean) => {
-      liveFor(tabId).setFollowing(next);
-      if (followingRef.current === next) return;
-      followingRef.current = next;
-      setFollowingState(next);
-    },
-    [tabId],
+    () =>
+      todoOn
+        ? todoBaselines(
+            ids
+              .map((id) => useMessages.getState().tabs[tabId]?.byId[id])
+              .filter(Boolean) as MessageViewT[],
+          )
+        : null,
+    [todoOn, tabId, ids, commitSeq],
   );
 
-  /**
-   * 读者手势（滚轮 / 触摸 / 拖滚动条）的最近时刻 —— 非方向性的"这是人滚的"标记。
-   *
-   * 为什么要它：`nextFollowingFromSample` 的第 2 条规则是"内容比上次采样更高 → 是内容把底
-   * 推走的，继续跟随"。流式时内容**每 16ms 就长高一次**，于是"读者刚往上滚了一下"这个
-   * 采样也会命中那条规则 → 跟随意图原地保持 → 下一帧贴底把人拽回去（滚轮在手感上完全没反应）。
-   * 内容长高确实不能算读者滚动（那条规则要留着，它救的是 `loadTail` 换页时浏览器滚动锚定
-   * 造成的假位置），所以判据要换成**"这次滚动背后有没有读者的手势"**。
-   */
-  const readerGestureRef = useRef(0);
-  const markReaderGesture = useCallback(() => {
-    readerGestureRef.current = performance.now();
-  }, []);
-
-  /**
-   * 读者**向上**的意图：`{ top: 滚轮那一刻的位置, at: 时刻 }`。
-   *
-   * 与 `readerGestureRef` 分开，是因为它要扛的东西不同：一次上滚必须**兑现**
-   * （位置真的往上走了一格），期间不许被"贴着底"的 25px 容差反悔掉
-   * —— 小滚轮一格正好是 25px 上下，容差会把每一次都吞掉，读者永远翻不上去
-   * （门禁第 20 段实测：4 × `wheel(0,-25)` 每次都被按回底部，`gap` 一路是 0）。
-   */
-  const readerUpRef = useRef<{ top: number; at: number } | null>(null);
-
-  const virtualizer = useVirtualizer({
-    count: rowIds.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 88,
-    overscan: 6,
-    getItemKey: (i) => rowIds[i] ?? `row-${i}`,
-  });
-
-  /**
-   * 实时块的挂载点：**回调 ref** —— 节点的生死由 React 报，不由 effect 的依赖猜。
-   *
-   * 起因（用户 2026-09-23 报「有时候不会滚动输出，会等到完成后再全部输出」）：
-   * 实时行是最后一行、由虚拟化渲染，读者往上滚出窗口（或它在窗口外时这一轮开始流式）
-   * 就会**卸载**；回来时 React 给的是**另一个新节点**。早先这里写的是
-   * `useEffect(… mount(liveRef.current, scrollRef.current) …, [tabId, streaming])`：
-   * 节点换了 effect 不会再跑，引擎从此一直往被摘掉的那个节点写字，
-   * 界面上那一行空着，直到 `message_end` 把整段消息交给 store 才一次性出现。
-   *
-   * 现在：节点挂上就 `attach`，摘掉就 `detach`（文本留在引擎的 `pending` 里，
-   * 见 `lib/live` 的说明），文本与视图各司其职。
-   */
-  const attachLive = useCallback(
-    (node: HTMLDivElement | null) => {
-      const engine = liveFor(tabId);
-      if (node) {
-        engine.attach(node);
-        // 挂上就把当前意图同步过去：读者接管过之后再挂回来的节点，不许自己贴底
-        engine.setFollowing(followingRef.current);
-      } else {
-        engine.detach();
-      }
-    },
-    [tabId],
+  /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
+     ⚠️ 阅读线**不看瞬时几何**：流式时内容两帧之间长高，几何会把"自己贴的底"读成
+     "读者滚上去了"，于是亮条在最新那轮与阅读线那轮之间逐帧来回翻（实测 58 ↔ 61）。 */
+  const activeTurn = useMemo(
+    () => activeTurnOf(railItems, scroll.readingRow ?? 0, scroll.following),
+    [railItems, scroll.readingRow, scroll.following],
   );
 
-  /* 一轮的边界（实时块的累积文本作废）**不在这里清**：它由 `lib/tabEvents` 在
-     `agent_start` 到达时、`applyCommit` 之前清（那里有 IPC 的顺序保证，见那边的说明）。
-     渲染侧"下一帧再清"会清掉新一轮开头已经收到的帧 —— 探针实测过：同一 tick 里
-     `agent_start` + 帧，那一行最后是空的。 */
-
-  /**
-   * 我们上一次**程序化**设置的 scrollTop（DSH `ScrollFollow.sampledTop` 同义）。
-   *
-   * 为什么要记：贴底这个动作本身会产生一次 scroll 事件，而它**不是读者在滚**。
-   * 只用几何判断"离底多远"会在流式下判错——内容在两帧之间长高，
-   * 等 scroll 事件被处理时 `scrollHeight` 已经变了，于是"自己贴的底"被当成
-   * "读者滚上去了"，跟随意图当场丢掉、视图停在半空。
-   * 实测（真浏览器 + mock 流式）：一开口说话，当前刻度就从第 60 轮掉到 58 轮、
-   * 之后再也不跟。所以判定必须带"这个位置是不是我们自己设的"。
-   */
-  const pinnedTopRef = useRef<number | null>(null);
-
-  /**
-   * 上次**贴底那一刻**的 scrollHeight。
-   *
-   * 判据是"现在比贴底时更高吗"——比"比上次采样更高吗"稳：采样可能发生在
-   * 布局还没完成时（首帧 scrollHeight 为 0），那样第一次真实滚动会被误判成"内容长高"，
-   * 于是读者往上滚也不交还控制权（测试里当场就红）。
-   */
-  const pinnedHeightRef = useRef<number | null>(null);
-
-  /**
-   * 读者接管之后"读到哪了"（见 `transcriptScroll.ReaderAnchor` 的说明）。
-   *
-   * dockview 把非活动面板摘出 DOM，而**浏览器不保留被摘出元素的滚动位置**
-   * （实测：`removeChild` → `appendChild` 之后 `scrollTop` 从 300 掉到 0；
-   * 只有 `display:none` 才是保留的）。所以读者本来在读的位置，必须由我们自己记回来，
-   * 否则每次切标签都回到那一页的高位 —— 用户报的正是这一条。
-   */
-  const readerAnchorRef = useRef<ReaderAnchor | null>(null);
-
-  /**
-   * 贴底。**不**改跟随意图——调用方决定（打开会话 / 用户点按钮 / 内容增长）。
-   *
-   * **幂等**：已经贴着底（差 ≤1px）就只刷新记录、不写 `scrollTop`。
-   * 写了也不会怎样，但"内容变 → 写位置 → 布局变 → 内容变"这种没必要的写
-   * 正是历史上那两次 ResizeObserver 自循环的燃料，能省则省。
-   *
-   * **没有布局时直接返回**（`clientHeight === 0`）：dockview 把非活动面板的内容
-   * 摘出 DOM（`EditorArea` 的注释与门禁实测都确认了这条），此时 `scrollHeight` /
-   * `clientHeight` / `scrollTop` 三个都是 0 → `gap = 0` 会被误读成"已经贴着底"，
-   * 于是把 `pinnedTop/pinnedHeight` 记成一对 0。那一对 0 是**假基线**：
-   * 面板重新可见后第一次采样会因为"没有可靠基线"直接把跟随意图判死
-   * （`nextFollowingFromSample` 的口径），用户看到的就是"切回来的会话停在半空、
-   * 而且再也不跟着走了"。
-   */
-  const pinToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (el.clientHeight <= 0) return; // 摘出 DOM / 还没布局：贴底是空操作
-    const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
-    if (gap <= 1) {
-      pinnedTopRef.current = el.scrollTop;
-      pinnedHeightRef.current = el.scrollHeight;
-      return;
-    }
-    el.scrollTop = el.scrollHeight;
-    pinnedTopRef.current = el.scrollTop;
-    pinnedHeightRef.current = el.scrollHeight;
-  }, []);
-
-  /** 读者动作（点刻度跳转 / 换窗）：忘掉"程序化位置"，下一次滚动算读者滚的。 */
-  const handOverToReader = useCallback(() => {
-    pinnedTopRef.current = null;
-    setFollowing(false);
-  }, [setFollowing]);
-
-  // 换标签 = 换会话：跟随意图回到初始值（DSH 打开会话没有"上次读到哪"时直接贴底）
-  useEffect(() => {
-    setFollowing(true);
-  }, [setFollowing, tabId]);
-
-  // 换窗（跳到很久以前）：窗口不在尾部，跟随意图必须关掉
-  useEffect(() => {
-    if (!hasNewer) return;
-    setFollowing(false);
-  }, [hasNewer, setFollowing]);
-
-  // 第一页灌进来（hydrated 由 false 变 true）→ 贴底
-  useEffect(() => {
-    if (!hydrated) return;
-    if (hasNewer) return; // 换窗状态：窗口不在尾部，贴底是错的
-    if (!followingRef.current) return;
-    requestAnimationFrame(pinToBottom);
-  }, [hydrated, hasNewer, pinToBottom]);
-
-  /**
-   * 内容变高 → 只要还在跟随就贴底。
-   *
-   * 判据是**虚拟化器报的总高**（`getTotalSize()`）：行被测量、消息到达、实时块长高
-   * 都会让它变，而它变化时 React 必然重渲染 —— 于是这里在**布局阶段**（绘制前）贴底，
-   * 不需要 ResizeObserver。
-   *
-   * 为什么不用 ResizeObserver（用户 2026-09-23 第五轮还在偶发报错）：
-   *   · 实时块的成长**引擎自己就在贴底**（`lib/live.ts` 的 `follow()`：离底 <120px 就贴），
-   *     再叠一个 60Hz 的观察者纯属重复，还制造"回调 → 布局变 → 回调"的级联，
-   *     浏览器就报 `ResizeObserver loop completed with undelivered notifications`；
-   *   · 观察者回调里改布局（滚动）本来就是这条报错的经典成因，能不碰就不碰。
-   *
-   * 仍然**幂等**：已经贴着底（差 ≤1px）就什么都不做，避免与测量互相触发。
-   */
-  const totalSize = virtualizer.getTotalSize();
-  useLayoutEffect(() => {
-    if (!followingRef.current || hasNewerRef.current) return;
-    pinToBottom(); // 幂等在 pinToBottom 里
-  }, [totalSize, ids.length, streaming, pinToBottom]);
-
-  /** 贴底/续页这些"回调里读"的地方要拿最新的换窗状态（不重挂任何东西）。 */
-  const hasNewerRef = useRef(hasNewer);
-  hasNewerRef.current = hasNewer;
-
-  // ── 预览滚动条：**整段会话**的轮次（轮廓）+ 已载入的行 ──
-  //   轮廓来自会话文件的一次扫描（不需要把内容读进来），已载入的轮次再用真实行覆盖。
-  //   于是"预览全部、展示部分"同时成立（用户 2026-09-23 反馈；DSH `mergeTurnRailItems` 同构）。
-  const railRows = useMemo<RailSourceRow[]>(
-    () => railRowsOf(useMessages.getState().tabs[tabId]),
-    // ids/byId 变了就要重算（`railRowsOf` 直接读 store，所以这里显式列依赖）
-    [tabId, ids, byId],
-  );
-  const railItems = useMemo(() => mergeRailItems(outline, railRows), [outline, railRows]);
-
-  /** 正在为"跳到未载入的那一轮"翻页：梯子上那一格显示忙碌。 */
-  const [jumping, setJumping] = useState<number | null>(null);
-
-  /**
-   * 换窗之后"继续往下读"：**只由滚轮意图触发**。
-   *
-   * 为什么不用"滚动事件 + 离底距离"自动续页（第一版就是那样，实测两次踩坑）：
-   * ① 贴底/换窗/内容长高都会产生 scroll 事件，于是"续页 → 内容变 → 再触发 → 再续页"
-   *    会一路把 `hasNewer` 走到 false —— 等于把整段会话读进来（门禁实测：跳一轮之后
-   *    自动读到 200/200 行），正好是用户担心的"其实全载入了"；
-   * ② 隐藏的面板 `clientHeight` 为 0，距离恒为 0，同样会级联。
-   * 滚轮是"我要往下看"最干净的信号：一次手势最多续一页，程序化滚动不会触发它。
-   * 滚轮之外还有右下角那颗「继续往下」按钮兜底（拖滚动条、键盘翻页的用户走它）。
-   */
-  const maybeLoadNewer = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (el.clientHeight <= 0) return; // 隐藏/未布局：不可能有真实滚动意图
-    const tab = useMessages.getState().tabs[tabId];
-    if (!tab?.hasNewer || tab.loadingNewer) return;
-    const gap = el.scrollHeight - el.clientHeight - el.scrollTop;
-    const canScroll = el.scrollHeight > el.clientHeight + 1;
-    // 滚到底了，或者窗口内容还不够滚（滚轮推不动）—— 两种都是"我要更多"
-    if (gap <= 240 || !canScroll) void loadNewer(tabId);
-  }, [tabId]);
-
-  /**
-   * 把读者的位置还给他（面板重新可见时用）。
-   *
-   * 先用**行键**把锚点行找回来（`getOffsetForIndex` 取它现在的起始像素），
-   * 找不到（换窗把窗口换掉了）就退回裸位置 —— 两种都钳进可滚范围。
-   */
-  const restoreReaderAnchor = useCallback(() => {
-    const el = scrollRef.current;
-    const anchor = readerAnchorRef.current;
-    if (!el || !anchor || el.clientHeight <= 0) return;
-    const index = rowIds.indexOf(anchor.key);
-    const resolved = index >= 0 ? (virtualizer.getOffsetForIndex(index, 'start')?.[0] ?? null) : null;
-    const target = readerTopFrom(anchor, resolved, el.scrollHeight - el.clientHeight);
-    if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
-  }, [rowIds, virtualizer]);
-
-  /** 阅读线所在行 → 当前轮次。滚动/新增消息时重算。 */
-  const [activeTurn, setActiveTurn] = useState<number | null>(null);
-  const recomputeActive = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const metrics = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
-    /* 跟随意图：**没有布局时一个字都不改**（`clientHeight === 0` = 面板被 dockview 摘出
-       DOM，组件还活着但三个读数全是 0）。拿这对 0 去判"读者滚上去了"，就会把跟随意图
-       判死，切回来时既不贴底也不跟随 —— 用户看到的是"停在这一页的高位，而且不跟了"。
-       （`nextFollowingFromSample` 那条"没有可靠基线就按几何判"的兜底也救不了这里：
-       0 位置配上旧的钉住位置，方向恰好是"往上滚了"。） */
-    if (el.clientHeight > 0) {
-      // 读者自己滚动过 → 重新判定跟随意图（DSH `ScrollFollow.sample`）。
-      // "自己滚的"判据 = 位置与我们上次程序化设置的值不同（DSH 的 `sampledTop` 比较同义）。
-      // 判据是"这段距离是谁造成的"（内容长高/换页 ≠ 读者滚动），见
-      // `nextFollowingFromSample` 的说明 —— 只看"位置对不对得上"会被滚动锚定骗到。
-      //
-      // 但**读者的上滚手势**要让位（用户 2026-09-23 报："一直向下滚动，
-      // 我希望手动向上翻滚时，不会被自动跳到最底下"）：流式时内容每 16ms 长高一次，
-      // "内容长高"这条规则会一直命中，于是读者的滚轮怎么滚都被下一帧贴回去。
-      const up = readerUpRef.current;
-      if (up) {
-        const movedUp = metrics.scrollTop < up.top - 1;
-        const expired = performance.now() - up.at > READER_GESTURE_MS;
-        if (movedUp) {
-          readerUpRef.current = null; // 手势兑现：位置真的往上走了
-          setFollowing(false);
-        } else if (expired) {
-          readerUpRef.current = null; // 抖了一下没走动（已在顶 / 没得滚）：作废，回常规规则
-          setFollowing(
-            nextFollowingFromSample({
-              metrics,
-              pinnedTop: pinnedTopRef.current,
-              lastScrollHeight: pinnedHeightRef.current,
-              following: followingRef.current,
-            }),
-          );
-        }
-        // 手势还在、位置还没动：什么都不改（滚轮那一刻已经交还了，
-        // 这里若按"贴着底"反悔，25px 容差每次都会把读者按回去）
-      } else {
-        setFollowing(
-          nextFollowingFromSample({
-            metrics,
-            pinnedTop: pinnedTopRef.current,
-            lastScrollHeight: pinnedHeightRef.current,
-            following: followingRef.current,
-          }),
-        );
-      }
-      // 位置归读者 → 记住他读到哪一行；贴底时清掉（下一次贴底才是权威位置）
-      readerAnchorRef.current = followingRef.current
-        ? null
-        : readerAnchorOf(virtualizer.getVirtualItems(), el.scrollTop);
-    }
-    // ⚠️ "当前是哪一轮"用**跟随意图**而不是瞬时几何：流式时内容在两帧之间长高，
-    //    等这次 scroll 事件被处理时 `scrollHeight` 已经变了，`isAtTail` 会瞬间为假 ——
-    //    于是当前轮次在"最新那轮"与"阅读线那轮"之间逐帧来回翻，梯子上的亮条疯狂闪动
-    //    （实测：跟随意图一直是 true，但 active 在 58 ↔ 61 之间跳）。
-    //    只要还在跟随尾部，"当前"就是最新那一轮，与几像素的瞬时差无关。
-    const atTailForTurn = followingRef.current || isAtTail(metrics);
-    const items = virtualizer.getVirtualItems();
-    if (items.length === 0) return;
-    // 阅读线：视口顶部往下 1/4（贴顶太灵敏，正中又会在一轮很长时乱跳）
-    const line = el.scrollTop + Math.min(120, el.clientHeight / 4);
-    let readingRow = items[0]!.index;
-    for (const vi of items) {
-      if (vi.start <= line) readingRow = vi.index;
-      else break;
-    }
-    setActiveTurn(activeTurnOf(railItems, readingRow, atTailForTurn));
-  }, [maybeLoadNewer, setFollowing, virtualizer, railItems]);
-
-  /**
-   * 滚动容器**重新有了真实布局** → 还在跟随就贴底。
-   *
-   * 这条补的是"面板不在前台时内容已经长好了"这一类：dockview 会把非活动面板的
-   * 内容摘出 DOM（组件不卸载），此时几何全是 0 —— 打开会话那一次 rAF 贴底、
-   * 以及"总高变化"那条布局 effect，都可能正好落在**没有布局**的时刻变成空操作。
-   * 等用户切回这个标签时，什么都不会再触发，视图就停在那一页的**高位**
-   * （用户 2026-09-23 报："从一个正在运行的会话切到另一个会话，不是在最低位，
-   * 而是在当前页的高位，而且有时候滚动位置怪怪的"）。
-   *
-   * 信号取自虚拟化器自己的 `scrollRect`（它内部就是一个挂在滚动容器上的
-   * ResizeObserver）——实测摘出 DOM 时它报 0、回来时报真实高度（622→0→622），
-   * 每次变化都会让虚拟化器重渲染，所以这个 effect 一定跑得到。
-   * **不**再自己挂一个观察者：`docs/04 §2.1` 记着那条纪律（观察者回调里写布局
-   * 正是 `ResizeObserver loop` 的经典成因），这里只是"读一个已经存在的测量值"。
-   */
-  const scrollerHeight = virtualizer.scrollRect?.height ?? 0;
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || scrollerHeight <= 0) return; // 还没有布局：见 pinToBottom 的说明
-    if (hasNewerRef.current) return; // 换窗态：窗口不在尾部，位置由换窗逻辑负责
-    const settle = () => {
-      if (followingRef.current) pinToBottom();
-      else restoreReaderAnchor(); // 读者接管过：把位置还给他（见 anchor 的说明）
-      // 刻度梯的"当前轮次"也要重算：隐藏期间几何是 0，阅读线算不出来（也没意义）
-      recomputeActive();
-    };
-    settle();
-    // 再补一帧：行的实测高度往往在这一次布局**之后**才落地（估计值 → 实测值），
-    // 只做一次会残留几十像素（门禁实测贴底差 20px、还原差一行）。
-    const raf = requestAnimationFrame(settle);
-    return () => cancelAnimationFrame(raf);
-  }, [scrollerHeight, pinToBottom, recomputeActive, restoreReaderAnchor]);
-
-  /**
-   * 读者的滚动意图（DSH 的 `movedByReader` 在 Piggy 这侧的来源）：
-   *
-   * - **滚轮**是"我要看别处"最干净的信号（程序化滚动、内容长高、滚动锚定都不会产生它）；
-   * - 往上滚**立刻**交还控制权，不等几何：这一帧内容还在长，等采样到手引擎已经又贴回底部了
-   *   （真浏览器实测：`wheel(0,-120)` 之后每一帧的 `gap` 都是 0）。
-   *   几何上真要判"有效"由 `recomputeActive` 那次采样兜底 —— 只是原地抖一下（没真滚上去）
-   *   的话它会把跟随还回来（`isAtTail`）；
-   * - 往下滚不改变意图（继续跟随 / 顺便续页），触摸与拖动滚动条只记手势、方向交给采样判。
-   */
-  const onWheel = useCallback(
-    (e: WheelEvent) => {
-      markReaderGesture();
-      if (e.deltaY < 0) {
-        readerUpRef.current = { top: scrollRef.current?.scrollTop ?? 0, at: performance.now() };
-        handOverToReader();
-      } else {
-        readerUpRef.current = null; // 往下滚：上滚意图作废
-        maybeLoadNewer();
-      }
-    },
-    [handOverToReader, markReaderGesture, maybeLoadNewer],
-  );
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    recomputeActive();
-    el.addEventListener('scroll', recomputeActive, { passive: true });
-    el.addEventListener('wheel', onWheel, { passive: true });
-    // 触摸 / 拖滚动条：只记手势（方向由采样按几何判），键盘滚动同理（能聚焦时）
-    el.addEventListener('touchstart', markReaderGesture, { passive: true });
-    el.addEventListener('pointerdown', markReaderGesture);
-    el.addEventListener('keydown', markReaderGesture);
-    return () => {
-      el.removeEventListener('scroll', recomputeActive);
-      el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('touchstart', markReaderGesture);
-      el.removeEventListener('pointerdown', markReaderGesture);
-      el.removeEventListener('keydown', markReaderGesture);
-    };
-  }, [markReaderGesture, maybeLoadNewer, onWheel, recomputeActive]);
-
-  /**
-   * 跳到某一轮：已载入的直接滚过去；**没载入的换窗过去**（只读目标那一页）。
-   *
-   * DSH `navigateToTurn` 的两个分支同构（loaded → scrollToTurn；unloaded → 先取历史再落位），
-   * 区别在"取历史"的口径：这里用**换窗**（丢掉旧窗口）而不是往上累加，
-   * 否则跳到第 1 轮就等于把整段会话读进内存——分页就白做了。
-   */
-  const jumpToTurn = useCallback(
-    async (item: RailItem) => {
-      handOverToReader();
-      if (item.loaded && item.rowIndex !== null) {
-        virtualizer.scrollToIndex(item.rowIndex, { align: 'start' });
-        return;
-      }
-      const anchorEnd = item.anchorEnd;
-      if (anchorEnd === null) return;
-      setJumping(item.turn);
-      try {
-        const ok = await loadWindowAt(tabId, anchorEnd);
-        if (!ok) return;
-        // 换窗后整段内容都换了：直接落到目标行（不做"高度差补偿"——那是给"往上加页"用的）
-        const rowIndex = findRowIndexByOffset(
-          railRowsOf(useMessages.getState().tabs[tabId]),
-          item.anchorStart ?? -1,
-        );
-        if (rowIndex === null) {
-          toast.info('这一轮没找到（会话文件可能已改变）');
-          return;
-        }
-        requestAnimationFrame(() => virtualizer.scrollToIndex(rowIndex, { align: 'start' }));
-      } finally {
-        setJumping(null);
-      }
-    },
-    [handOverToReader, tabId, virtualizer],
-  );
-
-  /**
-   * 点「继续往下」：追加下一页，并把**新内容的第一行**滚到视口顶部。
-   *
-   * 为什么必须滚（用户 2026-09-23 第五轮："按了继续往下结果停留在原地"）：
-   * 向下续页是把内容**追加在下面**，追加本身不会移动视口 —— 不滚的话用户看到的就是
-   * "点了没反应"。滚到新内容开头 = "接着往下读"，也正好接在刚才那一屏之后。
-   * 滚轮触发的自动续页**不滚**（用户自己在滚，替他滚会打架）。
-   */
-  const continueDown = useCallback(async () => {
-    const firstNew = useMessages.getState().tabs[tabId]?.ids.length ?? 0;
-    const added = await loadNewer(tabId);
-    if (added === 0) return;
-    requestAnimationFrame(() => virtualizer.scrollToIndex(firstNew, { align: 'start' }));
-  }, [tabId, virtualizer]);
-
-  /** 回到最新：重新装载尾部那一页（换窗的反向操作），并恢复贴底跟随。 */
-  const returnToLatest = useCallback(async () => {
-    const file = useTabs.getState().tabs[tabId]?.sessionFile ?? null;
-    setFollowing(true);
-    await loadTail(tabId, file);
-    requestAnimationFrame(pinToBottom);
-  }, [pinToBottom, setFollowing, tabId]);
-
-  /** 回到底部（DSH `chat.toBottom`）：贴底并重新接管跟随。 */
-  const returnToBottom = useCallback(() => {
-    setFollowing(true);
-    pinToBottom();
-  }, [pinToBottom, setFollowing]);
-
-  /**
-   * 加载更早一页，并**保住阅读位置**。
-   *
-   * 顺序不能反：先量旧几何 → await 取页（store 更新）→ 下一帧量新几何并按差值补 scrollTop。
-   * 少了最后一步，插入的 50 行会把眼前的内容整体推下去，看起来就是"点了一下跳到别处"。
-   */
-  const loadEarlier = useCallback(async () => {
-    const el = scrollRef.current;
-    const before = el ? { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight } : null;
-    const added = await loadOlder(tabId);
-    if (!el || !before || added === 0) return;
-    requestAnimationFrame(() => {
-      el.scrollTop = scrollTopAfterPrepend(before, el.scrollHeight);
-    });
-  }, [tabId]);
-
-  const lastId = ids.at(-1);
-  useEffect(() => {
-    // 新消息到达：还在跟随就贴底（行高变化由上面那个"总高变化"的布局 effect 兜住）
-    if (!followingRef.current || !lastId) return;
-    requestAnimationFrame(pinToBottom);
-  }, [lastId, pinToBottom]);
-
+  const total = virtualizer.getTotalSize();
   return (
     <div className="pg-transcript-wrap" data-rail-side={railPlacement} data-tab-id={tabId}>
       <div ref={scrollRef} className="pg-transcript" data-transcript-scroll>
         {hasMore && (
           <div className="pg-transcript-older">
-            <button type="button" disabled={loadingOlder} onClick={() => void loadEarlier()} data-load-older>
+            <button type="button" disabled={loadingOlder} onClick={scroll.loadEarlier} data-load-older>
               {loadingOlder ? '载入历史…' : '加载更早'}
             </button>
           </div>
@@ -613,9 +162,10 @@ export function Transcript({ tabId }: { tabId: string }) {
             载入历史…
           </div>
         )}
-        <div ref={innerRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        <div style={{ height: total, position: 'relative' }}>
           {virtualizer.getVirtualItems().map((vi) => {
-            const id = rowIds[vi.index]!;
+            const id = ids[vi.index];
+            if (!id) return null;
             return (
               <div
                 key={vi.key}
@@ -633,13 +183,7 @@ export function Transcript({ tabId }: { tabId: string }) {
                   transform: `translateY(${vi.start}px)`,
                 }}
               >
-                {id === LIVE_ID ? (
-                  <div className="pg-message pg-assistant pg-live" ref={attachLive}>
-                    <div className="pg-role">assistant ▌</div>
-                  </div>
-                ) : (
-                  <Row tabId={tabId} id={id} baselines={baselines} />
-                )}
+                <Row tabId={tabId} id={id} baselines={baselines} />
               </div>
             );
           })}
@@ -656,7 +200,7 @@ export function Transcript({ tabId }: { tabId: string }) {
             aria-label="回到最新"
             title="回到最新（重新装载会话尾部）"
             data-to-latest
-            onClick={() => void returnToLatest()}
+            onClick={scroll.returnToLatest}
           >
             <Icon name="chevron-down" size={16} />
             <span>回到最新</span>
@@ -668,20 +212,20 @@ export function Transcript({ tabId }: { tabId: string }) {
             title="继续往下读（也可以直接往下滚）"
             data-load-newer
             disabled={loadingNewer}
-            onClick={() => void continueDown()}
+            onClick={scroll.continueDown}
           >
             <Icon name="arrow-down" size={16} />
             <span>{loadingNewer ? '载入中…' : '继续往下'}</span>
           </button>
         </div>
-      ) : !following && ids.length > 0 ? (
+      ) : !scroll.following && ids.length > 0 ? (
         <button
           type="button"
           className="pg-to-bottom"
           aria-label="回到底部"
           title="回到底部"
           data-to-bottom
-          onClick={returnToBottom}
+          onClick={scroll.returnToBottom}
         >
           <Icon name="chevron-down" size={16} />
         </button>
@@ -691,14 +235,20 @@ export function Transcript({ tabId }: { tabId: string }) {
           items={railItems}
           activeTurn={activeTurn}
           placement={railPlacement}
-          onJump={(item) => void jumpToTurn(item)}
-          pendingTurn={jumping}
+          onJump={scroll.jumpToTurn}
+          pendingTurn={scroll.jumping}
         />
       )}
     </div>
   );
 }
 
+/**
+ * 一行 = 一个块（`store.ids` 里的一项）。
+ *
+ * ⚠️ **行切片订阅**：选择器只返回这一行自己的对象 —— 流式时只有那一行重渲染，
+ * 其余行（以及整个 Transcript）引用不变（DSH 的 seat 订阅自己的 node，同构）。
+ */
 function Row({
   tabId,
   id,
@@ -709,13 +259,12 @@ function Row({
   /** `todo_write` 的调用 id → 它的上一份清单（见 `todoBaselines`） */
   baselines: Map<string, TodoItem[]> | null;
 }) {
-  const view = useStore(
-    useMessages,
-    (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined,
-  );
+  const view = useStore(useMessages, (s) => s.tabs[tabId]?.byId[id] as MessageViewT | undefined);
   /* 工具行的窄摘要要的是**调用参数**（`运行命令 · pnpm test`），而参数在上一条助手消息里
      —— store 在 `register()` 时做过一次 join（docs/03 §3.1 的 `toolCalls` 索引）。
-     这里按 `toolCallId` 取出来交给 `MessageView`；拿不到就是 undefined，行会退到结果首行。 */
+     这里按 `toolCallId` 取出来交给 `MessageView`；拿不到就是 undefined，行会退到结果首行。
+     （只有"调用不在窗口里"的兜底 `toolResult` 行需要它：正常路径上工具行由助手消息里的
+     `toolCall` 块渲染，参数就在块里，见 `ToolCallRow`。） */
   const callId = view?.role === 'toolResult' ? (view.message as { toolCallId?: string }).toolCallId : undefined;
   const call = useStore(useMessages, (s) => (callId ? s.tabs[tabId]?.toolCalls[callId] : undefined));
   /* 差异基线按**调用 id** 查（`todoBaselines` 的键就是 callId，不是 store 的行 id）。
@@ -726,5 +275,14 @@ function Row({
   /* 行身份给"展开态记忆"（`lib/rowMemory`）：行滚出窗口会被卸载，
      行里的 `useState` 会跟着丢 —— 展开过的思考/工具行必须活过这一次卸载。 */
   const memory = { tabId, rowKey: id };
-  return <MessageView view={view} call={call} baseline={baseline} memory={memory} />;
+  return (
+    <MessageView
+      view={view}
+      call={call}
+      baseline={baseline}
+      baselines={baselines}
+      tabId={tabId}
+      memory={memory}
+    />
+  );
 }

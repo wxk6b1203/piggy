@@ -143,16 +143,19 @@ body {
 .pg-rail-right .pg-rail-mark::before { right: 0; transform-origin: right center; }
 .pg-rail-left .pg-rail-mark::before { left: 0; transform-origin: left center; }
 .pg-rail-mark.is-preview::before { transform: translateY(-50%) scaleX(0.9); background: var(--pg-fg-caption); }
+/* 正在为这一轮翻页（点未载入的刻度之后）：脉冲（DSH `.markBusy::before`，1s 循环） */
+.pg-rail-mark.is-busy::before { animation: pg-rail-busy 1s ease-in-out infinite; }
+@keyframes pg-rail-busy { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 /* 当前这一轮：满宽 + 最亮（用户说的"亮色的条子代表当前位置"） */
 .pg-rail-mark.is-active::before { transform: translateY(-50%) scaleX(1); background: var(--pg-fg); }
-/* 未载入的历史（分页）：**短一点、暗一点**的实心刻度，点它翻页过去（docs/03 §2.19）。
-   这里刻意**不用虚线**（DSH 的 markUnloaded 是虚线）：用户实测 30 轮 / 1028 步的会话里，
-   一页只覆盖一两轮，整条梯子大半是虚线，看起来像"坏了/缺了一半"——他要的是"一眼就是
-   整段会话的地图"。所以形状与普通刻度同族，只靠更短更暗 + 悬停提示"还没载入"来表达。 */
+/* 未载入的历史（分页）：**更短更暗**的刻度，点它翻页过去（docs/03 §2.19）。
+   数值照抄 DSH `TurnNavigator.module.css` 的 `.markUnloaded::before`：`scaleX(0.4)` +
+   `opacity 0.6`（DSH 用的也不是虚线 —— 它只是把同一根刻度压短、压暗）。 */
 .pg-rail-unloaded { background: none; border: none; padding: 0; cursor: pointer; }
 .pg-rail-unloaded::before {
-  background: var(--pg-border-l3);
-  transform: translateY(-50%) scaleX(0.45);
+  background: var(--pg-border-l4);
+  transform: translateY(-50%) scaleX(0.4);
+  opacity: 0.6;
 }
 .pg-rail-unloaded:hover::before { background: var(--pg-fg-caption); transform: translateY(-50%) scaleX(0.9); }
 .pg-rail-mark:focus-visible { outline: none; }
@@ -170,6 +173,8 @@ body {
   background: var(--pg-bg-layer-2); border: 1px solid var(--pg-border-l2);
   box-shadow: 0 12px 32px rgb(0 0 0 / 40%);
   pointer-events: none; animation: pg-rail-preview-in 120ms ease-out;
+  /* 悬停相邻刻度时预览框跟随移动（DSH `.preview { transition: top 140ms ... }`） */
+  transition: top 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .pg-rail-right .pg-rail-preview { right: calc(100% + 10px); }
 .pg-rail-left .pg-rail-preview { left: calc(100% + 10px); }
@@ -199,11 +204,19 @@ body {
   from { opacity: 0; } to { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pg-rail-mark::before, .pg-rail-preview { transition: none; animation: none; }
+  .pg-rail-mark::before, .pg-rail-mark.is-busy::before, .pg-rail-preview { transition: none; animation: none; }
+  .pg-shimmer-decoration { display: none; }
+  .pg-shimmer-sweep, .pg-shimmer-highlight { animation: none; }
 }
 /* 内容轴：DSH clamp(680px, col*0.64, 920px)——用百分比近似同一观感 */
 .pg-transcript > * { max-width: 920px; margin-left: auto; margin-right: auto; }
-.pg-message { margin: var(--pg-sp-6) 0; }
+/* 转录行的**垂直节奏**：所有行统一 6px 上下（相邻两行之间 12px）。
+   DSH 的 flow gap 是 6px（process 行）/ 12px（response 行两侧），转录行之间的实际间距
+   就是 12px；而 Piggy 这边此前是"谁有 margin 算谁的"——`.pg-message` 16px、`.pg-user-row`
+   和 `.pg-compaction` 各写各的，于是**同一屏里行距在 16px 与 32px 之间跳**
+   （用户 2026-09-24："输出有时候行间距很大，有时候很小"）。
+   现在把间距统一挂在行容器上，哪种行都跑不掉。 */
+.pg-vrow > * { margin-block: 6px; }
 /* 用户气泡（DSH UserStyleBubble，docs/12 §3.2）：右对齐 + r22 + padding 10/16。
    没有角色芯片——身份只靠右对齐表达。 */
 .pg-user-row { display: flex; flex-direction: column; align-items: flex-end; gap: var(--pg-sp-3); }
@@ -222,7 +235,17 @@ body {
 }
 .pg-role { display: inline-flex; align-items: center; gap: var(--pg-sp-2); font-size: var(--pg-fs-11); color: var(--pg-fg-caption); margin-bottom: var(--pg-sp-2); }
 /* 助手正文（DSH AssistantMarkdown）：整宽、块间距 16px */
-.pg-assistant-body { display: flex; flex-direction: column; gap: var(--pg-sp-6); }
+/* 助手正文的块间距：**两级**，与 DSH 的可见节奏一致
+   （`ChatView.module.css` 的 `--dsh-chat-flow-gap` + `AssistantMarkdown.module.css` 的 `.body`）：
+     · 窄行之间（思考/工具/清单）**6px** —— DSH 的 process 行默认 flow gap；
+     · 正文两侧**12px** —— DSH 在 response 节点的两侧把 flow gap 提到 12px。
+   ⚠️ 必须用 flex `gap` 打底，不能用 `> * + * { margin-top }`：窄行自己有
+   `.pg-trow { margin: 0 }`（DSH 同款），兄弟选择器写出来的间距会被它顶掉 —— 实测
+   "正文 → 紧随其后的工具行"是 **0px**、其它边界 16px，看起来就是"有时候行间距很大、
+   有时候很小"。`gap` 长在容器上，子元素的 margin 顶不掉它；正文那 6px 额外边距走
+   `.pg-md` 的 margin（正文没有 `margin: 0` 的覆盖，安全）。 */
+.pg-assistant-body { display: flex; flex-direction: column; gap: 6px; }
+.pg-assistant-body > .pg-md { margin-block: 6px; }
 .pg-assistant-body > :first-child { margin-top: 0; }
 .pg-assistant-body > :last-child { margin-bottom: 0; }
 
@@ -239,6 +262,10 @@ body {
 }
 .pg-md > :first-child { margin-top: 0; }
 .pg-md > :last-child { margin-bottom: 0; }
+/* DSH `MarkdownText.module.css` 的两条首尾修剪：`p` 也可能是引用/列表项的第一个或最后一个
+   孩子（那时它不在 `.pg-md` 的直系上），所以选择器与 `!important` 都照抄。 */
+.pg-md p:first-child { margin-top: 0 !important; }
+.pg-md p:last-child { margin-bottom: 0 !important; }
 .pg-md p { margin: 16px 0; white-space: pre-wrap; word-break: break-word; }
 .pg-md strong { font-weight: 600; }
 .pg-md h1 { font-size: 21px; line-height: 30px; font-weight: 700; margin: 32px 0 16px; }
@@ -369,7 +396,8 @@ body {
   flex: none; font-size: var(--pg-fs-13); line-height: 24px; color: var(--pg-fg-secondary);
 }
 .pg-drow-head:hover .pg-drow-title { color: var(--pg-fg); }
-/* 折叠区：留在 DOM 里但不可见（`hidden="until-found"`）——Ctrl+F 能搜到、复制拿得到 */
+/* 折叠正文（DSH 同款：折叠 = 不挂载，展开才渲染）。`[hidden]` 这条留着兜底：
+   任何直接给正文加 `hidden` 的调用点都不至于把内容显示出来。 */
 .pg-drow [hidden] { display: none; }
 
 /* 标题与摘要之间的 2×2 圆点（DSH `.sep`：width/height 2px、r1、margin 0 8px） */
@@ -388,6 +416,25 @@ body {
 .pg-trow[data-state='error'] .pg-drow-title,
 .pg-trow[data-state='error'] .pg-trow-summary { color: var(--pg-error); }
 .pg-trow[data-state='error'] .pg-trow-sep { background: var(--pg-error); }
+/* 运行中的行：文字扫光（DSH `TextShimmer`，见 features/common/TextShimmer.tsx）。
+   几何一个字都不改 —— 真文字留在原位，只有一道亮光扫过。 */
+.pg-shimmer { position: relative; display: inline-grid; width: max-content; max-width: 100%; min-width: 0; vertical-align: top; color: inherit; }
+.pg-shimmer-content { display: flex; align-items: center; min-width: 0; }
+.pg-shimmer-text { color: inherit; }
+.pg-shimmer [data-shimmer-text]::after { content: attr(data-shimmer-text); }
+.pg-shimmer-decoration { position: absolute; inset: 0; overflow: clip; pointer-events: none; user-select: none; }
+.pg-shimmer-sweep {
+  position: absolute; inset: 0; overflow: hidden;
+  color: var(--pg-fg);
+  mask-image: linear-gradient(105deg, transparent 0%, black 40% 60%, transparent 100%);
+  transform: translateX(-100%);
+  animation: pg-shimmer-sweep 1.5s steps(48, end) 0.3s infinite;
+}
+.pg-shimmer-sweep * { color: inherit !important; }
+/* 反向位移让两层字形始终对齐，只有遮罩在动 */
+.pg-shimmer-highlight { width: 100%; height: 100%; transform: translateX(100%); animation: pg-shimmer-highlight 1.5s steps(48, end) 0.3s infinite; }
+@keyframes pg-shimmer-sweep { 0% { transform: translateX(-100%); } 66.6667%, 100% { transform: translateX(100%); } }
+@keyframes pg-shimmer-highlight { 0% { transform: translateX(100%); } 66.6667%, 100% { transform: translateX(-100%); } }
 /* 展开后的正文：与窄行之间留 4px，卡片本身照旧 */
 .pg-trow [data-tool-body] { padding: 4px 0 2px; }
 
@@ -450,7 +497,6 @@ body {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 0; border: none; background: transparent; text-align: left; cursor: pointer;
 }
-.pg-todo-panel-quiet { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
 .pg-todo-panel-lead { display: grid; flex: none; place-items: center; color: var(--pg-fg-dim); }
 .pg-todo-panel-title {
   flex: none; font-size: var(--pg-fs-13); line-height: 24px; font-weight: 500; color: var(--pg-fg);
@@ -477,12 +523,20 @@ body {
 .pg-todo-panel-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 思考行：同样一行 24px，展开看全文 */
-.pg-thinkrow { margin: 0; }
+.pg-thinkrow { margin: 0; display: flex; flex-direction: column; }
+/* 折叠时把高度钉在 24px（DSH `ReasoningRow.module.css` 的 `contain: size layout`）：
+   思考正文在流式时每帧都在长，不钉的话这一行会跟着抖。展开时自动放开。 */
+.pg-thinkrow:not([data-open]) { contain: size layout; height: 24px; }
 .pg-thinkrow .pg-drow-title { color: var(--pg-fg-dim); }
+/* 流式摘要：右端渐隐而不是省略号（DSH 同款）—— 内容还在长，"…"会一直跳 */
+.pg-thinkrow[data-state='running'] .pg-trow-summary {
+  mask-image: linear-gradient(to right, black calc(100% - 48px), transparent);
+}
+.pg-thinkrow[data-state='running'] .pg-trow-summary > * { overflow: visible; text-overflow: clip; }
 .pg-thinkrow [data-thinking-body] { padding: 2px 0 6px; }
 /* 压缩行（会话文件里的 `compaction` 条目，docs/03 §2.19）：与"思考"同一套左侧竖线，
    但整行居中偏左、颜色更弱——它是历史里的一个书签，不是一条消息。 */
-.pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; margin: var(--pg-sp-3) 0; }
+.pg-compaction { border-left: 2px solid var(--pg-border-l3); padding-left: 10px; }
 .pg-compaction-tokens { color: var(--pg-fg-caption); }
 /* 压缩行下面的"账本"（保留边界 / 涉及文件 / 摘要调用用量）：
    12px 次要色，等宽数字对齐；这些是**事实**，不是提示语，所以不做成 chip。 */
@@ -510,10 +564,11 @@ body {
 .pg-cmd { font-family: var(--pg-mono); color: var(--pg-accent); }
 .pg-unknown summary { cursor: pointer; color: var(--pg-fg-dim); }
 
-/* 实时块 */
-.pg-live { min-height: 28px; }
-.pg-live .pg-role { color: var(--pg-accent); }
-.pg-live-text { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+/* 流式的那一行（就是转录里的那一行，`data-streaming` 标出"还在长"）
+   —— 见 stores/messages.ts 文件头：内容在 store 里，DOM 只是它的视图。 */
+.pg-message[data-streaming] { min-height: 28px; }
+/* 流式正文与落定正文共用 `.pg-md`（增量解析，见 features/chat/markdown.tsx）：
+   造型一致是有意的 —— 转正那一刻不该有跳变。 */
 
 /* Composer（DSH InputBar.module.css，docs/12 §3.8 —— 几何逐条照抄） */
 .pg-composer {

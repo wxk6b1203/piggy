@@ -904,29 +904,36 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 | store | 内容 | 更新源 |
 |---|---|---|
 | `tabsStore` | tab 列表、活动 tab、worker 状态 | `tabs:changed`、`pi:state` |
-| `messagesStore` | 每 tab 的消息（normalized：`byId` + `ids`）、回合分组、工具卡片状态 | `pi:commit` |
-| `lib/live`（不是 store） | **瞬态**：per-tab 实时块引擎 —— 每块的 `pending`（kind/label/全文）+ 当前 DOM 视图。不参与 React 渲染（04 §3.2/§4.6） | `pi:frame`（直写 DOM） |
+| `messagesStore` | 每 tab 的消息（normalized：`byId` + `ids`）、**流式那一行的 `live` 槽位**、`toolCalls`/`toolResults` 索引、分页状态 | `pi:commit` + `pi:frame` |
 | `sessionsStore` | 会话列表、树缓存 | `sessions:changed`、invoke |
 | `settingsStore` | pi 配置合并视图 + Piggy 自有配置 | invoke（写后回读） |
 | `fleetStore` | 舰队 run/lane 状态 | `fleet:event` |
 | `uiStore` | 弹窗队列、工作区布局（视图开合/尺寸/活动视图，04 §1.8）、视图注册表、键位注册表 | 本地 + Extension UI |
 
-原则：**store 只存结构态与索引，流式文本不进 React 状态**（04 §4）。
-流式的文本本体放在 `lib/live` 的引擎里（一轮为界，04 §3.2）：它虽然不进 store，
-但**必须留着** —— 节点被虚拟化卸载/面板被摘出 DOM 时要按它重建（04 §4.6）。
+原则：**store 存结构态、索引与"还没落定的内容"**（04 §3.2/§4）。
+
+2026-09-24 改口径：流式的文本**进 store**（`byId[pendingId].live`，按 `contentIndex` 分槽位）。
+旧口径是"流式文本不进 React 状态、由 `lib/live` 直写 DOM"，那条路有三个结构性错误
+（同一内容出现两遍 / 两条消息按 `contentIndex` 串块 / 工具行要等结果才出现），
+实测复现与现在的模型见 04 §3.2。
+代价是"每帧一次 store 写入"，收益是**订阅面只有那一行**（行组件选自己那一行的切片），
+转录本体与虚拟化器的身份都不动 —— 单帧工作量仍有上界（04 §4.2）。
 
 ### 3.3 `features/chat/` — 转录与输入
 
 - `Transcript`：TanStack Virtual 虚拟化容器；行组件按消息类型分发；
 - `MessageView`（自研，antd-free）：user / assistant(text+thinking+toolCall) / toolResult / bashExecution / 未知块；
-- `LiveBlock`（`lib/live.ts` 的 per-tab 引擎）：直写文本节点 + `pending` 累积；
-  挂载点是 `Transcript` 里的**回调 ref**（节点摘掉 `detach`、回来 `attach` 重建，04 §4.6）；
+- `TranscriptReading` / `TranscriptViewport` / `ScrollFollow`（`features/chat/` 的三个类）：
+  阅读意图、DOM 与几何、跟随控制器，各管一件事（分工见 04 §2.1.0）；
+- 流式的那一行**就是转录里的那一行**（`live` 槽位），没有单独的 `LiveBlock` 通道（04 §3.2）；
 - `ToolCard`：工具调用卡片（参数摘要、累积输出、diff/图片/文件路径特化渲染）；
 - `Composer`：多行输入、图片拖拽/粘贴、斜杠命令自动补全（数据 `get_commands`）、队列 chips、steer/followUp 选择（流式中）。
 
 ### 3.4 `features/sessions/`
 
-侧栏（项目分组列表、搜索 `Cmd+Shift+F`）、会话树抽屉（`tree.rs` 数据 → antd Tree + 自绘分支图）、fork/clone/重命名/导出/删除操作（映射 02 §3.2 表）。
+侧栏（项目分组列表、搜索 `Cmd+Shift+F`）、fork/clone/重命名/导出/删除操作（映射 02 §3.2 表）。
+⚠️ **会话树抽屉 2026-09-24 移除**（用户："好像没什么用"）：`sessions/tree.rs` 与 `get_tree` 通道留着，
+前端不再有入口 —— 只读树没有动作可做，而"就地切分支"协议里没有（02 §5.2 C11）。
 
 ### 3.5 `features/settings/`
 

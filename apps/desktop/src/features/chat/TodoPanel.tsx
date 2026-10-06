@@ -15,10 +15,20 @@
  * 两层"默认折起来"（与 DSH 一致）：面板默认只露头部一行（进度看得到，清单看不见），
  * 点开才展开列表；列表内部超 180px 自己滚，不会把输入框顶出屏幕。
  *
- * 三处与本仓有关的判断：
+ * 两处与本仓有关的判断：
  *   1. **没有能力就不渲染任何东西**（`supported`）—— 没装 todo 插件时界面与从前一模一样；
- *   2. 清空之后（`clearedByTurn`）不显示旧计划，但头部说清"上一轮有过清单"，而不是假装没有；
- *   3. 空清单（0 条）等价于没有计划 —— DSH 也是 `todos.length === 0 → null`。
+ *   2. **空清单（0 条）= 没有计划 → 不渲染**（DSH `todos.length === 0 → null`）。
+ *      2026-09-24 用户报"TODO 执行完了好像不会被清理掉"，核对 DSH 的时机是：
+ *
+ *      ```
+ *      todo/write → 换成新清单
+ *      turn/end   → **保留**（做完的清单继续看得见）
+ *      turn/start → null（下一次发消息时才清掉）
+ *      ```
+ *
+ *      也就是说"清空"这件事本身两边一致，差别在于 Piggy 清空之后还留了一条
+ *      "上一轮的任务清单已归档（新一轮开始）" —— 那条**常驻**，看起来就像没清掉。
+ *      现在照 DSH：清单为空就什么都不渲染（面板整个消失）。
  */
 import { useState } from 'react';
 import { Icon } from '@/features/common/Icon';
@@ -31,31 +41,15 @@ const STATUS_ICON = { completed: 'check', in_progress: 'loading', pending: 'circ
 export function TodoPanel({ tabId }: { tabId: string }) {
   const supported = useTodoSupported();
   const todos = useTabTodo(tabId, (t) => t.todos);
-  const clearedByTurn = useTabTodo(tabId, (t) => t.clearedByTurn);
-  const writes = useTabTodo(tabId, (t) => t.writes);
   const source = useTabTodo(tabId, (t) => t.source);
   const chainBroken = useTabTodo(tabId, (t) => t.chainBroken);
   const [open, setOpen] = useState(false);
 
   if (!supported) return null;
   const items = todos ?? [];
-  if (items.length === 0) {
-    // 清空过就说清楚（DSH 的 turn/start 清空是**设计**，不是丢失）
-    if (clearedByTurn && writes > 0) {
-      return (
-        <section className="pg-todo-panel pg-todo-panel-quiet" data-todo-panel data-todo-state="cleared">
-          <span className="pg-todo-panel-lead" aria-hidden="true">
-            <Icon name="checklist" size={14} />
-          </span>
-          <span className="pg-todo-panel-title">{TODO_PANEL_TITLE}</span>
-          <span className="pg-todo-panel-progress" data-todo-cleared>
-            上一轮的任务清单已归档（新一轮开始）
-          </span>
-        </section>
-      );
-    }
-    return null;
-  }
+  // DSH：空清单就是不渲染（面板整个消失）。清空发生在**下一轮开始**（`turn/start`），
+  // 做完的那一轮结束时清单照旧留着 —— 那正是用户想看到的样子。
+  if (items.length === 0) return null;
 
   const progress = progressLabel(items);
 

@@ -15,13 +15,22 @@
  * 悬停某条刻度 → 弹出预览框（标题=用户那条消息，正文=回答摘要）；点击 → 跳到那一轮。
  * 当前刻度会**跟着滚动走**，并在梯子内部把它居中（指针停在梯子上时不抢）。
  *
- * ## 与 DSH 的两处差异（都是有意的）
+ * ## 跟随策略照抄 DSH（2026-09-24 改回）
  *
- * 1. **刻度梯的间距固定 10px，不按文档长度比例**（DSH 同款）。按比例画的话，
- *    一轮很长的回答会把后面所有刻度挤成一堆，梯子就看不出形状了；固定间距下
- *    梯子比可视带高时**在梯子内部滚动**（两端用渐隐提示还能滚）。
- * 2. DSH 只放在右侧，这里支持左/右/关（用户要求的三态开关，docs/03 §2.2）。
- *    左置时刻度改为左对齐、预览框翻到右侧——否则预览会盖住正文。
+ * DSH `TurnNavigator.tsx` 的 `scrollToIndex(index, reveal, behavior)`：
+ * 目标位置 = **把这一格居中**（`center = item.start + item.size/2`，`top = center - height/2`），
+ * 但 `reveal === 'if-needed'` 时先看它有没有跑出**渐隐带**（`scrollPadding = FADE_PX`，
+ * 上下各 24px）—— 在带子里就一动不动。跟随用平滑滚动（尊重 `prefers-reduced-motion`）；
+ * 首次拿到非零高度时是 `'always'`（开局就把当前刻度居中）。
+ *
+ * 本仓早先自己发明过"最小幅度跟随"（跑出带子时只把它拉回带内，不居中），
+ * 现在**删掉**、按 DSH 来（用户 2026-09-24："有意偏离 DSH 的行为，都对标 DSH"）。
+ * 刻度间距固定 10px、梯子最大 420px、两端渐隐 24px 这些数值本来就和 DSH 一致。
+ *
+ * ## 唯一保留的差异：左/右/关三态
+ *
+ * DSH 只放在右侧。这个开关是本仓自己的产品功能（docs/03 §2.2），**默认值就是 DSH 的右侧**；
+ * 左置时刻度左对齐、预览框翻到另一侧（否则预览会盖住正文）。
  *
  * ## 为什么要虚拟化
  *
@@ -107,30 +116,43 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
   );
 
   /**
-   * 跟随当前刻度：**只在它跑出可视带时，最小幅度地把它拉回来**。
+   * 把某一格滚到梯子中间（DSH `scrollToIndex` 的同义实现）。
    *
-   * 为什么不是"居中"（DSH 的口径）：DSH 的刻度间距与文档长度成比例，梯子通常装得下；
-   * 而 Piggy 用固定 10px 间距（有意的差异，见文件头），一场 100 轮的会话梯子有 1000px，
-   * 塞进 420px 的带子里必然要内部滚动。居中意味着每走十几轮就整体跳 ~200px ——
-   * 用户报的"预览滚动条在疯狂跳动"就是这个（实测：跳一轮时梯子从 592 → 311 → 521）。
-   * 最小幅度跟随把每次调整压到 10~50px，且只在贴边时发生。
+   * @param reveal - `'if-needed'`：已经在**渐隐带**里就一动不动（跟随用）；
+   *                 `'always'`：无条件居中（开局定位用）
    */
-  useLayoutEffect(() => {
+  const scrollToMark = useCallback((index: number, reveal: 'if-needed' | 'always') => {
     const el = railRef.current;
-    if (!el || activeIndex < 0 || pointerInside.current || maxScroll <= 0) return;
-    const center = RAIL_INSET_PX + activeIndex * TURN_SPACING_PX + TURN_SPACING_PX / 2;
-    const viewTop = el.scrollTop;
-    const viewBottom = viewTop + el.clientHeight;
-    // 已经落在可视带内（留 FADE_PX 余量）就不动它
-    if (center >= viewTop + FADE_PX && center <= viewBottom - FADE_PX) return;
-    const target = Math.max(
-      0,
-      Math.min(maxScroll, center < viewTop ? center - FADE_PX : center - el.clientHeight + FADE_PX),
-    );
-    if (Math.abs(target - viewTop) < 1) return;
-    el.scrollTop = target;
+    const height = el?.clientHeight ?? 0;
+    if (!el || index < 0 || height <= 0) return;
+    const center = RAIL_INSET_PX + index * TURN_SPACING_PX + TURN_SPACING_PX / 2;
+    const current = el.scrollTop;
+    if (reveal === 'if-needed' && center >= current + FADE_PX && center <= current + height - FADE_PX) {
+      return;
+    }
+    const max = Math.max(0, el.scrollHeight - height);
+    const target = Math.max(0, Math.min(max, center - height / 2));
+    if (Math.abs(target - current) < 1) return;
+    // 动效偏好：能平滑就平滑（DSH `preferredScrollBehavior`），否则直接跳
+    const smooth =
+      typeof matchMedia === 'function' && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' });
     setScrollTop(target);
-  }, [activeIndex, maxScroll]);
+  }, []);
+
+  /** 开局：第一次拿到真实高度时把当前刻度**居中**（DSH 的 `'always'` 那一次）。 */
+  const placed = useRef(false);
+  useLayoutEffect(() => {
+    if (placed.current || bandH <= 0 || activeIndex < 0) return;
+    placed.current = true;
+    scrollToMark(activeIndex, 'always');
+  }, [bandH, activeIndex, scrollToMark]);
+
+  /** 跟随：只在当前刻度跑出渐隐带时把它拉回中间（DSH 的 `'if-needed'`）。 */
+  useLayoutEffect(() => {
+    if (!placed.current || activeIndex < 0 || pointerInside.current) return;
+    scrollToMark(activeIndex, 'if-needed');
+  }, [activeIndex, scrollToMark]);
 
   const onRailScroll = useCallback(() => {
     const el = railRef.current;
@@ -147,8 +169,9 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
   const fadeBottom = scrollTop < maxScroll - 1;
 
   return (
-    <div
+    <nav
       className={`pg-rail pg-rail-${placement}`}
+      aria-label="会话轮次导航"
       data-turn-rail
       data-rail-placement={placement}
       data-rail-count={items.length}
@@ -246,6 +269,6 @@ export function TurnRail({ items, activeTurn, placement, onJump, pendingTurn }: 
           )}
         </div>
       )}
-    </div>
+    </nav>
   );
 }

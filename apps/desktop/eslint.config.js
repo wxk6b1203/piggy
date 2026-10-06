@@ -26,7 +26,17 @@ export default tseslint.config(
     // ⚠️ flat config 里**同一条规则后块整体覆盖前块**，不是合并 patterns。
     // 所以 chat 那三刀被下面 Monaco 那块 `ignores` 排除掉，由本块把两条禁令一起管
     // ——否则 Monaco 那块会把这里的作用域连同 antd 禁令一起吃掉。
-    files: ['src/features/chat/Transcript.tsx', 'src/features/chat/MessageView.tsx', 'src/features/chat/TrajectoryView.tsx'],
+    // 2026-09-24：Transcript 拆成"薄视图 + 三个类"之后，新文件一并纳入这条禁令 ——
+    // 拆分的意义是分工，不是把红线留在原地。
+    files: [
+      'src/features/chat/Transcript.tsx',
+      'src/features/chat/MessageView.tsx',
+      'src/features/chat/ToolCallRow.tsx',
+      'src/features/chat/useTranscriptScroll.ts',
+      'src/features/chat/transcriptViewport.ts',
+      'src/features/chat/scrollFollow.ts',
+      'src/features/chat/TrajectoryView.tsx',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -46,6 +56,10 @@ export default tseslint.config(
     ignores: [
       'src/features/chat/Transcript.tsx',
       'src/features/chat/MessageView.tsx',
+      'src/features/chat/ToolCallRow.tsx',
+      'src/features/chat/useTranscriptScroll.ts',
+      'src/features/chat/transcriptViewport.ts',
+      'src/features/chat/scrollFollow.ts',
       'src/features/chat/TrajectoryView.tsx',
     ],
     rules: {
