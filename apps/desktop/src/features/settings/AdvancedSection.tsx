@@ -6,8 +6,10 @@
  * 手写字段（`compat.thinkingFormat`、`modelOverrides`、`promptCache`…）必须有个地方能改，
  * 否则用户只能去终端里 vim。
  *
- * 为什么**没有** auth.json：里面的密钥只在 Rust 侧脱敏读出（`auth_list`），
- * 明文不进渲染进程（docs/03 §2.10）。要改密钥请走「模型」页。
+ * 为什么**没有** auth.json：密钥在 Rust 侧脱敏读出（走 `provider_list` 的 `keyMasked`，
+ * 见 docs/03 §2.10），明文不进渲染进程。要改密钥请走「模型」页。
+ * （IPC 上另有一组 `auth_list`/`auth_set_key`/`auth_remove` 命令，当前**没有渲染点** ——
+ * 这一段曾经把它们写成"就是它在读"，是不对的；真要显示凭据列表时它们可以用。）
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from 'antd';

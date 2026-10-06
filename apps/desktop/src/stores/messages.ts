@@ -89,7 +89,7 @@ export interface ToolResultView {
  * 而且只出现在**它所属的那个会话**里。
  */
 export interface NoticeView {
-  kind: 'retry' | 'compaction';
+  kind: 'retry' | 'compaction' | 'extension';
   /** 重试：第几次 / 上限 / 这次等了多久（pi `auto_retry_start` 的字段） */
   attempt?: number;
   maxAttempts?: number;
@@ -98,6 +98,15 @@ export interface NoticeView {
   errorMessage?: string;
   /** 压缩：触发原因（`manual` / `threshold`） */
   reason?: string;
+  /* ── 扩展报错（`extension_error`）──
+     与上面两类**语义不同**：那两类是"正在…"的瞬时状态（结束就撤），
+     这一类是**发生过的事故**，要留在转录里给人回看（不清）。 */
+  /** 哪个扩展：文件路径（界面只显示末段） */
+  source?: string;
+  /** 报错正文（pi 的 `error`） */
+  text?: string;
+  /** 同一个扩展累计报了几次（一次插件崩溃常常连报） */
+  count?: number;
 }
 
 export interface MessageView {
@@ -385,14 +394,15 @@ function pushRow(tab: TabMessages, row: PageRow): boolean {
  * 每次都 push 一行的话，转录尾部会堆出一串"正在重试"的化石。
  * 用固定 id 就地改内容：行还在原位，React 也不重建组件。
  */
-const NOTICE_ID: Record<NoticeView['kind'], string> = {
-  retry: 'notice:retry',
-  compaction: 'notice:compaction',
-};
+function noticeId(notice: NoticeView): string {
+  // 扩展报错按**来源**分行：两个插件各报各的，不能互相覆盖
+  if (notice.kind === 'extension') return `notice:extension:${notice.source ?? ''}`;
+  return `notice:${notice.kind}`;
+}
 
 /** 建/改一条提示行（已经在就改内容，不新增行、不改下标）。 */
 function pushNotice(tab: TabMessages, notice: NoticeView): void {
-  const id = NOTICE_ID[notice.kind];
+  const id = noticeId(notice);
   const row = tab.byId[id];
   if (row) {
     row.notice = notice;
@@ -411,7 +421,7 @@ function pushNotice(tab: TabMessages, notice: NoticeView): void {
 
 /** 撤掉一条提示行（结束/成功/取消都走这里：它只表示"正在…"）。 */
 function dropNotice(tab: TabMessages, kind: NoticeView['kind']): void {
-  const id = NOTICE_ID[kind];
+  const id = noticeId({ kind });
   if (!tab.byId[id]) return;
   delete tab.byId[id];
   tab.ids = tab.ids.filter((x) => x !== id);
@@ -750,6 +760,28 @@ export const useMessages = create<MessagesState>()(
           case 'auto_retry_end':
             dropNotice(tab, 'retry');
             break;
+          /* 扩展报错（pi 的 `extension_error`：扩展加载失败、事件处理抛异常等）。
+             ⚠️ 此前**完全不可见** —— Rust 的兜底分支把它转成 `pi:commit`，而前端
+             `applyCommit` 的 default 分支直接忽略，于是"插件炸了"在界面上没有任何痕迹
+             （用户只看得到"点了没反应"）。现在它是转录里的一行：留在那儿可回看，
+             同一个扩展连报多次只累计计数、不刷屏；`agent_settled` 也**不**撤它
+             （见那条注释：撤的只有 retry/compaction 两种"正在…"）。 */
+          case 'extension_error': {
+            const err = e as unknown as { extensionPath?: string; error?: string; event?: string };
+            /* 显示名取**目录名**而不是文件名：扩展入口多是 `index.ts`/`index.js`，
+               只显示 `index.ts` 等于没说清是谁报的。取不到就退回文件名。 */
+            const parts = (err.extensionPath ?? '').split(/[\\/]/).filter(Boolean);
+            const base = parts.pop() ?? '扩展';
+            const source = /^index\.[cm]?[jt]s$/.test(base) ? parts.pop() ?? base : base;
+            const prev = tab.byId[noticeId({ kind: 'extension', source })]?.notice;
+            pushNotice(tab, {
+              kind: 'extension',
+              source,
+              text: err.error ?? '未知错误',
+              count: (prev?.count ?? 0) + 1,
+            });
+            break;
+          }
           case 'piggy:resync': {
             // resync 是**权威全量**（worker 崩/休眠后补齐上下文）：流式那一行连同它的
             // 半截文本一起撤掉 —— 它要么在 entries 里以权威消息的身份回来，要么本来就没落盘。

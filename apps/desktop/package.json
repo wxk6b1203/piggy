@@ -26,7 +26,6 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
-    "@monaco-editor/react": "^4.7.0",
     "@piggy/pi-protocol": "workspace:*",
     "@tanstack/react-virtual": "^3.13.0",
     "@tauri-apps/api": "^2.9.0",
@@ -43,7 +42,6 @@
     "react-dom": "^19.2.0",
     "react-resizable-panels": "^4.13.1",
     "shiki": "^1.29.2",
-    "zod": "^3.25.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
@@ -52,7 +50,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.1.0",
-    "babel-plugin-react-compiler": "latest",
+    "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^10.11.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^27.0.0",

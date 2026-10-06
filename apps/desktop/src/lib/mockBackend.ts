@@ -56,6 +56,15 @@ export const pathCalls: { path: string; action: string; application: string | nu
  */
 export const providerOps: { name: string; args: Record<string, unknown> }[] = [];
 
+/** 外部链接的打开记录（门禁核对"markdown 里的链接点击真的交给宿主了"）。 */
+export const externalOpenCalls: string[] = [];
+
+/** 被 `pi_abort` 打断过的 tab（假流式的循环会看它 —— 否则"停止"按钮在 mock 下没有反应）。 */
+const abortedTabs = new Set<string>();
+
+/** 内嵌登录终端的假 PTY 序号。 */
+let nextMockPtyId = 1;
+
 /** 提供商配置的 mock 副本：形状与 `provider_overview` 的一行一致，写入要真的记住。 */
 interface MockProvider {
   provider: string;
@@ -1158,6 +1167,43 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       sessionMeta('/Users/mock/proj', 'layout-wp1', 40, '工作区布局 v1 落地', 40),
       sessionMeta('/Users/mock/testpilot', 'nightly-audit', 3_000, '审核夜间构建', 5_000),
     ].map((m) => (mockSessionNames.has(m.path) ? { ...m, name: mockSessionNames.get(m.path)! } : m)),
+  /* ── 下面这几条是「前端真的会调、mock 从前没有」的补齐（由
+     `ipc-mock-coverage.test.ts` 扫出来的）：兜底分支静默返回 `{}` 时，界面表现是
+     "点了没反应"而门禁全绿 —— 与 docs/14 §6 记的那类风险同源。 ── */
+
+  /** 外部链接：真机交系统浏览器（Rust 侧再校验 scheme）。mock 记一笔并成功。 */
+  open_external_url: (a) => {
+    externalOpenCalls.push(String(a.url ?? ''));
+    return null;
+  },
+  /** 中断：把这一轮正在跑的假流式停掉（`streamFor` 的循环会看这个标记）。 */
+  pi_abort: (a) => {
+    abortedTabs.add(String(a.tabId ?? a.tab_id ?? TAB));
+    return null;
+  },
+  /** 清空排队消息：真机返回清空后的队列，前端拿它刷新 Composer 的队列条。 */
+  pi_clear_queue: (a) => {
+    const tabId = String(a.tabId ?? a.tab_id ?? TAB);
+    emit(`pi:commit:${tabId}`, { type: 'queue_update', steering: [], followUp: [] });
+    return { steering: [], followUp: [] };
+  },
+  /** 扩展 UI 应答（DialogRouter 用的就是它）：mock 只回一个"收到"。 */
+  ui_reply: () => null,
+  /**
+   * 会话改名（`pi_set_session_name`）。
+   *
+   * ⚠️ 与 `session_rename`（Piggy 自己扫文件目录那条路）**不是一回事**：前者改的是
+   * pi 会话文件里的 `session_info.name`，后者改的是文件名/元数据。mock 里两者都写进
+   * 同一张覆盖表 `mockSessionNames`，于是"改完侧栏就变"这条链在 mock 下也是真的。
+   */
+  pi_set_session_name: (a) => {
+    const key = String(a.sessionFile ?? a.path ?? a.tabId ?? '');
+    const name = String(a.name ?? '');
+    if (key) mockSessionNames.set(key, name);
+    return null;
+  },
+  /** 内嵌登录终端的 PTY：mock 没有真 PTY，给一个 id 让界面进入"已连接"形态。 */
+  pty_open: () => ({ id: `mock-pty-${nextMockPtyId++}` }),
   session_delete: () => {},
   session_rename: (args) => {
     // 重命名也走同一张覆盖表：不然门禁里"重命名之后列表变了"会与生成标题不一致
@@ -1836,6 +1882,8 @@ if (typeof window !== 'undefined' && isMock) {
       let i = 0;
       let text = '';
       while (performance.now() - start < totalMs) {
+        // 被 `pi_abort` 打断（与 streamMixed 同一条纪律：mock 也要能停）
+        if (abortedTabs.has(tabId)) break;
         const delta = '流式渲染性能压测流。';
         text += delta;
         emit(`pi:frame:${tabId}`, {
@@ -1875,6 +1923,8 @@ if (typeof window !== 'undefined' && isMock) {
       let i = 0;
       let text = head;
       while (performance.now() - start < totalMs) {
+        // 被 `pi_abort` 打断：真机上这一轮就此结束（后面不再有 message_end 的正文）
+        if (abortedTabs.has(tabId)) break;
         const delta = '正文流。';
         text += delta;
         emit(`pi:frame:${tabId}`, { text: [{ contentIndex: 2, delta }], usage: { totalTokens: 1000 + i } });
@@ -1956,7 +2006,14 @@ export async function mockInvoke<T>(name: string, args?: Record<string, unknown>
   }
   const h = handlers[name];
   if (!h) {
-    console.debug('[mock-ipc] unhandled:', name, args);
+    /* ⚠️ 静默返回 `{}` 是**危险**的：浏览器门禁跑在 mock 上，真机路径一旦调到一个
+       没实现（或拼错）的命令，界面上只会"什么都没发生"，而门禁全绿 ——
+       docs/14 §6 记过这一类"mock 比真机宽松"的结构性风险。
+       现在：① 明确 warn（门禁会把它收集起来）；② `ipc-mock-coverage.test.ts`
+       静态对账"前端调用的每个命令都有 handler 或落在显式白名单里"。
+       返回值仍是 `{}`：有些命令（`webview_log`、`pty_*`）的调用方不读返回值，
+       真机上它们也确实成功 —— 抛异常会让无关的界面段整段挂掉。 */
+    console.warn(`[mock-ipc] 没有实现：${name}`, args);
     return {} as T;
   }
   return h(args ?? {}) as T;

@@ -123,7 +123,7 @@ pnpm --filter @piggy/desktop perf                 # 全场景 S1–S6
 | 门禁 | 覆盖 | 最近一次实测 |
 |---|---|---|
 | `pnpm typecheck` | apps/desktop + packages/piggy-bridge（后者对着真实 pi 类型） | ✅ |
-| `pnpm test` | 前端 441（47 文件）+ 桥接 37 + 协议 30 | ✅ **508 passed** |
+| `pnpm test` | 前端 **599（61 文件）** + 桥接 37 + 协议 30 | ✅ **666 passed**（2026-09-25 实测；计数会随迭代变化，以 `pnpm -r test` 的输出为准） |
 | `pnpm test:rust` | Rust 单元 308 + fixtures 3 + IPC 契约 19 + 路径纪律 2；另 7 条 `#[ignore]` 真机核对 | ✅ **332 passed / 7 ignored** |
 | `pnpm test:contract` | 对真实 pi 0.87.1 跑 C1–C14（含桥接数据面、降级、两 lane DAG） | ✅ **347 passed**（其中对真实 pi 的 15 项耗时 41s） |
 | `cargo clippy --all-targets -- -D warnings` | 含 test 目标（只跑 lib 会漏掉 5 处旧提示，已修） | ✅ |

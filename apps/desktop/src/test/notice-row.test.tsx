@@ -159,6 +159,40 @@ describe('正在重试模型请求：会话里的一行，且在流式那一行�
   });
 });
 
+describe('扩展报错：转录里看得见（以前是完全不可见）', () => {
+  it('extension_error 建一行、同名扩展累计计数、settled 不撤它', async () => {
+    await mount();
+    await commit({ type: 'agent_start' });
+    await commit({
+      type: 'extension_error',
+      extensionPath: '/Users/x/.pi/agent/extensions/pi-todo/index.ts',
+      event: 'tool_call',
+      error: 'TypeError: cannot read properties of undefined',
+    });
+    const row = rows('[data-notice="extension"]');
+    expect(row, '扩展报错没有在转录里出现').toHaveLength(1);
+    expect(text(row[0])).toContain('扩展报错');
+    // 显示的是**目录名**（扩展入口多是 index.ts，只show文件名等于没说清是谁）
+    expect(text(row[0]), '没有显示是哪个扩展').toContain('pi-todo');
+    expect(row[0]!.getAttribute('data-notice-source'), 'data-notice-source 不是目录名').toBe('pi-todo');
+    expect(text(row[0]), '没有显示错误正文').toContain('TypeError');
+    expect(row[0]!.querySelector('[data-notice-details]'), '展开看全文的那块不在').toBeTruthy();
+
+    // 同一个扩展连报两次：只累计，不刷屏
+    await commit({ type: 'extension_error', extensionPath: '/Users/x/.pi/agent/extensions/pi-todo/index.ts', error: '第二次' });
+    expect(rows('[data-notice="extension"]'), '同一个扩展报了两次却堆了两行').toHaveLength(1);
+    expect(text(rows('[data-notice="extension"]')[0])).toContain('×2');
+
+    // 另一个扩展：各占一行
+    await commit({ type: 'extension_error', extensionPath: '/Users/x/.pi/agent/extensions/other/index.js', error: 'boom' });
+    expect(rows('[data-notice="extension"]'), '两个不同扩展的报错应该各占一行').toHaveLength(2);
+
+    // 一轮落定**不**撤它（它是事故记录，不是"正在…"）
+    await commit({ type: 'agent_settled' });
+    expect(rows('[data-notice="extension"]'), '扩展报错被 agent_settled 撤掉了').toHaveLength(2);
+  });
+});
+
 describe('正在压缩上下文：与工具行同一套窄行', () => {
   it('compaction_start 建行、compaction_end 撤掉', async () => {
     await mount();

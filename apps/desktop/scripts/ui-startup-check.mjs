@@ -38,8 +38,15 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e)));
+/* ⚠️ mock 里没实现的命令：`mockBackend` 的兜底分支只 warn + 返回 `{}`，
+   界面表现是"点了没反应"而门禁全绿。这条把那种情况**变成可见的**：
+   静态对账在 `ipc-mock-coverage.test.ts`（扫 `cmd('…')` 字面量），
+   这里兜住静态扫不到的（例如 ErrorBoundary 直接 `internals.invoke('webview_log')`）。 */
+const unmockedCommands = [];
 page.on('console', (m) => {
-  if (m.type() === 'error') pageErrors.push(m.text().split('\n')[0]);
+  const line = m.text().split('\n')[0];
+  if (m.type() === 'error') pageErrors.push(line);
+  if (line.includes('[mock-ipc] 没有实现')) unmockedCommands.push(line);
 });
 
 /* ---------- 1. 干净启动，产出真实布局 ---------- */
@@ -3004,6 +3011,19 @@ const liveBind = await page.evaluate(async () => {
  */
 const wheelHold = await (async () => {
   const tabId = liveBind.tabId;
+  /* ⚠️ 先把上一段（第 19 段）那条假流式**等干净**再开始（2026-09-25 加）。
+     上一段用的是**同一个 tab**，它的 `streamFor(3400)` 若还在跑，这一段的滚轮手势会被
+     后续帧打断：实测同一份代码有时 gap 一路长上去（读者拿住），有时在 25px 容差里
+     被拽回底部 —— 两次采样值逐帧相同，说明是**时序**而不是逻辑（docs/15 §4 记过这条
+     flaky）。等 `streaming` 落地再灌数据，这一段就只由自己决定。 */
+  await page.evaluate(async (id) => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const stores = globalThis.__piggyStores;
+    for (let i = 0; i < 60; i += 1) {
+      if (!stores.useMessages.getState().tabs[id]?.streaming) return;
+      await sleep(100);
+    }
+  }, tabId);
   const setup = await page.evaluate(async (id) => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const stores = globalThis.__piggyStores;
@@ -3479,6 +3499,24 @@ const noticesAndDiff = await page.evaluate(async () => {
   await sleep(400);
   notices.afterEnd = tr.querySelectorAll('[data-notice-row]').length;
   apply({ type: 'agent_settled' });
+
+  /* ── 扩展报错：从前**完全不可见**（Rust 兜底转发成 pi:commit，前端 default 分支忽略），
+     现在必须是转录里的一行，而且 `agent_settled` **不**撤它（它是事故记录，不是"正在…"）。 ── */
+  apply({
+    type: 'extension_error',
+    extensionPath: '/Users/mock/.pi/agent/extensions/pi-todo/index.ts',
+    event: 'tool_call',
+    error: 'TypeError: cannot read properties of undefined (reading id)',
+  });
+  await sleep(400);
+  const extRow = tr.querySelector('[data-notice="extension"]');
+  notices.extension = {
+    present: !!extRow,
+    source: extRow?.getAttribute('data-notice-source') ?? null,
+    text: (extRow?.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80),
+    details: !!extRow?.querySelector('[data-notice-details]'),
+    afterSettled: (apply({ type: 'agent_settled' }), await sleep(300), !!tr.querySelector('[data-notice="extension"]')),
+  };
 
   /* ── ② 工具行里的 diff ── */
   const trow = tr.querySelector('[data-tool-row][data-tool="edit"]');
@@ -4989,6 +5027,18 @@ if (noticesAndDiff.missing) {
   if (n.afterEnd !== 0) {
     bad.push(`会话内提示：end 事件之后提示行没撤（还剩 ${n.afterEnd} 条化石行）★`);
   }
+  const ext = n.extension ?? {};
+  if (!ext.present) {
+    bad.push('会话内提示：扩展报错（extension_error）在转录里没有出现 —— 用户看到的只会是"点了没反应" ★');
+  } else {
+    if (!/扩展报错/.test(ext.text ?? '') || !/pi-todo/.test(ext.source ?? '')) {
+      bad.push(`会话内提示：扩展报错行没说清是谁报的（source=${JSON.stringify(ext.source)} text=${JSON.stringify(ext.text)}）★`);
+    }
+    if (!ext.details) bad.push('会话内提示：扩展报错行没有可展开的全文 ★');
+    if (!ext.afterSettled) {
+      bad.push('会话内提示：一轮落定把扩展报错撤掉了 —— 它是事故记录，不该跟着 settled 走 ★');
+    }
+  }
 
   const d = noticesAndDiff.toolDiff ?? {};
   if (d.stat !== '+3 -1') {
@@ -5060,6 +5110,18 @@ if (noticesAndDiff.missing) {
   if (t.panelsAfter !== (t.panelsBefore ?? 0) + 1 || !t.previewTab) {
     bad.push(`DIFF 标签：「打开文件」没有开出预览标签（${t.panelsBefore} → ${t.panelsAfter}，preview=${t.previewTab}）★`);
   }
+}
+
+/* ---------- 23. mock 覆盖：这一轮里没有任何"没实现的命令"被调用过 ----------
+ * 与 `ipc-mock-coverage.test.ts` 的静态对账互补：那条扫 `cmd('…')` 字面量，
+ * 这条管真跑一遍时**实际发生**的调用（含只有运行期才知道名字的那些）。
+ * `pty_write/resize/close` 是显式白名单（mock 没有真 PTY），它们不 warn —— warn 只由
+ * `mockBackend` 的兜底分支发。 */
+if (unmockedCommands.length > 0) {
+  bad.push(
+    `mock 覆盖：这一段里调到了没有实现的 mock 命令：\n    ${[...new Set(unmockedCommands)].join('\n    ')}\n` +
+      '    门禁跑在 mock 上，缺 handler 会让相关界面静默失效（兜底只 warn + 返回 {}）★',
+  );
 }
 
 console.log(bad.length ? `\n❌ ${bad.join('\n❌ ')}` : '\n✅ 全部通过');

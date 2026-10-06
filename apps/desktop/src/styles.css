@@ -576,6 +576,37 @@ body {
   overflow-wrap: anywhere; font-size: var(--pg-fs-13); line-height: var(--pg-lh-12);
 }
 .pg-notice-detail-label { color: var(--pg-fg-secondary); }
+/* 扩展报错行：错误色、不扫光、不自动消失。整行是一颗 `<details>`，
+   摘要一行放不下就省略号，展开看全文（同一个扩展连报多次只累计 ×N）。 */
+.pg-notice-ext {
+  color: var(--pg-error); font-size: var(--pg-fs-13); line-height: var(--pg-lh-13);
+}
+.pg-notice-ext-summary {
+  display: inline-flex; align-items: center; gap: var(--pg-sp-3);
+  max-width: 100%; padding: 2px 0; cursor: pointer; list-style: none; user-select: none;
+}
+.pg-notice-ext-summary::-webkit-details-marker { display: none; }
+.pg-notice-ext-summary::after {
+  flex: none; width: 6px; height: 6px; margin-right: 2px;
+  border-right: 1.5px solid currentcolor; border-bottom: 1.5px solid currentcolor;
+  content: ''; transform: rotate(-45deg); transition: transform 120ms ease;
+}
+.pg-notice-ext[open] .pg-notice-ext-summary::after { transform: rotate(45deg); }
+.pg-notice-ext-title { flex: none; font-weight: 500; }
+.pg-notice-ext-source { flex: none; color: var(--pg-fg-dim); font-family: var(--pg-mono); font-size: var(--pg-fs-11); }
+.pg-notice-ext-count {
+  flex: none; padding: 0 6px; border-radius: var(--pg-r-pill);
+  border: 0.5px solid var(--pg-error); font-size: var(--pg-fs-11);
+}
+.pg-notice-ext-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--pg-fg-secondary);
+}
+.pg-notice-ext-details {
+  margin-top: 3px; padding-left: 14px; color: var(--pg-fg-secondary);
+  font-family: var(--pg-mono); font-size: var(--pg-fs-12); line-height: var(--pg-lh-12);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 /* 压缩提示：与工具行同一套窄行，只是它不是工具（没有结果、不可展开） */
 .pg-notice-compaction { margin: 0; }
 

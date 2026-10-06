@@ -266,7 +266,7 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 | **D8** | **Composer 不贴底、Transcript 高度失真** | **`.pg-workspace` 这个类名在 CSS 里根本不存在**——`SessionWorkspace` 被重写时漏了样式表 | ✅ 已补 |
 | D5 | `tauri.conf.json` `security.csp: null` | 显式关闭了 CSP | ⬜ 待补 |
 | D6 | 打包配置里 updater 指向 `https://updates.piggy.invalid/` | 占位域名未替换 | ⬜ 待处理 |
-| D7 | 根目录 `scripts/` 为空目录 | 遗留 | ⬜ 待清理 |
+| D7 | 根目录 `scripts/` 为空目录 | 已不存在（2026-09-25 核对 `ls scripts` → No such file or directory） | ✅ 已清理 |
 
 > D1 与 D8 是同一类问题：**DOM 结构被改动，CSS 没有跟上**。这是多 agent 接力改 UI 的典型事故。
 > 本次加入两道防线：`ui:debug` 的**布局体检**（自动发现异常高度/越界/空色块）与**图标名编译期守卫**。
@@ -346,7 +346,7 @@ pnpm --filter @piggy/desktop ui:debug     # 终端 B：截图 + 错误 + 布局�
 - **P1 token 层**：DSH 色板 → `--pg-*`（暗/亮）（✅ 已完成）
 - **P2 图标**：codicons 落地 + 编译期守卫（✅ 已完成）
 - **P3 区域重构**：侧栏 / 会话头部 / 消息 / Composer / dock / 轨迹（含三轨时间线）/ 右栏（文件树 + 文档预览 + Fleet）/ 代码块 / 改动文件卡片（✅ 全部完成）
-- **P4 收尾**：根 `scripts/` 清理（⬜）；其余见下面的发布门禁。
+- **P4 收尾**：根 `scripts/` 清理（✅ 已不存在）；其余见下面的发布门禁。
 
 ## 6.1 旁证：VS Code 1.140 独立收敛到同一拓扑
 

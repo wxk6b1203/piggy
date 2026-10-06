@@ -39,7 +39,7 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 
 **范围**：G2 全量——一切操作 GUI 化。
 
-- 会话：列表（文件扫描 + watcher）、switch/new/fork/clone/rename/delete/export_html、会话树抽屉（get_tree）；
+- 会话：列表（文件扫描 + watcher）、switch/new/rename/delete/export_html；fork/clone 与 get_tree 的 **RPC 与 Rust 命令就绪但前端没有入口**（2026-09-25 核对：`pi_fork`/`pi_clone_session`/`pi_get_tree` 全仓只出现在 mock 的命令名单里，侧栏右键菜单没有分支项；会话树已于 2026-09-24 从产品里删掉）；
 - 模型/Thinking：选择器（get_available_models/set_model）、thinking 级别；
 - 设置：Provider（auth.json 表单 + 状态检测）、自定义 provider（models.json 表单）、settings.json 表单 + JSON 编辑器、Piggy 自有设置；
 - Composer 完整态：图片、斜杠补全（get_commands）、队列 chips、steer/followUp；
@@ -62,7 +62,7 @@ M0 实现修正记录：React StrictMode 双 effect 曾导致双 tab → init �
 | WP | 内容 | 位置理由 | 状态 |
 |---|---|---|---|
 | 1 | 工作区布局 v1：dockview 编辑区 + 左右视图轨 + 底部面板 + tab 模型（预览/固定/徽标）+ 布局持久化 | 结构地基，后续功能都往骨架里插 | ✅ |
-| 2 | 会话管理：sessions/list.rs（扫描+watcher）+ 侧栏会话视图 + new/switch/rename/delete/export/fork/clone | G2 核心；依赖 WP1 侧栏 | ✅ |
+| 2 | 会话管理：sessions/list.rs（扫描+watcher）+ 侧栏会话视图 + new/switch/rename/delete/export | G2 核心；依赖 WP1 侧栏。**fork/clone 未接线**（见 §3 范围那行的说明） | 🟡 部分 |
 | 3 | 模型/Thinking + Composer 完整态：Cmd+L 选择器、thinking 循环、图片粘贴/拖拽、斜杠补全 | 小而高频，提前保持日常可用 | ✅ |
 | 4 | Monaco 基座：worker/CSP/懒加载/实例池/主题注册（风险 spike 前置） | M1 最大技术未知数，尽早排雷 | ✅ |
 | 5 | 设置中心：auth/models/settings 三文件表单化 + 原始编辑器 + schema 校验 | 依赖 WP1/WP4 | ✅（schema 校验 M2；2026-09-24 重做为**提供商配置页**：DSH 版式左导航 + 提供商列表/编辑卡片/检测/获取可用模型，见 03 §2.12、04 §2.2；2026-09-24 增**插件页**：四个来源分组盘点 + 装/删/升级/启停 + 路径登记，见 03 §2.15、04 §2.3） |
@@ -198,7 +198,7 @@ dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自�
 | 全局唤起 | `tauri-plugin-global-shortcut`：Cmd/Ctrl+Shift+P 显示并聚焦主窗（Rust 侧注册，无 webview 权限面） | ✅ |
 | 登录内嵌终端 | `src-tauri/src/pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `LoginTerminalModal`（@xterm/xterm + fit；关闭即 close 回收）；设置 → 认证页入口 | ✅（真机 OAuth 流程待用户实测） |
 | 资源浏览器 | `fs_list_dir`（项目根子树、守卫校验、目录优先排序）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
-| 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）+ FilePreview 编辑模式（有 root 才出编辑钮） | ✅ |
+| 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）**都在，但前端从未接线**：`fs_write_edit` 全仓 0 调用、`FilePreview` 里没有任何编辑 UI（`git log -S fs_write_edit -- apps/desktop/src` 为空，说明不是后来删掉的，是从来没做） | ❌ 未完成（原标 ✅ 是错的） |
 | i18n | `lib/i18n.ts`：zh-CN/en-US 词典 + t() 回退链 + setLang 持久化/事件；已接 palette/welcome 文案；语言切换 UI 与全量文案迁移 = 持续项 | ✅ 骨架 |
 | 自动更新 | `tauri-plugin-updater` 已接入构建（check 未被调用即零风险）；endpoints/签名密钥/双通道 = 发布基建（需苹果/微软证书与更新服务器），随打包签名一同落地 | 🔧 结构就绪 |
 | 打包签名 | macOS notarization / Windows signing 需要证书；`tauri.full.conf.json`（full SKU 捆绑 pi）+ `fetch-pi-standalone.mjs`（SHA256 强校验）已就绪，发布清单见 08 §7.1 | 🔧 脚本就绪 |

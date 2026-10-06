@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use super::catalog;
 use crate::config::paths;
@@ -245,15 +245,6 @@ pub fn overview_with(agent: &Path, env: EnvLookup<'_>) -> Result<Value, String> 
 /// 生产入口：用真实的 `~/.pi/agent`。
 pub fn overview() -> Result<Value, String> {
     overview_at(&paths::agent_dir())
-}
-
-/// 只保留 `providers` 这一层，给「高级」里的原始 JSON 编辑器做差异展示用。
-#[allow(dead_code)]
-pub fn providers_only(v: &Value) -> Map<String, Value> {
-    v.get("providers")
-        .and_then(|p| p.as_object())
-        .cloned()
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

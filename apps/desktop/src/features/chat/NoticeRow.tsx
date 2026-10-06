@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { NoticeView } from '@/stores/messages';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Icon } from '@/features/common/Icon';
+import { firstLine } from './toolRowModel';
 import { TextShimmer } from '@/features/common/TextShimmer';
 
 /** DSH `retrySeconds`：向上取整，最小 1 秒（不能显示 0s）。 */
@@ -31,7 +32,33 @@ function retrySeconds(milliseconds: number): number {
 
 export function NoticeRow({ notice }: { notice: NoticeView }) {
   if (notice.kind === 'retry') return <RetryNotice notice={notice} />;
+  if (notice.kind === 'extension') return <ExtensionNotice notice={notice} />;
   return <CompactionNotice />;
+}
+
+/**
+ * 「扩展报错」——**一次事故**，不是"正在进行"。
+ *
+ * 与上面两类刻意不同：它不扫光（扫光表达"还在动"）、不自动消失（`agent_settled` 不撤它），
+ * 用错误色 + `<details>` 展开看全文。同一个扩展连报多次只累计 `count`，
+ * 否则一次插件崩溃会刷出十几行一模一样的红字（把真正的内容顶出屏幕）。
+ */
+function ExtensionNotice({ notice }: { notice: NoticeView }) {
+  const count = notice.count ?? 1;
+  return (
+    <details className="pg-notice-ext" data-notice-row data-notice="extension" data-notice-source={notice.source}>
+      <summary className="pg-notice-ext-summary">
+        <Icon name="alert" size={12} />
+        <span className="pg-notice-ext-title">扩展报错</span>
+        <span className="pg-notice-ext-source">{notice.source}</span>
+        {count > 1 ? <span className="pg-notice-ext-count">×{count}</span> : null}
+        <span className="pg-notice-ext-text">{firstLine(notice.text ?? '')}</span>
+      </summary>
+      <div className="pg-notice-ext-details" data-notice-details>
+        {notice.text ?? ''}
+      </div>
+    </details>
+  );
 }
 
 /** 「正在重试模型请求（1/3） · 5s」——DSH `ModelRetryItem`。 */
