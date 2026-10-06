@@ -37,14 +37,19 @@ import { defaultOpen, useTurnFold } from '@/stores/turnFold';
 import { useMessages, useTabMsg, type MessageView as MessageViewT } from '@/stores/messages';
 import { useQuestions } from '@/stores/questions';
 import { useTabs } from '@/stores/tabs';
+import { openDiffTab, openPreviewTab } from '@/features/workspace/EditorArea';
 import { useTodoSupported } from '@/stores/todo';
 import { Icon } from '@/features/common/Icon';
 import { MessageView } from './MessageView';
 import { todoBaselines, type TodoItem } from '@/lib/todoModel';
 import { foldRowInput, turnFolds, type TurnFold } from '@/lib/turnFold';
+import { editedCallsOf } from '@/lib/diff';
+import { baseName, resolveAgainst } from '@/lib/paths';
+import type { ContentBlock } from '@piggy/pi-protocol';
 import { changedStatsOf } from '@/stores/messages';
 import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItems';
 import { TurnRail } from './TurnRail';
+import { ChangedFiles, type ChangedFile } from './ChangedFiles';
 import { TurnFoldRow } from './TurnFoldRow';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
 import { railRowsFor, useTranscriptScroll, type ReadingPositionPort } from './useTranscriptScroll';
@@ -242,6 +247,58 @@ export function Transcript({ tabId }: { tabId: string }) {
     return out;
   }, [folds, ids, detail, foldMemory, tabId]);
 
+  /* ── 回合尾的「已编辑 N 个文件」卡片（DSH `ChangedFiles`，docs/12 §3.5）──
+     卡片属于**回合**（DSH 挂在 `conversation.chat.turnTail`），不属于某一条助手行：
+     放进行里会被"回合折叠"一起藏起来 —— 折起过程之后就看不到这轮改了哪些文件了
+     （截图实测抓到）。所以这里按段聚合，挂在这一段**最后一行**的槽位上：
+     那段行被折起来时，卡片照样渲染（折叠只藏过程行，不藏卡片）。
+
+     数据：路径来自工具调用参数（`editedCallsOf`），加删行数来自工具结果的 `details.patch`
+     （`changeStats`，在结果索引时算过一次）。拿不到行数的文件只显示路径 —— 不臆造数字。 */
+  const tailChanged = useMemo(() => {
+    const out = new Map<string, ChangedFile[]>();
+    const tab = useMessages.getState().tabs[tabId];
+    if (!tab) return out;
+    /** 把一段（下标区间）里所有助手行的改动并起来（同一路径取第一次出现的调用 id）。 */
+    const collect = (from: number, to: number): ChangedFile[] => {
+      const seen = new Set<string>();
+      const files: ChangedFile[] = [];
+      for (let i = from; i <= to; i += 1) {
+        const row = tab.byId[ids[i] ?? ''];
+        if (!row || row.role !== 'assistant' || row.live) continue;
+        const blocks = (Array.isArray((row.message as { content?: unknown }).content)
+          ? (row.message as { content: ContentBlock[] }).content
+          : []) as ContentBlock[];
+        for (const c of editedCallsOf(blocks)) {
+          if (seen.has(c.path)) continue;
+          seen.add(c.path);
+          files.push({
+            path: c.path,
+            callId: c.callId,
+            added: changeStats[c.callId]?.added ?? null,
+            removed: changeStats[c.callId]?.removed ?? null,
+          });
+        }
+      }
+      return files;
+    };
+    /* 没有 user 行的前置段（分页窗口从半途开始）也要有卡片：那一段的下标是
+       `[0, 第一个 fold 的 start)`（没有任何 fold 时就是整窗）。 */
+    const firstStart = folds[0]?.start ?? ids.length;
+    if (firstStart > 0) {
+      const files = collect(0, firstStart - 1);
+      const tail = ids[firstStart - 1];
+      if (files.length > 0 && tail) out.set(tail, files);
+    }
+    for (const fold of folds) {
+      const files = collect(fold.start, fold.end);
+      const tail = ids[fold.end];
+      if (files.length > 0 && tail) out.set(tail, files);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 行数据从 store 现读（与 folds 同一口径）
+  }, [tabId, ids, commitSeq, folds, changeStats]);
+
   /* 当前轮次 = 阅读线所在那一轮  /* 当前轮次 = 阅读线所在那一轮  /* 当前轮次 = 阅读线所在那一轮（贴底时 = 已载入窗口的最后一轮）。
      ⚠️ 阅读线**不看瞬时几何**：流式时内容两帧之间长高，几何会把"自己贴的底"读成
      "读者滚上去了"，于是亮条在最新那轮与阅读线那轮之间逐帧来回翻（实测 58 ↔ 61）。 */
@@ -300,8 +357,26 @@ export function Transcript({ tabId }: { tabId: string }) {
                         />
                       ) : null}
                       {plan?.folded ? null : (
-                        <Row tabId={tabId} id={id} baselines={baselines} changeStats={changeStats} detail={detail} />
+                        <Row tabId={tabId} id={id} baselines={baselines} detail={detail} />
                       )}
+                      {tailChanged.has(id) ? (
+                        <ChangedFiles
+                          files={tailChanged.get(id)!}
+                          onOpen={(file, kind) => {
+                            const cwd = useTabs.getState().tabs[tabId]?.cwd;
+                            const full = resolveAgainst(cwd, file.path);
+                            const name = baseName(full) || full;
+                            /* 头部 = 看**文件**（"现在长什么样"），行 = 看 **diff**（"改了什么"）。
+                               行上没有差异信息时（`write` 覆盖写、拿不到 patch）退回文件预览：
+                               点下去总有东西出来，不弹一个"没有差异"的空视图。 */
+                            if (kind === 'diff' && file.callId && file.added != null) {
+                              openDiffTab(tabId, file.callId, name);
+                              return;
+                            }
+                            openPreviewTab(full, full, name, cwd ?? undefined);
+                          }}
+                        />
+                      ) : null}
                     </>
                   );
                 })()}
@@ -374,15 +449,12 @@ function Row({
   tabId,
   id,
   baselines,
-  changeStats,
   detail,
 }: {
   tabId: string;
   id: string;
   /** `todo_write` 的调用 id → 它的上一份清单（见 `todoBaselines`） */
   baselines: Map<string, TodoItem[]> | null;
-  /** 文件改动的调用 id → 加删行数（见 `stores/messages.ts` 的 `changedStatsOf`） */
-  changeStats: Record<string, { added: number; removed: number }>;
   /** 工作步骤展示档位（只有 `compact` 会改行的呈现：落定的思考摘要隐藏） */
   detail: TranscriptDetail;
 }) {
@@ -409,7 +481,6 @@ function Row({
       baseline={baseline}
       baselines={baselines}
       tabId={tabId}
-      changeStats={changeStats}
       detail={detail}
       memory={memory}
     />

@@ -165,6 +165,38 @@ describe('FileDiff（标签页）', () => {
   });
 });
 
+describe('ChangedFiles 卡片：头部开文件、行开 diff（用户 2026-09-25 的口径）', () => {
+  it('两个热区各自报对 kind，且无障碍标签说明它开什么', async () => {
+    const calls: Array<[string, string]> = [];
+    await act(async () => {
+      mountDom(
+        <ChangedFiles
+          files={[
+            { path: 'src/a.ts', callId: 'c1', added: 3, removed: 1 },
+            { path: 'src/b.ts', callId: 'c2', added: 1, removed: 1 },
+          ]}
+          onOpen={(f, kind) => calls.push([f.path, kind])}
+        />,
+      );
+    });
+    const header = q('[data-cf-open="file"]') as HTMLElement;
+    expect(header, '头部没有标出"开文件"').toBeTruthy();
+    await act(async () => {
+      header.click();
+    });
+    expect(calls[0], '头部应当开**文件**（多个文件时开第一个）').toEqual(['src/a.ts', 'file']);
+
+    const rows = qa('[data-cf-open="diff"]') as HTMLElement[];
+    expect(rows, '每一行都该是"开 diff"的热区').toHaveLength(2);
+    await act(async () => {
+      rows[1]!.click();
+    });
+    expect(calls[1], '底下那一行应当开 **diff**').toEqual(['src/b.ts', 'diff']);
+    expect(text(q('.pg-cf-hint')), '头部提示语没说清开的是文件').toBe('打开文件');
+    await unmountDom();
+  });
+});
+
 describe('ChangedFiles 卡片', () => {
   it('总计与每行都显示 +N −M；没有 patch 的文件一个数字都不显示', async () => {
     await act(async () => {

@@ -14,9 +14,16 @@
  *   · 没有 patch 的文件（`write` 覆盖写、参数里只有路径）→ **一个数字都不显示**，
  *     绝不拿"文件计数"冒充行数（那正是这张卡片早先只敢显示文件数的原因）。
  *
- * 交互差异：点击开一个**新标签页**（Piggy 没有 DSH 那种右栏预览面板）：
- * 有 diff 的开 **diff 标签**（`openDiffTab`），没有 diff 的退回文件预览
- * （`openPreviewTab`，与右栏文件树同一条路）。
+ * ## 点哪里开什么（用户 2026-09-25 明确要求）
+ *
+ * ```
+ * ┌─ 头部（主体）→ 打开**文件**（预览标签页）        ← 想看"现在长什么样"
+ * └─ 底下那一行 → 打开**diff**（差异标签页）          ← 想看"改了什么"
+ * ```
+ *
+ * 两个热区、两件事，互不抢占：头部是"这张卡的整体"（多个文件时开第一个），
+ * 行是"这一个文件的改动"。没有 diff 的文件（`write` 覆盖写、拿不到 patch）那一行
+ * 退回**文件预览** —— 点下去总有东西出来，不弹一个"没有差异"的空视图。
  */
 import { useState } from 'react';
 import { Icon } from '@/features/common/Icon';
@@ -54,13 +61,22 @@ function Counts({ added, removed }: { added: number; removed: number }) {
   );
 }
 
+/** 点的是"看文件"还是"看差异"（头部 = 文件，行 = 差异）。 */
+export type OpenKind = 'file' | 'diff';
+
 export function ChangedFiles({
   files,
   onOpen,
 }: {
   files: ChangedFile[];
-  /** 打开某一条改动（有 callId → diff 标签；否则文件预览） */
-  onOpen?: (file: ChangedFile) => void;
+  /**
+   * 打开某一条改动。
+   *
+   * @param file - 哪一条
+   * @param kind - `file` = 文件预览（头部）；`diff` = 差异视图（底下那一行）。
+   *               没有 patch 的文件收到 `diff` 时应当**退回文件预览**（调用方负责）。
+   */
+  onOpen?: (file: ChangedFile, kind: OpenKind) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (files.length === 0) return null;
@@ -75,8 +91,10 @@ export function ChangedFiles({
       {/* 60px 头部：40px 图标砖 + 标题 + 统计 */}
       <button
         className="pg-cf-header"
-        onClick={() => onOpen?.(files[0]!)}
-        title={files.map((f) => f.path).join('\n')}
+        data-cf-open="file"
+        aria-label={`打开文件 ${files[0]!.path}`}
+        onClick={() => onOpen?.(files[0]!, 'file')}
+        title={`${files.map((f) => f.path).join('\n')}\n\n点击打开文件（要看去掉了什么，点下面那一行）`}
       >
         <span className="pg-cf-tile">
           <span className="pg-cf-tilemark">
@@ -93,7 +111,7 @@ export function ChangedFiles({
                 <Counts added={sum.added} removed={sum.removed} />
               </span>
             ) : null}
-            <span className="pg-cf-hint">在标签页中打开</span>
+            <span className="pg-cf-hint">打开文件</span>
           </span>
         </span>
       </button>
@@ -101,7 +119,18 @@ export function ChangedFiles({
       <ul className="pg-cf-list">
         {visible.map((f) => (
           <li key={f.path}>
-            <button className="pg-cf-row" onClick={() => onOpen?.(f)} title={f.path}>
+            {/* 底下这一行 → **diff**（看不清差异的文件退回文件预览，由调用方决定） */}
+            <button
+              className="pg-cf-row"
+              data-cf-open="diff"
+              aria-label={`打开 ${f.path} 的差异`}
+              onClick={() => onOpen?.(f, 'diff')}
+              title={
+                f.added == null && f.removed == null
+                  ? `${f.path}\n（这个文件没有差异信息）点击打开文件`
+                  : `${f.path}\n点击打开差异视图`
+              }
+            >
               <FileIcon name={f.path} size={13} />
               <span className="pg-cf-path">{f.path}</span>
               <span className="pg-cf-counts">

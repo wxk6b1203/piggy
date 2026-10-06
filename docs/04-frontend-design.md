@@ -593,7 +593,7 @@ DSH `FileDiff.tsx` 与 `DiffBlock.tsx`）：
 |---|---|---|
 | 工具行摘要 | `+3 -1`（跟在参数摘要后面；没有 patch 就不显示，不臆造 `+0 -0`） | `ToolRow.tsx` |
 | 工具行正文（展开） | 行内 diff 块：路径行 + 逐 hunk 的增删/上下文行 + `⋯`，**超过 9 行折成头 5 尾 4** | `features/chat/DiffBlock.tsx` |
-| 回合尾「已编辑 N 个文件」卡片 | 总计与**每行**的 `+N -M`；有 patch 才有数字 | `features/chat/ChangedFiles.tsx` |
+| 回合尾「已编辑 N 个文件」卡片 | 总计与**每行**的 `+N -M`；有 patch 才有数字。**头部 → 开文件标签页；底下那一行 → 开 diff 标签页**（没有差异的行退回文件预览） | `features/chat/ChangedFiles.tsx` |
 | 改动标签页（点卡片某一行） | 统一/并排两种版式 + 折行 + 「打开文件」；逐 hunk 画 `@@ … @@` 头与两侧行号 | `features/preview/{DiffView,FileDiff}.tsx` |
 
 为什么是**新标签页**而不是 DSH 的右栏 review：Piggy 没有那个面板（用户 2026-09-25

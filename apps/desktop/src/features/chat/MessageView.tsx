@@ -24,11 +24,6 @@ import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
-import { ChangedFiles, type ChangedFile } from './ChangedFiles';
-import { baseName, resolveAgainst } from '@/lib/paths';
-import { editedCallsOf } from '@/lib/diff';
-import { useTabs } from '@/stores/tabs';
-import { openDiffTab, openPreviewTab } from '@/features/workspace/EditorArea';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Markdown, StreamingMarkdown } from './markdown';
 import { TextShimmer } from '@/features/common/TextShimmer';
@@ -115,7 +110,6 @@ export function MessageView({
   baseline,
   baselines,
   tabId,
-  changeStats,
   detail = 'standard',
   memory,
 }: {
@@ -128,13 +122,6 @@ export function MessageView({
   baselines?: Map<string, TodoItem[]> | null | undefined;
   /** 会话 id：助手消息里的工具行要按它取结果索引（`toolResults`） */
   tabId?: string | undefined;
-  /**
-   * 本轮各次文件改动的加删行数（`callId → {added, removed}`）。
-   *
-   * 由 `Transcript` 按 `commitSeq` 现算（改动卡片要显示 `+N −M`），
-   * 不在这里订阅整个 `toolResults` —— 那会让每个助手行在**每帧**重渲染。
-   */
-  changeStats?: Record<string, { added: number; removed: number }> | null | undefined;
   /**
    * 工作步骤展示档位（docs/04 §2.1.6）。只有 `compact` 会改这一行的呈现：
    * **落定的思考行不显示摘要**（DSH 的 `Settled reasoning preview: Hidden`）。
@@ -168,17 +155,6 @@ export function MessageView({
   if (role === 'assistant') {
     const blocks = view.live ? liveBlocks(view.live) : settledBlocks(m.content);
     const full = blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('');
-    const committed = (Array.isArray(m.content) ? m.content : []) as ContentBlock[];
-    /* 本轮改动的文件：路径来自调用参数，加删行数来自工具结果（`changeStats`，
-       由结果索引里 `details.patch` 数出来）。拿不到行数的文件只显示路径 —— 不臆造数字。 */
-    const changed: ChangedFile[] = view.live
-      ? []
-      : editedCallsOf(committed).map((c) => ({
-          path: c.path,
-          callId: c.callId,
-          added: changeStats?.[c.callId]?.added ?? null,
-          removed: changeStats?.[c.callId]?.removed ?? null,
-        }));
     const failure = view.live ? null : turnFailure(m);
     return (
       <div className="pg-message pg-assistant" data-streaming={view.live ? '' : undefined}>
@@ -198,25 +174,10 @@ export function MessageView({
         {/* 失败/中断回合：pi 用普通 assistant 消息表达（content 为空 + stopReason/errorMessage）。
             没有这块卡片时，整条消息渲染出来是**一片空白**——用户看到的是"发出去没反应"。 */}
         {failure ? <TurnFailureCard failure={failure} /> : null}
-        {/* DSH 回合尾：改动文件卡片（docs/12 §3.5）。
-            ⚠️ 点击行为与 DSH 不同：DSH 是把文件送进**右侧预览面板**（它的右栏就是文档预览），
-            Piggy 没有那个面板，改成**开一个新标签页**（`openPreviewTab`）——
-            与右栏文件树点文件是同一条路。工具参数里的路径可能是相对的，按会话 cwd 解析。 */}
-        <ChangedFiles
-          files={changed}
-          onOpen={(file) => {
-            const cwd = tabId ? useTabs.getState().tabs[tabId]?.cwd : undefined;
-            const full = resolveAgainst(cwd, file.path);
-            const name = baseName(full) || full;
-            /* 有实际 diff 的（`edit`…）开 **diff 标签**：用户要看的正是"改成了什么样"。
-               没有 diff 的（`write` 覆盖写、拿不到结果）退回文件预览 —— 至少能看到现在的内容。 */
-            if (tabId && file.callId && file.added != null) {
-              openDiffTab(tabId, file.callId, name);
-              return;
-            }
-            openPreviewTab(full, full, name, cwd ?? undefined);
-          }}
-        />
+        {/* 回合尾的「已编辑 N 个文件」卡片**不在这里**：它挂在"这一轮的最后一行"上，
+            由 `Transcript` 渲染（见那边的 `tailChanged`）。理由：卡片属于**回合**（DSH 也是
+            挂在 `conversation.chat.turnTail`），放进助手行里会被回合折叠一起藏起来 ——
+            用户折叠过程之后就看不到"这轮改了哪些文件"了（实测截图抓到）。 */}
         {/* 操作行（复制/时间）只在落定之后出现：流式时内容还不是最终文本，
             而且这一行自带 16px 上边距 —— 流式中挂着会让那一行在转正时矮一截。 */}
         {!view.live && full.trim() ? <MessageActions text={full} message={m} /> : null}

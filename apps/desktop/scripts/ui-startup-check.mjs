@@ -3092,10 +3092,16 @@ const wheelHold = await (async () => {
   await page.mouse.move(setup.x, setup.y);
   await page.waitForTimeout(500);
   const bottom = await read();
-  // 慢速小幅上滚（trackpad 手感）：4 × -25，每 25ms 采一次
+  /* 慢速上滚（trackpad 手感）：4 × -60，每 25ms 采一次。
+     ⚠️ 步长**必须明显大于跟随容差**（`FOLLOW_THRESHOLD_PX = 25`）：早先这里写的是 -25，
+     正好压在容差边界上 —— 每一步滚完 gap 恰好 25，"≤25 算贴着底"于是判定继续跟随、
+     把读者拽回去，下一步又是 25…… 读者永远逃不掉，量到的东西取决于这一窗口里
+     流式内容有没有长过 1px（**同一份代码时红时绿**，实测 4 次里挂 3 次）。
+     容差边界本身由单测钉着（`transcript-page.test.tsx` 的「容差就是容差」），
+     这一段要量的是"读者说要接管之后就跟丢了"——那就得给出一个真的超出容差的手势。 */
   const nudge = [];
   for (let k = 0; k < 4; k += 1) {
-    await page.mouse.wheel(0, -25);
+    await page.mouse.wheel(0, -60);
     for (let i = 0; i < 4; i += 1) {
       await page.waitForTimeout(25);
       nudge.push(await read());
@@ -3609,8 +3615,28 @@ const noticesAndDiff = await page.evaluate(async () => {
     live: stores.useMessages.getState().tabs[tabId]?.toolResults[mock.MOCK_EDIT_CALL_ID]?.changed ?? null,
   };
 
+  /* ── ③b 点头部 → **文件**标签（用户 2026-09-25：上面开文件、底下开 diff）──
+     先点头部：出来的是**文件预览**（`.pg-preview`），不是 diff 视图。 */
+  const panelsBeforeHeader = globalThis.__piggyDock.panels.length;
+  card?.querySelector('[data-cf-open="file"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(900);
+  const headerOpen = {
+    previews: document.querySelectorAll('.pg-preview').length,
+    diffViews: document.querySelectorAll('[data-diffview]').length,
+    panelsBefore: panelsBeforeHeader,
+    panelsAfter: globalThis.__piggyDock.panels.length,
+    label: card?.querySelector('[data-cf-open="file"]')?.getAttribute('aria-label') ?? null,
+    rowLabel: card?.querySelector('[data-cf-open="diff"]')?.getAttribute('aria-label') ?? null,
+  };
+  /* 切回会话标签再点行（⚠️ 不能用 `closeAllTabs`：那会把会话面板连同转录 DOM 一起销毁，
+     下面所有基于 `tr` 的引用就全失效了 —— 实测就是这么红的）。 */
+  globalThis.__piggyEditor.focusSessionTab(tabId);
+  await sleep(600);
+
   /* ── ④ 点一行 → diff 标签 ── */
-  cardRows[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  (document.querySelector(`[data-tab-id="${tabId}"] [data-cf-open="diff"]`) ?? cardRows[0])?.dispatchEvent(
+    new MouseEvent('click', { bubbles: true }),
+  );
   await sleep(900);
   const panel = document.querySelector('[data-diffview]');
   const diffTab = {
@@ -3639,7 +3665,7 @@ const noticesAndDiff = await page.evaluate(async () => {
     (t.textContent ?? '').includes('✦'),
   );
 
-  return { notices, toolDiff, changed, diffTab };
+  return { notices, toolDiff, changed, headerOpen, diffTab };
 });
 
 /* ---------- 24. worker 崩/休眠：这一轮必须**当场落地**（docs/15 §4 的老缺口）----------
@@ -5623,6 +5649,21 @@ if (noticesAndDiff.missing) {
   }
   if (c.live?.added !== 3 || c.live?.removed !== 1) {
     bad.push(`改动卡片：结果索引里的行数不对（读到 ${JSON.stringify(c.live)}）★`);
+  }
+
+  const h = noticesAndDiff.headerOpen ?? {};
+  /* 头部 → 文件（用户 2026-09-25：上面开文件、底下开 diff） */
+  if (!(h.previews >= 1) || (h.diffViews ?? 0) > 0) {
+    bad.push(`改动卡片：点头部没有开出**文件**预览（诊断 ${JSON.stringify(h)}）★`);
+  }
+  if ((h.panelsAfter ?? 0) <= (h.panelsBefore ?? 0)) {
+    bad.push('改动卡片：点头部没有开新标签页（点了没反应）★');
+  }
+  if (!/文件/.test(h.label ?? '')) {
+    bad.push(`改动卡片：头部的无障碍标签没说明开什么（读到 ${JSON.stringify(h.label)}）★`);
+  }
+  if (!/差异/.test(h.rowLabel ?? '')) {
+    bad.push(`改动卡片：行的无障碍标签没说明开 diff（读到 ${JSON.stringify(h.rowLabel)}）★`);
   }
 
   const t = noticesAndDiff.diffTab ?? {};

@@ -713,6 +713,15 @@ DSH 里这是**回合尾部的卡片**，属于独立包 `ui-deliverables`（不
 - 数据：`ChangesSummary`（宿主服务端读取，`changesSummaryUrl(sessionId, seq)`，`#12-packages/client/ui-deliverables/src/changes.ts`）
 - 折叠阈值：`const COLLAPSED_ROWS = 4`（`ChangedFiles.tsx:18`）
 
+> **Piggy 的点击口径（用户 2026-09-25 明确要求，与 DSH 不同）**：
+> DSH 的头部是"在右侧栏打开本回合 review 的第 0 个文件"、行是 `HoverCard` 预览；
+> Piggy 没有右侧预览面板，两个热区各开一个**标签页**，并且**分工**：
+> **头部 → 打开文件**（`openPreviewTab`，看"现在长什么样"）、
+> **底下那一行 → 打开 diff**（`openDiffTab`，看"改了什么"）。
+> 行上没有差异信息时（`write` 覆盖写、拿不到 patch）退回文件预览 —— 点下去总有东西出来，
+> 不弹一个"没有差异"的空视图。头部提示语相应改成「打开文件」，两个热区都有
+> `aria-label` 说明它开什么（`features/chat/ChangedFiles.tsx`）。
+
 DOM（`ChangedFiles.tsx:49-91`）：
 
 ```
