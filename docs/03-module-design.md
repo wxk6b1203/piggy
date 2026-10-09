@@ -184,6 +184,13 @@ pub struct TabDescriptor {
 | `paths.rs` | **文件级**那一档：操作系统文件关联（查处理器 + 默认项 + 32px 图标）、`open`/`reveal`/指定应用三个动作。macOS 走 `osascript -l JavaScript` + AppKit `NSWorkspace`（实测 0.4s / 20+ 处理器），Linux 走 `gio info` + `gio mime` + desktop entry，Windows 只做 open/reveal |
 | `host.rs` | 宿主事实（platform/home/app_roots/env/ssh）+ `Host` trait（可注入）+ 有超时的宿主命令 + **把脚本体写成临时 `.ps1` 再执行**的 `run_script`（`run` 只能回字符串，装不下二进制产物）+ **脱离父进程组、洗净凭据环境**的启动器 |
 
+**一次性 pi 进程不能直接把 `.cmd` 垫片交给 `Command`**（2026-10-09 用户报的
+`启动 …\pi.cmd 失败：batch file arguments are invalid`）：标准库对批处理文件**拒绝**含换行的参数
+（`cmd.exe` 转义不了），而标题的提示词天生多行。`pi/discovery.rs::direct_command` 读垫片、
+按 cmd 的词法切出"解释器 + 入口脚本"（分支 1 是同目录 `node.exe`，本机 pnpm 走的是分支 2 里
+**裸写的 `node`**，按 PATH 解析），把它交给 `CreateProcess` —— 参数就不经 cmd 转义了。
+解析不出来一律回退到垫片本身（宁可失败得和以前一样，也不换一个跑不起来的启动器）。
+
 六个命令：`open_in_app_list` / `open_in_app_icon` / `open_in_app_open`（目录），
 `open_path_available` / `open_path_applications` / `open_path_open`（文件，`action = open | reveal`）。
 

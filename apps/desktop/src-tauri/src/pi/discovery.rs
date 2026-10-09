@@ -254,9 +254,184 @@ fn first_pi_in(dir: &Path, names: &[String], windows: bool) -> Option<PathBuf> {
     None
 }
 
+/// 把一个 **`.cmd`/`.bat` 垫片**解析成"直接启动它背后的真实程序"的 argv。
+///
+/// ## 为什么需要它（2026-10-09 用户报的 bug）
+///
+/// 界面上点「重新生成标题」报：
+/// `启动 C:\…\pnpm\bin\pi.cmd 失败：batch file arguments are invalid`。
+///
+/// 根因不在 pi、也不在参数写错，而在 **Rust 标准库对批处理垫片的参数转义**：
+/// `CreateProcess` 传不了参数的原始字节，std 只能自己拼命令行交给 `cmd.exe`，
+/// 而 `cmd.exe` **无法安全转义换行** —— 于是 std 直接拒绝启动（本机实测确认，三种都拒）：
+///
+/// | 参数内容 | 结果 |
+/// |---|---|
+/// | 空格 / 双引号 / `&` / `\|` / `%` | ✅ 正常转义 |
+/// | `\n`、`\r\n`、单独的 `\r` | ❌ `batch file arguments are invalid` |
+///
+/// 而标题那条路的提示词**天生多行**（`build_prompt` 的 `…human messages:\n{json}`），
+/// 所以「Windows + pnpm 垫片」下这条功能是**必然失败**，不是偶发。
+///
+/// ## 做法：走垫片自己写的那条命令，不自己拼 cmd 语法
+///
+/// pnpm / npm 的垫片形状是固定的（本机真机读到的 pnpm 版本）：
+///
+/// ```text
+/// @IF EXIST "%~dp0\node.exe" (
+///   "%~dp0\node.exe" "%~dp0\..\global\…\dist\bundle\cli.js" %*
+/// ) ELSE (
+///   @SET PATHEXT=%PATHEXT:;.JS;=;%
+///   node "%~dp0\..\global\…\dist\bundle\cli.js" %*
+/// )
+/// ```
+///
+/// 所以：读文本 → 剥掉 `@IF EXIST …` / `@SET …` 这些行 → 在剩下的行里取第一个
+/// `"<…>node.exe" "<…>cli.js"` 对，把 `%~dp0` 展开成垫片所在目录。
+/// **把命令的"真身"交给 `CreateProcess`**，参数就没有 cmd 转义这一层了，
+/// 换行、`&`、`%` 全部安全（而且顺带少一层 `cmd.exe` 进程）。
+///
+/// 解析不出来时返回 `None`，调用方**必须回退到垫片本身**（宁可失败得和以前一样，
+/// 也不能因为解析不出就换一个跑不起来的启动器）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn direct_command(pi_bin: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let ext = pi_bin.extension()?.to_string_lossy().to_ascii_lowercase();
+    if ext != "cmd" && ext != "bat" {
+        return None;
+    }
+    let text = std::fs::read_to_string(pi_bin).ok()?;
+    let shim_dir = pi_bin.parent()?;
+    let (program, script) = parse_shim_command(&text, shim_dir)?;
+    // 两道存在性闸门：解释器与入口脚本**都要真的在磁盘上**。
+    // 缺任何一个就交回垫片自己报错 —— 否则用户看到的是 node 的 `MODULE_NOT_FOUND`，
+    // 而那是"装坏了"的另一种说法，比 pi 的原话难懂得多。
+    if !Path::is_file(&program) || !Path::is_file(&script) {
+        return None;
+    }
+    Some((program, vec![script.to_string_lossy().into_owned()]))
+}
+
+/// 垫片文本 → `(解释器, 入口脚本)`，**纯函数**（不碰文件系统）。
+///
+/// 与 [`direct_command`] 的分工：这里只管"从 cmd 语法里读出它到底要跑什么"，
+/// 存在性由调用方判。拆开是为了让夹具能覆盖各种垫片写法，而不必在磁盘上
+/// 造出一个真的 node.exe。
+///
+/// 只认"第一段是解释器（node / pwsh）、第二段是脚本"这种形状：
+/// **不做通用 cmd 解析** —— 猜错会造出一个跑不起来的启动器。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_shim_command(text: &str, shim_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let expand = |raw: &str| -> PathBuf {
+        let joined = raw.replace("%~dp0", &shim_dir.to_string_lossy());
+        let joined = joined.replace("\\%", "%"); // 兜一手转义过的百分号
+        PathBuf::from(joined)
+    };
+    let looks_like_interpreter = |p: &Path| {
+        p.file_name()
+            .map(|n| {
+                let n = n.to_string_lossy().to_ascii_lowercase();
+                n == "node.exe" || n == "node" || n == "pwsh.exe" || n == "powershell.exe"
+            })
+            .unwrap_or(false)
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // 跳过批处理的控制行（`@IF EXIST` / `@SET` / `@ECHO` / 标签 / 分支括号）。
+        // 注意 `@IF EXIST "%~dp0\node.exe" (` 这一行里也有引号，但它是**条件**不是命令，
+        // 故意跳过；真正执行的那一行在它下面（本机 pi.cmd 第 2/3 行就是这个形状）。
+        if trimmed.is_empty()
+            || trimmed.starts_with('@')
+            || trimmed.starts_with(':')
+            || trimmed.starts_with("SET ")
+            || trimmed.starts_with("REM ")
+            // 分支条件本身不是命令（`@IF EXIST "%~dp0\node.exe" (` 里也有引号，
+            // 但它是**条件**；真正执行的那一行在它下面，本机 pi.cmd 第 2/3 行就是这个形状）
+            || trimmed.starts_with("IF ")
+            || trimmed.starts_with(") ELSE")
+            || trimmed == ")"
+            || trimmed == "("
+        {
+            continue;
+        }
+        /* ⚠️ 这里必须按 cmd 的词法切分，**不能**只按引号切。
+           本机 pi.cmd 真正执行的那一行是：
+               node  "%~dp0\..\global\…\cli.js" %*
+           ——解释器是**裸写**的 `node`（没有引号），只按引号切就只得一个片段，
+           于是这一行被判成"不像启动命令"而跳过。第一版就是这么错的。 */
+        let tokens = cmd_line_tokens(trimmed);
+        let (raw_program, raw_script) = match (tokens.first(), tokens.get(1)) {
+            (Some(p), Some(s)) => (p.as_str(), s.as_str()),
+            _ => continue,
+        };
+        // 末段常是 `%*`（参数转发标记）：它不该出现在脚本位置上
+        let script = expand(raw_script);
+        if script.extension().is_none() {
+            continue;
+        }
+        let raw_program = expand(raw_program);
+        let program = if raw_program.is_absolute() {
+            // 分支 1 的形状：垫片同目录的 node.exe。**它可能不存在**
+            // （本机 pnpm 就没铺这一份，于是垫片实际走的是 ELSE 支）——
+            // 不存在就跳过这一行、让下面的 PATH 解析接手。
+            if !Path::is_file(&raw_program) {
+                continue;
+            }
+            raw_program
+        } else {
+            // 分支 2 的形状：裸写的 `node`。cmd 此时从 PATH 取，我们也从 PATH 取。
+            if !looks_like_interpreter(&raw_program) {
+                continue;
+            }
+            let path_var = std::env::var("PATH").unwrap_or_default();
+            which_in(&raw_program.to_string_lossy(), &path_var, std::env::var("PATHEXT").ok().as_deref())?
+        };
+        // 再确认一次形状（PATH 命中的可能是别的同名程序）
+        if !looks_like_interpreter(&program) {
+            continue;
+        }
+        return Some((program, script));
+    }
+    None
+}
+
+/// cmd 命令行 → 词法单元：`"…"` 当作一个整体（引号去掉），引号外的空白分段。
+///
+/// 够用就好：垫片里只有"解释器 + 脚本 + `%*`"这三段，不需要支持 `^` 转义、
+/// 变量展开、重定向这些真正的 cmd 语法（解析错了会造出跑不起来的启动器）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn cmd_line_tokens(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in line.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// PATH 查找：逐目录探测"存在且可执行"（`PATHEXT` 参与补后缀）。
+///
+/// 与 `open_in_app::host::which_in` 同语义，但那边在 `open_in_app` 模块里、
+/// 且要求 `PATHEXT` 由调用方传；这里就地留一个薄的转发，免得 pi 这一侧
+/// 为了查一个 `node` 去依赖"打开方式"那个模块。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn which_in(name: &str, path_var: &str, pathext: Option<&str>) -> Option<PathBuf> {
+    crate::open_in_app::host::which_in(name, path_var, pathext)
+}
+
 /// PATH 扫描 → 常见安装位置兜底。都没有返回 `None`。
-fn which_pi() -> Option<PathBuf> {
-    let windows = cfg!(windows);
+fn which_pi() -> Option<PathBuf> {    let windows = cfg!(windows);
     let names = exec_names(windows, std::env::var("PATHEXT").ok().as_deref());
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
@@ -537,6 +712,218 @@ mod tests {
         std::fs::write(tmp.path().join("pi"), b"MZ\x90\x00fake-pe").unwrap();
         let picked = first_pi_in(tmp.path(), &exec_names(true, None), true).unwrap();
         assert_eq!(picked.file_name().unwrap(), "pi");
+    }
+
+    /* ---------------- 垫片 → 真实命令（标题那条路的换行 bug） ---------------- */
+
+    /// 夹具用**本机真实读到的** pnpm 垫片形状（逐行 `Get-Content` 核对过），
+    /// 把两个路径参数化，好让用例决定哪个分支真的存在。
+    ///
+    /// ⚠️ 第一版夹具写错了三处，都值得记下来：
+    ///   ① 我以为 `"%~dp0\node.exe"` 单独占一行，实际它在 `@IF EXIST …` **那一行上**；
+    ///   ② 我漏看了"分支 1 可能走不到"——本机 `%~dp0\node.exe` **不存在**，
+    ///      所以垫片实际执行的是 ELSE 支里**裸写的 `node`**（cmd 从 PATH 取它）；
+    ///   ③ 失败信息我写成了 `assert_eq!` 的第三个参数（它只收两个值），
+    ///      于是屏幕上只剩一个光秃秃的行号，白查了一轮。
+    /// 所以现在：夹具参数化、分支按"文件是否真的存在"选、断言都带消息。
+    fn pnpm_shim(interp: &str, script: &str) -> String {
+        format!(
+            "@SETLOCAL\r\n\
+             @IF EXIST \"%~dp0\\node.exe\" (\r\n\
+             \x20 \"%~dp0\\node.exe\"  \"{script}\" %*\r\n\
+             ) ELSE (\r\n\
+             \x20 @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n\
+             \x20 {interp}  \"{script}\" %*\r\n\
+             )\r\n"
+        )
+    }
+
+    /// 分支 1：垫片同目录**真的有** `node.exe` → 直接用它，脚本也跟着 `%~dp0` 展开。
+    #[test]
+    fn shim_prefers_the_node_next_to_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("node.exe"), b"MZ fake").unwrap(); // 只查存在性
+        std::fs::write(dir.join("cli.js"), "// entry").unwrap();
+        let text = pnpm_shim("%~dp0\\node.exe", "%~dp0\\cli.js");
+
+        let (program, script) = parse_shim_command(&text, dir).expect("应当解析出分支 1");
+        assert_eq!(program, dir.join("node.exe"));
+        assert_eq!(script, dir.join("cli.js"));
+        // `%*`（参数转发标记）不该混进脚本路径
+        assert!(
+            !script.to_string_lossy().contains('%'),
+            "参数转发标记混进来了：{}",
+            script.display()
+        );
+        // 控制行不许被当成命令
+        assert!(!program.to_string_lossy().contains("PATHEXT"));
+    }
+
+    /// 分支 2：垫片同目录**没有** `node.exe`（本机 pnpm 就是这个状态）→
+    /// 落到 ELSE 支里裸写的 `node`，按 **cmd 的语义**从 PATH 解析。
+    ///
+    /// 这条正是用户那个 bug 能否被修好的分水岭：本机分支 1 走不到，
+    /// 不认识分支 2 就等于什么都没修。
+    #[test]
+    fn shim_falls_back_to_the_bare_node_from_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("cli.js"), "// entry").unwrap();
+        // 故意**不**建 node.exe → 分支 1 的判定为假
+        let text = pnpm_shim("node", "%~dp0\\cli.js");
+
+        match parse_shim_command(&text, dir) {
+            Some((program, script)) => {
+                assert!(
+                    program
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_ascii_lowercase().starts_with("node"))
+                        .unwrap_or(false),
+                    "分支 2 应当解析成 PATH 上的真 node，实际 {}",
+                    program.display()
+                );
+                assert!(Path::is_file(&program), "PATH 命中的 node 应当存在");
+                assert_eq!(script, dir.join("cli.js"));
+            }
+            None => eprintln!("本机 PATH 上没有 node，这条只验了\"不 panic\""),
+        }
+    }
+
+    /// 分支 1 的文件在、但**脚本不在**（路径过期/换机器）→ `direct_command` 不接手
+    /// （纯解析层 `parse_shim_command` 不管存在性，所以这条必须量外层那道闸门）。
+    #[test]
+    fn direct_command_declines_when_the_script_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("node.exe"), b"MZ fake").unwrap();
+        let shim = dir.join("pi.cmd");
+        std::fs::write(
+            &shim,
+            pnpm_shim("%~dp0\\node.exe", "%~dp0\\gone\\cli.js"),
+        )
+        .unwrap();
+        assert!(
+            direct_command(&shim).is_none(),
+            "脚本不存在时不该接手（否则用户看到的是 node 的 ENOENT，而不是 pi 的原话）"
+        );
+
+        // 反面：脚本补上之后同一个垫片就该被接手
+        //（否则上一条可能只是"永远返回 None"，那样它什么都没验证）
+        std::fs::write(dir.join("cli.js"), "// entry").unwrap();
+        std::fs::write(&shim, pnpm_shim("%~dp0\\node.exe", "%~dp0\\cli.js")).unwrap();
+        let (program, args) = direct_command(&shim).expect("文件齐了就该接手");
+        assert_eq!(program, dir.join("node.exe"));
+        assert_eq!(args, vec![dir.join("cli.js").to_string_lossy().into_owned()]);
+    }
+
+    /// 不是 `.cmd`/`.bat` 的一律不接手（`.exe` 直接跑就好，没有 cmd 转义那一层）。
+    #[test]
+    fn direct_command_only_handles_batch_shims() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("pi.exe");
+        std::fs::write(&exe, b"MZ fake").unwrap();
+        assert!(direct_command(&exe).is_none(), ".exe 不该被解析，它本来就直连");
+
+        let bare = tmp.path().join("pi");
+        std::fs::write(&bare, "#!/bin/sh\n").unwrap();
+        assert!(direct_command(&bare).is_none());
+    }
+
+    /// **真机核对**：本机 PATH 上那个垫片必须能被解析出来，且解析结果真的可执行。
+    /// 这条是"我照着本机 pnpm 的写法写的解析器"的反向验证 —— 换个机器/换个包管理器
+    /// （npm 的垫片写法略有不同）时，它会在这里红，而不是在用户点按钮时红。
+    #[test]
+    fn real_machine_shim_resolves_to_a_runnable_command() {
+        let Some(bin) = which_pi() else {
+            eprintln!("本机没有 pi，跳过");
+            return;
+        };
+        if bin.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) != Some("cmd".into()) {
+            eprintln!("本机的 pi 不是 .cmd 垫片（{:?}），跳过", bin);
+            return;
+        }
+        let (program, args) = direct_command(&bin)
+            .unwrap_or_else(|| panic!("本机的垫片没解析出来：{}", bin.display()));
+        assert!(program.is_file(), "解析出的解释器不存在：{}", program.display());
+        assert!(
+            args.first().map(|a| Path::new(a).is_file()).unwrap_or(false),
+            "解析出的入口脚本不存在：{args:?}"
+        );
+        // 真的跑一次：`--version` 必须成功，且回的就是 pi 的版本号
+        let out = std::process::Command::new(&program)
+            .args(&args)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("应当能启动解析出的命令");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "解析出的命令跑不起来：{text}");
+        assert!(text.contains("0.87"), "版本输出不像 pi：{text}");
+        eprintln!("真机核对：{} → {} {}", bin.display(), program.display(), args[0]);
+    }
+
+    /// **这是用户那个报错的回归测试**：多行参数交给 `.cmd` 垫片必失败，
+    /// 交给解析出来的真实命令则成功。
+    ///
+    /// 前半段量的是标准库的行为（不依赖 pi）：std 拒绝对批处理文件传含换行的参数，
+    /// 报的就是 `batch file arguments are invalid` 那句原文。
+    #[cfg(windows)]
+    #[test]
+    fn multiline_args_fail_on_a_shim_but_work_on_the_real_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("echo-args.js");
+        // 一个只回显 argv 的 node 脚本：证明"参数真的原样到了"，不是只证明进程起来了
+        std::fs::write(
+            &script,
+            "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+        )
+        .unwrap();
+        let Some(node) = which_node_for_test() else {
+            eprintln!("找不到 node，跳过");
+            return;
+        };
+        let multiline = "line1\nline2";
+
+        // ① 垫片形状：std 直接拒绝（这就是用户看到的那句话）
+        let shim = tmp.path().join("pi.cmd");
+        std::fs::write(
+            &shim,
+            format!("@echo off\r\n\"{}\" \"{}\" %*\r\n", node.display(), script.display()),
+        )
+        .unwrap();
+        let err = std::process::Command::new(&shim)
+            .arg(multiline)
+            .output()
+            .expect_err("含换行的参数交给 .cmd 应当被 std 拒绝");
+        assert!(
+            err.to_string().contains("batch file arguments are invalid"),
+            "报错文案变了，用户看到的那句就对不上了：{err}"
+        );
+
+        // ② 解析之后：同一个参数交给真实命令 → 原样送达
+        let (program, args) = direct_command(&shim).expect("应当解析出 node + 脚本");
+        let out = std::process::Command::new(&program)
+            .args(&args)
+            .arg(multiline)
+            .output()
+            .expect("解析出的命令应当能跑");
+        let echoed = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(echoed, r#"["line1\nline2"]"#, "参数没有原样送达：{echoed}");
+    }
+
+    /// 测试里要一个 node（垫片解析的产物就是 node）。
+    ///
+    /// ⚠️ **不要往 `pnpm/bin/node.exe` 找**：本机那里根本没有（实测 `False`），
+    /// pnpm 的垫片自己也是靠 ELSE 分支从 PATH 取 `node` 的。所以就照 PATH 找。
+    #[cfg(windows)]
+    fn which_node_for_test() -> Option<PathBuf> {
+        let path = std::env::var("PATH").ok()?;
+        crate::open_in_app::host::which_in("node", &path, std::env::var("PATHEXT").ok().as_deref())
     }
 
     #[test]

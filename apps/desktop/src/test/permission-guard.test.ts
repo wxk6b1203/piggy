@@ -36,7 +36,25 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('isInside —— 前缀比较必须按路径段，不能按字符', () => {
+/* ⚠️ **这个文件里的两组用例是 POSIX 专属的**（2026-10-09 加闸门）。
+ *
+ * 被测的 `piggy-guard.js` 是「工作区内修改」档唯一的边界执行点，而它**只在 pi 进程里跑**
+ * ——pi 的宿主是 macOS/Linux，Windows 上 piggy 走的是 pi 的 Windows 发行版，
+ * 那份进程里的 `node:path` 就是 POSIX 语义。所以"守卫在 Windows 上跑"这件事不存在，
+ * 下面两组断言搬到 Windows 上必然不成立，而且是**两种不同的原因**：
+ *
+ *   ① `isInside` 组喂的是 `/work`、`/work/a.txt` 这种 POSIX 字面量，而守卫按
+ *      `path.sep` 做前缀比较（`target.startsWith(root + sep)`）——Windows 上 sep 是 `\`，
+ *      于是 `isInside('/work/a.txt', '/work')` 是 false。**守卫是对的，用例不可移植**。
+ *   ② 符号链接那两条要 `symlinkSync`，Windows 上普通进程建符号链接报
+ *      `EPERM: operation not permitted`（要开发者模式或管理员）。是环境限制，不是产品问题。
+ *
+ * 闸门写成**可见的 skip**而不是删掉：macOS/Linux 上覆盖一点不少，
+ * 而 Windows 上跑全量时它会明说自己跳过了哪几条、为什么 —— 比"红着让人肉记住"诚实。
+ */
+const posixOnly = describe.skipIf(process.platform === 'win32');
+
+posixOnly('isInside —— 前缀比较必须按路径段，不能按字符', () => {
   it('接受根目录本身与其中的路径', () => {
     expect(isInside('/work', '/work')).toBe(true);
     expect(isInside('/work/a.txt', '/work')).toBe(true);
@@ -60,7 +78,14 @@ describe('isInside —— 前缀比较必须按路径段，不能按字符', () 
   });
 });
 
-describe('canonicalize —— 必须穿透符号链接，否则链接能骗过前缀比较', () => {
+posixOnly('canonicalize —— 必须穿透符号链接，否则链接能骗过前缀比较', () => {
+  /* 符号链接**建在这里**，不靠别的 describe 顺手建。
+     原来 `escape` 只在上一条用例里建过，而那条一旦被闸门跳掉，
+     后面那条"拦截经符号链接逃逸"就会因为**链接不存在**而通过 ——
+     也就是说它会变成一条永远绿、什么都没验的用例（比红更糟）。 */
+  beforeAll(() => {
+    symlinkSync(outside, join(workspace, 'escape'), 'dir');
+  });
   it('解析已存在的路径为 realpath（macOS 上 /var 本身是 /private/var 的链接）', () => {
     const target = join(workspace, 'a.txt');
     const got = canonicalize(target);
@@ -82,7 +107,6 @@ describe('canonicalize —— 必须穿透符号链接，否则链接能骗过�
 
   it('把经符号链接指向外部的路径解析成真实位置', () => {
     const link = join(workspace, 'escape');
-    symlinkSync(outside, link, 'dir');
     // 关键：如果只做字符串前缀判断，workspace/escape/secret.txt 会"看起来"在工作区内
     const viaLink = canonicalize(join(link, 'secret.txt'));
     expect(isInside(viaLink, canonicalize(workspace))).toBe(false);
@@ -136,7 +160,9 @@ describe('checkWrite —— 放行与拦截的完整判定', () => {
     expect(v?.block).toBe(true);
   });
 
-  it('拦截经符号链接逃逸的路径', () => {
+  /* 这一条要 `symlinkSync`（链接由上面那组的 `beforeAll` 建好）——
+     所以同样加 POSIX 闸门。 */
+  posixOnly('拦截经符号链接逃逸的路径', () => {
     const v = checkWrite(
       { toolName: 'write', input: { path: 'escape/secret.txt' } },
       rootsOf(),

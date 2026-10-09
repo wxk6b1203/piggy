@@ -12,7 +12,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + �
 | 检查 | 结果 |
 |---|---|
 | `tsc --noEmit` | 通过（apps/desktop + packages/piggy-bridge，后者对着真实 pi 类型） |
-| `vitest` | **2026-09-25 复核**：apps/desktop **599（61 文件）**、`packages/piggy-bridge` **37/37**、`packages/pi-protocol` **30/30** —— 全部通过。⚠️ 本节下面那段历史留档里写的「572（57 文件）」与「bridge `artifact.test.ts` 既存红」**都已过期**：产物是新鲜的（`node packages/piggy-bridge/scripts/build.mjs --check` → ✓），那条用例也一直绿；本地若要复现，先 `pnpm install`（`packages/*/node_modules/vitest` 的软链会随 lockfile 更新而悬空）。以下为历史明细（数字按当时算）：apps/desktop 明细：**566**（57 文件）。**2026-09-24 本轮（转录重整 + 流式 Markdown）：删 11 条旧实时块引擎单测（`live.test.ts`，那个引擎没有了）、新增 5 条**流式行模型**（两条助手消息不串块 / 工具结果并进调用行 / 转正不重挂 / 新一轮落定掉队行 / 换窗期间不建流式行）、`transcript-scroll` 从 12 条改成 16 条（跟随判定改测 `ScrollFollow` 类）、`stores.test` 增 1 条（工具结果不单独成行 + 调用不在窗口时的兜底）、**`markdown.test` 增 6 条流式增量（节点身份跨冻结边界不变 / 尾部跟长 / 非追加输入整段重置 / 六种构造不变义 / 安全口径一致 / 流式围栏不上色）**。其余明细（历史留档）：含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）、**本轮新增 56 条：21 条清单模型（含与 Rust 状态白名单的跨语言一致性）、8 条清单行、9 条计划面板、16 条 todo store（能力探测的坏形状 / seed / 实时增量 / 项目级补探）、2 条转录接线（端到端两行写入，钉住差异基线按调用 id 配对）**）、**本轮新增 20 条：7 条行内展开态记忆（键口径 / LRU / 清理）、7 条展开态跨卸载重挂（思考行 / 工具行 / 工具正文代码块 / 行与行·标签与标签不串 / 关标签要忘）、4 条读者位置锚点（口径 / 钳制 / 行没了退回裸位置）、2 条面板不在前台的几何（隐藏期间不许写位置·不许丢跟随 / 读者接管则分毫不差还回去）**）、**本轮新增 8 条：会话名的同步（按会话文件推给打开的标签 / 不误改别的会话 / 空白=清掉 / 路径字面比较 / 头部响应式跟着变 / 命令面板那条入口也会推 / 后端说没写下去就不许本地改口）**）、**本轮新增 3 条：连点两次只 addPanel 一次且不弹报错 / 同一快照连开两次只加一个面板 / 双击只读一次尾页**）、**本轮新增 6 条：4 条实时块引擎（节点摘掉再挂到新节点不丢字 / 块的形状随 pending 重建 / 同一节点重复 attach 幂等 / 无布局不写 scrollTop 且有布局才贴底）、2 条转录接线（实时行滚出窗口再回来必须长在可见节点上 / 新一轮清掉上一轮残留）**）、**本轮新增 4 条：1 条引擎跟随意图（读者接管之后一个像素都不写 / 交还后继续贴底）、3 条转录回滚（上滚交还且内容继续长也不拽回 / 一格 25px 也交还 —— 容差不许吞手势 / 滚回底部跟随自己回来）**）|
+| `vitest` | **2026-10-09 本机（Windows）复核**：**66 文件全过 / 633 passed + 7 skipped（640）**。⚠️ 两点与 macOS 上不同：① `permission-guard.test.ts` 有 **7 条 skip**（POSIX 专属，见 §4.2）；② **exit code 仍可能是 1** —— React scheduler 的 `setImmediate` 在 jsdom 拆除后才跑，vitest 记为 unhandled error（已知 flake，见 §4.3）。本轮修掉两条稳定超时（`session-name-sync` / `feedback`，原因都是"用例体里 `await import()` 一棵重模块树"，见 §4.2）。历史留档：**2026-09-25 复核**：apps/desktop **599（61 文件）**、`packages/piggy-bridge` **37/37**、`packages/pi-protocol` **30/30** —— 全部通过。⚠️ 本节下面那段历史留档里写的「572（57 文件）」与「bridge `artifact.test.ts` 既存红」**都已过期**：产物是新鲜的（`node packages/piggy-bridge/scripts/build.mjs --check` → ✓），那条用例也一直绿；本地若要复现，先 `pnpm install`（`packages/*/node_modules/vitest` 的软链会随 lockfile 更新而悬空）。以下为历史明细（数字按当时算）：apps/desktop 明细：**566**（57 文件）。**2026-09-24 本轮（转录重整 + 流式 Markdown）：删 11 条旧实时块引擎单测（`live.test.ts`，那个引擎没有了）、新增 5 条**流式行模型**（两条助手消息不串块 / 工具结果并进调用行 / 转正不重挂 / 新一轮落定掉队行 / 换窗期间不建流式行）、`transcript-scroll` 从 12 条改成 16 条（跟随判定改测 `ScrollFollow` 类）、`stores.test` 增 1 条（工具结果不单独成行 + 调用不在窗口时的兜底）、**`markdown.test` 增 6 条流式增量（节点身份跨冻结边界不变 / 尾部跟长 / 非追加输入整段重置 / 六种构造不变义 / 安全口径一致 / 流式围栏不上色）**。其余明细（历史留档）：含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）、**本轮新增 56 条：21 条清单模型（含与 Rust 状态白名单的跨语言一致性）、8 条清单行、9 条计划面板、16 条 todo store（能力探测的坏形状 / seed / 实时增量 / 项目级补探）、2 条转录接线（端到端两行写入，钉住差异基线按调用 id 配对）**）、**本轮新增 20 条：7 条行内展开态记忆（键口径 / LRU / 清理）、7 条展开态跨卸载重挂（思考行 / 工具行 / 工具正文代码块 / 行与行·标签与标签不串 / 关标签要忘）、4 条读者位置锚点（口径 / 钳制 / 行没了退回裸位置）、2 条面板不在前台的几何（隐藏期间不许写位置·不许丢跟随 / 读者接管则分毫不差还回去）**）、**本轮新增 8 条：会话名的同步（按会话文件推给打开的标签 / 不误改别的会话 / 空白=清掉 / 路径字面比较 / 头部响应式跟着变 / 命令面板那条入口也会推 / 后端说没写下去就不许本地改口）**）、**本轮新增 3 条：连点两次只 addPanel 一次且不弹报错 / 同一快照连开两次只加一个面板 / 双击只读一次尾页**）、**本轮新增 6 条：4 条实时块引擎（节点摘掉再挂到新节点不丢字 / 块的形状随 pending 重建 / 同一节点重复 attach 幂等 / 无布局不写 scrollTop 且有布局才贴底）、2 条转录接线（实时行滚出窗口再回来必须长在可见节点上 / 新一轮清掉上一轮残留）**）、**本轮新增 4 条：1 条引擎跟随意图（读者接管之后一个像素都不写 / 交还后继续贴底）、3 条转录回滚（上滚交还且内容继续长也不拽回 / 一格 25px 也交还 —— 容差不许吞手势 / 滚回底部跟随自己回来）**）|
 | `cargo test` | **336 + 3 + 21 + 2**（另有 9 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮新增：`plugin::capabilities` 9 条、`transcript::todo_projection` 12 条（折叠/清空/坏形状/预筛/分支/**载荷在前的 custom 条目**/半行/真机）、`tests/ipc_contract.rs` 2 条（两个新命令的返回形状逐个锁死）|
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
 | `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 PNG data URL（**2026-10-09 改口径：macOS 128×128、Windows 32×32**，Windows 那一支此前返回 None，写死 128 会在 Windows 上误报）/ 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
@@ -1370,6 +1370,48 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 （假宿主验证接线）与 `pi::client::tests::kill_process_tree_takes_the_grandchildren_too`
 （真进程树；红检过：把 `taskkill` 关掉它就点名"子孙进程 N 活下来了"）**都是绿的**。
 要给这些用例补 `cfg(unix)` 闸门或平台化断言，是另一件事，本轮没顺手动它们。
+
+### 4.2 前端那 5 条失败：全是"模块求值的账"，不是逻辑错（2026-10-09）
+
+同一轮里 `pnpm test` 在 Windows 上红 5 条。查完的结论：**没有一条是被测逻辑错**，
+3 条是平台/环境限制（`permission-guard.test.ts`，已加可见闸门，见下），
+2 条是**用例把"整棵应用树的模块求值"算进了自己的 5 秒预算**。
+
+| 用例 | 计时证据 | 处置 |
+|---|---|---|
+| `session-name-sync` 的「生成完把名字推给标签」 | `import('@/lib/appCommands') = 9308ms，调用 = 2ms` | 把这句 import **提到文件顶部**（它不依赖 `vi.doMock`）：求值挪进收集期、不计入用例预算。用例体 **9.6s → 0.3s**，8/8 连跑 3 次全绿 |
+| `feedback` 的「真实 `<App />` 树里桥位正确」 | 卡在 `await import('@/App')`；这棵树在 jsdom 里求值就要 4-5 s（`collect` 期被它撑起来） | 这条**必须**保留动态 import（要在 `vi.doMock('@tauri-apps/api/core'…)` **之后**才加载，否则真模块被绑进去，用例立意就没了）→ 只把它自己的预算放宽到 30 s，并把 `antd` 提到顶部 |
+
+传递依赖是 `appCommands → EditorArea →（dockview / SessionWorkspace / FilePreview / DiffView /
+SettingsTab）` —— **整棵编辑器 UI 树**。所以这不是产品缺陷（真机上这棵树只在启动时求值一次），
+而是**测试写法**的坑：**别把重模块的 `await import()` 放在用例体里**。
+`about-dialog.test.tsx` 一直是静态引入 `appCommands`，所以它从没撞过。
+
+`permission-guard.test.ts` 那 3 条的两种原因（已加 `describe.skipIf(platform === 'win32')`，
+Windows 上显示为 **7 skipped** 而不是红）：
+① `isInside` 组喂 POSIX 字面量（`/work`…），而守卫按 `path.sep` 比较 —— **守卫是对的，
+用例不可移植**（它只在 pi 进程里跑，那个进程的 `node:path` 就是 POSIX）；
+② 符号链接那两条要 `symlinkSync`，Windows 普通进程报 `EPERM`。
+顺带修掉一个**更隐蔽**的问题：那条"拦截经符号链接逃逸"原先**依赖上一个 describe 建的链接**，
+闸门一加它就会因为"链接不存在"而通过 —— 一条永远绿、什么都没验的用例。链接改由本组
+`beforeAll` 自己建。
+
+### 4.3 `pnpm test` 全绿也可能非零退出（已知 flake，不是本轮引入）
+
+本机实测：**66 文件全过（633 passed / 7 skipped）**，但 **exit code = 1** ——
+vitest 报 1 条 unhandled error：
+
+```
+ReferenceError: window is not defined
+ ❯ performWorkOnRootViaSchedulerTask  react-dom-client.development.js
+This error originated in "src/test/settings-delegation.test.tsx" …caught after test environment was torn down
+```
+
+根因 [`src/test/dom-render.tsx`](../apps/desktop/src/test/dom-render.tsx) 的注释里早就写清了：
+React 19 的 scheduler 在 Node 下走 **`setImmediate`**（不是 jsdom 的定时器，拆环境时不会取消），
+于是同步 `unmount()` 之后排队的回调会在 `window` 消失后才跑。**单独跑那个文件是 exit 0**，
+只在并发全量时偶发 —— 与 `dom-render.tsx` 记的"8 次中 2 次"是同一类。
+**判据：`pnpm test` 偶发非零退出 ≠ 有回归，先单跑那个文件确认。** 本轮没动它（drain 试过，修不掉）。
 
 ## 5. 验收方式
 

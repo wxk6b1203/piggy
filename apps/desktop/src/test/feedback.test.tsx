@@ -19,7 +19,7 @@
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { act } from 'react';
-import { App as AntdApp, ConfigProvider } from 'antd';
+import { App as AntdApp, ConfigProvider, message as staticMessage } from 'antd';
 
 import { drainReact, mountDom, unmountDom } from './dom-render';
 
@@ -101,7 +101,16 @@ describe('必须走上下文实例，而不是静默退回静态 API', () => {
 });
 
 describe('真实 <App /> 树里桥位正确', () => {
-  it('触发 toast 不抛异常', async () => {
+  /* ⚠️ **这条必须给足预算**（2026-10-09 查出来的）：
+     它按设计要 `await import('@/App')` —— 而且**只能在用例体里**动态引入，
+     因为必须在 `vi.doMock('@tauri-apps/api/core' / '…api/event' / 'mockBackend')`
+     **之后**才加载那棵树（静态引入会在 doMock 之前就把真模块绑进去）。
+     代价是 `@/App` 这棵树（dockview / antd / 全部面板 / Monaco 链路）在 jsdom 里
+     首次求值要**好几秒**（本机 Windows 实测：这棵树的求值把 collect 期撑到 4-5 s，
+     等用例体跑到这一行时默认的 5 s 预算已经不够它落地 —— 现象就是"稳定超时"）。
+     这不是产品缺陷：真机上这棵树只在启动时求值一次。
+     默认 5 s 是给普通用例的；这条量的是"整棵真实应用树"，本来就该按它的成本算。 */
+  it('触发 toast 不抛异常', { timeout: 30_000 }, async () => {
     const { invokeMock, listenMock } = vi.hoisted(() => {
       const invokeMock = vi.fn();
       const listenMock = vi.fn();
@@ -113,9 +122,7 @@ describe('真实 <App /> 树里桥位正确', () => {
     vi.doMock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listenMock(...a) }));
     invokeMock.mockRejectedValue(new Error('ipc 不可用（本测试只关心 toast 通道）'));
 
-    const { message: staticMessage } = await import('antd');
     const spy = vi.spyOn(staticMessage, 'error').mockImplementation((() => {}) as never);
-
     const { default: RealApp } = await import('@/App');
     const { createRoot: create } = await import('react-dom/client');
     const div = document.createElement('div');

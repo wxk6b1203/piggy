@@ -21,6 +21,17 @@ const { invokeMock, toastError } = vi.hoisted(() => ({ invokeMock: vi.fn(), toas
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { SessionHead } from '@/features/chat/SessionHead';
+/* ⚠️ **必须静态引入**（2026-10-09 查出来的）：
+   这两条用例原来在用例体里 `await import('@/lib/appCommands')`。那条路径的传递依赖是
+   `appCommands → EditorArea →（dockview / SessionWorkspace / FilePreview / DiffView / SettingsTab）`
+   —— 整棵编辑器 UI 树。在 jsdom 里首次求值实测 **9.3 s**（本机 Windows，模块 66 个文件规模），
+   而 vitest 的用例预算是 **5 s**：于是"生成完把名字推给标签"这条**稳定超时**、
+   后一条 3.9 s 擦边通过。计时把它钉死了：`import=9308ms  调用=2ms` ——
+   逻辑一行都没问题，时间全花在**模块求值**上。
+   静态引入把这次求值挪到收集阶段（不计入用例预算），于是它不再是这条用例的成本。
+   （`about-dialog.test.tsx` 一直是静态引入 `appCommands`，所以它从没撞过这个坑 ——
+   也就是说这是**测试写法**的坑，不是产品缺陷：真机上这个 import 只在启动时发生一次。） */
+import { generateTitleForActiveTab } from '@/lib/appCommands';
 import { applySessionName, useTabs, type TabInfo } from '@/stores/tabs';
 import { useMessages } from '@/stores/messages';
 import { domContainer, mountDom, unmountDom } from './dom-render';
@@ -143,7 +154,6 @@ describe('命令面板那条入口（⌘K → 重新生成会话标题）', () =
       return {};
     });
 
-    const { generateTitleForActiveTab } = await import('@/lib/appCommands');
     await act(async () => {
       await generateTitleForActiveTab();
     });
@@ -159,7 +169,6 @@ describe('命令面板那条入口（⌘K → 重新生成会话标题）', () =
       }
       return {};
     });
-    const { generateTitleForActiveTab } = await import('@/lib/appCommands');
     await act(async () => {
       await generateTitleForActiveTab();
     });

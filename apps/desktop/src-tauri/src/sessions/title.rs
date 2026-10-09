@@ -34,7 +34,7 @@
 //! 完全不进被命名那个会话的转录——与 DSH 的"titles never enter model input"同效，
 //! 但这里靠的是进程隔离而不是服务侧保证。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde_json::{json, Value};
@@ -420,6 +420,25 @@ pub struct GenRequest<'a> {
     pub max_chars: u32,
 }
 
+/// 一次性进程到底该执行谁：`(程序, 完整 argv)`。
+///
+/// Windows 上 pi 常是 pnpm/npm 的 `.cmd` 垫片，而标准库**拒绝**把含换行的参数交给
+/// 批处理文件（`batch file arguments are invalid`）—— 而标题的提示词天生多行。
+/// 所以先试着解析出垫片背后的真实命令（`node "<cli.js>" …`），把参数直接交给
+/// `CreateProcess`，那一层 `cmd.exe` 转义就不存在了。
+///
+/// **解析不出来必须回退到垫片本身**：宁可失败得和以前一样（用户至少能看到 pi 的原话），
+/// 也不能因为解析失败就换一个根本不存在的启动器。
+fn spawn_argv(pi_bin: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    match crate::pi::discovery::direct_command(pi_bin) {
+        Some((program, mut prefix)) => {
+            prefix.extend(args.iter().cloned());
+            (program, prefix)
+        }
+        None => (pi_bin.to_path_buf(), args.to_vec()),
+    }
+}
+
 /// 起一个一次性 pi 进程生成标题。**不写任何文件**。
 pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
     let GenRequest {
@@ -435,14 +454,16 @@ pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
     let started = std::time::Instant::now();
     let args = generate_args(provider, model_id, thinking, system, user);
 
-    let mut child = Command::new(pi_bin)
-        .args(&args)
+    let (program, argv) = spawn_argv(pi_bin, &args);
+    let mut child = Command::new(&program)
+        .args(&argv)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
+        // 报错里用**用户认得的那条路径**（pi_bin），不是解析之后的 node.exe
         .map_err(|e| format!("启动 {} 失败：{e}", pi_bin.display()))?;
 
     let mut stdout = child.stdout.take();
@@ -647,8 +668,9 @@ pub fn parse_list_models(stdout: &str) -> Vec<ModelOption> {
 /// 详见 docs/15 的已知缺口）。项目级模型仍可手动填入。
 pub async fn list_models(pi_bin: &Path, cwd: &Path) -> Result<ModelOptions, String> {
     let started = std::time::Instant::now();
-    let mut child = Command::new(pi_bin)
-        .args(["--list-models"])
+    let (program, argv) = spawn_argv(pi_bin, &["--list-models".to_string()]);
+    let mut child = Command::new(&program)
+        .args(&argv)
         // 与一次性生成进程同样的处理：stdin 关掉，否则 pi 可能等着读输入
         .current_dir(cwd)
         .stdin(Stdio::null())
