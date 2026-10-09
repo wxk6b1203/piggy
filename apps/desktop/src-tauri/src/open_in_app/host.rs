@@ -69,6 +69,19 @@ pub trait Host {
     fn which(&self, name: &str) -> Option<PathBuf>;
     /// 跑一条宿主命令（argv，永不经过 shell），带超时；失败/超时/非零退出 → None。
     fn run(&self, command: &str, args: &[&str], timeout: Duration) -> Option<String>;
+    /// 把一段**脚本内容**写进临时文件再执行它（argv，永不经过 shell）。
+    ///
+    /// 为什么需要它（而不是 `run` + `-Command <脚本>`）：
+    /// 1. **二进制产不出**。`run` 的返回值是 `String`，而 Windows 抠图标这条路的产物是 PNG
+    ///    字节 —— 塞进 stdout 会被控制台编码毁掉（PowerShell 5.1 的 `Console.OutputEncoding`
+    ///    是 UTF-16LE，重定向时表现为零字节交替）。所以脚本只负责**往文件写**，
+    ///    调用方读文件，stdout 仅留给人看的日志。
+    /// 2. **不给自己造引号转义面**。脚本体作为 `-Command` 的实参要再过一层解析，
+    ///    里面任何引号都要转义；写进 `.ps1` 再用 `-File` 执行则是**数据**，不是表达式
+    ///    （DSH 的 Windows 图标脚本同样只用 `-File` + 位置参数）。
+    ///
+    /// 返回 `None` = 脚本没跑成（非零退出/超时/spawn 失败），调用方按"拿不到"处理。
+    fn run_script(&self, script_name: &str, script: &str, args: &[&str], timeout: Duration) -> Option<()>;
 }
 
 /// 真机宿主。
@@ -115,6 +128,37 @@ impl Host for RealHost {
 
     fn run(&self, command: &str, args: &[&str], timeout: Duration) -> Option<String> {
         run_bounded(command, args, timeout)
+    }
+
+    fn run_script(&self, script_name: &str, script: &str, args: &[&str], timeout: Duration) -> Option<()> {
+        // 临时目录里的一次性脚本：**保留 .ps1 后缀**（`powershell -File` 只认这个后缀）
+        let dir = std::env::temp_dir().join(format!(
+            "piggy-script-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join(script_name);
+        // 脚本体是 ASCII（见 open_in_app::icons 的说明）：BOM 在这里帮不上忙，
+        // 因为 Windows PowerShell 5.1 读**无 BOM 的 .ps1** 是按 ANSI 解的 ——
+        // 非 ASCII 注释会被解成乱码并把语法弄坏。这条约束写在图标脚本的常量注释里。
+        std::fs::write(&path, script).ok()?;
+        let mut argv: Vec<String> = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            path.to_string_lossy().into_owned(),
+        ];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let ok = run_bounded("powershell.exe", &refs, timeout).is_some();
+        let _ = std::fs::remove_dir_all(&dir);
+        ok.then_some(())
     }
 }
 

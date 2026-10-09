@@ -13,3 +13,10 @@ apps/desktop/perf-results/
 # 下载的 pi standalone（由 scripts/fetch-pi-standalone.mjs 落位，体积大且可重新下载）
 # 注意：resources/piggy-guard.js 是**源码**，必须提交，不要一起忽略
 apps/desktop/src-tauri/resources/pi/
+
+# 运行时落点：从 apps/desktop/src-tauri 里跑 `cargo test` 时，
+# pi 的配置目录与 Piggy 自己的配置会按 cwd 就近落在这里（2026-10-09 实测：
+# `.pi/agent/settings.json` + `.piggy/config.json`）。**它们不是夹具**，
+# 是本机的运行时状态（含会话列表），一律不进仓库。
+apps/desktop/src-tauri/.pi/
+apps/desktop/src-tauri/.piggy/

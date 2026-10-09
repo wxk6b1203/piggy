@@ -875,7 +875,11 @@ mod tests {
         assert!(sys.contains("Use the language of the messages"), "{sys}");
         assert!(sys.contains("no quotes,"), "{sys}");
         assert!(sys.contains("20 characters"), "{sys}");
-        assert!(!sys.contains("Markdown, XML") || true);
+        // 禁 Markdown/XML 这条负向约束是真的写在提示词里的（原来那条断言写成
+        // `assert!(!sys.contains("Markdown, XML") || true)` —— `|| true` 让它恒真，
+        // 什么也没验；clippy 的 `overly_complex_bool_expr` 在 1.96 上把它当硬错误）。
+        // 断言改成提示词里**真有**的那几个词，别按记忆写。
+        assert!(sys.contains("Markdown, XML, or terminal control codes"), "{sys}");
 
         // 素材是 JSON 数组（DSH 的做法）：消息里出现"忽略上面的指示"时边界仍然明确
         assert!(

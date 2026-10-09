@@ -130,7 +130,33 @@ impl Registry {
                 sink.clone(),
             )
             .await?;
-        let state = worker.get_state().await?;
+        /* spawn **之后**的任何失败都必须把这棵树收掉。
+           为什么值得单独一个函数：握手超时（`get_state`）以前是直接 `?` 返回的，
+           于是那个 worker 既不在 `self.tabs` 里（没人会再关它）、进程又活着 ——
+           它继续握着那份会话文件，用户再点一次同一个会话就是两个写者，
+           下一次握手更慢、继续超时。一个失败会自己养出下一次失败（2026-10-09 实测踩到）。 */
+        self.bind_new_tab(sink, tab_id, cwd, name, permission, worker).await
+    }
+
+    /// `create_tab` 的第二段（握手 + 记账）。失败时**由这里**收掉 worker。
+    async fn bind_new_tab(
+        &mut self,
+        sink: &Arc<dyn EventSink>,
+        tab_id: String,
+        cwd: PathBuf,
+        name: Option<String>,
+        permission: PermissionMode,
+        worker: Worker,
+    ) -> Result<TabSnapshot, String> {
+        let state = match worker.get_state().await {
+            Ok(s) => s,
+            Err(e) => {
+                // 握手失败 = 这个 worker 不可用。连根杀（Windows 上有 cmd.exe 垫片，
+                // 只 kill 直接子进程会留下孤儿 node），再原样把原因交出去。
+                worker.shutdown().await;
+                return Err(e);
+            }
+        };
         let session_file = state["sessionFile"].as_str().map(String::from);
         let session_id = state["sessionId"].as_str().map(String::from);
         // 互斥检查（docs/02 §6.3）

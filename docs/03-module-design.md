@@ -180,9 +180,9 @@ pub struct TabDescriptor {
 |---|---|
 | `catalog.rs` | **编译期白名单**（34 条）：编辑器/IDE、Git GUI、终端、文件管理器，每条声明按平台依次尝试的定位链 |
 | `resolver.rs` | 把定位链解析成"这台机器上**验过的**启动器"（`app` / `xcode` / `cli` / `file` / `app-paths` / `install-record` / `scan` / `github-desktop` / `desktop` / `fixed`），含 `reg.exe` 输出与 `.desktop` 解析 |
-| `icons.rs` | 图标提取：macOS `plutil` + `sips` 出 128px PNG；Linux 走 hicolor/pixmaps；**Windows 未实现**（返回 None，前端画通用图标） |
+| `icons.rs` | 图标提取：macOS `plutil` + `sips` 出 128px PNG；Linux 走 hicolor/pixmaps；**Windows 走生成的 PowerShell 脚本**（`System.Drawing.Icon::ExtractAssociatedIcon` → 32px PNG。`-File` + 位置参数，DSH 同款，2026-10-09 本机实测）。两条硬约束写进常量注释与用例：脚本**必须纯 ASCII**（PS 5.1 按 ANSI 解无 BOM 的 `.ps1`，一句中文注释就让整套语法失效）、**产物走文件不走 stdout**（PNG 进 stdout 会被控制台编码毁掉，见 `host.rs::run_script`）。按 exe 路径**进程内缓存**（含 `None`），启动后台预热 —— 每个应用要起一个 PowerShell 进程，本机实测 250-350 ms |
 | `paths.rs` | **文件级**那一档：操作系统文件关联（查处理器 + 默认项 + 32px 图标）、`open`/`reveal`/指定应用三个动作。macOS 走 `osascript -l JavaScript` + AppKit `NSWorkspace`（实测 0.4s / 20+ 处理器），Linux 走 `gio info` + `gio mime` + desktop entry，Windows 只做 open/reveal |
-| `host.rs` | 宿主事实（platform/home/app_roots/env/ssh）+ `Host` trait（可注入）+ 有超时的宿主命令 + **脱离父进程组、洗净凭据环境**的启动器 |
+| `host.rs` | 宿主事实（platform/home/app_roots/env/ssh）+ `Host` trait（可注入）+ 有超时的宿主命令 + **把脚本体写成临时 `.ps1` 再执行**的 `run_script`（`run` 只能回字符串，装不下二进制产物）+ **脱离父进程组、洗净凭据环境**的启动器 |
 
 六个命令：`open_in_app_list` / `open_in_app_icon` / `open_in_app_open`（目录），
 `open_path_available` / `open_path_applications` / `open_path_open`（文件，`action = open | reveal`）。

@@ -101,10 +101,16 @@ fn open_in_app_list_returns_string_ids() {
     }
 }
 
-/// 图标必须是 `data:image/png;base64,...`，解出来得是 **128×128 的 PNG**。
+/// 图标必须是 `data:image/png;base64,...`，解出来得是**该平台约定的尺寸**的 PNG。
 /// 这条把"宿主真的抠出了图标"钉在跨 IPC 的那一层（而不是只钉在内部函数上）。
+///
+/// 尺寸按平台分（2026-10-09）：macOS 走 `sips -Z 128` → 128×128；
+/// Windows 的 `ExtractAssociatedIcon` **只能给 32px**（DSH README 同样承认这个上限：
+/// "the largest size `ExtractAssociatedIcon` yields without a native addon"）。
+/// 老版本断言写死 128 是因为这一支当时在 Windows 上返回 None —— 现在它真的抠图了，
+/// 断言就必须跟着平台走，否则这条会在 Windows 上误报。
 #[test]
-fn open_in_app_icon_is_a_128px_png_data_url() {
+fn open_in_app_icon_is_a_png_data_url_at_the_platform_size() {
     let ids = piggy_lib::open_in_app::open_in_app_list();
     let Some(id) = ids
         .iter()
@@ -120,12 +126,14 @@ fn open_in_app_icon_is_a_128px_png_data_url() {
         .strip_prefix("data:image/png;base64,")
         .unwrap_or_else(|| panic!("图标不是 PNG data URL: {}", &url[..40.min(url.len())]));
     let bytes = b64_decode(payload);
+    let expected = if cfg!(target_os = "windows") { (32, 32) } else { (128, 128) };
     assert_eq!(
         piggy_lib::open_in_app::icons::png_dimensions(&bytes),
-        Some((128, 128)),
-        "{id} 的图标不是 128×128 PNG（{} 字节）",
+        Some(expected),
+        "{id} 的图标不是 {expected:?} PNG（{} 字节）",
         bytes.len()
     );
+    assert!(bytes.len() > 200, "{id} 的图标只有 {} 字节，像是空图", bytes.len());
     // 拿不到的应用返回 None（不是报错、也不是空串）
     assert_eq!(piggy_lib::open_in_app::open_in_app_icon("nope-nope".into()), None);
 }

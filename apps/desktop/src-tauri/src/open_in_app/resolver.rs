@@ -749,6 +749,15 @@ mod tests {
             self.seen_runs.borrow_mut().push(key.clone());
             self.runs.get(&key).cloned()
         }
+        fn run_script(&self, script_name: &str, script: &str, args: &[&str], _timeout: Duration) -> Option<()> {
+            // 解析链（目录那一档）不碰脚本；这里只记一笔，免得"假宿主悄悄跑脚本"没人发现
+            self.seen_runs.borrow_mut().push(format!(
+                "script {script_name} ({} 字节) {}",
+                script.len(),
+                args.join(" ")
+            ));
+            None
+        }
     }
 
     /// 假宿主按**归一化斜杠**比较：夹具可以照实写 Windows 反斜杠路径，

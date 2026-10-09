@@ -15,7 +15,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + �
 | `vitest` | **2026-09-25 复核**：apps/desktop **599（61 文件）**、`packages/piggy-bridge` **37/37**、`packages/pi-protocol` **30/30** —— 全部通过。⚠️ 本节下面那段历史留档里写的「572（57 文件）」与「bridge `artifact.test.ts` 既存红」**都已过期**：产物是新鲜的（`node packages/piggy-bridge/scripts/build.mjs --check` → ✓），那条用例也一直绿；本地若要复现，先 `pnpm install`（`packages/*/node_modules/vitest` 的软链会随 lockfile 更新而悬空）。以下为历史明细（数字按当时算）：apps/desktop 明细：**566**（57 文件）。**2026-09-24 本轮（转录重整 + 流式 Markdown）：删 11 条旧实时块引擎单测（`live.test.ts`，那个引擎没有了）、新增 5 条**流式行模型**（两条助手消息不串块 / 工具结果并进调用行 / 转正不重挂 / 新一轮落定掉队行 / 换窗期间不建流式行）、`transcript-scroll` 从 12 条改成 16 条（跟随判定改测 `ScrollFollow` 类）、`stores.test` 增 1 条（工具结果不单独成行 + 调用不在窗口时的兜底）、**`markdown.test` 增 6 条流式增量（节点身份跨冻结边界不变 / 尾部跟长 / 非追加输入整段重置 / 六种构造不变义 / 安全口径一致 / 流式围栏不上色）**。其余明细（历史留档）：含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）、**本轮新增 56 条：21 条清单模型（含与 Rust 状态白名单的跨语言一致性）、8 条清单行、9 条计划面板、16 条 todo store（能力探测的坏形状 / seed / 实时增量 / 项目级补探）、2 条转录接线（端到端两行写入，钉住差异基线按调用 id 配对）**）、**本轮新增 20 条：7 条行内展开态记忆（键口径 / LRU / 清理）、7 条展开态跨卸载重挂（思考行 / 工具行 / 工具正文代码块 / 行与行·标签与标签不串 / 关标签要忘）、4 条读者位置锚点（口径 / 钳制 / 行没了退回裸位置）、2 条面板不在前台的几何（隐藏期间不许写位置·不许丢跟随 / 读者接管则分毫不差还回去）**）、**本轮新增 8 条：会话名的同步（按会话文件推给打开的标签 / 不误改别的会话 / 空白=清掉 / 路径字面比较 / 头部响应式跟着变 / 命令面板那条入口也会推 / 后端说没写下去就不许本地改口）**）、**本轮新增 3 条：连点两次只 addPanel 一次且不弹报错 / 同一快照连开两次只加一个面板 / 双击只读一次尾页**）、**本轮新增 6 条：4 条实时块引擎（节点摘掉再挂到新节点不丢字 / 块的形状随 pending 重建 / 同一节点重复 attach 幂等 / 无布局不写 scrollTop 且有布局才贴底）、2 条转录接线（实时行滚出窗口再回来必须长在可见节点上 / 新一轮清掉上一轮残留）**）、**本轮新增 4 条：1 条引擎跟随意图（读者接管之后一个像素都不写 / 交还后继续贴底）、3 条转录回滚（上滚交还且内容继续长也不拽回 / 一格 25px 也交还 —— 容差不许吞手势 / 滚回底部跟随自己回来）**）|
 | `cargo test` | **336 + 3 + 21 + 2**（另有 9 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮新增：`plugin::capabilities` 9 条、`transcript::todo_projection` 12 条（折叠/清空/坏形状/预筛/分支/**载荷在前的 custom 条目**/半行/真机）、`tests/ipc_contract.rs` 2 条（两个新命令的返回形状逐个锁死）|
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
-| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 128×128 PNG data URL / 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
+| `cargo test --features contract` | **15/15 全绿**（pi 0.87.1 真实跑，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 PNG data URL（**2026-10-09 改口径：macOS 128×128、Windows 32×32**，Windows 那一支此前返回 None，写死 128 会在 Windows 上误报）/ 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
@@ -1279,9 +1279,9 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | `@monaco-editor/react` 未被使用 | 在 `apps/desktop/package.json` 依赖表里，但全仓没有任何 import（预览用 `MonacoHost` 直接持有 `monaco-editor`）。可直接删，或按 docs/10 §2.2 的旧描述接回来 |
 | ~~左侧"常驻视图轨"~~ **已决定不做**（2026-09-24） | docs/04 §1.2 曾规划一条常驻的 44px L 轨（VS Code 活动栏语义）。查 DSH 源码：`ui-layout/.../AppFrame.tsx:183-186` 写明 *neither platform keeps an icon rail* —— 折叠后的重开控件走标题栏（macOS `shell.leading` 座位 / Windows caption 行）。而且左栏只有一个视图（会话列表），轨上没有可切的东西。**计划已从 docs/04 删除**；左侧只有折叠态那条 56px 轨（`SidebarRail`），右侧那条 40px 常驻轨（`RightBar`）保留（它本身也是对 DSH 的偏离 —— DSH 右栏用 dockview tab 条，若哪天要百分百对齐，该动的是这条） |
 | `SIDEBAR_AUTO_COLLAPSE = 1024` 没接 | docs/12 §1.5：视口 < 1024px 自动折叠侧栏。Piggy 是纯百分比布局，620px 窗口下侧栏被压到 122px 也不折叠。现在折叠是安全的（有图标轨可点回来），接不接是产品决策 |
-| 「打开方式」文件级的 **Windows 处理器枚举** | DSH 为此内嵌了一段 C#（`SHAssocEnumHandlers` + `IShellItem` + `SHDefExtractIcon` COM 互操作）。本机无法验证，所以**没写**：Windows 上关联列表返回空，主按钮退成「显示文件位置」，`open`/`reveal` 仍可用（`Invoke-Item` 与 `explorer /select,<file-url>`，后者的 URL 编码有单测）。指定应用打开在 Windows 上明确报错（而不是静默乱开） |
+| ~~「打开方式」的 **Windows 图标**~~ **已补（2026-10-09，Windows 真机）** | DSH 那一支用生成的 PowerShell 调 `ExtractAssociatedIcon`（32px）；这条曾在 macOS 上无法验证而故意留空，**现在在真 Windows 上实现并实测**：`icons.rs` 写临时 `.ps1`（`-File` + `-Source/-Target` 位置参数）→ `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass` → 读回 PNG。本机实测 **250-350 ms/个**，产物是 32×32 PNG（1-3 KB）。三处工程细节都是踩出来的：①脚本**必须纯 ASCII**（PS 5.1 按 ANSI 解无 BOM 的 `.ps1`，一句中文注释就让整套语法失效，实测 `Unexpected token '}'`）；②**产物只能走文件**，PNG 进 stdout 会被控制台编码毁掉（DSH 的 Node 版能直接读 stdout buffer，Rust 侧 `run` 返回 `String` 装不下）；③菜单是**按需逐个**拉图标的，于是加了「按 exe 路径缓存 + 启动后台预热」，否则第一次打开菜单会看到方块逐个亮。尺寸从 128 降到 32 是平台事实（`ExtractAssociatedIcon` 的上限，DSH README 同样承认），菜单里渲染 15-18 CSS px 够用。**仍未做**：文件级那档的处理器枚举（下一条） |
+| 「打开方式」文件级的 **Windows 处理器枚举** | DSH 为此内嵌了一段 C#（`SHAssocEnumHandlers` + `IShellItem` + `SHDefExtractIcon` COM 互操作）。**仍未写**：Windows 上关联列表返回空，主按钮退成「显示文件位置」，`open`/`reveal` 仍可用（`Invoke-Item` 与 `explorer /select,<file-url>`，后者的 URL 编码有单测）。指定应用打开在 Windows 上明确报错（而不是静默乱开）。补充（2026-10-09）：`SHDefExtractIcon` 本机试过，它只对一部分 exe 给出 64px（7 个候选里 1 个），换来的清晰度不值那份失败面，所以图标那一档也没用它 |
 | 「打开方式」文件级的 **Linux 真机** | `gio info` / `gio mime` / desktop entry 解析都有夹具单测（含嵌套 desktop id、`Name[zh_CN]` 回退、默认项排序），但**没在真 Linux 桌面上跑过** |
-| 「打开方式」的 **Windows 图标** | DSH 那一支用生成的 PowerShell 调 `ExtractAssociatedIcon`（32px）。**本机无法验证**，所以没写：`icons.rs::icon_png(IconSource::Executable)` 直接返回 `None`，前端退化成通用圆角方块（不残废，只是不显示真图标）。要补需在 Windows 上实测 |
 | 「打开方式」的 **Windows/Linux 定位链** | 已按 DSH 逐条移植，并有脚本化假宿主的单测（`reg.exe` 输出解析、`.desktop` 解析、版本目录数值排序、`TryExec→Exec` 回退、无 DISPLAY 时 `xdg-open` 不出现），但**没有在真 Windows/Linux 机器上跑过**。macOS 那一条是真机验证过的 |
 | 「打开方式」真机弹窗 | **已由用户手动确认**（2026-09-24：点了就弹出来了）。自动化侧覆盖：①解析结果里每个启动器都真实存在于磁盘；②图标真抠出来（128×128 PNG）；③启动语义用真实进程测了四态（仍在跑=成功 / 早退非零=失败 / 退出 0=成功 / 不存在=Missing）。剩下没自动化的是「操作系统把窗口开出来」这一步本身 —— 需要驱动 Tauri 窗口，agent 侧没有这个能力 |
 | 「打开方式」的 **分屏假设** | `openin.pick` 命令发的是**无载荷信号**，谁在听谁展开菜单。M1 是单组布局（非活动 tab 卸载 DOM），同时只有一个会话头部在听；M3 分屏之后会**同时展开两个菜单**。到时要给信号加 tabId 过滤（代码里已留注释） |
@@ -1321,6 +1321,55 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | todo 的**复杂度闸门是启发式** | 打分规则可复现、可解释，但会低估"措辞简短、实际多步"的请求 —— 因此**默认关闭**（2026-09-29 用户裁定；要拦得用配置文件 `enforceComplexity:true` / `PI_TODO_ENFORCE_COMPLEXITY=1` / `pi --todo-enforce`）。真模型上只跑了两跑（该激活/该拒绝各一，且那两跑是在"闸门打开"的状态下做的），**没有**统计过误判率 |
 
 | **A 期审计里"没做"的几条**（2026-09-25，明确留档，不是遗忘） | ① `pi_fork`/`pi_clone_session`/`pi_get_tree` 与 `fs_write_edit`：**Rust 与测试就绪、前端没有入口**（docs/09 的 ✅ 已改正）；接前端要产品决策（分支入口形态、快捷编辑的边界警示）。② `auth_list`/`auth_set_key`/`auth_remove` 三条 IPC 命令**当前没有渲染点**（真正的密钥路径是 `provider_set_key`；`AdvancedSection` 的注释已改成实话）——留着是因为它们对应的 pi_files 形状有单测锁着，删了会连测试一起删。③ `session_page`/`session_outline`/`fs_list_dir` 还**没有跨语言形状金标**（现有 3 组：providers / plugins / session-title；`fs_list_dir` 的 `OsString` 全窗黑屏就是形状漂移造成的）。④ **没有覆盖率配置**（`vite.config.ts` 无 coverage 段、devDeps 无 `@vitest/coverage-*`），"哪些文件没被测到"只能靠猜。⑤ `ui:startup`（26 段）**仍不在 CI**：需要 runner 上有 Chrome（脚本写死 `channel:'chrome'`）与 :5195 的 dev server。⑥ 没有任何**发布工作流**（tag → 三平台构建/签名/上传）。⑦ 两份 `*_generated.rs` 快照（provider 目录 / pi 内置扩展）随 pi 版本**静默漂移**：本机 pi 源码是 v1.0.4、快照是 v0.87.1，`--check` 因此对不上（与代码无关，但提醒：升级 pi 时要重跑生成器）。 |
+
+## 4.1 Windows 这两个问题是怎么查的（2026-10-09）
+
+用户在 Windows 上报了两件事：**「打开方式」图标加载不出来**，以及偶尔
+`tab_create FAILED: pi command 'get_state' timed out`。查完的结论是：**两件都不是"pi 卡住了"**。
+
+**① 图标**：不是"加载不出来"，是**从来没实现在 Windows 上**。`icons.rs` 的
+`IconSource::Executable` 直接返回 `None`（当时的理由写在模块头注释里："这条在 macOS 上无法验证"），
+前端于是按设计退化成通用圆角方块 —— 也就是截图里那排空方块。已按 DSH 那条路补齐（见 §4 那一行）。
+
+**② 超时**：三个原因叠在一起，没有一个需要"pi 卡住"。
+
+| 原因 | 证据（都在本机量的） | 已做的处理 |
+|---|---|---|
+| **10 秒预算本身太紧** | `pi --mode rpc` + 第一条 `get_state`：**冷启动 2.2 s / 2.2 s / 2.2 s**（三次）、热态 0.26 s。这是空载机器上的基线，只有 4 倍余量；而放大器全是常见情形 —— 长会话要读大 JSONL、多开 tab 抢磁盘、Defender 实时扫描 | `HANDSHAKE_TIMEOUT = 40s`；报错文案带上"真实等了多久"（`pi command 'get_state' timed out（等了 40s 没回）`），以后能一眼分清"慢"与"卡" |
+| **孤儿 worker 抢同一份会话文件** | 进程树上直接看到：`cmd.exe`(pi.cmd 垫片) + `node.exe`(真 pi)，**4 个孤儿**的父进程已经不在了（`<已死>`），其中 **2 个孤儿与 2 个在跑的 tab 各占同一份 `.jsonl`** —— 同一份会话被四个进程写 | `shutdown()` 里对整棵树 `taskkill /PID <pid> /T /F` + `wait()` 收尸 |
+| **握手失败会把失败传下去** | `create_tab` 里 `get_state().await?` 是**先 spawn 再握手**：超时那一刻 worker 已经在跑，但它不在 `self.tabs` 里（没人会再关它），进程活着、会话文件继续被它握着 —— 用户再点一次同一个会话，就有了两个写者，下一次更慢 | spawn 之后的失败一律 `worker.shutdown()`（`create_tab` / `bind_new_tab`） |
+
+**孤儿是怎么来的**（这是本轮最值钱的一条）：Windows 上 pi 是从 pnpm 垫片启动的，
+链是 `piggy → cmd.exe → node.exe`，而 `tokio` 的 `Child::kill()` / `kill_on_drop(true)`
+**只杀直接子进程**。本机实测：杀掉直接子进程之后孙进程仍在；`taskkill /T /F` 才连根拔掉。
+顺带试过更"正统"的 Job Object（kill-on-close）：本机 `AssignProcessToJobObject(cmd.exe)` 返回 1，
+但它 fork 出来的 node **`IsProcessInJob` = 0**，关掉 job 句柄杀不掉它 —— 所以没走那条路。
+
+**还剩的缺口**：整棵树清理要 piggy 活着才能执行。**piggy 被强杀/崩溃**时孤儿仍会留下
+（`kill_on_drop` 在那种路径上同样只杀直接子进程）。补法是在启动时枚举"父进程已死 +
+命令行含 `pi-coding-agent` 且 `--mode rpc`"的进程收掉 —— 本轮没做（要引 `tasklist` 输出解析），
+先记在这里。手工清一次的形状：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -like '*pi-coding-agent*' -and $_.CommandLine -like '*--mode rpc*' } |
+  ForEach-Object { taskkill /PID $_.ProcessId /T /F }
+```
+
+**⚠️ Windows 上 `cargo test --lib` 是红的（19/348，与上面两件事无关）**：这些用例把 POSIX 路径
+写死在断言里，在 Windows 上必然不等。查过一条的字节级现场（把 `resolver.rs` 临时回到 HEAD 复现）：
+`left: "open -a /Users/x/Applications\\Zed.app"` vs `right: "open -a /Users/x/Applications/Zed.app"`
+—— 是 `PathBuf::join` 用 `\` 拼、断言写的是 `/`，**不是本轮改动引入的**。清单：
+`open_in_app::host::tests` 7 条（`/bin/echo`、`/bin/sleep`、`/bin/sh`、`/bin/ls`、`/usr/bin/false`）、
+`open_in_app::resolver::tests` 2 条（夹具有反斜杠）、`open_in_app::paths` / `open_in_app::icons` /
+`open_in_app::tests` 各若干（`/tmp`、`/bin/ls`）、`config::paths` / `config::pi_files` /
+`fs_guard` / `plugin::inventory` 各 1-2 条（路径分隔符与 `HOME` 口径）。
+本机实测：**331 passed / 19 failed / 9 ignored**，其中本轮新增的
+`icons::tests::real_windows_executable_icon_is_a_png`（真跑 PowerShell 抠图）、
+`windows_icon_script_stays_pure_ascii`、`windows_executable_icon_runs_the_script_and_reads_the_png`
+（假宿主验证接线）与 `pi::client::tests::kill_process_tree_takes_the_grandchildren_too`
+（真进程树；红检过：把 `taskkill` 关掉它就点名"子孙进程 N 活下来了"）**都是绿的**。
+要给这些用例补 `cfg(unix)` 闸门或平台化断言，是另一件事，本轮没顺手动它们。
 
 ## 5. 验收方式
 

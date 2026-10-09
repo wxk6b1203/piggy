@@ -55,6 +55,9 @@ fn main() {
     let mut bad = Vec::new();
     // 「关于」正下方那条：0 号位是预定义的 About，1 号位必须是我们的条目
     // （用户点 About 的地方就是这儿——位置错了等于没人找得到）
+    // `mut` 只在 macOS 分支里被写（非 macOS 上 placement 保持 "(非 macOS)"）——
+    // 于是非 macOS 上 clippy 会说"这个 mut 没用"。这是**平台差异**，不是死代码。
+    #[allow(unused_mut)]
     let mut placement = String::from("(非 macOS)");
     #[cfg(target_os = "macos")]
     {

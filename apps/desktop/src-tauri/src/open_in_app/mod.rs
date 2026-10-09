@@ -36,7 +36,11 @@ use spec::{LaunchOutcome, LaunchSpec, Resolved};
 /// 宿主命令（`xcode-select` / `plutil` / `reg.exe`）的单条超时。
 /// DSH 把解析超时与图标超时分开（两个旋钮，调一个不影响另一个）；这里沿用同样的分离。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const ICON_TIMEOUT: Duration = Duration::from_secs(10);
+/// 图标超时：**Windows 上这一条是"每个应用起一个 PowerShell 进程"的预算**
+/// （本机实测单个 250-350 ms，11 个约 3.5 s）。10 s 的老值在装得满的机器上会拦腰截断，
+/// 于是后半截应用的图标静默退化成通用方块 —— 那种"少几个图标"没人会想到是超时。
+/// 40 s 是"最慢一台上限"，不是期望值；预热在后台跑，用户看不到这段时间。
+const ICON_TIMEOUT: Duration = Duration::from_secs(40);
 /// 启动后的观察窗：窗内非零退出 = 失败；到点仍在跑 = 交出去了（kitty/JetBrains 会一直前台运行）。
 const LAUNCH_WATCH: Duration = Duration::from_secs(1);
 
@@ -69,8 +73,7 @@ pub fn resolved_apps() -> Vec<Resolved> {
 }
 
 /// 只重解析一条（"启动时发现可执行文件没了" → 立刻自愈，DSH 同样只在卸载方向自愈）。
-fn refresh_one(id: &str) -> Option<Resolved> {
-    let facts = Facts::detect();
+fn refresh_one(id: &str) -> Option<Resolved> {    let facts = Facts::detect();
     let real = RealHost::new(facts.clone());
     let fresh = resolver::resolve_one(&real, &facts, id, PROBE_TIMEOUT);
     let mut slot = cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -121,6 +124,37 @@ fn load_icon(id: &str) -> Option<String> {
     let bytes = icons::icon_png(&real, &facts, &source, ICON_TIMEOUT)?;
     let mime = icons::media_type(&bytes);
     Some(format!("data:{mime};base64,{}", base64(&bytes)))
+}
+
+/// 后台预热图标缓存（Tauri 的 setup 里调一次；**只该在后台线程调**）。
+///
+/// 为什么要有这一步：图标是按需拉的（`loadIcon` 一个一个来），而 Windows 上**每个**
+/// 都要起一个 PowerShell 进程（本机实测 250-350 ms）。不预热的话，第一次打开菜单会看到
+/// 十来个方块逐个"亮"起来 —— 用户报的是"图标加载不出来"，其实是在慢慢加载。
+///
+/// 返回真的抠出来的条数（日志用）。拿不到的条目也进缓存（`None`），不会反复重试。
+pub fn prefetch_icons() -> usize {
+    let apps = resolved_apps();
+    let facts = Facts::detect();
+    let real = RealHost::new(facts);
+    let exes: Vec<PathBuf> = apps
+        .iter()
+        .filter_map(|a| match &a.icon {
+            Some(spec::IconSource::Executable(p)) => Some(p.clone()),
+            _ => None,
+        })
+        .collect();
+    if exes.is_empty() {
+        return 0;
+    }
+    let started = std::time::Instant::now();
+    let done = icons::prefetch_executable_icons(&real, &exes, ICON_TIMEOUT);
+    eprintln!(
+        "[piggy] 「打开方式」图标预热: {done}/{} 个（{:.1}s）",
+        exes.len(),
+        started.elapsed().as_secs_f32()
+    );
+    done
 }
 
 /// 在一个已安装的应用里打开一个目录。
