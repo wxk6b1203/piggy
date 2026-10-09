@@ -5,7 +5,8 @@
     "commit": "112b795f5d1cc7bbded445a8df61a350e3f8b8e1",
     "dirty": false,
     "licenseFile": null,
-    "spdx": "MIT"
+    "spdx": "MIT",
+    "label": "pi-todo"
   },
   "vendoredAt": "2026-10-06T10:58:12.916Z",
   "files": {

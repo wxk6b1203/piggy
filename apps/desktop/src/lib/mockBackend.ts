@@ -1245,7 +1245,15 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
    * mock 除了回一个"收到"，还把内容记进 {@link uiReplies} —— 门禁要核对
    * "提问卡的答案真的按契约送回去了"（`{id, value}` 里 value 是回答 JSON）。
    */
-  /** 随包带的插件（真机由 Rust 读清单；mock 里照抄 `pi-ask` 的清单形状）。 */
+  /**
+   * 随包带的插件（真机由 Rust 读清单；mock 里照抄真实返回的形状）。
+   *
+   * 三条形状都要有样本，否则界面的分支在门禁里看不见：
+   *   · 正常注入的一行（`source_tree`/`resource_dir` 之外的普通情形）；
+   *   · **目录缺失**的一行（`dir: null` + skipped 说明"随包分发不完整"）；
+   *   · origin 是 `resource_dir`（打包后的正式落点）。
+   * 参数里的 `projectDir` 在 mock 里不影响结果（真机用它查项目级同名扩展）。
+   */
   plugin_bundled: () => ({
     plugins: [
       {
@@ -1256,10 +1264,28 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
         tools: ['ask_user_question', 'exit_plan_mode'],
         commands: ['plan', 'plan-off'],
         dir: '/mock/resources/pi-plugins/pi-ask',
+        origin: '随包分发',
+        originKind: 'resource_dir',
         bundled: true,
         enabled: mockBundledEnabled(),
         inject: mockBundledEnabled(),
         skipped: mockBundledEnabled() ? null : '设置里关掉了',
+      },
+      {
+        name: 'pi-todo',
+        title: '任务清单（DSH 风格）',
+        description: '随 Piggy 分发的第三方 pi 插件。',
+        license: 'MIT',
+        tools: ['todo_enable', 'todo_write'],
+        commands: ['todos'],
+        dir: null,
+        origin: null,
+        originKind: null,
+        bundled: true,
+        // 配置里**默认只开 pi-ask** → 这一行的勾选框是关的（缺目录是另一件事，两句话分开说）
+        enabled: false,
+        inject: false,
+        skipped: '这一份安装里没有这个目录（随包分发不完整：bundle.resources 没登记 resources/pi-plugins）',
       },
     ],
   }),

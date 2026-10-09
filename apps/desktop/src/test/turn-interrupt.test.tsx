@@ -232,6 +232,9 @@ describe('pi 启动就失败：stderr 里那句真话要看得见', () => {
     expect(row, '启动失败的原因没有出现在转录里').toHaveLength(1);
     expect(text(row[0])).toContain('pi 启动/运行失败');
     expect(text(row[0]), '没有把 pi 说的那句真话带出来').toContain('conflicts with');
+    // 「工具名冲突」还要翻译成"去哪儿改"：pi 的原话只说"冲突了"，没说要动谁
+    expect(text(row[0]), '冲突没有给出可操作的去处').toContain('内置插件');
+    expect(text(row[0]), '没点出冲突的工具名').toContain('ask_user_question');
   });
 });
 

@@ -44,18 +44,56 @@ pub fn extension_script(resource_dir: Option<&Path>, filename: &str) -> Option<P
 /// @param name - 插件目录名（例如 `pi-ask`）
 /// @returns 目录路径；不存在返回 None（由调用方决定是警告还是忽略）
 pub fn bundled_plugin_dir(resource_dir: Option<&Path>, name: &str) -> Option<PathBuf> {
+    bundled_plugin_dir_with_origin(resource_dir, name).map(|(p, _)| p)
+}
+
+/// 这份插件目录是从哪儿找到的。
+///
+/// 为什么要把它显式报出来（2026-10-09）：第三个候选是**编译期烧进二进制的构建机绝对路径**
+/// （`env!("CARGO_MANIFEST_DIR")`）。于是"打包漏登记 `pi-plugins`"这个失败在**构建机上
+/// 直接跑那个 .app** 时会看起来完全正常 —— 换台机器才消失。
+/// 界面必须能说出"这一份是从源码树来的"，否则这个坑会一直骗过手工验收。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginOrigin {
+    /// `<resource_dir>/resources/pi-plugins/<name>`（打包后的正式落点）
+    ResourceDir,
+    /// `<resource_dir>/pi-plugins/<name>`（扁平布局，兼容早期打包）
+    ResourceDirFlat,
+    /// 仓库源码树（**开发态**；打包产物里出现它 = `bundle.resources` 漏登记了）
+    SourceTree,
+}
+
+impl PluginOrigin {
+    /// 给界面看的一句话。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ResourceDir | Self::ResourceDirFlat => "随包分发",
+            Self::SourceTree => "开发态（仓库源码树）",
+        }
+    }
+}
+
+/// 同上，但连"从哪儿找到的"一起返回。
+pub fn bundled_plugin_dir_with_origin(resource_dir: Option<&Path>, name: &str) -> Option<(PathBuf, PluginOrigin)> {
     // 目录判定用 `is_dir`（上面两个是单文件脚本，用 is_file）
     let candidates = [
-        resource_dir.map(|rd| rd.join("resources").join("pi-plugins").join(name)),
-        resource_dir.map(|rd| rd.join("pi-plugins").join(name)),
-        Some(
+        resource_dir.map(|rd| {
+            (
+                rd.join("resources").join("pi-plugins").join(name),
+                PluginOrigin::ResourceDir,
+            )
+        }),
+        resource_dir.map(|rd| (rd.join("pi-plugins").join(name), PluginOrigin::ResourceDirFlat)),
+        Some((
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources")
                 .join("pi-plugins")
                 .join(name),
-        ),
+            PluginOrigin::SourceTree,
+        )),
     ];
-    candidates.into_iter().flatten().find(|p| p.is_dir())
+    candidates.into_iter().flatten().find(|(p, _)| p.is_dir())
 }
 
 /// 权限守卫扩展（`piggy-guard.js`）。缺失 → 「工作区内修改」档拒绝启动（fail-closed）。

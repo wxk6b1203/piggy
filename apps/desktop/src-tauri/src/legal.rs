@@ -63,6 +63,12 @@ pub const THIRD_PARTY: &[ThirdParty] = &[
         usage: "驱动会话的编码代理；full SKU 会把 standalone 随安装包分发",
     },
     ThirdParty {
+        name: "pi-todo",
+        license: "MIT",
+        holder: "wxk6b1203",
+        usage: "随包分发的 pi 插件：DSH 风格任务清单（todo_write / todo_enable + /todos）",
+    },
+    ThirdParty {
         name: "DeepSeek Harness",
         license: "MIT",
         holder: "Copyright (c) 2026 DeepSeek",

@@ -124,7 +124,16 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
         if ((st.state === 'crashed' || st.state === 'stopped') && typeof st.stderrTail === 'string') {
           const line = st.stderrTail.trim();
           if (line !== '') {
-            useMessages.getState().extensionError(tabId, 'pi 启动/运行失败', line);
+            /* 工具名冲突是这一堆失败里最常见的一种（用户自己装过同名插件，或**项目目录**里有
+               `<cwd>/.pi/extensions/<同名>`）：pi 只回一句
+               `Tool "x" conflicts with <path>` 然后**根本不进会话**，用户看不出该动什么。
+               这里把那句话翻译成"去哪儿改"，其余的 stderr 原样保留（pi 的原话往往最准）。 */
+            const conflict = /Tool "([^"]+)" conflicts with (.+)/.exec(line);
+            const hint = conflict
+              ? `\n→ 工具「${conflict[1]}」有两个来源：${conflict[2].trim()} 与 Piggy 自带的那份。` +
+                '两者留一个：删掉你自己装的那份，或到「设置 › 通用 › 内置插件」把 Piggy 这份关掉。'
+              : '';
+            useMessages.getState().extensionError(tabId, 'pi 启动/运行失败', line + hint);
           }
         }
         useTabs

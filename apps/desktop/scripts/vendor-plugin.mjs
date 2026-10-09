@@ -31,7 +31,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +48,20 @@ const SKIP_FILE = /^(\.DS_Store|\.tmp-|.*\.log$|tsconfig\.tsbuildinfo$)/;
  * @returns 选项
  */
 function parseArgs(argv) {
-  const out = { check: false, from: null, name: null, entry: null, tools: [], commands: [], title: '' };
+  const out = {
+    check: false,
+    from: null,
+    name: null,
+    entry: null,
+    tools: [],
+    commands: [],
+    title: '',
+    // 收录来源的**短标签**（写进清单描述；默认取源目录名）
+    sourceLabel: null,
+    // 覆盖型插件（顶替 pi 内置工具，如 pi-guardrails）用 --no-allowlist：
+    // 它的工具名**不进**限制档位的 --tools 白名单，否则只读档会凭空获得写能力
+    allowlist: true,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--check') out.check = true;
@@ -58,6 +71,8 @@ function parseArgs(argv) {
     else if (a === '--tools') out.tools = String(argv[++i] ?? '').split(',').filter(Boolean);
     else if (a === '--commands') out.commands = String(argv[++i] ?? '').split(',').filter(Boolean);
     else if (a === '--title') out.title = argv[++i] ?? '';
+    else if (a === '--no-allowlist') out.allowlist = false;
+    else if (a === '--source-label') out.sourceLabel = argv[++i] ?? null;
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error(`未知参数：${a}`);
   }
@@ -155,6 +170,7 @@ function gitInfo(dir) {
 function vendor(opts) {
   if (!opts.from || !opts.name) throw new Error('缺少 --from / --name');
   const from = resolve(opts.from);
+  opts.sourceLabel ??= basename(from);
   if (!existsSync(from)) throw new Error(`源目录不存在：${from}`);
   const entry = opts.entry ?? (existsSync(join(from, 'index.js')) ? 'index.js' : 'index.ts');
   if (!existsSync(join(from, entry))) throw new Error(`入口文件不存在：${join(from, entry)}`);
@@ -164,7 +180,9 @@ function vendor(opts) {
   if (clone) {
     throw new Error(
       '必须显式写 --tools / --commands：清单里的工具名会被加进限制档位的 --tools 白名单，' +
-        '猜错就等于告诉模型"你有这个工具"而它并不存在',
+        '猜错就等于告诉模型"你有这个工具"而它并不存在。\n' +
+        '（如果这个插件是**覆盖型**的 —— 顶替 pi 内置工具，如 pi-guardrails 的 write/edit —— ' +
+        '再加 --no-allowlist，让"不进白名单"是一个写下来的决定）',
     );
   }
 
@@ -189,11 +207,17 @@ function vendor(opts) {
   const manifest = {
     name: opts.name,
     title: opts.title || opts.name,
-    description: `随 Piggy 分发的第三方 pi 插件（收录自 ${from}）`,
+    // ⚠️ 描述会**显示在设置页**，别把开发机的绝对路径写进去（2026-10-09 修：
+    // 原来写的是 `收录自 /Users/…/pi-todo`，用户看到的是维护者的目录结构）
+    description: `随 Piggy 分发的第三方 pi 插件（收录自上游 ${opts.sourceLabel ?? opts.name}）`,
     license: license.spdx ?? '见 LICENSE',
     entry,
     tools: opts.tools,
     commands: opts.commands,
+    /* `allowlist` 只在**关掉**时写出来：开着是默认行为，写进每一份清单反而像噪声。
+       覆盖型插件（顶替 pi 内置 write/edit 的那种）必须显式关掉 —— 否则限制档位会
+       凭空获得这些能力（`pi/plugins.rs` 的 `Manifest::allowlist`）。 */
+    ...(opts.allowlist ? {} : { allowlist: false }),
   };
   writeFileSync(join(dest, 'piggy-plugin.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(
@@ -202,7 +226,12 @@ function vendor(opts) {
       {
         name: opts.name,
         source: {
+          /* `path` 留开发机的绝对路径是**有意的**：它是"从哪儿收录的"的现场记录，
+             换机器后它当然不存在 —— 真正的可复现锚点是同一份 `files` 里的 sha256
+             （`--check` 只重算哈希，不碰这个路径）。 */
           path: from,
+          // 给用户看的短标签（不带绝对路径；描述与界面用这个）
+          label: opts.sourceLabel ?? opts.name,
           commit: info?.commit ?? null,
           dirty: info?.dirty ?? null,
           licenseFile: license.file,

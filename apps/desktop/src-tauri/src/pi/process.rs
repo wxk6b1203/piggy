@@ -607,6 +607,48 @@ mod tests {
         assert!(argv.iter().any(|s| s == &std::ffi::OsString::from(&dir)));
     }
 
+    /// **覆盖型插件不许把限制档变成可写档**（2026-10-09 补，argv 级）。
+    ///
+    /// `plugins.rs` 那边有单测盯着 `plugin_tools_for`；这条盯的是**最终 argv**：
+    /// 清单写了 `"allowlist": false` 的插件，它的 `write`/`edit` 绝不能出现在
+    /// 「仅可查看」档的 `--tools` 里。两处都要，是因为"合并发生在 `cli_args` 里"
+    /// 这件事只有这条能证明（以前的白名单测试只钉静态常量）。
+    #[test]
+    fn override_type_plugin_does_not_widen_a_restricted_allowlist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let over = tmp.path().join("pi-guardrails");
+        std::fs::create_dir_all(&over).unwrap();
+        std::fs::write(over.join("index.js"), "export default function () {}\n").unwrap();
+        std::fs::write(
+            over.join("piggy-plugin.json"),
+            r#"{"name":"pi-guardrails","entry":"index.js","tools":["write","edit"],"allowlist":false}"#,
+        )
+        .unwrap();
+        // 一个正常插件，证明"别的插件的名字还是照旧合并"
+        let normal = tmp.path().join("pi-ask");
+        std::fs::create_dir_all(&normal).unwrap();
+        std::fs::write(normal.join("index.js"), "export default function () {}\n").unwrap();
+        std::fs::write(
+            normal.join("piggy-plugin.json"),
+            r#"{"name":"pi-ask","entry":"index.js","tools":["ask_user_question"]}"#,
+        )
+        .unwrap();
+
+        let mut a = args(PermissionMode::ReadOnly);
+        a.bundled_extensions = vec![over, normal];
+        let argv = argv(&a);
+        let tools = argv
+            .windows(2)
+            .find(|w| w[0] == "--tools")
+            .map(|w| w[1].clone())
+            .expect("限制档必须带 --tools");
+        assert!(
+            !tools.contains("write") && !tools.contains("edit"),
+            "覆盖型插件的 write/edit 混进了「仅可查看」的白名单：{tools}"
+        );
+        assert!(tools.contains("ask_user_question"), "正常插件的工具名该合并：{tools}");
+    }
+
     #[test]
     fn restricted_modes_disable_mcp_explicitly() {
         /* `--tools` 在 pi 1.1.0 上**拦不住 MCP**（判据是"白名单里有没有 mcp__ 前缀"），

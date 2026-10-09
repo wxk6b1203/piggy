@@ -16,6 +16,7 @@
 //! 所以注入前先扫一遍 pi 自己的发现目录，同一个名字（realpath 比较）已经在里面就不注入，
 //! 并把这件事报给界面（`skipped`）。
 
+use crate::pi::resources::PluginOrigin;
 use std::path::{Path, PathBuf};
 
 /// 插件自述文件（放在插件目录里，随包分发）。
@@ -47,9 +48,25 @@ pub struct Manifest {
     /// 这个插件注册的工具名（限制档位下要被加进 `--tools` 白名单）
     #[serde(default)]
     pub tools: Vec<String>,
+    /// 这些工具名要不要并进 `--tools` 白名单（**默认 true**）。
+    ///
+    /// 为什么要能关掉（2026-10-09）：白名单是权限档位的**边界**，而有一类插件注册的是
+    /// **覆盖型**工具 —— 它顶替 pi 的内置 `write`/`edit`（`pi-guardrails` 就是这种：
+    /// 在写入前加校验）。对这种插件，把 `write,edit` 并进「仅可查看」档的白名单等于
+    /// **凭空把只读档变成可写档**，而且现有测试抓不到（它们只钉静态常量）。
+    /// 所以清单里可以写 `"allowlist": false`：插件照样注入、照样顶替内置工具，
+    /// 但它的工具名**不进**白名单 —— 限制档位不给它开口子。
+    #[serde(default = "default_true")]
+    pub allowlist: bool,
     /// 注册的斜杠命令名
     #[serde(default)]
     pub commands: Vec<String>,
+}
+
+/// serde 的 `#[serde(default)]` 对 bool 是 `false`，而这里的默认语义是**开启**
+/// （老清单没有这个字段，行为必须与从前一致）。
+fn default_true() -> bool {
+    true
 }
 
 /// 读一个插件目录的清单；没有清单或读不动时返回 None（不编造工具名）。
@@ -67,6 +84,10 @@ pub fn read_manifest(dir: &Path) -> Option<Manifest> {
 /// （`spawn` 路径上 `bundled_extensions` 就是最终清单）—— 白名单必须与"真的注入了什么"
 /// 严格一致，多一个名字就是骗模型。
 ///
+/// ⚠️ 清单里 `"allowlist": false` 的插件**一个名字都不贡献**：那类插件注册的是
+/// **覆盖型**工具（顶替 pi 的内置 `write`/`edit`），把它并进限制档的白名单等于
+/// 凭空把只读档变成可写档（见 `Manifest::allowlist` 的说明）。
+///
 /// @param dirs - 本次注入的插件目录
 /// @returns 去重后的工具名
 pub fn plugin_tools_for(dirs: &[PathBuf]) -> Vec<String> {
@@ -75,6 +96,9 @@ pub fn plugin_tools_for(dirs: &[PathBuf]) -> Vec<String> {
         let Some(m) = read_manifest(dir) else {
             continue;
         };
+        if !m.allowlist {
+            continue;
+        }
         for t in m.tools {
             if !out.contains(&t) {
                 out.push(t);
@@ -84,14 +108,30 @@ pub fn plugin_tools_for(dirs: &[PathBuf]) -> Vec<String> {
     out
 }
 
+/// 一个**候选**插件：名字 + 落点 + 这份目录是从哪儿找到的。
+///
+/// `dir = None` 是真实存在的一种状态：**这一份安装里没有这个目录**
+/// （打包时 `bundle.resources` 漏登记了 `resources/pi-plugins/**`，或用户删了它）。
+/// 2026-10-09 之前这里只传"存在的目录"，于是那种情况下插件在设置页里**整个消失**，
+/// 用户看到的只是"列表里没有它"，没有任何地方说明"你的安装包不完整"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub name: String,
+    pub dir: Option<PathBuf>,
+    /// 目录缺失时为 None
+    pub origin: Option<PluginOrigin>,
+}
+
 /// 一个捆绑插件的解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundledPlugin {
     /// 插件名（目录名，例如 `pi-ask`）
     pub name: String,
-    /// 仓库/安装包里的插件目录
-    pub dir: PathBuf,
-    /// 要不要注入（用户关了 / 用户自己装过同名 → false）
+    /// 仓库/安装包里的插件目录；`None` = 这一份安装里没有它
+    pub dir: Option<PathBuf>,
+    /// 这份目录从哪儿来的（缺失时为 None）
+    pub origin: Option<PluginOrigin>,
+    /// 要不要注入（用户关了 / 用户自己装过同名 / 目录缺失 → false）
     pub inject: bool,
     /// 不注入的原因（给界面看的一句话）；`inject` 为真时是 None
     pub skipped: Option<String>,
@@ -143,80 +183,82 @@ pub fn existing_install(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 
 /// 解析"哪些捆绑插件该注入"。
 ///
-/// @param bundled - 随包带的插件目录（`pi/resources.rs::bundled_plugin_dir` 的结果）
+/// @param candidates - 随包带的插件候选（`lib.rs::bundled_plugin_dirs` 的结果）
 /// @param enabled - 用户开关（配置里的名字清单；空 = 一个都不开）
 /// @param home - 用户主目录
-/// @param cwd - 会话工作目录
-/// @returns 每个插件的解析结果（顺序 = `bundled` 顺序）
-pub fn resolve(bundled: &[PathBuf], enabled: &[String], home: Option<&Path>, cwd: Option<&Path>) -> Vec<BundledPlugin> {
+/// @param cwd - **会话工作目录**（项目级扩展放在 `<cwd>/.pi/extensions`；
+///   不传就等于看不见项目级的同名扩展 —— 那条路会让 pi 因工具名冲突直接退出）
+/// @returns 每个插件的解析结果（顺序 = `candidates` 顺序）
+pub fn resolve(
+    candidates: &[Candidate],
+    enabled: &[String],
+    home: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Vec<BundledPlugin> {
     let dirs = discovery_dirs(home, cwd);
-    bundled
+    candidates
         .iter()
-        .filter_map(|dir| {
-            let name = dir.file_name()?.to_string_lossy().to_string();
+        .map(|c| {
+            let name = c.name.clone();
+            let missing = |why: String| BundledPlugin {
+                name: name.clone(),
+                dir: c.dir.clone(),
+                origin: c.origin,
+                inject: false,
+                skipped: Some(why),
+            };
+            let Some(dir) = &c.dir else {
+                return missing(
+                    "这一份安装里没有这个目录（随包分发不完整：bundle.resources 没登记 resources/pi-plugins）"
+                        .to_string(),
+                );
+            };
             if !enabled.iter().any(|e| e == &name) {
-                return Some(BundledPlugin {
-                    name,
-                    dir: dir.clone(),
-                    inject: false,
-                    skipped: Some("设置里关掉了".to_string()),
-                });
+                return missing("设置里关掉了".to_string());
             }
             // 目录里没有清单或没有入口：**不注入**。pi 对"加载失败的扩展"的处理是
             // 报诊断并 exit(1)（`resource-loader.ts`），所以宁可少一个功能，
             // 也不能让用户开不了会话。
             match read_manifest(dir) {
-                None => {
-                    return Some(BundledPlugin {
-                        name,
-                        dir: dir.clone(),
-                        inject: false,
-                        skipped: Some(format!("缺少 {MANIFEST}（随包分发不完整）")),
-                    });
-                }
+                None => return missing(format!("缺少 {MANIFEST}（随包分发不完整）")),
                 Some(m) if !m.entry.is_empty() && !dir.join(&m.entry).is_file() => {
-                    return Some(BundledPlugin {
-                        name,
-                        dir: dir.clone(),
-                        inject: false,
-                        skipped: Some(format!("清单里的入口 {} 不存在", m.entry)),
-                    });
+                    return missing(format!("清单里的入口 {} 不存在", m.entry));
                 }
                 Some(_) => {}
             }
             if let Some(found) = existing_install(&dirs, &name) {
-                return Some(BundledPlugin {
-                    name,
-                    dir: dir.clone(),
-                    inject: false,
-                    // 这条信息要原样给用户看：两个扩展注册同一个工具名会让 pi **直接退出**，
-                    // 不是"多一份"而已
-                    skipped: Some(format!(
-                        "你自己已经装了同名扩展（{}）；再注入一份会让 pi 因工具名冲突而退出，所以跳过",
-                        found.display()
-                    )),
-                });
+                // 这条信息要原样给用户看：两个扩展注册同一个工具名会让 pi **直接退出**，
+                // 不是"多一份"而已
+                return missing(format!(
+                    "你自己已经装了同名扩展（{}）；再注入一份会让 pi 因工具名冲突而退出，所以跳过",
+                    found.display()
+                ));
             }
-            Some(BundledPlugin {
+            BundledPlugin {
                 name,
-                dir: dir.clone(),
+                dir: c.dir.clone(),
+                origin: c.origin,
                 inject: true,
                 skipped: None,
-            })
+            }
         })
         .collect()
 }
 
 /// 只要"该注入的那些目录"（`spawn` 路径用）。
 ///
-/// @param bundled - 随包带的插件目录
-/// @returns 目录清单
-pub fn enabled_plugin_dirs(bundled: &[PathBuf]) -> Vec<PathBuf> {
+/// @param candidates - 随包带的插件候选
+/// @param cwd - **会话工作目录**。必须传：项目级 `<cwd>/.pi/extensions` 里有同名扩展时，
+///   注入 Piggy 自带的那份会让 pi 因工具名冲突**直接退出**（真机复现过：
+///   `Tool "ask_user_question" conflicts with …` + 退出码 1 + stdout 零字节）。
+///   2026-10-09 之前这里写死 `None`，于是那条路在生产里一直瞎着。
+/// @returns 目录清单（只含真的存在、且该注入的）
+pub fn enabled_plugin_dirs(candidates: &[Candidate], cwd: Option<&Path>) -> Vec<PathBuf> {
     let enabled = crate::config::app::perf_config_load().bundled_plugins;
-    resolve(bundled, &enabled, home_dir().as_deref(), None)
+    resolve(candidates, &enabled, home_dir().as_deref(), cwd)
         .into_iter()
         .filter(|p| p.inject)
-        .map(|p| p.dir)
+        .filter_map(|p| p.dir)
         .collect()
 }
 
@@ -246,16 +288,25 @@ mod tests {
         dir
     }
 
+    /// 目录 → 候选（测试里绝大多数用例只关心"目录存在"这一种情形）。
+    fn cand(dir: &Path) -> Candidate {
+        Candidate {
+            name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+            dir: Some(dir.to_path_buf()),
+            origin: Some(crate::pi::resources::PluginOrigin::SourceTree),
+        }
+    }
+
     #[test]
     fn enabled_plugin_is_injected() {
         let tmp = std::env::temp_dir().join(format!("piggy-plug-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let dir = plugin_dir(&tmp, "pi-ask");
-        let out = resolve(std::slice::from_ref(&dir), &["pi-ask".to_string()], None, None);
+        let out = resolve(&[cand(&dir)], &["pi-ask".to_string()], None, None);
         assert_eq!(out.len(), 1);
         assert!(out[0].inject);
         assert_eq!(out[0].name, "pi-ask");
-        assert_eq!(out[0].dir, dir);
+        assert_eq!(out[0].dir.as_deref(), Some(dir.as_path()));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -264,7 +315,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("piggy-plug-off-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let dir = plugin_dir(&tmp, "pi-ask");
-        let out = resolve(&[dir], &[], None, None);
+        let out = resolve(&[cand(&dir)], &[], None, None);
         assert!(!out[0].inject);
         assert!(out[0].skipped.as_deref().unwrap().contains("关掉"));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -279,7 +330,7 @@ mod tests {
         let home = tmp.join("home");
         let user_ext = home.join(".pi").join("agent").join("extensions");
         std::fs::create_dir_all(user_ext.join("pi-ask")).unwrap();
-        let out = resolve(&[bundled], &["pi-ask".to_string()], Some(&home), None);
+        let out = resolve(&[cand(&bundled)], &["pi-ask".to_string()], Some(&home), None);
         assert!(!out[0].inject, "用户自己装过同名扩展时不该再注入");
         let why = out[0].skipped.clone().unwrap();
         assert!(why.contains("工具名冲突"), "理由要说明白：{why}");
@@ -295,7 +346,7 @@ mod tests {
         let bundled = plugin_dir(&tmp.join("bundled"), "pi-ask");
         let cwd = tmp.join("proj");
         std::fs::create_dir_all(cwd.join(".pi").join("extensions").join("pi-ask")).unwrap();
-        let out = resolve(&[bundled], &["pi-ask".to_string()], None, Some(&cwd));
+        let out = resolve(&[cand(&bundled)], &["pi-ask".to_string()], None, Some(&cwd));
         assert!(!out[0].inject);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -314,7 +365,7 @@ mod tests {
         std::fs::write(bad_entry.join(MANIFEST), r#"{"name":"pi-other","entry":"nope.js"}"#).unwrap();
 
         let out = resolve(
-            &[no_manifest, bad_entry],
+            &[cand(&no_manifest), cand(&bad_entry)],
             &["pi-ask".to_string(), "pi-other".to_string()],
             None,
             None,
@@ -384,6 +435,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// **覆盖型插件不许污染白名单**（2026-10-09 补）。
+    ///
+    /// 这类插件注册的是 pi 的**内置同名工具**（`write`/`edit`，如 pi-guardrails）。
+    /// 如果照旧把名字并进 `--tools`，「仅可查看」档会凭空获得写能力 ——
+    /// 而这是权限档位最不能接受的失败方式（用户以为限制还在）。
+    #[test]
+    fn override_type_plugins_contribute_no_allowlist_names() {
+        let tmp = std::env::temp_dir().join(format!("piggy-plug-allow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let normal = plugin_dir(&tmp, "pi-ask");
+        // 覆盖型：清单里显式声明 allowlist:false
+        let over = tmp.join("pi-plugins").join("pi-guardrails");
+        std::fs::create_dir_all(&over).unwrap();
+        std::fs::write(over.join("index.js"), "export default function () {}\n").unwrap();
+        std::fs::write(
+            over.join(MANIFEST),
+            r#"{"name":"pi-guardrails","entry":"index.js","tools":["write","edit"],"allowlist":false}"#,
+        )
+        .unwrap();
+
+        // 单独：一个名字都不贡献
+        assert!(
+            plugin_tools_for(std::slice::from_ref(&over)).is_empty(),
+            "覆盖型插件的工具名不该进白名单"
+        );
+        // 老清单（没有 allowlist 字段）默认仍然是"贡献" —— 行为不变
+        let m = read_manifest(&normal).unwrap();
+        assert!(m.allowlist, "没写 allowlist 的老清单必须默认 true（保持原行为）");
+        let names = plugin_tools_for(&[normal, over]);
+        assert_eq!(names, vec!["pi-ask_tool"], "正常插件的名字要照旧收进来");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// **目录缺失要留一行并说清原因**（2026-10-09 补）。
+    ///
+    /// 打包漏登记 `resources/pi-plugins` 时，以前这里是 `filter_map` → 插件从设置页
+    /// **整个消失**，用户只看得到"列表里没有它"，看不到"你的安装包不完整"。
+    #[test]
+    fn a_missing_bundle_directory_stays_visible_with_a_reason() {
+        let missing = Candidate {
+            name: "pi-ask".to_string(),
+            dir: None,
+            origin: None,
+        };
+        let out = resolve(&[missing], &["pi-ask".to_string()], None, None);
+        assert_eq!(out.len(), 1, "缺目录的候选不该被丢掉");
+        assert!(!out[0].inject);
+        let why = out[0].skipped.clone().unwrap();
+        assert!(why.contains("随包分发不完整"), "理由要说清是包装漏了：{why}");
+        assert!(why.contains("bundle.resources"), "理由要指出该改哪里：{why}");
+    }
+
+    /// **cwd 必须传进 `enabled_plugin_dirs`**：项目级 `<cwd>/.pi/extensions` 里的同名扩展
+    /// 同样会让 pi 因工具名冲突**直接退出**（真机复现过）。这条用例钉的是"生产那条路上
+    /// 真的带着 cwd"——`project_level_install_also_blocks` 只证明 `resolve` 收 cwd 时管用。
+    #[test]
+    fn spawn_path_passes_the_session_cwd_so_project_installs_are_seen() {
+        let src = include_str!("plugins.rs");
+        let body = src
+            .split_once("pub fn enabled_plugin_dirs(")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(b, _)| b)
+            .expect("找不到 enabled_plugin_dirs 的函数体");
+        assert!(
+            body.contains("cwd"),
+            "enabled_plugin_dirs 没把 cwd 用起来（项目级同名扩展会让 pi 直接退出）"
+        );
+        assert!(
+            !body.contains("home_dir().as_deref(), None)"),
+            "enabled_plugin_dirs 又把 cwd 写死成 None 了"
+        );
+    }
+
     /// 单文件形态（`pi-ask.js`）也算"用户装过了"。
     #[test]
     fn single_file_install_counts_as_installed() {
@@ -394,7 +518,7 @@ mod tests {
         let user_ext = home.join(".pi").join("agent").join("extensions");
         std::fs::create_dir_all(&user_ext).unwrap();
         std::fs::write(user_ext.join("pi-ask.js"), "// 用户自己写的\n").unwrap();
-        let out = resolve(&[bundled], &["pi-ask".to_string()], Some(&home), None);
+        let out = resolve(&[cand(&bundled)], &["pi-ask".to_string()], Some(&home), None);
         assert!(!out[0].inject);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -411,7 +535,7 @@ mod tests {
         let user_ext = home.join(".pi").join("agent").join("extensions");
         std::fs::create_dir_all(&user_ext).unwrap();
         std::os::unix::fs::symlink(&elsewhere, user_ext.join("pi-ask")).unwrap();
-        let out = resolve(&[bundled], &["pi-ask".to_string()], Some(&home), None);
+        let out = resolve(&[cand(&bundled)], &["pi-ask".to_string()], Some(&home), None);
         assert!(!out[0].inject, "软链过来的同名扩展也要挡住（realpath 比较）");
         let _ = std::fs::remove_dir_all(&tmp);
     }

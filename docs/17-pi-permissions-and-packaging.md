@@ -146,7 +146,7 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 是 spawn 系统 `npm` 来装的（`package-manager.js`）。捆绑 + `-e` 不需要任何包管理器，
 插件目录就是最终产物（plain ESM JS，不需要构建，也没有 npm 依赖）。
 
-四条纪律（都有真机证据，`node apps/desktop/scripts/pi-plugin-probe.mjs` 可复现）：
+六条纪律（都有真机证据，`node apps/desktop/scripts/pi-plugin-probe.mjs` 可复现）：
 
 1. **重复加载会让 pi 直接不进会话**：同名工具从两个不同路径注册时，pi 打印
    `Tool "ask_user_question" conflicts with …` 并**根本不建立会话**（同一个路径传两次
@@ -154,13 +154,36 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
    因此 `pi/plugins.rs::resolve` 在注入前扫 pi 的发现目录（`~/.pi/agent/extensions`、
    `<cwd>/.pi/extensions`，含软链的 realpath 比较），发现同名就**不注入**并把原因报给界面
    （设置 › 通用 › 内置插件）。
+   ⚠️ 2026-10-09 复查补的两条：① 生产的 spawn 路径以前把 `cwd` 写死成 `None`，
+   于是**项目级**那一条一直瞎着（真机复现：`cd <项目> && pi -e <自带 pi-ask>` →
+   `Tool "ask_user_question" conflicts with …` + 退出码 1 + stdout 零字节）；
+   现在 `enabled_plugin_dirs(candidates, Some(cwd))` 一路带着会话 cwd，
+   设置页读列表时也把当前会话的 cwd 传下去（否则界面会承诺一个 spawn 时做不到的事）。
+   ② 失败已经发生时（pi 已经退出），`pi:state` 的 `stderrTail` 会被前端翻成一句可操作的
+   提示（"两者留一个：删掉你自己装的那份，或到设置 › 通用 › 内置插件关掉 Piggy 这份"）。
 2. **`--tools` 会把插件工具一起过滤掉**：pi 的帮助写着 "Applies to built-in, extension, and
    custom tools"，真机实测 `--tools read` 之下 `getAllTools()` 只剩 `["read"]`
    （插件的两个工具都没了）。所以限制档位拼白名单时，要把**这次真的注入了的**插件在
    `piggy-plugin.json` 里申报的工具名加进去（`pi/process.rs::cli_args`）。
 3. **清单缺失/入口不存在就不注入**：pi 对"加载失败的扩展"的处理是报诊断并退出 ——
    宁可少一个功能，也不能让用户开不了会话。
-4. **目录必须登记进两个 SKU 的 `bundle.resources`，而且要用 `**/*`**（2026-10-09 补）：
+4. **目录缺失要留在列表里、并说清是哪一种"没有"**（2026-10-09 补）：`lib.rs` 以前用
+   `filter_map` 只传"存在的目录"，于是打包漏登记时插件从设置页**整个消失** ——
+   用户只看得到"列表里没有它"。现在候选里保留 `dir: null` 的项，界面显示
+   「这一份安装里没有这个目录（随包分发不完整：bundle.resources 没登记 resources/pi-plugins）」，
+   与"设置里关掉了"是两句不同的话。同理，候选③（源码树）会在界面与启动日志里
+   标成**开发态**：它是编译期烧进二进制的构建机绝对路径，打包产物里出现它就说明清单漏登记了。
+
+5. **覆盖型插件的工具名不进 `--tools` 白名单**（2026-10-09 补）：白名单是权限档位的边界，
+   而有一类插件注册的是**顶替 pi 内置工具**的扩展（`pi-guardrails` 顶替 `write`/`edit`
+   加写前校验）。把 `write,edit` 并进「仅可查看」档的白名单 = **凭空把只读档变成可写档**，
+   而当时的单测只钉静态常量、抓不到合并结果。规矩：清单里写 `"allowlist": false`
+   （`pi/plugins.rs::Manifest::allowlist`，默认 true 保持老行为），
+   `vendor-plugin.mjs` 对应 `--no-allowlist` 开关；两条闸门盯着它 ——
+   `plugin-contract.test.ts`（申报了内置工具名就必须显式 allowlist:false）与
+   `pi/process.rs` 的 argv 级用例（限制档的 `--tools` 里不许出现 write/edit）。
+
+6. **目录必须登记进两个 SKU 的 `bundle.resources`，而且要用 `**/*`**（2026-10-09 补）：
    `pi-plugins/` 是 10-06 进来的，而资源清单里**从来没登记过它** → 打包产物零插件；
    更阴的是**在构建机上直接跑那个 `.app` 会看起来完全正常**（`pi/resources.rs` 的第三候选
    `CARGO_MANIFEST_DIR` 正好命中源码树），换台机器才消失。
@@ -193,6 +216,24 @@ node apps/desktop/scripts/vendor-plugin.mjs --check   # CI 跑这条：文件内
 收录完有两步收尾（脚本会提醒）：把名字加进 `config/app.rs::default_bundled_plugins()`、
 跑一次 `node apps/desktop/scripts/pi-plugin-probe.mjs`（真 pi 能不能加载它），
 以及确认新目录被两个 SKU 的 `bundle.resources` 的 `resources/pi-plugins/**/*` 覆盖（闸门会自动查）。
+还要把许可证登记进 `THIRD_PARTY_NOTICES.md` 与 `legal.rs::THIRD_PARTY`
+（两份互为金标，但**两边同缺时测试是绿的** —— pi-todo 就漏了三天，见 docs/15 规矩 134）。
+
+#### pi-guardrails（覆盖型插件）—— 机制已就绪，等上游补 LICENSE
+
+它顶替 pi 的 `write`/`edit` 加写前校验，是本仓之外最值得收录的一个（作者自研、
+`npm:pi-guardrails` 已在用户机器上跑）。**现在还不收**，两个前置条件：
+
+1. **上游没有 LICENSE 文件**（只有 `package.json` 的 `"license": "MIT"`）。
+   `vendor-plugin.mjs` 会按 SPDX 补一份 MIT 正文，但**版权人只能写成占位符** ——
+   署名义务实质上没被履行。要收录得先让上游加一个 `LICENSE`（写明版权人），
+   或者由作者在此明确授权；
+2. 收录时必须带 **`--no-allowlist`**（它的工具名是 pi 的内置 `write`/`edit`，
+   进了白名单就等于把限制档变成可写档，见 §2.2b 纪律 5）。
+
+机制侧已经为它准备好：`allowlist` 字段（默认 true）、两条闸门、以及
+`pi` 的冲突表只统计**扩展之间**的同名工具（顶替内置不算冲突）——
+所以"它能不能顶掉 pi 的 write/edit"不是问题，"顶掉之后权限档还成不成立"才是。
 契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
 有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
 

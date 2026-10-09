@@ -33,6 +33,24 @@ pi 的许可全文以 `apps/desktop/src-tauri/resources/pi-LICENSE.txt` **随安
 
 ---
 
+## pi-todo（随包分发的 pi 插件）
+
+- **用途**：DSH 风格的任务清单（`todo_write` / `todo_enable` 两个工具 + `/todos` 命令），
+  随 Piggy 一起注入到 pi 会话里（`apps/desktop/src-tauri/resources/pi-plugins/pi-todo/`）
+- **来源**：<https://github.com/wxk6b1203/pi-todo>（本仓作者的另一个项目）；
+  收录方式与漂移检测见 `apps/desktop/scripts/vendor-plugin.mjs` 与插件目录里的 `vendor.json`
+  （逐文件 sha256；CI 跑 `--check`）
+- **许可**：MIT（上游 `package.json` 的 `license` 字段；收录时由脚本补一份 MIT 正文，
+  见插件目录里的 `LICENSE`）。版权人：**wxk6b1203**
+- **取用方式**：源码整目录收录（入口 + `src/**` + LICENSE + README），
+  运行期由 pi 以 `--extension <dir>` 加载；**不经过 npm**（目标机器上可能没有 node/npm）
+
+> 这一节是 2026-10-09 补的：插件 10-06 就随包分发了，而两份清单（本文件与
+> `legal.rs::THIRD_PARTY`）都漏登记 —— 它们互为金标、两边同缺所以测试是绿的。
+> 教训见 docs/15 规矩 134：**"互为金标"的两份清单挡不住"两边都忘了"。**
+
+---
+
 ## DeepSeek Harness（DSH，设计参照）
 
 - **用途**：Piggy 的 UI/交互**以 DSH 为参照**（docs/11/12/14 是逐条对照的规格与实测记录）

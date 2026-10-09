@@ -1,7 +1,7 @@
 {
   "name": "pi-todo",
   "title": "任务清单（DSH 风格）",
-  "description": "随 Piggy 分发的第三方 pi 插件（收录自 /Users/wxk/Documents/Project/pi-todo）",
+  "description": "随 Piggy 分发的第三方 pi 插件（收录自上游 pi-todo）",
   "license": "MIT",
   "entry": "index.ts",
   "tools": [

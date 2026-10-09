@@ -80,9 +80,14 @@ fn subagent_policy_for(state: &AppState, resource_dir: Option<&std::path::Path>)
 /// 名字清单来自 `config/app.rs::default_bundled_plugins`（+ 配置里可能多出来的名字）：
 /// 只有**明确列出来**的才作为候选，避免往 resources 里丢个文件就悄悄改变模型能用的工具。
 ///
+/// **每个名字都留一行**（哪怕目录不在）：`dir: None` 会在设置页里明说
+/// "这一份安装里没有这个目录（随包分发不完整）"。以前这里是 `filter_map`，
+/// 打包漏登记 `resources/pi-plugins` 时插件**整个从列表里消失**，
+/// 用户只看得到"没有它"，看不到"你的包不完整"（2026-10-09 修）。
+///
 /// @param resource_dir - Tauri 资源目录（拿不到时回落源码树）
-/// @returns 存在的插件目录
-fn bundled_plugin_dirs(resource_dir: Option<&std::path::Path>) -> Vec<PathBuf> {
+/// @returns 候选（含缺失项；顺序 = 默认清单顺序）
+fn bundled_plugin_dirs(resource_dir: Option<&std::path::Path>) -> Vec<crate::pi::plugins::Candidate> {
     let mut names = crate::config::app::default_bundled_plugins();
     for n in crate::config::app::perf_config_load().bundled_plugins {
         if !names.contains(&n) {
@@ -91,7 +96,20 @@ fn bundled_plugin_dirs(resource_dir: Option<&std::path::Path>) -> Vec<PathBuf> {
     }
     names
         .iter()
-        .filter_map(|n| crate::pi::resources::bundled_plugin_dir(resource_dir, n))
+        .map(
+            |n| match crate::pi::resources::bundled_plugin_dir_with_origin(resource_dir, n) {
+                Some((dir, origin)) => crate::pi::plugins::Candidate {
+                    name: n.clone(),
+                    dir: Some(dir),
+                    origin: Some(origin),
+                },
+                None => crate::pi::plugins::Candidate {
+                    name: n.clone(),
+                    dir: None,
+                    origin: None,
+                },
+            },
+        )
         .collect()
 }
 
@@ -230,9 +248,20 @@ pub fn run() {
                         Some(p) => eprintln!("[piggy] 子代理桥接扩展: {}", p.display()),
                         None => eprintln!("[piggy] 子代理桥接扩展缺失：Fleet 面板的会话内子代理不可用"),
                     }
-                    match bundled_plugin_dirs(resource_dir.as_deref()).len() {
-                        0 => eprintln!("[piggy] 捆绑插件目录缺失：结构化提问/计划模式不可用"),
-                        n => eprintln!("[piggy] 捆绑插件候选 {n} 个（装不装看设置与是否重复）"),
+                    /* 启动日志把"从哪儿找到的"说清楚：第三候选是**编译期烧进二进制的
+                    构建机绝对路径**，所以"打包漏登记"在构建机上跑那个 .app 会看起来正常。
+                    这一行是那种情况下唯一的线索。 */
+                    let cands = bundled_plugin_dirs(resource_dir.as_deref());
+                    for c in &cands {
+                        match (&c.dir, c.origin) {
+                            (Some(d), Some(o)) => {
+                                eprintln!("[piggy] 捆绑插件 {}: {}（{}）", c.name, d.display(), o.label())
+                            }
+                            _ => eprintln!("[piggy] 捆绑插件 {}: 这一份安装里没有这个目录", c.name),
+                        }
+                    }
+                    if cands.iter().all(|c| c.dir.is_none()) {
+                        eprintln!("[piggy] 捆绑插件目录全缺失：结构化提问/计划模式不可用（打包漏登记？）");
                     }
                     if let Some(p) = &reg.subagent_policy {
                         eprintln!("[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}", p.display());

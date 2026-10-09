@@ -88,6 +88,28 @@ describe('pi-ask 与宿主的契约', () => {
     }
   });
 
+  it('申报了 pi **内置工具名**的插件必须显式 allowlist:false', () => {
+    /* 白名单是权限档位的边界。有一类插件注册的是**覆盖型**的 pi 内置工具
+       （pi-guardrails 顶替 write/edit 加写前校验），把它的名字并进 `--tools`
+       等于把「仅可查看」档变成可写档。规矩：**只要申报了内置工具名，就必须
+       显式声明 `"allowlist": false`**，让"不进白名单"是一个写下来的决定。 */
+    const BUILTIN_TOOLS = new Set(['read', 'write', 'edit', 'bash', 'powershell', 'grep', 'find', 'ls']);
+    for (const name of PLUGINS) {
+      const dir = join(PLUGINS_DIR, name);
+      const m = JSON.parse(readFileSync(join(dir, 'piggy-plugin.json'), 'utf8')) as {
+        tools?: string[];
+        allowlist?: boolean;
+      };
+      const hits = (m.tools ?? []).filter((t) => BUILTIN_TOOLS.has(t));
+      if (hits.length === 0) continue;
+      expect(
+        m.allowlist,
+        `${name} 申报了内置工具名 ${hits.join('/')}，但没有写 "allowlist": false ` +
+          '（那会让限制档位凭空获得这些能力）',
+      ).toBe(false);
+    }
+  });
+
   it('可打包：入口存在、没有 npm 依赖、许可证写明', () => {
     expect(manifest.entry).toBe('index.js');
     expect(existsSync(join(DIR, manifest.entry)), '入口文件不在').toBe(true);
