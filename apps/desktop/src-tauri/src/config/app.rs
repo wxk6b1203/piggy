@@ -337,16 +337,12 @@ mod tests {
     #[test]
     fn rail_placement_parses_and_falls_back() {
         /* 默认注入哪些插件是**显式**决定（不是"目录里有啥就开啥"）。
-           ⚠️ 加一个插件前要想清两件事：① 模型会多看见哪些**工具**；
-           ② 它会不会**顶替内置工具**（那样要配 `allowlist:false`，见 docs/17 §2.2b 纪律 5）。 */
+        ⚠️ 加一个插件前要想清两件事：① 模型会多看见哪些**工具**；
+        ② 它会不会**顶替内置工具**（那样要配 `allowlist:false`，见 docs/17 §2.2b 纪律 5）。 */
         let cfg = PerfConfig::default();
         assert_eq!(
             cfg.bundled_plugins,
-            vec![
-                "pi-ask".to_string(),
-                "pi-todo".to_string(),
-                "pi-guardrails".to_string()
-            ],
+            vec!["pi-ask".to_string(), "pi-todo".to_string(), "pi-guardrails".to_string()],
             "默认随包分发的插件清单（改这里要同时想清楚：模型会多看见哪些工具）"
         );
         // 老配置里没有这个字段 → 拿到默认（插件照常开）

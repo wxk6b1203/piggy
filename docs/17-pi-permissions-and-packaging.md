@@ -241,6 +241,19 @@ bash 证据化、重复调用提醒）。作者自研，`Copyright (c) 2026 wxk6
 而注入顺序保证守卫先注册、先判定（`process.rs::cli_args`：守卫 → 桥接 → 捆绑插件）。
 真机探针里有组合断言：守卫 + pi-guardrails + `--tools read,grep,find,ls` →
 `getAllTools()` 里**没有** `write`/`edit`；不传 `--tools`（完全权限）→ 两个都在。
+
+**行为层的组合验证**（`node apps/desktop/scripts/guard-combo-probe.mjs`，三次极小模型调用，
+所以是诊断脚本、不进 CI；本机实测三个回合全绿）：
+
+| 回合 | 期望 | 本机实测 |
+|---|---|---|
+| 往工作区**外面**写 | 路径守卫拦（文件不出现） | ✅ 文件仍是原内容 |
+| 改工作区内**已存在但没读过**的文件 | pi-guardrails 拦（内容不变） | ✅ 内容未变 |
+| 在工作区内**新建**文件 | 放行（它明确不拦"创建不存在的文件"） | ✅ 文件创建成功 |
+
+⚠️ 本机跑这个脚本要带 `-ne`：`~/.pi/agent/extensions/pi-guardrails` 与随包那份同名，
+pi 会因工具名冲突**直接退出** —— 而 Piggy 自己会跳过自带那份（`pi/plugins.rs::existing_install`），
+所以这不是产品 bug，是脚本要自己处理的现场。
 契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
 有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
 

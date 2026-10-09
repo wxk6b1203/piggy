@@ -1390,9 +1390,11 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      这两者会不会互相顶掉？读 pi 源码可以确定不会：`tool_call` 由**会话层**在
      `beforeToolCall` 里按**工具名**触发（`core/agent-session.ts::_beforeToolCall`），
      与"这个工具是谁注册的"无关；注入顺序（守卫 → 桥接 → 捆绑插件）还保证守卫先判定。
-     但"读源码确定"不够 —— `scripts/pi-plugin-probe.mjs` 里补了两条**真机组合断言**：
+     但"读源码确定"不够 —— `apps/desktop/scripts/pi-plugin-probe.mjs` 里补了两条**真机组合断言**：
      守卫 + pi-guardrails + `--tools read,grep,find,ls` → `getAllTools()` 里没有
      `write`/`edit`；**不传** `--tools` → 两个都在（这条反向断言让上面那条不至于"永远绿"）。
+     再加一条**行为层**的组合检查（`apps/desktop/scripts/guard-combo-probe.mjs`，三次极小模型调用、
+     不进 CI）：越界写被路径守卫拦、未读就改被 pi-guardrails 拦、新建文件放行 —— 本机三个回合全绿。
      判据：**凡是"两个机制各自都对、合起来才对"的地方，闸门要量组合后的结果**，
      并且配一条反向断言证明被测对象真的在场。
 
