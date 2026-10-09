@@ -173,6 +173,49 @@ try {
     problems.push('白名单放行');
   }
 
+  /* ── 2b. 覆盖型插件 + 路径守卫：限制档的边界仍然成立（2026-10-09 加）
+     这是 docs/17 §2.2b 纪律 5 的真机侧：pi-guardrails 注册的是**内置同名**
+     `write`/`edit`（写前校验），而 `piggy-guard.js` 的"工作区内修改"边界挂在
+     **`tool_call` 钩子**上 —— pi 的会话层按**工具名**触发它
+     （`agent-session.ts::_beforeToolCall`），与"这个工具是谁注册的"无关。
+     所以两者同时注入时，限制档必须仍然能把 write/edit 拿到工具表外面。
+     断言的是**组合结果**（守卫 + 覆盖型插件 + `--tools`），不是加载成功而已。 */
+  const guardrails = ALL_PLUGINS.find((p) => p.name === 'pi-guardrails');
+  const guard = join(HERE, '..', 'src-tauri', 'resources', 'piggy-guard.js');
+  if (guardrails && existsSync(guard)) {
+    const combo = await runPi(
+      ['-e', guard, '-e', guardrails.dir, '-e', probe, '--tools', 'read,grep,find,ls'],
+      { type: 'get_state', id: 1 },
+    );
+    const comboTools = /PROBE tools=\[([^\]]*)\]/.exec(combo.err)?.[1] ?? '';
+    const noWriters = !/"write"/.test(comboTools) && !/"edit"/.test(comboTools);
+    if (
+      !report(
+        combo.responded && noWriters,
+        '覆盖型插件 + 路径守卫下，限制档仍然拿掉了 write/edit（`allowlist:false` 的边界成立）',
+        `responded=${combo.responded} all=${comboTools}`,
+      )
+    ) {
+      problems.push('覆盖型插件与权限边界');
+    }
+    /* 反向：**完全权限档**（不传 `--tools`）下两个工具都要在 —— 否则说明
+       pi-guardrails 在组合里根本没注册上，上面那条就成了"永远绿"。 */
+    const comboFull = await runPi(['-e', guard, '-e', guardrails.dir, '-e', probe], {
+      type: 'get_state',
+      id: 1,
+    });
+    const fullTools = /PROBE tools=\[([^\]]*)\]/.exec(comboFull.err)?.[1] ?? '';
+    if (
+      !report(
+        comboFull.responded && /"write"/.test(fullTools) && /"edit"/.test(fullTools),
+        '完全权限档下 `write`/`edit` 都在（上面那条不是"永远绿"）',
+        `all=${fullTools}`,
+      )
+    ) {
+      problems.push('覆盖型插件注册');
+    }
+  }
+
   // ── 3. 重复加载会炸（D1 的证据）
   const copy = join(tmp, 'pi-ask-copy');
   cpSync(PLUGIN, copy, { recursive: true });

@@ -134,7 +134,8 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 ### 2.2b 捆绑的 **pi 插件**（功能插件，和 pi 本身分开）
 
 `resources/pi/` 装的是 **pi 自己**；`resources/pi-plugins/<name>/` 装的是**给模型用的功能插件**
-（自研 `pi-ask` 结构化提问 + `/plan` 计划模式；收录的第三方 `pi-todo`）。区别与理由：
+（自研 `pi-ask` 结构化提问 + `/plan` 计划模式；收录的第三方 `pi-todo` 任务清单、
+`pi-guardrails` 写前校验护栏）。区别与理由：
 
 | | `piggy-guard.js` / `piggy-bridge.js` | `pi-plugins/<name>/` |
 |---|---|---|
@@ -175,8 +176,8 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
    标成**开发态**：它是编译期烧进二进制的构建机绝对路径，打包产物里出现它就说明清单漏登记了。
 
 5. **覆盖型插件的工具名不进 `--tools` 白名单**（2026-10-09 补）：白名单是权限档位的边界，
-   而有一类插件注册的是**顶替 pi 内置工具**的扩展（`pi-guardrails` 顶替 `write`/`edit`
-   加写前校验）。把 `write,edit` 并进「仅可查看」档的白名单 = **凭空把只读档变成可写档**，
+   而有一类插件注册的是**顶替 pi 内置工具**的扩展（收录的 `pi-guardrails` 顶替
+   `write`/`edit` 加写前校验）。把 `write,edit` 并进「仅可查看」档的白名单 = **凭空把只读档变成可写档**，
    而当时的单测只钉静态常量、抓不到合并结果。规矩：清单里写 `"allowlist": false`
    （`pi/plugins.rs::Manifest::allowlist`，默认 true 保持老行为），
    `vendor-plugin.mjs` 对应 `--no-allowlist` 开关；两条闸门盯着它 ——
@@ -219,21 +220,27 @@ node apps/desktop/scripts/vendor-plugin.mjs --check   # CI 跑这条：文件内
 还要把许可证登记进 `THIRD_PARTY_NOTICES.md` 与 `legal.rs::THIRD_PARTY`
 （两份互为金标，但**两边同缺时测试是绿的** —— pi-todo 就漏了三天，见 docs/15 规矩 134）。
 
-#### pi-guardrails（覆盖型插件）—— 机制已就绪，等上游补 LICENSE
+#### pi-guardrails（覆盖型插件）—— **已收录**（2026-10-09）
 
-它顶替 pi 的 `write`/`edit` 加写前校验，是本仓之外最值得收录的一个（作者自研、
-`npm:pi-guardrails` 已在用户机器上跑）。**现在还不收**，两个前置条件：
+它顶替 pi 的 `write`/`edit` 加写前校验（另有锁内 CAS、原子发布、空响应兜底、
+bash 证据化、重复调用提醒）。作者自研，`Copyright (c) 2026 wxk6b1203`，MIT。
 
-1. **上游没有 LICENSE 文件**（只有 `package.json` 的 `"license": "MIT"`）。
-   `vendor-plugin.mjs` 会按 SPDX 补一份 MIT 正文，但**版权人只能写成占位符** ——
-   署名义务实质上没被履行。要收录得先让上游加一个 `LICENSE`（写明版权人），
-   或者由作者在此明确授权；
-2. 收录时必须带 **`--no-allowlist`**（它的工具名是 pi 的内置 `write`/`edit`，
-   进了白名单就等于把限制档变成可写档，见 §2.2b 纪律 5）。
+收录时的两步（都是**前置条件**，不是可选项）：
 
-机制侧已经为它准备好：`allowlist` 字段（默认 true）、两条闸门、以及
-`pi` 的冲突表只统计**扩展之间**的同名工具（顶替内置不算冲突）——
-所以"它能不能顶掉 pi 的 write/edit"不是问题，"顶掉之后权限档还成不成立"才是。
+1. 上游先补一个 `LICENSE` 文件（原来只有 `package.json` 的 SPDX）。
+   否则 `vendor-plugin.mjs` 只能补一份**版权人是占位符**的 MIT 正文 ——
+   署名义务实质上没被履行（这次的 LICENSE 由作者提供，版权人写实）。
+   ⚠️ 顺带修了脚本一处：有 LICENSE 文件时以前会把 SPDX 丢掉（清单里显示"见 LICENSE"），
+   现在文件优先、SPDX 仍作为标签，两者不一致时以文件为准并打印提醒。
+2. 收录必须带 **`--no-allowlist`**：它的工具名是 pi 的内置 `write`/`edit`，
+   进了白名单就等于把限制档变成可写档（§2.2b 纪律 5）。
+
+**它与 Piggy 自己的路径守卫不冲突**（这条读源码确认过，另有真机断言）：
+`piggy-guard.js` 挂的是 **`tool_call` 钩子**，由 pi 的会话层在 `beforeToolCall` 里
+**按工具名**触发（`core/agent-session.ts::_beforeToolCall`），与"这个工具是谁注册的"无关；
+而注入顺序保证守卫先注册、先判定（`process.rs::cli_args`：守卫 → 桥接 → 捆绑插件）。
+真机探针里有组合断言：守卫 + pi-guardrails + `--tools read,grep,find,ls` →
+`getAllTools()` 里**没有** `write`/`edit`；不传 `--tools`（完全权限）→ 两个都在。
 契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
 有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
 

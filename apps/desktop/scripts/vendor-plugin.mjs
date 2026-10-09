@@ -111,7 +111,21 @@ function listFiles(root, dir = root) {
 function licenseOf(from) {
   const licenseFile = readdirSync(from).find((f) => /^licen[cs]e/i.test(f));
   if (licenseFile) {
-    return { file: licenseFile, spdx: null, text: readFileSync(join(from, licenseFile), 'utf8') };
+    const text = readFileSync(join(from, licenseFile), 'utf8');
+    /* 有 LICENSE 文件时**仍然读一次 SPDX**（2026-10-09）：清单里的 `license` 字段
+       会显示在设置页，而 `spdx: null` 写出来是"见 LICENSE"—— 用户看到的是
+       "不知道什么许可"。文件优先（正文是权威），SPDX 只作为标签；两者不一致时
+       以文件为准并在控制台提一句。 */
+    const pkgPath = join(from, 'package.json');
+    let spdx = null;
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+      if (typeof pkg.license === 'string') spdx = pkg.license;
+    }
+    if (spdx && !new RegExp(spdx, 'i').test(text)) {
+      console.warn(`⚠️  ${from}：LICENSE 正文里没有出现 package.json 声明的 "${spdx}"，以文件为准`);
+    }
+    return { file: licenseFile, spdx, text };
   }
   const pkgPath = join(from, 'package.json');
   if (existsSync(pkgPath)) {

@@ -1,0 +1,26 @@
+{
+  "name": "pi-guardrails",
+  "source": {
+    "path": "/Users/wxk/Documents/Project/pi-guardrails",
+    "label": "pi-guardrails",
+    "commit": "42f45ece712549a83950679ff0d3206d67db95fe",
+    "dirty": true,
+    "licenseFile": "LICENSE",
+    "spdx": "MIT"
+  },
+  "vendoredAt": "2026-10-09T15:39:40.339Z",
+  "files": {
+    "LICENSE": "31123527b83390c584f50fba1ed9d8f3e2b12f2174274aace469a708ec525746",
+    "README.md": "3af75cddd9bed39d9348338afb6d36baeb970296836725d7435fc03824c5ece4",
+    "index.ts": "ab4c2dc3afd71dba5277978a334e91347c9e713e49ef15ae3bfcadd4b4704c57",
+    "src/config.ts": "46720a34ec110e7c829442e4e20e4b56c9d0059bc68e1084f48aa8a302fbfd29",
+    "src/evidence.ts": "7ebd5b1ead7dab50bda3d20aa126cf28fdb6cc67e332dd5b0d4ab48b3d12e33e",
+    "src/guard-atomic.ts": "05587f27b7a037d60e62faf4914f19f41544ce3c9170144a1871dca459088156",
+    "src/guard-empty.ts": "7210c82d98cc7e6cd9451e81afad89286a3c98ee806ce78a25d9add6d5ab23a4",
+    "src/guard-repeat.ts": "44da4f5b3864c843376eb52c63f1820749f2a595691d4f382a4a40cf04ccc49a",
+    "src/guard-write.ts": "b044a4d77c617c3052a06451fb9f8cb387aca661951b58eac56fff4175ff09a7",
+    "src/observation.ts": "df35f74e497a9ad3f98d0f365754fffe8e11728b204b8f8289f4041f097ae7aa",
+    "src/prompt.ts": "6f1021196b2d42a8da2f1e81b7f079f01d187f3653c4a7d282a0e57838c2b98a",
+    "src/publish.ts": "c7ccb4968bb5851486c88282f196265f5bab521a1ba38bea3e976715666345fd"
+  }
+}

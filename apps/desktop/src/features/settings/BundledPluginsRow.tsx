@@ -13,6 +13,9 @@ import { toast } from '@/lib/feedback';
 import { Icon } from '@/features/common/Icon';
 import { useTabs } from '@/stores/tabs';
 
+/** pi 的内置工具名：插件申报了这些名字就说明它是**覆盖型**（顶替内置实现）。 */
+const OVERRIDE_TOOLS = ['read', 'write', 'edit', 'bash', 'powershell', 'grep', 'find', 'ls'];
+
 interface BundledPlugin {
   name: string;
   title: string;
@@ -107,6 +110,16 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
               {p.tools.length > 0 ? `工具：${p.tools.join('、')}` : '不注册工具'}
               {p.commands.length > 0 ? ` · 命令：/${p.commands.join('、/')}` : ''}
             </span>
+            {/* 覆盖型插件（清单里 `allowlist:false`）：它注册的是 pi 的内置同名工具。
+                必须说出来 —— 用户会问"为什么我的 write 行为变了"，
+                以及"为什么限制档里没有它"。 */}
+            {OVERRIDE_TOOLS.some((t) => p.tools.includes(t)) ? (
+              <span className="pg-bundled-override" data-bundled-override>
+                <Icon name="info" size={12} /> 它会**顶替** pi 的内置{' '}
+                {p.tools.filter((t) => OVERRIDE_TOOLS.includes(t)).join(' / ')} 工具（行为变化型）；
+                它的工具名不进限制档位的白名单，所以「仅可查看」档仍然是只读的
+              </span>
+            ) : null}
             {p.skipped !== null ? (
               <span className="pg-bundled-skip" data-bundled-skip>
                 <Icon name="info" size={12} /> 这次没有注入：{p.skipped}

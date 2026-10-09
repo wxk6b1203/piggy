@@ -69,6 +69,12 @@ pub const THIRD_PARTY: &[ThirdParty] = &[
         usage: "随包分发的 pi 插件：DSH 风格任务清单（todo_write / todo_enable + /todos）",
     },
     ThirdParty {
+        name: "pi-guardrails",
+        license: "MIT",
+        holder: "Copyright (c) 2026 wxk6b1203",
+        usage: "随包分发的 pi 插件：写前校验护栏（覆盖型，注册内置同名 write/edit）",
+    },
+    ThirdParty {
         name: "DeepSeek Harness",
         license: "MIT",
         holder: "Copyright (c) 2026 DeepSeek",

@@ -51,6 +51,27 @@ pi 的许可全文以 `apps/desktop/src-tauri/resources/pi-LICENSE.txt` **随安
 
 ---
 
+## pi-guardrails（随包分发的 pi 插件）
+
+- **用途**：**写前校验护栏** —— 拦「改已存在但没读过的文件」、锁内 CAS（消除 TOCTOU）、
+  崩溃安全的原子发布、空响应兜底、bash 证据化、重复调用提醒。
+  随 Piggy 一起注入到 pi 会话里（`apps/desktop/src-tauri/resources/pi-plugins/pi-guardrails/`）
+- **来源**：<https://github.com/wxk6b1203/pi-guardrails>（本仓作者的另一个项目）；
+  收录方式与漂移检测见 `apps/desktop/scripts/vendor-plugin.mjs` 与插件目录里的 `vendor.json`
+  （逐文件 sha256；CI 跑 `--check`）
+- **许可**：MIT（`Copyright (c) 2026 wxk6b1203`，见插件目录里的 `LICENSE`）
+- **取用方式**：源码整目录收录（入口 + `src/**` + LICENSE + README），
+  运行期由 pi 以 `--extension <dir>` 加载；**不经过 npm**（目标机器上可能没有 node/npm）。
+  它只 import `node:*` 内置模块与 pi 的虚拟模块（`@earendil-works/pi-coding-agent`），
+  因此不需要 `node_modules`
+- **⚠️ 覆盖型插件**：它注册的是 pi 的**内置同名工具** `write`/`edit`。
+  清单里写死 `"allowlist": false`，所以它的工具名**不进**限制档位的 `--tools` 白名单
+  （否则「仅可查看」档会凭空获得写能力）。与 Piggy 自己的路径守卫 `piggy-guard.js`
+  不冲突：那个挂的是 `tool_call` 钩子，由 pi 的会话层按**工具名**触发，
+  与"工具是谁注册的"无关（真机探针里有组合断言）
+
+---
+
 ## DeepSeek Harness（DSH，设计参照）
 
 - **用途**：Piggy 的 UI/交互**以 DSH 为参照**（docs/11/12/14 是逐条对照的规格与实测记录）

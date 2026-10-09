@@ -216,6 +216,17 @@ pub fn default_bundled_plugins() -> Vec<String> {
         ⚠️ 用户自己装过同名扩展时不会注入（两份同名扩展会让 pi 因工具名冲突退出），
         界面上会说明原因。 */
         "pi-todo".to_string(),
+        /* pi-guardrails（作者自研，MIT）：**写前校验护栏** —— 拦「改已存在但没读过的文件」、
+           锁内 CAS（消除 TOCTOU）、崩溃安全的原子发布、空响应兜底、bash 证据化、重复调用提醒。
+
+        ⚠️ 它是**覆盖型**插件：注册的是 pi 的**内置同名工具** `write`/`edit`。所以：
+          · 清单里写死 `"allowlist": false` —— 它的工具名**不进**限制档位的 `--tools` 白名单
+            （否则「仅可查看」档会凭空获得写能力，见 `pi/plugins.rs::Manifest::allowlist`）；
+          · 与 `piggy-guard.js`（路径守卫）不冲突也不互相顶替：路径守卫挂的是 **`tool_call` 钩子**，
+            由 pi 的会话层按**工具名**触发（`agent-session.ts::_beforeToolCall`），
+            与"这个工具是谁注册的"无关 —— 所以"工作区内修改"档的边界仍然有效
+            （注入顺序也保证守卫先注册、先判定）。 */
+        "pi-guardrails".to_string(),
     ]
 }
 
@@ -325,11 +336,17 @@ mod tests {
     /// 预览滚动条的三态：默认右、能解析、**认不出的值收回默认**（而不是整份配置失败）。
     #[test]
     fn rail_placement_parses_and_falls_back() {
-        // 默认注入哪些插件是**显式**决定（不是"目录里有啥就开啥"）
+        /* 默认注入哪些插件是**显式**决定（不是"目录里有啥就开啥"）。
+           ⚠️ 加一个插件前要想清两件事：① 模型会多看见哪些**工具**；
+           ② 它会不会**顶替内置工具**（那样要配 `allowlist:false`，见 docs/17 §2.2b 纪律 5）。 */
         let cfg = PerfConfig::default();
         assert_eq!(
             cfg.bundled_plugins,
-            vec!["pi-ask".to_string(), "pi-todo".to_string()],
+            vec![
+                "pi-ask".to_string(),
+                "pi-todo".to_string(),
+                "pi-guardrails".to_string()
+            ],
             "默认随包分发的插件清单（改这里要同时想清楚：模型会多看见哪些工具）"
         );
         // 老配置里没有这个字段 → 拿到默认（插件照常开）

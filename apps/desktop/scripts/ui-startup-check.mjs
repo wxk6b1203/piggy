@@ -5969,8 +5969,10 @@ if (turnFolding.standard?.folds !== 2) {
     if (!/GPL/.test(b.license)) bad.push(`内置插件：许可证没显示（读到 ${JSON.stringify(b.license)}）★`);
     if (!/ask_user_question/.test(b.meta)) bad.push(`内置插件：没显示它提供哪些工具（读到 ${JSON.stringify(b.meta)}）★`);
     if (o.enabled !== false || o.inject !== false) bad.push('内置插件：关掉之后界面上还是"开着/已注入"★');
-    if ((o.enabledInConfig ?? []).length !== 0) {
-      bad.push(`内置插件：关掉之后配置里还留着（读到 ${JSON.stringify(o.enabledInConfig)}）★`);
+    /* 关掉 pi-ask 之后，配置里**不许再有它**（别的插件开着是正常的：
+       随包清单现在有三个 —— 断言"整个清单为空"会在加插件时误报）。 */
+    if ((o.enabledInConfig ?? []).includes('pi-ask')) {
+      bad.push(`内置插件：关掉之后配置里还留着 pi-ask（读到 ${JSON.stringify(o.enabledInConfig)}）★`);
     }
     if (!/关掉/.test(o.skip ?? '')) {
       bad.push(`内置插件：没说清这次为什么不注入（读到 ${JSON.stringify(o.skip)}）★`);

@@ -61,6 +61,20 @@ const PLUGINS = [
     skipped: null,
   },
   {
+    name: 'pi-guardrails',
+    title: '写前校验护栏',
+    description: '写前校验',
+    license: 'MIT',
+    tools: ['write', 'edit'],
+    commands: [],
+    dir: '/app/Contents/Resources/resources/pi-plugins/pi-guardrails',
+    origin: '随包分发',
+    originKind: 'resource_dir',
+    enabled: true,
+    inject: true,
+    skipped: null,
+  },
+  {
     name: 'pi-ghost',
     title: '缺目录的插件',
     description: '打包漏登记',
@@ -109,6 +123,7 @@ describe('设置页「内置插件」', () => {
     expect(qa('[data-bundled]').map((r) => r.getAttribute('data-bundled'))).toEqual([
       'pi-ask',
       'pi-todo',
+      'pi-guardrails',
       'pi-ghost',
     ]);
     // 注入成功的那两行没有 skip 行
@@ -118,6 +133,17 @@ describe('设置页「内置插件」', () => {
     expect(ghost, '缺目录的插件整行消失了 —— 用户只会以为列表里本来就没有它').toBeTruthy();
     expect(text(ghost)).toContain('随包分发不完整');
     expect(text(q('[data-bundled="pi-ghost"] .pg-bundled-dir'))).toContain('没有这个目录');
+  });
+
+  it('覆盖型插件要说明它顶替了内置工具、且不进限制档白名单', async () => {
+    mountDom(<BundledPluginsRow onChanged={() => {}} />);
+    await flush();
+    const hint = q('[data-bundled="pi-guardrails"] [data-bundled-override]');
+    expect(hint, '覆盖型插件没有提示 —— 用户会以为自己的 write 行为莫名其妙变了').toBeTruthy();
+    expect(text(hint)).toContain('顶替');
+    expect(text(hint)).toContain('仅可查看');
+    // 普通插件不该有这条
+    expect(q('[data-bundled="pi-ask"] [data-bundled-override]')).toBeNull();
   });
 
   it('来自仓库源码树的那行要显眼提示（打包产物里出现它就是漏登记）', async () => {

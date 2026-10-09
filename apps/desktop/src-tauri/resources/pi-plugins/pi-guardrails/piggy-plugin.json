@@ -1,0 +1,13 @@
+{
+  "name": "pi-guardrails",
+  "title": "写前校验护栏",
+  "description": "随 Piggy 分发的第三方 pi 插件（收录自上游 pi-guardrails）",
+  "license": "MIT",
+  "entry": "index.ts",
+  "tools": [
+    "write",
+    "edit"
+  ],
+  "commands": [],
+  "allowlist": false
+}
