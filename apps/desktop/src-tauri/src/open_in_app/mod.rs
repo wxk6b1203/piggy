@@ -73,7 +73,8 @@ pub fn resolved_apps() -> Vec<Resolved> {
 }
 
 /// 只重解析一条（"启动时发现可执行文件没了" → 立刻自愈，DSH 同样只在卸载方向自愈）。
-fn refresh_one(id: &str) -> Option<Resolved> {    let facts = Facts::detect();
+fn refresh_one(id: &str) -> Option<Resolved> {
+    let facts = Facts::detect();
     let real = RealHost::new(facts.clone());
     let fresh = resolver::resolve_one(&real, &facts, id, PROBE_TIMEOUT);
     let mut slot = cache().lock().unwrap_or_else(|e| e.into_inner());

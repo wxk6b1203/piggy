@@ -321,9 +321,17 @@ pub fn direct_command(pi_bin: &Path) -> Option<(PathBuf, Vec<String>)> {
 /// **不做通用 cmd 解析** —— 猜错会造出一个跑不起来的启动器。
 #[cfg_attr(not(windows), allow(dead_code))]
 fn parse_shim_command(text: &str, shim_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    /* `%~dp0` 展开时**要按 cmd 的词法认分隔符**：批处理里的路径一律写 `\`，
+    而解析器可能跑在 macOS/Linux 上（CI 的 rust 作业就是），那里 `\` 只是个普通字符
+    —— `PathBuf::from("/tmp/x\\cli.js")` 会被当成一个**文件名**，`is_file` 永远为假，
+    于是整条垫片解析在这两个平台上静默失效（2026-10-09 实测：三条用例在 macOS 上红，
+    而它们本该在 CI 上守着这段 Windows 专用逻辑）。
+    把 `\` 归一到宿主分隔符：Windows 上本来就是 `\`（no-op），POSIX 上还原出真实层级。
+    只在这一处做，因为**这里的输入一定是 cmd 批处理文本**，不存在"路径里真的含反斜杠"的情形。 */
     let expand = |raw: &str| -> PathBuf {
         let joined = raw.replace("%~dp0", &shim_dir.to_string_lossy());
         let joined = joined.replace("\\%", "%"); // 兜一手转义过的百分号
+        let joined = joined.replace('\\', std::path::MAIN_SEPARATOR_STR);
         PathBuf::from(joined)
     };
     let looks_like_interpreter = |p: &Path| {
@@ -354,10 +362,10 @@ fn parse_shim_command(text: &str, shim_dir: &Path) -> Option<(PathBuf, PathBuf)>
             continue;
         }
         /* ⚠️ 这里必须按 cmd 的词法切分，**不能**只按引号切。
-           本机 pi.cmd 真正执行的那一行是：
-               node  "%~dp0\..\global\…\cli.js" %*
-           ——解释器是**裸写**的 `node`（没有引号），只按引号切就只得一个片段，
-           于是这一行被判成"不像启动命令"而跳过。第一版就是这么错的。 */
+        本机 pi.cmd 真正执行的那一行是：
+            node  "%~dp0\..\global\…\cli.js" %*
+        ——解释器是**裸写**的 `node`（没有引号），只按引号切就只得一个片段，
+        于是这一行被判成"不像启动命令"而跳过。第一版就是这么错的。 */
         let tokens = cmd_line_tokens(trimmed);
         let (raw_program, raw_script) = match (tokens.first(), tokens.get(1)) {
             (Some(p), Some(s)) => (p.as_str(), s.as_str()),
@@ -383,7 +391,11 @@ fn parse_shim_command(text: &str, shim_dir: &Path) -> Option<(PathBuf, PathBuf)>
                 continue;
             }
             let path_var = std::env::var("PATH").unwrap_or_default();
-            which_in(&raw_program.to_string_lossy(), &path_var, std::env::var("PATHEXT").ok().as_deref())?
+            which_in(
+                &raw_program.to_string_lossy(),
+                &path_var,
+                std::env::var("PATHEXT").ok().as_deref(),
+            )?
         };
         // 再确认一次形状（PATH 命中的可能是别的同名程序）
         if !looks_like_interpreter(&program) {
@@ -431,7 +443,8 @@ fn which_in(name: &str, path_var: &str, pathext: Option<&str>) -> Option<PathBuf
 }
 
 /// PATH 扫描 → 常见安装位置兜底。都没有返回 `None`。
-fn which_pi() -> Option<PathBuf> {    let windows = cfg!(windows);
+fn which_pi() -> Option<PathBuf> {
+    let windows = cfg!(windows);
     let names = exec_names(windows, std::env::var("PATHEXT").ok().as_deref());
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
@@ -798,11 +811,7 @@ mod tests {
         let dir = tmp.path();
         std::fs::write(dir.join("node.exe"), b"MZ fake").unwrap();
         let shim = dir.join("pi.cmd");
-        std::fs::write(
-            &shim,
-            pnpm_shim("%~dp0\\node.exe", "%~dp0\\gone\\cli.js"),
-        )
-        .unwrap();
+        std::fs::write(&shim, pnpm_shim("%~dp0\\node.exe", "%~dp0\\gone\\cli.js")).unwrap();
         assert!(
             direct_command(&shim).is_none(),
             "脚本不存在时不该接手（否则用户看到的是 node 的 ENOENT，而不是 pi 的原话）"
@@ -843,8 +852,7 @@ mod tests {
             eprintln!("本机的 pi 不是 .cmd 垫片（{:?}），跳过", bin);
             return;
         }
-        let (program, args) = direct_command(&bin)
-            .unwrap_or_else(|| panic!("本机的垫片没解析出来：{}", bin.display()));
+        let (program, args) = direct_command(&bin).unwrap_or_else(|| panic!("本机的垫片没解析出来：{}", bin.display()));
         assert!(program.is_file(), "解析出的解释器不存在：{}", program.display());
         assert!(
             args.first().map(|a| Path::new(a).is_file()).unwrap_or(false),
@@ -878,11 +886,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("echo-args.js");
         // 一个只回显 argv 的 node 脚本：证明"参数真的原样到了"，不是只证明进程起来了
-        std::fs::write(
-            &script,
-            "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
-        )
-        .unwrap();
+        std::fs::write(&script, "process.stdout.write(JSON.stringify(process.argv.slice(2)));").unwrap();
         let Some(node) = which_node_for_test() else {
             eprintln!("找不到 node，跳过");
             return;

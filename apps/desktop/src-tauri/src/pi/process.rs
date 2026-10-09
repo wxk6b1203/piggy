@@ -75,14 +75,14 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push(n.into());
     }
     /* 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
-       不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
+    不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
 
-       ⚠️ pi 的帮助原话："Applies to built-in, extension, and custom tools"。也就是说
-       **`--tools` 会把捆绑插件的工具一起过滤掉**（真机验证：`--tools read,grep,find,ls`
-       之下 `pi.getAllTools()` 只剩这 4 个）。要让插件在限制档位下仍然可用，就得把它申报的
-       工具名**加进白名单**（名字来自插件的 `piggy-plugin.json`，见 `pi/plugins.rs`）。
-       只加"这次真的注入了的"那些插件申报的名字 —— 插件没注入却把名字写进白名单，
-       等于告诉模型"你有这个工具"，而它并不存在。 */
+    ⚠️ pi 的帮助原话："Applies to built-in, extension, and custom tools"。也就是说
+    **`--tools` 会把捆绑插件的工具一起过滤掉**（真机验证：`--tools read,grep,find,ls`
+    之下 `pi.getAllTools()` 只剩这 4 个）。要让插件在限制档位下仍然可用，就得把它申报的
+    工具名**加进白名单**（名字来自插件的 `piggy-plugin.json`，见 `pi/plugins.rs`）。
+    只加"这次真的注入了的"那些插件申报的名字 —— 插件没注入却把名字写进白名单，
+    等于告诉模型"你有这个工具"，而它并不存在。 */
     if let Some(list) = args.permission.tool_allowlist() {
         let mut names: Vec<String> = list.split(',').map(|s| s.trim().to_string()).collect();
         let extra = crate::pi::plugins::plugin_tools_for(&args.bundled_extensions);
@@ -115,11 +115,11 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push(bridge.into());
     }
     /* 捆绑的 pi 插件（docs/06 §7）：目录形式注入，pi 的 `-e` 接受目录。
-       ⚠️ 与 `--tools` 的关系：pi 的帮助写得很清楚 —— `--tools` 是"内置、扩展与自定义工具"
-       的总白名单。限制档位（`tool_allowlist()` 为 Some）之下**插件工具名不在白名单里，
-       所以插件的工具会被整个过滤掉**（真机验证见 docs/15 规矩 8 那条）。这里仍然注入
-       （不注入的话连"插件在不在"都看不出来），但**上层必须据此提示用户**：
-       想用插件工具就得用「完全权限」档，或者把工具名加进白名单。 */
+    ⚠️ 与 `--tools` 的关系：pi 的帮助写得很清楚 —— `--tools` 是"内置、扩展与自定义工具"
+    的总白名单。限制档位（`tool_allowlist()` 为 Some）之下**插件工具名不在白名单里，
+    所以插件的工具会被整个过滤掉**（真机验证见 docs/15 规矩 8 那条）。这里仍然注入
+    （不注入的话连"插件在不在"都看不出来），但**上层必须据此提示用户**：
+    想用插件工具就得用「完全权限」档，或者把工具名加进白名单。 */
     for ext in args.bundled_extensions.iter().filter(|p| p.is_dir()) {
         out.push("--extension".into());
         out.push(ext.into());
@@ -493,7 +493,7 @@ mod tests {
     fn restricted_modes_carry_the_allowlist() {
         assert!(argv(&args(PermissionMode::ReadOnly)).contains(&"read,grep,find,ls".to_string()));
         /* 插件的工具名要**加进**白名单（否则 `--tools` 把它们整个过滤掉，
-           插件等于没注入）。名字来自插件的 `piggy-plugin.json`。 */
+        插件等于没注入）。名字来自插件的 `piggy-plugin.json`。 */
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("pi-ask");
         std::fs::create_dir_all(&dir).unwrap();

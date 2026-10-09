@@ -161,8 +161,12 @@ describe('checkWrite —— 放行与拦截的完整判定', () => {
   });
 
   /* 这一条要 `symlinkSync`（链接由上面那组的 `beforeAll` 建好）——
-     所以同样加 POSIX 闸门。 */
-  posixOnly('拦截经符号链接逃逸的路径', () => {
+     所以同样加 POSIX 闸门。**闸门必须是 `it.skipIf`，不能复用上面那个 `posixOnly`**：
+     它是 `describe.skipIf`，包一个只有裸 `expect` 的块会得到一个**没有任何 `it` 的空 suite**
+     —— vitest 直接判这个文件失败（2026-10-09 实测：macOS/Linux 上 `Test Files 1 failed`），
+     而在 Windows 上它退化成静默 skip，那 4 条断言**一次都不跑**（比红更糟）。
+     闸门的效果一样是"可见的跳过"，但这次跳过的是**用例**而不是容器。 */
+  it.skipIf(process.platform === 'win32')('拦截经符号链接逃逸的路径', () => {
     const v = checkWrite(
       { toolName: 'write', input: { path: 'escape/secret.txt' } },
       rootsOf(),

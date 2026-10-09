@@ -201,10 +201,10 @@ pub fn default_bundled_plugins() -> Vec<String> {
         // Piggy 自己的：结构化提问 + 计划模式（resources/pi-plugins/pi-ask）
         "pi-ask".to_string(),
         /* 第三方（收录自上游仓库，见插件目录里的 vendor.json 与 LICENSE）：
-           pi-todo —— DSH 风格的 todo_write 清单。`scripts/vendor-plugin.mjs` 负责收录与
-           漂移检测；`scripts/pi-plugin-probe.mjs` 负责"pi 真的能加载它"。
-           ⚠️ 用户自己装过同名扩展时不会注入（两份同名扩展会让 pi 因工具名冲突退出），
-           界面上会说明原因。 */
+        pi-todo —— DSH 风格的 todo_write 清单。`scripts/vendor-plugin.mjs` 负责收录与
+        漂移检测；`scripts/pi-plugin-probe.mjs` 负责"pi 真的能加载它"。
+        ⚠️ 用户自己装过同名扩展时不会注入（两份同名扩展会让 pi 因工具名冲突退出），
+        界面上会说明原因。 */
         "pi-todo".to_string(),
     ]
 }

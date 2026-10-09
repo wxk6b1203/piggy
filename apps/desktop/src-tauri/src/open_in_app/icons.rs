@@ -217,6 +217,13 @@ const WINDOWS_ICON_SCRIPT_NAME: &str = "extract-icon.ps1";
 /// 菜单里渲染 15-18 CSS px，Retina 下 32px 仍然够；再大就得走 COM（`SHDefExtractIcon`），
 /// 本机实测它只对一部分 exe 有效，换来的清晰度不值那份复杂度和失败面。
 fn executable_icon_png(host: &dyn Host, exe: &Path, timeout: Duration) -> Option<Vec<u8>> {
+    /* 平台闸门放在**这一层**（生产入口），不能放进 `extract_executable_icon`：
+    那一层要在假宿主下被验证"线接对了"（`windows_executable_icon_runs_the_script_and_reads_the_png`），
+    而 CI 的 rust 作业跑在 macOS 上 —— 闸门留在里面，那条用例就只剩"验了 cfg! 这一行"，
+    等于 Windows 接线零覆盖（2026-10-09 实测：它就是这么在 macOS 上红的）。 */
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
     if let Some(hit) = icon_cache().lock().unwrap_or_else(|e| e.into_inner()).get(exe) {
         return hit.clone();
     }
@@ -228,10 +235,9 @@ fn executable_icon_png(host: &dyn Host, exe: &Path, timeout: Duration) -> Option
     bytes
 }
 
+/// 跑一次 PowerShell 抠图（**不带平台闸门**：闸门在 `executable_icon_png`）。
+/// 生产入口只有 `executable_icon_png` 一个；直接调它会真的去起 `powershell.exe`。
 fn extract_executable_icon(host: &dyn Host, exe: &Path, timeout: Duration) -> Option<Vec<u8>> {
-    if !cfg!(target_os = "windows") {
-        return None; // 非 Windows 上这条脚本没有意义（也跑不动 System.Drawing）
-    }
     if !host.is_file(exe) {
         return None;
     }
@@ -447,8 +453,8 @@ mod tests {
             calls: RefCell::new(Vec::new()),
             exe: exe.clone(),
         };
-        let bytes = extract_executable_icon(&host, &exe, Duration::from_secs(5))
-            .expect("脚本跑了、产物是 PNG，就该拿到字节");
+        let bytes =
+            extract_executable_icon(&host, &exe, Duration::from_secs(5)).expect("脚本跑了、产物是 PNG，就该拿到字节");
         assert_eq!(png_dimensions(&bytes), Some((32, 32)));
         assert_eq!(host.calls.borrow().len(), 1, "应当恰好跑一次脚本");
         // 源文件必须**作为参数**传进去（不是拼进脚本源码）
@@ -462,6 +468,10 @@ mod tests {
     }
 
     /// 非 Windows 上这条脚本没有意义（`System.Drawing` 不存在）—— 直接 None，不要白起进程。
+    ///
+    /// ⚠️ 量的是**生产入口** `executable_icon_png`（闸门在那儿）。以前这里调的是内层的
+    /// `extract_executable_icon`，那等于把闸门和用例绑死在一起：内层一旦去掉闸门
+    /// （为了让假宿主接线用例在任何平台都能跑），这条就会真的去起 powershell。
     #[test]
     fn executable_icon_is_none_off_windows() {
         if cfg!(target_os = "windows") {
@@ -475,7 +485,7 @@ mod tests {
             return;
         }
         assert_eq!(
-            extract_executable_icon(&host, &exe, Duration::from_secs(5)),
+            executable_icon_png(&host, &exe, Duration::from_secs(5)),
             None,
             "非 Windows 平台不该尝试抠 Windows 可执行文件的图标"
         );
@@ -490,8 +500,12 @@ mod tests {
         let host = RealHost::new(facts.clone());
         let candidates: Vec<PathBuf> = [
             std::env::var("SystemRoot").map(|r| format!("{r}\\explorer.exe")).ok(),
-            std::env::var("SystemRoot").map(|r| format!("{r}\\System32\\notepad.exe")).ok(),
-            std::env::var("SystemRoot").map(|r| format!("{r}\\System32\\cmd.exe")).ok(),
+            std::env::var("SystemRoot")
+                .map(|r| format!("{r}\\System32\\notepad.exe"))
+                .ok(),
+            std::env::var("SystemRoot")
+                .map(|r| format!("{r}\\System32\\cmd.exe"))
+                .ok(),
         ]
         .into_iter()
         .flatten()

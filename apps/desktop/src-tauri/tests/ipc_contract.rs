@@ -126,7 +126,11 @@ fn open_in_app_icon_is_a_png_data_url_at_the_platform_size() {
         .strip_prefix("data:image/png;base64,")
         .unwrap_or_else(|| panic!("图标不是 PNG data URL: {}", &url[..40.min(url.len())]));
     let bytes = b64_decode(payload);
-    let expected = if cfg!(target_os = "windows") { (32, 32) } else { (128, 128) };
+    let expected = if cfg!(target_os = "windows") {
+        (32, 32)
+    } else {
+        (128, 128)
+    };
     assert_eq!(
         piggy_lib::open_in_app::icons::png_dimensions(&bytes),
         Some(expected),

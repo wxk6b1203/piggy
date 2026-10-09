@@ -410,16 +410,14 @@ mod tests {
         let mut child = spawn_ping_under_cmd();
         let cmd_pid = child.id();
         let guard = Watchdog(spawn_ping_under_cmd()); // 兜底：万一断言提前返回
-        // 等 ping 真的被拉起来（cmd.exe → ping.exe）
+                                                      // 等 ping 真的被拉起来（cmd.exe → ping.exe）
         std::thread::sleep(std::time::Duration::from_millis(700));
         let ping: Vec<u32> = String::from_utf8_lossy(
             &std::process::Command::new("powershell.exe")
                 .args([
                     "-NoProfile",
                     "-Command",
-                    &format!(
-                        "(Get-CimInstance Win32_Process -Filter \"ParentProcessId={cmd_pid}\").ProcessId"
-                    ),
+                    &format!("(Get-CimInstance Win32_Process -Filter \"ParentProcessId={cmd_pid}\").ProcessId"),
                 ])
                 .output()
                 .expect("powershell 跑不动")

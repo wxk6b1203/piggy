@@ -131,10 +131,10 @@ impl Registry {
             )
             .await?;
         /* spawn **之后**的任何失败都必须把这棵树收掉。
-           为什么值得单独一个函数：握手超时（`get_state`）以前是直接 `?` 返回的，
-           于是那个 worker 既不在 `self.tabs` 里（没人会再关它）、进程又活着 ——
-           它继续握着那份会话文件，用户再点一次同一个会话就是两个写者，
-           下一次握手更慢、继续超时。一个失败会自己养出下一次失败（2026-10-09 实测踩到）。 */
+        为什么值得单独一个函数：握手超时（`get_state`）以前是直接 `?` 返回的，
+        于是那个 worker 既不在 `self.tabs` 里（没人会再关它）、进程又活着 ——
+        它继续握着那份会话文件，用户再点一次同一个会话就是两个写者，
+        下一次握手更慢、继续超时。一个失败会自己养出下一次失败（2026-10-09 实测踩到）。 */
         self.bind_new_tab(sink, tab_id, cwd, name, permission, worker).await
     }
 
@@ -211,8 +211,8 @@ impl Registry {
         let bridge = self.bridge_script.clone();
         let policy = self.subagent_policy.clone();
         /* 捆绑插件：按当前配置过滤一遍（设置页关掉的不注入）。
-           放到 spawn 时算而不是 setup 时算：`bundled_plugins` 是用户能改的开关，
-           改完新建标签页就该生效，不必重启应用。 */
+        放到 spawn 时算而不是 setup 时算：`bundled_plugins` 是用户能改的开关，
+        改完新建标签页就该生效，不必重启应用。 */
         let plugins = crate::pi::plugins::enabled_plugin_dirs(&self.bundled_plugins);
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),

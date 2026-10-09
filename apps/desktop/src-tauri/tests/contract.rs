@@ -41,6 +41,8 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         Arc::new(NullSink),
     )
@@ -132,6 +134,8 @@ async fn c3_id_echo() {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -274,6 +278,8 @@ async fn c7_megabyte_lines() {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -366,6 +372,8 @@ async fn e2e_streaming_pipeline() {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -433,6 +441,8 @@ async fn e2e_crash_recovery() {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -540,6 +550,8 @@ async fn c12_bridge_status_payload_over_rpc() {
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -603,6 +615,8 @@ async fn c13_bridge_degrades_without_pi_subagents() {
                 cfg.path().to_string_lossy().into_owned(),
             )],
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         sink.clone(),
     )
@@ -654,6 +668,8 @@ async fn run_lane(mgr: &piggy_lib::fleet::FleetManager, run_id: &str, lane_key: 
             envs: Vec::new(),
             // C12–C14 测的是子代理数据面本身，不涉及委派开关
             subagent_policy: None,
+            // 契约测试不需要随包插件：C 组量的是 RPC 协议本身
+            bundled_extensions: Vec::new(),
         },
         Arc::new(NullSink),
     )
