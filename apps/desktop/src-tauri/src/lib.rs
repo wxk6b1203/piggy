@@ -325,8 +325,8 @@ pub fn run() {
                         eprintln!("[piggy] idle worker reaped: {id}");
                     }
                     /* 预热 worker 也在这个心跳里过期（docs/05 §5.7）：它不属于任何 tab，
-                       `reap_idle` 看不见它 —— 不在这里收，开了预热开关的用户会一直挂着
-                       一个 200 MB 的 pi 进程（实测 RSS），哪怕他几小时没开会话。 */
+                    `reap_idle` 看不见它 —— 不在这里收，开了预热开关的用户会一直挂着
+                    一个 200 MB 的 pi 进程（实测 RSS），哪怕他几小时没开会话。 */
                     if let Some(w) = reg.take_expired_warm() {
                         drop(reg);
                         w.shutdown().await;

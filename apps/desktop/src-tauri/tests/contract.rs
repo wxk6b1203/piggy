@@ -906,7 +906,7 @@ async fn c16_warm_worker_is_reused_by_the_next_session() {
     }
 
     /* ② 冷启动对照（同一个 cwd、同一类目标）：把备用槽清空，再开一次。
-       这一段的意义是**量出收益**，而不是只证明机制能跑 —— docs/05 §5.7 的数字就是这么来的。 */
+    这一段的意义是**量出收益**，而不是只证明机制能跑 —— docs/05 §5.7 的数字就是这么来的。 */
     if let Some(w) = { shared.lock().await.take_warm_for_shutdown() } {
         w.shutdown().await;
     }
