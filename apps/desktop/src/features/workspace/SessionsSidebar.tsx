@@ -16,7 +16,7 @@ import {
   buildSidebar,
   type SessionMeta,
 } from '@/stores/sessions';
-import { openSessionTab, openSettingsTab, focusSessionTab } from './EditorArea';
+import { openSessionTabOptimistic, openSettingsTab, focusSessionTab } from './EditorArea';
 import { Icon } from '@/features/common/Icon';
 import { ContextMenu, type MenuItem } from '@/features/common/ContextMenu';
 import { SessionTitlePreview } from './SessionTitlePreview';
@@ -127,9 +127,10 @@ export function SessionsSidebar() {
     const existing = findTabBySession(m.path);
     if (existing && focusSessionTab(existing.tabId)) return;
     try {
-      // 幂等：即使落到这里（比如面板丢了、或上一次点击还在建），也不会建出第二个 worker
-      const snap = await createTabGuarded({ sessionPath: m.path, cwd: m.cwd ?? undefined });
-      await openSessionTab(snap, sessionTitle(m));
+      /* 走**带占位**的统一入口（`openSessionTabOptimistic`）：点击后立刻出现
+         「正在启动 pi…」标签，`tab_create` 回来换成真面板。
+         幂等由 `createTabGuarded` 在里层保证（同一会话文件不会建出第二个 worker）。 */
+      await openSessionTabOptimistic({ sessionPath: m.path, cwd: m.cwd ?? undefined }, sessionTitle(m));
     } catch (e) {
       toast.error(String(e));
     }
@@ -137,9 +138,8 @@ export function SessionsSidebar() {
 
   const newSession = async (cwd?: string) => {
     try {
-      const snap = await createTabGuarded({ cwd, name: '新会话' });
       const label = cwd ? `${baseName(cwd)} · 新会话` : '新会话';
-      await openSessionTab(snap, label);
+      await openSessionTabOptimistic({ cwd, name: '新会话' }, label);
       void load(); // 新目录/新会话立即上侧栏（不依赖 watcher 时序）
     } catch (e) {
       toast.error(String(e));

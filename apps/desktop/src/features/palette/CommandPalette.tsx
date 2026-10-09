@@ -7,8 +7,7 @@ import { baseName } from '@/lib/paths';
 import { useUi } from '@/stores/ui';
 import { useSessions, sessionTitle } from '@/stores/sessions';
 import { useTabs } from '@/stores/tabs';
-import { createTab } from '@/stores/tabs';
-import { openSessionTab } from '@/features/workspace/EditorArea';
+import { openSessionTabOptimistic } from '@/features/workspace/EditorArea';
 
 interface Item {
   key: string;
@@ -52,10 +51,7 @@ export function CommandPalette() {
         title: `打开会话：${sessionTitle(m)}`,
         hint: g0(m.cwd),
         run: () => {
-          void (async () => {
-            const snap = await createTab({ sessionPath: m.path, cwd: m.cwd ?? undefined });
-            await openSessionTab(snap, sessionTitle(m));
-          })();
+          void openSessionTabOptimistic({ sessionPath: m.path, cwd: m.cwd ?? undefined }, sessionTitle(m));
         },
       }));
     const all = [...cmds, ...sessions];

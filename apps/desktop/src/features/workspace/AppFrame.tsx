@@ -5,15 +5,14 @@ import { Group, Panel, Separator } from 'react-resizable-panels';
 import { useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { bootGate } from '@/lib/boot';
-import { ensureTabListeners } from '@/lib/tabEvents';
 import { windowEvents } from '@/lib/windowEvents';
 import { useAppCommands } from '@/lib/appCommands';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { HelpOverlay } from '@/features/palette/HelpOverlay';
 import { BashPanel } from './BashPanel';
-import { useTabs, createTab } from '@/stores/tabs';
+import { useTabs } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
-import { EditorArea, closeActivePanel, openSessionTab } from './EditorArea';
+import { EditorArea, closeActivePanel, openSessionTabOptimistic } from './EditorArea';
 import { SessionsSidebar } from './SessionsSidebar';
 import { SidebarRail } from './SidebarRail';
 import { RightBar } from './RightBar';
@@ -140,9 +139,9 @@ export function AppFrame() {
 
 async function createFreshTab() {
   try {
-    const snap = await createTab({ name: '新会话' });
-    ensureTabListeners(snap.tab_id);
-    await openSessionTab(snap, '新会话');
+    /* 启动首屏：占位标签会立刻出现（`openSessionTabOptimistic` 内部走 `createTabGuarded`
+       → `ensureTab` 会装监听器），失败时由 banner 说话。 */
+    await openSessionTabOptimistic({ name: '新会话' }, '新会话');
   } catch (e) {
     useTabs.getState().setBanner(`启动失败：${String(e)}`);
   }

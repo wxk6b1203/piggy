@@ -25,6 +25,7 @@ import { shouldApplyLayout, shouldCloseTabOnPanelRemoved } from '@/lib/layoutLif
 import { disposeTabListeners } from '@/lib/tabEvents';
 import { forgetRowTab } from '@/lib/rowMemory';
 import { useTabs, createTab, type TabSnapshot } from '@/stores/tabs';
+import { createTabGuarded } from '@/lib/tabCreate';
 import { useUi } from '@/stores/ui';
 import { useMessages } from '@/stores/messages';
 import { loadTail } from '@/lib/transcriptPage';
@@ -43,6 +44,9 @@ export interface SessionParams {
   sessionFile: string | null;
   cwd: string;
   title: string;
+  /** 占位面板（乐观 UI）：`tab_create` 还没回来时先把标签画出来，就绪后换成真面板。
+   *  这类面板**不进布局持久化**（见 `persist()` 里的过滤）。 */
+  pending?: boolean;
 }
 export interface SettingsParams {
   kind: 'settings';
@@ -70,6 +74,29 @@ export interface DiffParams {
 }
 export type PanelParams = SessionParams | SettingsParams | PreviewParams | DiffParams;
 
+/**
+ * 正在打开的会话（乐观 UI 的占位内容）。
+ *
+ * 为什么要有它：`tab_create` 要 spawn 一个 pi 进程并握手（macOS 实测 0.5s 左右，
+ * Windows 上更久），而**在它回来之前界面上什么都没有** —— 用户点了"新建会话"
+ * 或者点了侧栏某一行，屏幕纹丝不动，只能再点一次（于是又撞上重复创建那条路）。
+ * 现在点击后立刻画出标签与这块骨架，`tab_create` 回来时换成真面板。
+ *
+ * 内容刻意极简（一行转圈 + 一句"正在启动 pi"）：这里**不能**猜任何东西
+ * （模型、标题、消息都还不知道），说错比空着更糟。
+ */
+function SessionOpening({ title }: { title: string }) {
+  return (
+    <div className="pg-workspace pg-session-opening" data-session-opening>
+      <div className="pg-session-opening-box">
+        <span className="pg-spinner" aria-hidden />
+        <span className="pg-session-opening-title">正在启动 pi…</span>
+        <span className="pg-session-opening-sub">{title}</span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- 面板组件注册表 ---------------- */
 
 /**
@@ -92,7 +119,12 @@ function PreviewPanel(props: IDockviewPanelProps<PreviewParams>) {
 }
 
 const components = {
-  session: (props: IDockviewPanelProps<SessionParams>) => <SessionWorkspace tabId={props.params.tabId} />,
+  session: (props: IDockviewPanelProps<SessionParams>) =>
+    props.params.pending ? (
+      <SessionOpening title={props.params.title} />
+    ) : (
+      <SessionWorkspace tabId={props.params.tabId} />
+    ),
   settings: () => <SettingsTab />,
   preview: PreviewPanel,
   diff: (props: IDockviewPanelProps<DiffParams>) => (
@@ -177,9 +209,26 @@ function api(): DockviewApi | null {
 const persist = debounce(() => {
   if (!api) return;
   void cmd('layout_save', {
-    value: { dockview: api()?.toJSON(), updated_at: Date.now() },
+    value: { dockview: stripPendingPanels(api()?.toJSON()), updated_at: Date.now() },
   }).catch(() => {});
 }, 800);
+
+/**
+ * 从要落盘的布局里**剔掉占位面板**（乐观 UI 的中间态）。
+ *
+ * 为什么必须剔：占位面板的 `params.sessionFile` 是空的，下次启动 `restore()` 会把它
+ * 当成"旧布局遗留的无文件会话"标成 `missing` —— 于是"点一下新会话、立刻关掉应用"
+ * 会在下次启动时留下一个「会话文件不存在」的僵尸标签。占位是**几秒钟的 UI 状态**，
+ * 不该进持久化。
+ */
+export function stripPendingPanels(json: unknown): unknown {
+  const j = json as { panels?: Record<string, { id?: string }> } | undefined;
+  if (!j?.panels) return json;
+  for (const [id, p] of Object.entries(j.panels)) {
+    if (id.startsWith(PENDING_PREFIX) || String(p?.id ?? '').startsWith(PENDING_PREFIX)) delete j.panels[id];
+  }
+  return j;
+}
 
 function onReady(e: DockviewReadyEvent) {
   setDockApi(e.api);
@@ -387,6 +436,76 @@ export async function restore() {
  * ⚠️ 按 `params.tabId` 找、**不拼面板 id**：布局恢复后面板 id 与 tabId 会分叉
  * （见 `findSessionPanel` 的说明），拼字符串在恢复过的会话上会找不到。
  */
+/** 占位面板的 id 前缀（`stripPendingPanels` 与门禁都靠它认人）。 */
+const PENDING_PREFIX = 'session:pending:';
+let pendingSeq = 0;
+/** 同一份"要打开的会话"只允许有一个占位（连点两次不该画出两个骨架标签）。 */
+const pendingKeys = new Map<string, string>();
+
+/**
+ * 先画出占位标签（乐观 UI）。
+ *
+ * @param key - 去重键（会话文件；新会话用 `new:<cwd>`）
+ * @param title - 标签标题
+ * @returns 占位面板 id（`undefined` = dockview 还没就绪，调用方照常走后面的流程）
+ */
+export function openPendingSessionTab(key: string, title: string): string | undefined {
+  const exist = pendingKeys.get(key);
+  if (exist) {
+    api()?.getPanel(exist)?.focus();
+    return exist;
+  }
+  const id = `${PENDING_PREFIX}${++pendingSeq}`;
+  const dash = api();
+  if (!dash) return undefined;
+  dash.addPanel({
+    id,
+    component: 'session',
+    title,
+    params: { kind: 'session', tabId: id, sessionFile: null, cwd: '', title, pending: true } satisfies SessionParams,
+  });
+  dash.getPanel(id)?.focus();
+  pendingKeys.set(key, id);
+  return id;
+}
+
+/** 关掉占位面板（无论成功还是失败都要走这一步，否则骨架会永远挂着）。 */
+export function closePendingSessionTab(key: string): void {
+  const id = pendingKeys.get(key);
+  if (!id) return;
+  pendingKeys.delete(key);
+  api()?.getPanel(id)?.api.close();
+}
+
+/**
+ * **打开会话的唯一入口**（带乐观 UI）：先画占位 → 建 tab → 换成真面板。
+ *
+ * 所有入口（侧栏点会话、新建会话、命令面板、Fleet）都走它 ——
+ * "先反馈再等待"这条体验只在**一个漏斗**里实现，别在每个调用点各写一遍
+ * （写两遍的下场是其中一条忘了关占位，转录里永远多一个骨架标签）。
+ *
+ * @param input - `createTabGuarded` 的入参（会话文件 / cwd / 名字）
+ * @param title - 标签标题（占位与真面板都用它）
+ * @returns 建成后的快照（调用方需要时可用；失败会把占位收掉并抛出原错误）
+ */
+export async function openSessionTabOptimistic(
+  input: { cwd?: string; sessionPath?: string; name?: string },
+  title: string,
+): Promise<TabSnapshot> {
+  const key = input.sessionPath ?? `new:${input.cwd ?? ''}`;
+  openPendingSessionTab(key, title);
+  try {
+    const snap = await createTabGuarded(input);
+    await openSessionTab(snap, title);
+    return snap;
+  } finally {
+    /* ⚠️ `finally` 而不是 `catch`：成功路径也要关占位（真面板已经在那儿了），
+       失败路径更要关（否则骨架永远转圈）。关占位在 `openSessionTab` 之后 ——
+       先加真面板再关占位，视觉上不会出现"空一下"。 */
+    closePendingSessionTab(key);
+  }
+}
+
 export async function openSessionTab(snap: TabSnapshot, title: string) {
   ensureTab(snap);
   const existing = findSessionPanel(snap.tab_id);

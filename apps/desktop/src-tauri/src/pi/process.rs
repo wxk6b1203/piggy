@@ -9,7 +9,7 @@ use crate::pi::codec::JsonlDecoder;
 use crate::pi::permission::PermissionMode;
 use crate::pi::protocol::{classify, Ame, PiEvent, DELTA_KINDS};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,6 +60,34 @@ pub struct SpawnArgs {
 /// 抽成纯函数是为了让「权限档位/扩展注入到底传了什么」可被单测覆盖——
 /// 这层如果错了，界面显示的档位和进程实际拿到的能力就会不一致，
 /// 而那是最难从现象反推的一类 bug（见 docs/15 规矩 8）。
+/// worker 到底该起哪个进程：能剥掉 cmd 垫片就剥（**纯函数，便于单测**）。
+///
+/// ## 为什么要剥（2026-10-09）
+///
+/// Windows 上 pi 是 pnpm 的 `pi.cmd` 垫片，进程链是
+/// `piggy → cmd.exe → node.exe`。三层里前两层只带来坏处：
+///   · `Child::kill()` / `kill_on_drop(true)` **只杀得掉 cmd.exe** → 孤儿 node 握着会话文件
+///     （e898b02 那个 bug 的病根，当时只能用 `taskkill /T /F` 兜）；
+///   · 每开一个会话多一个进程，Windows 上还要多付一次 CreateProcess + Defender 扫描。
+/// 一次性命令（标题生成 / 列模型）早就走 `direct_command` 了，worker 这条长命进程反而没有。
+///
+/// **解析不出来就回退到垫片本身**（行为与从前完全一致）——宁可失败得和以前一样，
+/// 也不能因为解析不出就换一个跑不起来的启动器。
+///
+/// ⚠️ 这条**只在 Windows 上有意义**：POSIX 的 pnpm 垫片用的是 `exec node …`
+/// （本机 `~/Library/pnpm/bin/pi` 实测），shell 进程被 node **替换**掉，
+/// 所以既没有多余的进程、也没有孤儿问题 —— `direct_command` 也只在
+/// `.cmd`/`.bat` 上接手（跨平台解析 shell 垫片是另一件事，收益只有 ~10ms，不做）。
+///
+/// @param pi_bin - 发现链给出的 pi 路径（可能是 `.cmd`/`.bat` 垫片）
+/// @returns `(真正要起的程序, 前置参数)`
+pub fn worker_command(pi_bin: &Path) -> (PathBuf, Vec<String>) {
+    match crate::pi::discovery::direct_command(pi_bin) {
+        Some((program, args)) => (program, args),
+        None => (pi_bin.to_path_buf(), Vec::new()),
+    }
+}
+
 pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
     let mut out: Vec<std::ffi::OsString> = vec!["--mode".into(), "rpc".into()];
     match &args.session {
@@ -204,7 +232,11 @@ pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
 
 pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink>) -> Result<Worker, String> {
     let argv = cli_args(&args)?;
-    let mut cmd = tokio::process::Command::new(&args.pi_bin);
+    let (program, prefix) = worker_command(&args.pi_bin);
+    let mut cmd = tokio::process::Command::new(&program);
+    for a in prefix {
+        cmd.arg(a);
+    }
     cmd.current_dir(&args.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -647,6 +679,36 @@ mod tests {
             "覆盖型插件的 write/edit 混进了「仅可查看」的白名单：{tools}"
         );
         assert!(tools.contains("ask_user_question"), "正常插件的工具名该合并：{tools}");
+    }
+
+    /// worker 启动命令：**能剥掉 cmd 垫片就剥**（Windows 上那一层 cmd.exe 是孤儿进程的真凶），
+    /// 剥不出来时原样回退到垫片（行为与从前一致）。
+    ///
+    /// 用例在 macOS 上也能跑：`direct_command` 只做**文本解析 + 存在性**检查，
+    /// 不要求那个 `.cmd` 真能被 CreateProcess 执行（路径分隔符的归一化见 `discovery.rs`）。
+    #[test]
+    fn worker_command_prefers_the_real_node_over_the_cmd_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("node.exe"), b"MZ fake").unwrap();
+        std::fs::write(dir.join("cli.js"), "// entry").unwrap();
+        let shim = dir.join("pi.cmd");
+        std::fs::write(
+            &shim,
+            "@IF EXIST \"%~dp0\\node.exe\" (\r\n \"%~dp0\\node.exe\" \"%~dp0\\cli.js\" %*\r\n) ELSE (\r\n node \"%~dp0\\cli.js\" %*\r\n)\r\n",
+        )
+        .unwrap();
+        let (program, prefix) = worker_command(&shim);
+        assert_eq!(program, dir.join("node.exe"), "没有剥掉垫片那一层");
+        assert_eq!(prefix, vec![dir.join("cli.js").to_string_lossy().into_owned()]);
+
+        // 剥不出来（脚本不在 / 不是 .cmd）→ 回退到原路径
+        let bare = dir.join("pi");
+        std::fs::write(&bare, "#!/bin/sh\n").unwrap();
+        assert_eq!(worker_command(&bare), (bare.clone(), Vec::new()));
+        let exe = dir.join("pi.exe");
+        std::fs::write(&exe, b"MZ fake").unwrap();
+        assert_eq!(worker_command(&exe), (exe.clone(), Vec::new()));
     }
 
     #[test]

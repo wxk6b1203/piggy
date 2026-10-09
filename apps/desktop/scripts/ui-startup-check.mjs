@@ -4175,6 +4175,37 @@ const bundledUI = await page.evaluate(async () => {
   return { before, off, back };
 });
 
+/* ---------- 29. 打开会话的**第一帧反馈**（乐观 UI，2026-10-09）-------------------
+ * 用户报"每个新的会话打开都要等时间"：真机上 `tab_create` 要 spawn pi 并握手
+ * （macOS ~0.5s、Windows 更久），而在这之前界面上什么都没有。
+ * mock 的 `tab_create` 固定 250ms 延迟 —— 这一段量的就是"这 250ms 里屏幕上有没有东西"：
+ * 点击 → `[data-session-opening]` 必须在 **100ms 内**出现（远小于 250ms），
+ * 之后被真面板替换（占位不许留着）。
+ * ⚠️ 先 `closeAllTabs()` 清场，否则会命中去重路径、根本走不到建 tab。 */
+const optimistic = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  globalThis.__piggyEditor.closeAllTabs();
+  await sleep(200);
+  const t0 = performance.now();
+  // 走**应用自己那条漏斗**（└ 与侧栏/⌘N 同一个函数），不是另造一条路
+  const created = globalThis.__piggyEditor.openSessionTabOptimistic({ name: '新会话' }, '新会话');
+  let appearMs = null;
+  let goneMs = null;
+  const deadline = performance.now() + 3000;
+  while (performance.now() < deadline) {
+    const open = document.querySelector('[data-session-opening]');
+    if (open && appearMs === null) appearMs = performance.now() - t0;
+    if (!open && appearMs !== null && goneMs === null) goneMs = performance.now() - t0;
+    if (goneMs !== null) break;
+    await sleep(8);
+  }
+  const panels = globalThis.__piggyDock?.panels ?? [];
+  const leftovers = panels.filter((p) => String(p.id ?? '').startsWith('session:pending:')).length;
+  await created.catch(() => {});
+  globalThis.__piggyEditor.closeAllTabs();
+  return { appearMs, goneMs, panels: panels.length, leftovers };
+});
+
 await browser.close();
 console.log(
   JSON.stringify(
@@ -4183,6 +4214,7 @@ console.log(
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
+      optimistic,
       sessionTitle, menuProbe, cornerProbe, titleRun, titleSync, dblClickOpen, numbers, compactionProbe,
       scrollMemory, restoredScroll, liveBind, wheelHold, liveRows, noticesAndDiff,
     },
@@ -5903,6 +5935,23 @@ if (turnFolding.standard?.folds !== 2) {
   }
   if (a.pendingLeft !== 0) {
     bad.push(`提问卡：提交之后还挂着 ${a.pendingLeft} 个待答请求（卡片会一直可点）★`);
+  }
+}
+
+{
+  const o = optimistic;
+  if (o.appearMs === null) {
+    bad.push('打开会话：点下去到「正在启动 pi…」出现之间什么都没有（用户看到的是点了没反应）★');
+  } else if (o.appearMs > 100) {
+    bad.push(
+      `打开会话：占位标签用了 ${Math.round(o.appearMs)}ms 才出现（要求 <100ms，而 mock 的 tab_create 是 250ms）★`,
+    );
+  }
+  if (o.goneMs === null) {
+    bad.push('打开会话：占位标签一直挂着，没有换成真面板 ★');
+  }
+  if (o.leftovers !== 0) {
+    bad.push(`打开会话：还留着 ${o.leftovers} 个占位面板 ★`);
   }
 }
 

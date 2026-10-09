@@ -89,9 +89,16 @@ function stubDockWithPanel(tabId: string) {
  * 永远假绿。用户报的那条报错就是从这里来的。
  */
 function stubDock() {
-  const panels: { id: string; params: Record<string, unknown>; focus: () => void; focused: () => boolean }[] =
-    [];
+  const panels: {
+    id: string;
+    params: Record<string, unknown>;
+    focus: () => void;
+    focused: () => boolean;
+    /** dockview 的 `panel.api.close()`（乐观 UI 关占位用） */
+    api: { close: () => void };
+  }[] = [];
   const adds: string[] = [];
+  const closes: string[] = [];
   let focusedId: string | null = null;
   const api = {
     panels,
@@ -107,6 +114,13 @@ function stubDock() {
           focusedId = opts.id;
         },
         focused: () => focusedId === opts.id,
+        api: {
+          close: () => {
+            closes.push(opts.id);
+            const i = panels.findIndex((x) => x.id === opts.id);
+            if (i >= 0) panels.splice(i, 1);
+          },
+        },
       };
       panels.push(panel);
       return panel;
@@ -114,7 +128,7 @@ function stubDock() {
     getPanel: (id: string) => panels.find((p) => p.id === id),
   };
   (globalThis as Record<string, unknown>).__piggyDock = api;
-  return { api, adds, panels, focused: () => focusedId };
+  return { api, adds, closes, panels, focused: () => focusedId };
 }
 
 let seq = 0;
@@ -260,6 +274,53 @@ describe('侧栏：同一会话文件不许并发建两个 worker', () => {
 });
 
 /**
+ * 乐观 UI（2026-10-09）：点击后**立刻**画占位标签，`tab_create` 回来换成真面板。
+ *
+ * 起因（用户）："每个新的会话打开都要等时间"。真机上 `tab_create` 要 spawn 一个 pi
+ * 进程并握手（macOS 实测 ~0.5s，Windows 更久），而在这之前界面上什么都没有 ——
+ * 用户只能再点一次。这里钉两件事：占位**不依赖 IPC 回来**、占位**不进布局持久化**。
+ */
+describe('乐观 UI：占位标签', () => {
+  it('占位在 tab_create 落地**之前**就加上了（先反馈再等待）', async () => {
+    const { openSessionTabOptimistic } = await import('@/features/workspace/EditorArea');
+    const dock = stubDock();
+
+    let settled = false;
+    const p = openSessionTabOptimistic({ cwd: SESSION.cwd, name: '新会话' }, '新会话').then((v) => {
+      settled = true;
+      return v;
+    });
+    // 同一个 tick 里：IPC 还没回（mock 里 tab_create 有 30ms 延迟）
+    expect(settled, '前置条件：tab_create 还没回来').toBe(false);
+    expect(
+      dock.adds.filter((id) => id.startsWith('session:pending:')).length,
+      '点击后没有立刻出现占位标签 —— 用户看到的就是"点了没反应"',
+    ).toBe(1);
+
+    await act(async () => { await p; });
+    expect(dock.adds).toContain('session:tab-1');
+    // 真面板就位后占位必须消失
+    expect(dock.panels.filter((x) => x.id.startsWith('session:pending:'))).toEqual([]);
+  });
+
+  it('占位不进布局持久化（否则重启后会多一个「会话文件不存在」的僵尸标签）', async () => {
+    const { stripPendingPanels } = await import('@/features/workspace/EditorArea');
+    const json = {
+      panels: {
+        'session:pending:3': { id: 'session:pending:3', contentComponent: 'session' },
+        'session:tab-1': { id: 'session:tab-1', contentComponent: 'session' },
+        settings: { id: 'settings', contentComponent: 'settings' },
+      },
+      grid: { root: {} },
+    };
+    const out = stripPendingPanels(json) as { panels: Record<string, unknown> };
+    expect(Object.keys(out.panels).sort()).toEqual(['session:tab-1', 'settings']);
+    // 原地改（`toJSON()` 的返回值是新鲜对象，没必要再复制一份）
+    expect((json as { grid: unknown }).grid).toBeTruthy();
+  });
+});
+
+/**
  * 同一会话连点两次：**只许有一个面板**（用户 2026-09-23 报：
  * `Error: dockview: panel with id session:<uuid> already exists`）。
  *
@@ -275,9 +336,19 @@ describe('连点两次：只许有一个面板', () => {
     await clickTwice(rowOf());
 
     expect(tabCreateCalls()).toBe(1);
-    expect(dock.adds, '同一个 tabId 加了两次面板 —— 真 dockview 会抛 already exists').toEqual([
-      'session:tab-1',
-    ]);
+    /* 乐观 UI 之后 `adds` 里会先有一个**占位**面板（`session:pending:*`），
+       真面板随后加上、占位被关掉。要守的不变量没变：**同一个会话的 tabId 只许加一次**
+       （加两次真 dockview 会抛 `already exists`）。 */
+    expect(
+      dock.adds.filter((id) => id === 'session:tab-1'),
+      '同一个 tabId 加了两次面板 —— 真 dockview 会抛 already exists',
+    ).toEqual(['session:tab-1']);
+    // 占位必须被收掉：留着的话转录里永远挂着一个「正在启动 pi…」的骨架标签
+    expect(dock.closes.filter((id) => id.startsWith('session:pending:')).length, '占位面板没关').toBeGreaterThan(0);
+    expect(
+      dock.panels.filter((p) => p.id.startsWith('session:pending:')),
+      '还留着占位面板',
+    ).toEqual([]);
     expect(toastError, `用户不该看到报错（收到：${String(toastError.mock.calls[0]?.[0] ?? '')}）`).not.toHaveBeenCalled();
     // 第二次点击必须**把已经开着的那个标签聚焦**，而不是静默什么都不做
     expect(dock.focused()).toBe('session:tab-1');

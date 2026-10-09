@@ -8,10 +8,10 @@ import { cmd } from '@/lib/ipc';
 import {
   closeAllTabs,
   closeOtherTabs,
-  openSessionTab,
+  openSessionTabOptimistic,
   openSettingsTab,
 } from '@/features/workspace/EditorArea';
-import { applySessionName, createTab } from '@/stores/tabs';
+import { applySessionName } from '@/stores/tabs';
 import { windowEvents } from '@/lib/windowEvents';
 import { toast } from '@/lib/feedback';
 import { describeRun, generateTitle } from '@/lib/sessionTitle';
@@ -50,8 +50,8 @@ export async function generateTitleForActiveTab(): Promise<void> {
  */
 export async function newSessionTab(): Promise<void> {
   try {
-    const snap = await createTab({ name: '新会话' });
-    await openSessionTab(snap, '新会话');
+    // 带占位（乐观 UI）：⌘N / 命令面板 / 折叠轨三条入口都走这一条路
+    await openSessionTabOptimistic({ name: '新会话' }, '新会话');
   } catch (e) {
     console.error(e);
   }

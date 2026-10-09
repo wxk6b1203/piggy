@@ -1296,6 +1296,28 @@ body {
   font-size: var(--pg-fs-11); font-variant-numeric: tabular-nums; pointer-events: none;
 }
 
+/* 「正在启动 pi…」占位（乐观 UI，2026-10-09）。
+   点击后立刻出现，`tab_create` 回来即被真面板替换。
+   ⚠️ 只放**确定知道的东西**（标题 + 一句"正在启动"）：模型、消息、会话文件都还不知道，
+   这里猜任何一个都会变成"显示了然后又变"的闪烁。 */
+.pg-session-opening { height: 100%; display: flex; align-items: center; justify-content: center; }
+.pg-session-opening-box {
+  display: flex; flex-direction: column; align-items: center; gap: var(--pg-sp-5, 8px);
+  color: var(--pg-fg-dim);
+}
+.pg-session-opening-title { font-size: 13px; }
+.pg-session-opening-sub { font-size: 12px; opacity: 0.75; }
+.pg-spinner {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--pg-border, rgba(255, 255, 255, 0.18));
+  border-top-color: var(--pg-fg, currentColor);
+  animation: pg-spin 700ms linear infinite;
+}
+@keyframes pg-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pg-spinner { animation: none; }
+}
+
 .pg-welcome { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
 .pg-welcome-logo { font-size: 42px; }
 .pg-welcome-title { font-size: 18px; font-weight: 600; }
