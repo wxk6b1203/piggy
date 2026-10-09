@@ -71,15 +71,28 @@ fn sink(app: &AppHandle) -> Arc<dyn EventSink> {
     Arc::new(TauriSink { app: app.clone() })
 }
 
+/// 取一个可用的 worker（必要时复活）——**绝大多数命令的入口**。
+///
+/// 两条路，都必须**短**：
+/// 1. 快路径：标签页已有 `Ready`/`Busy`/`Spawning` 的 worker → 持锁只做一次查表 + 触碰活跃时间；
+/// 2. 慢路径：需要复活 → 交给 `revive_unlocked`，它**自己在三段之间取锁**，
+///    握手（可达 40s 预算）与补游标都在**锁外**跑。
+///
+/// 改造前这里是"持锁 → `ensure_worker` → 需要复活就地 spawn + 握手"，
+/// 于是一次慢启动会把**所有标签页**的命令一起卡住（同一把全局锁）。
 async fn worker_of(
     app: &AppHandle,
     state: &State<'_, AppState>,
     tab_id: &str,
 ) -> Result<crate::pi::client::Worker, String> {
-    let mut reg = state.registry.lock().await;
-    let w = reg.ensure_worker(&sink(app), tab_id).await?;
-    reg.touch(tab_id); // 05 §4.1：任意交互刷新活跃时间
-    Ok(w)
+    let ready = {
+        let mut reg = state.registry.lock().await;
+        reg.ready_worker(tab_id)? // 顺带刷新活跃时间（05 §4.1）
+    };
+    if let Some(w) = ready {
+        return Ok(w);
+    }
+    crate::sessions::registry::revive_unlocked(&state.registry, &sink(app), tab_id).await
 }
 
 /// 当前实际生效的 pi 二进制（按设置里的来源解析，含回退结果与 `PI_BIN` 覆盖）。
@@ -209,28 +222,32 @@ pub async fn tab_create(
             }
         },
     };
-    let snapshot = {
-        let mut reg = state.registry.lock().await;
-        // maxWorkers 上限（05 §4.2）：超限报错，前端提示"一键回收最闲"
-        let max = state.perf.read().map(|p| p.max_workers).unwrap_or(8) as usize;
-        if reg.alive_worker_count() >= max {
-            return Err(format!(
-                "MAX_WORKERS: 活跃会话已达上限 {max}。可关闭或休眠不用的标签后重试。"
-            ));
+    /* maxWorkers 上限（05 §4.2）：超限报错，前端提示"一键回收最闲"。
+    检查与 spawn 一起放进 `create_tab_unlocked`（它自己在锁内做这两件事），
+    而**握手在锁外** —— 见那里的三段式说明。 */
+    let max = state.perf.read().map(|p| p.max_workers).unwrap_or(8) as usize;
+    let snapshot = match crate::sessions::registry::create_tab_unlocked(
+        &state.registry,
+        &sink(&app),
+        cwd,
+        target,
+        name,
+        permission,
+        max,
+    )
+    .await
+    {
+        Ok(s) => {
+            eprintln!(
+                "[piggy] tab_create ok: {} (permission={})",
+                s.tab_id,
+                s.permission.as_str()
+            );
+            s
         }
-        match reg.create_tab(&sink(&app), cwd, target, name, permission).await {
-            Ok(s) => {
-                eprintln!(
-                    "[piggy] tab_create ok: {} (permission={})",
-                    s.tab_id,
-                    s.permission.as_str()
-                );
-                s
-            }
-            Err(e) => {
-                eprintln!("[piggy] tab_create FAILED: {e}");
-                return Err(e);
-            }
+        Err(e) => {
+            eprintln!("[piggy] tab_create FAILED: {e}");
+            return Err(e);
         }
     };
     // 初始游标在后台补（`get_entries` 不带 since 会把整段会话发回来，长会话实测 73ms，
@@ -244,6 +261,7 @@ pub async fn tab_create(
 ///
 /// `--tools` / `-e` 都是 pi 的 CLI 参数，RPC 没有运行期改工具的接口，
 /// 所以实现是「停旧进程 → 按新档复活」，会话文件与游标不变（复用崩溃复活路径）。
+/// **整条路径都不持 registry 锁**（复活要握手，40s 预算不能卡住别的标签页）。
 /// 同时把该档记为新标签页的默认值并持久化到 `~/.piggy/config.json`。
 #[tauri::command]
 pub async fn pi_set_permission_mode(
@@ -253,10 +271,7 @@ pub async fn pi_set_permission_mode(
     mode: String,
 ) -> Result<Value, String> {
     let mode = PermissionMode::parse(&mode)?;
-    let out = {
-        let mut reg = state.registry.lock().await;
-        reg.set_permission(&sink(&app), &tab_id, mode).await?
-    };
+    let out = crate::sessions::registry::set_permission_unlocked(&state.registry, &sink(&app), &tab_id, mode).await?;
     save_default_permission(&state, mode);
     Ok(out)
 }
@@ -667,13 +682,19 @@ pub async fn pi_set_session_name(
 
 /// Extension UI 应答（docs/02 §8）：前端弹窗交互后写回 stdin。
 #[tauri::command]
-pub async fn ui_reply(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tab_id: String,
-    response: Value,
-) -> Result<(), String> {
-    let worker = worker_of(&app, &state, &tab_id).await?;
+pub async fn ui_reply(state: State<'_, AppState>, tab_id: String, response: Value) -> Result<(), String> {
+    /* ⚠️ 这里**只认活着的 worker**，不走 `worker_of`（那条路会按需复活）。
+    回答一个"已经不存在的提问"绝不该拉起新进程：复活出来的 pi 从来没发过那个
+    `extension_ui_request` id，`extension_ui_response` 会被它静默忽略 ——
+    用户点了提交、界面什么都不发生，而进程白起一个（2026-10-09 复查发现的缝；
+    前端那边崩溃/休眠时也会把待答卡片清掉，两条一起把这条路堵死）。 */
+    let ready = {
+        let mut reg = state.registry.lock().await;
+        reg.ready_worker(&tab_id)?
+    };
+    let Some(worker) = ready else {
+        return Err("这个提问所属的会话已经不在了（pi 已崩溃或被休眠回收），回答无法送出".to_string());
+    };
     worker.ui_response(response).await
 }
 
@@ -1360,19 +1381,21 @@ async fn start_ready_lanes(app: &AppHandle, run_id: &str, ready: Vec<String>) ->
         };
         // 拉起 lane worker-tab（NoSession：不污染项目会话列表，06 §3.3）
         let tab_id = {
-            let mut reg = state.registry.lock().await;
             let lane_label = format!("fleet:{}/{}", &run_id[..8], lane_key);
             // lane 继承当前默认档位：Fleet 是"替用户跑任务"，不该偷偷提权
-            let lane_permission = reg.default_permission;
-            match reg
-                .create_tab(
-                    &sink(app),
-                    cwd.clone(),
-                    SessionTarget::NoSession,
-                    Some(lane_label),
-                    lane_permission,
-                )
-                .await
+            let lane_permission = { state.registry.lock().await.default_permission };
+            let max = state.perf.read().map(|p| p.max_workers).unwrap_or(8) as usize;
+            // 同样走"锁外握手"那条路：lane 是并发拉起的，握着锁握手会互相卡
+            match crate::sessions::registry::create_tab_unlocked(
+                &state.registry,
+                &sink(app),
+                cwd.clone(),
+                SessionTarget::NoSession,
+                Some(lane_label),
+                lane_permission,
+                max,
+            )
+            .await
             {
                 Ok(snap) => snap.tab_id,
                 Err(e) => {

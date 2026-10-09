@@ -774,3 +774,61 @@ async fn c14_fleet_lane_dag_with_real_pi() {
         snap["runs"][0]["lanes"]
     );
 }
+
+/* ---------------- C15：建 tab 时**不持 registry 锁**握手（2026-10-09 复查的修复） ----------------
+
+   为什么值得一条契约级用例：这条不变量是**时间性质**的，单测（纯函数）证明不了它。
+   改造前 `create_tab` 是「锁内 spawn → 锁内 get_state（40s 预算）→ 锁内记账」，
+   于是一次慢启动会让**所有标签页**的命令一起卡住（`worker_of` 走同一把锁）。
+   这里在真实 pi 上建一个 tab，同时不停抢锁、量"最久一次等了多久"。
+   —— 测的是"锁没有被握手占着"，而不是某个实现细节。 */
+#[tokio::test]
+async fn c15_creating_a_tab_does_not_hold_the_registry_lock() {
+    use piggy_lib::sessions::registry::{create_tab_unlocked, Registry, SharedRegistry};
+    use std::sync::Arc as StdArc;
+    use std::time::Instant;
+    use tokio::sync::Mutex;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let shared: SharedRegistry = StdArc::new(Mutex::new(Registry::new(Some(
+        discover(PiSource::default(), None, None).expect("pi not found"),
+    ))));
+    let sink: StdArc<dyn piggy_lib::events::EventSink> = StdArc::new(NullSink);
+
+    let create = tokio::spawn({
+        let shared = shared.clone();
+        let sink = sink.clone();
+        let cwd = tmp.path().to_path_buf();
+        async move {
+            create_tab_unlocked(
+                &shared,
+                &sink,
+                cwd,
+                SessionTarget::NoSession,
+                None,
+                PermissionMode::Full,
+                8,
+            )
+            .await
+        }
+    });
+
+    // 创建期间反复抢锁：旧实现下这里会出现一次几百毫秒到数十秒的等待
+    let mut worst = Duration::ZERO;
+    while !create.is_finished() {
+        let t0 = Instant::now();
+        let _guard = shared.lock().await;
+        worst = worst.max(t0.elapsed());
+        tokio::task::yield_now().await;
+    }
+    let snapshot = create.await.expect("join").expect("建 tab 失败");
+    assert!(
+        worst < Duration::from_millis(300),
+        "别的命令被握手挡住了 {worst:?}（应当只等锁内的微秒级操作）"
+    );
+
+    // 收尾：关掉这个 tab（会把 worker 收掉，不留孤儿）
+    let mut reg = shared.lock().await;
+    reg.close_tab(&sink, &snapshot.tab_id).await.expect("close_tab");
+    eprintln!("C15 ok：最长一次抢锁等待 {worst:?}");
+}

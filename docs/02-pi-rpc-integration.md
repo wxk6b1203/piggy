@@ -64,7 +64,17 @@ spawn 后依次：`get_state` →（若返回 `sessionFile`）绑定 tab↔sessi
 
 - 每条命令分配**进程内单调递增 `id`**（u64→字符串），写入 pending map（`id → oneshot sender + 截止时间`）；
 - 响应到达：按 `id` 路由到 oneshot；无 `id` 的响应按 `command` 字段与最近同类型未决请求关联（协议允许省略 id）【契约验证 C3：观察实际实现是否总是回显 id；Piggy 默认总是携带 id，规避该歧义】；
-- 超时默认 30s；`bash`/`compact` 类长命令不设超时（由 abort 类命令取消）；
+- 超时**分四档**（2026-10-09 复查统一，此前只有 `get_state` 一个拿到了冷启动预算，
+  同一条链上 `set_session_name` 还是 30s —— 同一个冷进程两套判据，报错会自相矛盾）：
+  | 档 | 值 | 谁用 | 理由 |
+  |---|---|---|---|
+  | 冷启动 `COLD_START_TIMEOUT` | **40s** | `get_state`、`switch_session`、`new_session`、`set_session_name`、`get_available_models` | 同一个 pi 进程里只有**第一条**命令要付"起 node + 读配置 + 加载扩展 + 读会话"的钱；凡是**可能成为第一条**的都用它（一次性标题生成就是 spawn 完不握手直接发 `set_session_name`） |
+  | 默认 | 30s | 其余有界命令 | — |
+  | 长命令 `LONG_TIMEOUT` | **120s** | `get_entries`、`get_messages`、`get_tree` | 要读很久但**一定有尽头**。此前传 `None`＝永不超时，而一个卡住的 pi 会把调用方永久挂住 —— `revive` 就是在 registry 锁里调 `get_entries` 的 |
+  | 无超时 | — | `bash`、`compact` | 真的可能跑几分钟（LLM 压缩 / 用户命令），靠 `abort`/`abort_bash` 取消 |
+- **握手不持 registry 锁**（2026-10-09）：`create_tab` 拆成「锁内 spawn → **锁外握手** → 锁内记账」
+  （`sessions/registry.rs::create_tab_unlocked`），复活同理（`revive_unlocked`，带"正在复活"占位）。
+  此前握手在锁里，一次慢启动会让所有标签页的命令一起等（契约用例 C15 量这条：最久一次抢锁 < 300ms，红检 480ms）；
 - **stdin 单写者**：所有命令经 mpsc 通道串行写入并 flush，避免交错写坏 JSONL。
 
 ### 3.2 命令 → UI 能力映射总表

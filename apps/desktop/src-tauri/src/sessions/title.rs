@@ -121,6 +121,20 @@ pub const RECENT_LIMIT: usize = 3;
 const PER_MESSAGE_CHARS: usize = 400;
 /// 一次性 pi 进程的超时。标题是小事，卡住不能把界面钉死。
 const GENERATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 超时中止一次性 pi 进程：**连根杀**，不是只杀直接子进程。
+///
+/// Windows 上 pi 走 pnpm 的 `pi.cmd` 垫片时，进程链是
+/// `piggy → cmd.exe（垫片） → node.exe（真正的 pi）`，而 `Child::kill()` /
+/// `kill_on_drop(true)` 只杀得掉 cmd.exe —— node 会活下来，而它正握着会话文件。
+/// 复用 worker 那条路已经真机验证过的 `kill_process_tree`（`taskkill /T /F`）。
+///
+/// 用法：先 `kill_process_tree`（要用**还活着**的 pid），再 `kill()` + `wait()` 收尸。
+async fn kill_tree_and_wait(child: &mut tokio::process::Child) {
+    crate::pi::client::kill_process_tree(child.id());
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
 /// `pi --list-models` 的超时（真机实测 0.6s；它只读配置、不调模型）。
 const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -483,8 +497,7 @@ pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
     let collected = match tokio::time::timeout(GENERATE_TIMEOUT, collect).await {
         Ok(v) => v,
         Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            kill_tree_and_wait(&mut child).await;
             return Err(format!("生成标题超过 {} 秒未返回，已中止", GENERATE_TIMEOUT.as_secs()));
         }
     };
@@ -696,8 +709,7 @@ pub async fn list_models(pi_bin: &Path, cwd: &Path) -> Result<ModelOptions, Stri
     let (out, err) = match tokio::time::timeout(LIST_TIMEOUT, collect).await {
         Ok(v) => v,
         Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            kill_tree_and_wait(&mut child).await;
             return Err(format!("列出模型超过 {} 秒未返回，已中止", LIST_TIMEOUT.as_secs()));
         }
     };

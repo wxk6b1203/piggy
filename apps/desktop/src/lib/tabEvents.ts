@@ -99,6 +99,13 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
                 ? 'pi 进程崩溃（本轮已中断，已生成的内容保留在上面）'
                 : 'pi 进程被回收休眠（本轮已中断，已生成的内容保留在上面）',
             );
+          /* 待答提问也要一起清掉（与 `agent_settled` 那支对称）：
+             发问的那个进程已经没了，插件那边的 `select` 永远不会再被回答；
+             留着卡片的后果更糟 —— 用户点提交时 `ui_reply` 会**按需复活一个新 worker**
+             （commands.rs 的 `ui_reply` → `ensure_worker`）再把 `extension_ui_response`
+             写进去，而新进程从来没发过那个 id，于是回答被静默吞掉、界面只看到
+             "点了没反应"。清掉卡片 = 用户知道这一问已经作废。 */
+          useQuestions.getState().clearTab(tabId);
         }
         /* pi **启动就失败**的情况（今天最现实的一种：扩展工具名冲突 —— 用户自己装过一份
            同名插件，pi 会打印 "Tool "x" conflicts with …" 然后根本不进会话）。

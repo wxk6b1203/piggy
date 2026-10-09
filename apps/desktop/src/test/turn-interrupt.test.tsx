@@ -55,6 +55,7 @@ import { Transcript } from '@/features/chat/Transcript';
 import { ensureTabListeners } from '@/lib/tabEvents';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
+import { useQuestions } from '@/stores/questions';
 import { useTabs } from '@/stores/tabs';
 import { mountDom, unmountDom, domContainer } from './dom-render';
 
@@ -142,6 +143,37 @@ describe('worker 崩/休眠：这一轮当场落地', () => {
     expect(tab().streaming).toBe(false);
     expect(assistantRows(), '休眠没有落地这一轮').toHaveLength(1);
     expect(tab().byId[assistantRows()[0]!]!.interrupted).toBe(true);
+  });
+
+  /* 2026-10-09 补：崩/睡时**待答提问也要清掉**（与 `agent_settled` 那支对称）。
+     留着卡片的后果不是"多一个控件"：点提交时 Rust 侧的 `ui_reply` 会按需复活一个
+     新 worker，而新进程从来没发过那个 `extension_ui_request` id ——
+     回答被静默吞掉，用户看到的是"点了没反应"。 */
+  it('崩溃时把待答提问一起清掉（否则回答会被新进程静默吞掉）', async () => {
+    await mount();
+    await commit({ type: 'agent_start' });
+    await commit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    // 一条挂着信封的 select：pi-ask 的提问卡
+    await channel(`pi:ui-req:${TAB}`, {
+      id: 'req-1',
+      method: 'select',
+      title: 'piggy:ask:v1:call-1',
+      options: ['提交'],
+    });
+    expect(useQuestions.getState().get('call-1'), '前置条件：提问卡应当挂上了').toBeTruthy();
+
+    await channel(`pi:state:${TAB}`, { state: 'crashed' });
+    expect(useQuestions.getState().get('call-1'), '崩溃后提问卡还挂着 —— 点提交只会得到沉默').toBeFalsy();
+
+    // 休眠同理
+    await channel(`pi:ui-req:${TAB}`, {
+      id: 'req-2',
+      method: 'select',
+      title: 'piggy:ask:v1:call-2',
+      options: ['提交'],
+    });
+    await channel(`pi:state:${TAB}`, { state: 'sleeping' });
+    expect(useQuestions.getState().get('call-2'), '休眠后提问卡还挂着').toBeFalsy();
   });
 
   it('一个字都没流出来 → 不留空行', async () => {

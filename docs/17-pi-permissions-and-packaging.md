@@ -29,11 +29,19 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 
 ### 1.2 三个档位的真实定义
 
-| 档位 | `--tools` | 守卫扩展 | 实际能做什么 |
-|------|-----------|----------|--------------|
-| **仅可查看** | `read,grep,find,ls` | 不注入 | 只有只读工具，没有写、没有 shell |
-| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入 | 可读写文件，写入被守卫限制在会话 cwd 内；**无 shell** |
-| **完全权限** | **不传** | 不注入 | 不限制：含 `bash`/`powershell` 与扩展/自定义工具 |
+| 档位 | `--tools` | 守卫扩展 | MCP | 实际能做什么 |
+|------|-----------|----------|-----|--------------|
+| **仅可查看** | `read,grep,find,ls` | 不注入 | `--no-mcp` | 只有只读工具，没有写、没有 shell；不拉起 MCP 服务器 |
+| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入 | `--no-mcp` | 可读写文件，写入被守卫限制在会话 cwd 内；**无 shell** |
+| **完全权限** | **不传** | 不注入 | 不传（用你自己的配置） | 不限制：含 `bash`/`powershell` 与扩展/自定义工具 |
+
+**为什么限制档要显式 `--no-mcp`**（2026-10-09，pi 1.1.0 实测）：pi 1.1.0 的 MCP 过滤判据是
+"白名单里有没有 `mcp__` 前缀的名字"（`core/agent-session.ts` 的 `_allowlistFiltersMcp`），
+所以 `--tools read,grep,find,ls` 之下**用户的 MCP 服务器照样被拉起**（stdio stub 实测被 spawn）。
+工具本身不会声明给模型（它们要走 `tool_search`/`codemode`，而那两个也被白名单过滤掉了，
+pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_search tool"），
+但"限制档去启动本地进程 / 打开网络出口"与这一档对用户的承诺不符 ——
+**"我不给模型这个工具"和"我不启动这个东西"是两件事**。
 
 「完全权限」刻意**不传** `--tools`：一旦传显式白名单，pi 会把**扩展与自定义工具一并过滤掉**
 （`cli/args.ts:307-308` 帮助文本明说 "Applies to built-in, extension, and custom tools"）。
@@ -59,9 +67,12 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 ### 1.4 切档为什么要重启
 
 `--tools`/`-e` 是 CLI 参数。切档走的是**和崩溃复活完全相同**的路径
-（`sessions/registry.rs::set_permission` → `revive_tab`）：停旧进程 → 按新档 spawn →
-必要时 `switch_session` → `get_entries(since=cursor)` 游标补齐 → 发 `resync`。
+（`sessions/registry.rs::set_permission_unlocked` → `revive_unlocked`）：停旧进程 →
+按新档 spawn → 必要时 `switch_session` → `get_entries(since=cursor)` 游标补齐 → 发 `resync`。
 会话文件与游标不变，所以对话内容不丢。
+
+整条路径**不持 registry 锁**：复活要握手（冷启动预算 40s），握着全局锁做这件事会让
+所有标签页一起等（2026-10-09 复查修；契约用例 C15 量这条）。
 
 流式中拒绝切档（会打断回合，且用户看不出"前半段一个档、后半段另一个档"）。
 换档不占崩溃重启预算（`restarts` 归零）。
@@ -237,7 +248,10 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 - 包通过 `package.json` 的 `pi` 字段声明资源：`{ "pi": { "extensions": [...], "skills": [...], "prompts": [...], "themes": [...] } }`。
 - 扩展入口：`export default function (pi: ExtensionAPI) {}`，可 `on(<36 种事件>)`、`registerTool`、
   `registerCommand`、`registerFlag`、`registerProvider`。
-- **MCP 不支持**：pi 里没有 MCP 客户端或配置项。要用 MCP 得通过扩展（如第三方 `pi-mcp-adapter`）。
+- **MCP：0.87 时代 pi 没有 MCP；1.1.0 起有了**（内置 `mcp` 扩展 + `--no-mcp` 开关，
+  工具以 `mcp__*` 名字出现，且只能经 `tool_search`/`codemode` 触达）。
+  Piggy 在**限制档**显式关掉它（见 §1.2），完全权限档留给用户自己的配置。
+  用户自己的 MCP 配置读 `<agent-dir>/mcp.json` 与项目 `.pi/mcp.json`。
 - `get_commands`（Composer 的 `/` 补全）只有三个来源：extension、prompt 模板、skill。
   **内置 TUI 斜杠命令不在其中。**
 - ⚠️ **`--tools` 会连插件工具一起过滤。** 默认档位是「工作区内修改」，

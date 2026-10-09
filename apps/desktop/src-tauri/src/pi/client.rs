@@ -34,8 +34,23 @@ pub type Worker = Arc<WorkerInner>;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 冷启动握手预算（见 `get_state`）。
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(40);
+/// **冷启动预算**：同一个 pi 进程里只有**第一条** stdin 之前的命令要付这笔钱
+/// （起 node、读配置、加载扩展、读会话文件），所以凡是可能成为第一条的命令都用它。
+///
+/// 抽成常量而不是只写给 `get_state`（2026-10-09 复查发现的缝）：`set_session_name` /
+/// `switch_session` / `new_session` 也都可能落在冷进程上 —— 一次性标题生成的
+/// `set_session_name_via_worker` 就是 **spawn 之后不握手直接发**，
+/// 冷启动慢到 >30s 时它会以"等了 30s"失败，而同一时刻 `get_state` 的预算是 40s：
+/// 同一个进程两套判据，用户看到的报错会自相矛盾。
+pub const COLD_START_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// 「要读很久、但一定有尽头」的命令（`get_entries` / `get_messages` / `get_tree`）。
+///
+/// 这些命令以前传的是 `None` = **永不超时**。11 MB 会话实测 `get_entries` 383 ms，
+/// 正常情况下永远够用；但"永不超时"意味着一个卡住的 pi 会把调用方**永久**挂住 ——
+/// 而 `revive_tab` 就是在 registry 锁里调它的，那会变成整个应用停摆。
+/// 120s 是"再大的会话也不该超过"的量级，不是期望等待时间。
+const LONG_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 连根杀掉一个 worker **整棵进程树**（不是一个进程）。
 ///
@@ -211,12 +226,13 @@ impl WorkerInner {
     /// 超时的代价却特别大：用户点一次"打开会话"直接失败。
     /// 40s 是"慢到什么程度才算真的卡住"的判据，不是期望等待时间（正常仍是 2-3s）。
     pub async fn get_state(&self) -> Result<Value, String> {
-        self.request_checked("get_state", json!({}), Some(HANDSHAKE_TIMEOUT))
+        self.request_checked("get_state", json!({}), Some(COLD_START_TIMEOUT))
             .await
     }
 
     pub async fn get_messages(&self) -> Result<Value, String> {
-        self.request_checked("get_messages", json!({}), None).await
+        self.request_checked("get_messages", json!({}), Some(LONG_TIMEOUT))
+            .await
     }
 
     pub async fn get_entries(&self, since: Option<&str>) -> Result<Value, String> {
@@ -224,17 +240,23 @@ impl WorkerInner {
         if let Some(s) = since {
             p["since"] = json!(s);
         }
-        self.request_checked("get_entries", p, None).await
+        self.request_checked("get_entries", p, Some(LONG_TIMEOUT)).await
     }
 
     pub async fn new_session(&self) -> Result<Value, String> {
-        self.request_checked("new_session", json!({}), Some(DEFAULT_TIMEOUT))
+        // 可能落在冷进程上（换档/预热池）→ 用冷启动预算
+        self.request_checked("new_session", json!({}), Some(COLD_START_TIMEOUT))
             .await
     }
 
     pub async fn switch_session(&self, path: &str) -> Result<Value, String> {
-        self.request_checked("switch_session", json!({ "sessionPath": path }), Some(DEFAULT_TIMEOUT))
-            .await
+        // 换会话 = 重建整个 runtime（要读会话文件、重扫项目资源），冷启动预算
+        self.request_checked(
+            "switch_session",
+            json!({ "sessionPath": path }),
+            Some(COLD_START_TIMEOUT),
+        )
+        .await
     }
 
     pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<Value, String> {
@@ -247,7 +269,9 @@ impl WorkerInner {
     }
 
     pub async fn get_available_models(&self) -> Result<Value, String> {
-        self.request_checked("get_available_models", json!({}), None).await
+        // 可能等 pi 自己的目录刷新（它内部 15s abort），所以给冷启动预算而不是 30s
+        self.request_checked("get_available_models", json!({}), Some(COLD_START_TIMEOUT))
+            .await
     }
 
     pub async fn get_session_stats(&self) -> Result<Value, String> {
@@ -256,7 +280,8 @@ impl WorkerInner {
     }
 
     pub async fn set_session_name(&self, name: &str) -> Result<Value, String> {
-        self.request_checked("set_session_name", json!({ "name": name }), Some(DEFAULT_TIMEOUT))
+        // 一次性标题生成的路径是"spawn 完不握手直接发" → 可能是这个进程的第一条命令
+        self.request_checked("set_session_name", json!({ "name": name }), Some(COLD_START_TIMEOUT))
             .await
     }
 
@@ -273,7 +298,7 @@ impl WorkerInner {
     }
 
     pub async fn get_tree(&self) -> Result<Value, String> {
-        self.request_checked("get_tree", json!({}), None).await
+        self.request_checked("get_tree", json!({}), Some(LONG_TIMEOUT)).await
     }
 
     pub async fn fork(&self, entry_id: &str) -> Result<Value, String> {

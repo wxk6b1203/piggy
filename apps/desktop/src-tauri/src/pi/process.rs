@@ -124,6 +124,18 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push("--extension".into());
         out.push(ext.into());
     }
+    /* 限制档位**显式关掉 MCP**（pi 1.0.4 起的 `--no-mcp`）。
+    ⚠️ 为什么不能只靠 `--tools`：pi 1.1.0 的判据是"白名单里有没有 `mcp__` 前缀的名字"
+    （`agent-session.ts` 的 `_allowlistFiltersMcp`），所以**限制档照样会拉起用户配的
+    MCP 服务器**（真机实测：`--tools read,grep,find,ls` 之下 stdio stub 仍被 spawn）。
+    工具本身不会声明给模型（它们要走 `tool_search`/`codemode`，而那两个也被过滤掉了，
+    pi 自己会回一条 "MCP tools are only reachable from the codemode or tool_search tool"），
+    但"仅可查看"档去启动本地进程 / 打开网络出口，与这一档对用户的承诺不符。
+    放在 argv 末尾：老版本 pi 不认识这个 flag 时会当未知 flag 收进 unknownFlags
+    （`cli/args.ts` 的 `arg.startsWith("--")` 分支），**不会**吃掉后面的参数值。 */
+    if args.permission.tool_allowlist().is_some() {
+        out.push("--no-mcp".into());
+    }
     // 子代理委派策略（docs/06 §6）：`--append-system-prompt` 落到系统提示词的 addendum 段，
     // 位置在所有其它段落之后 —— 它要正面对冲 pi-subagents 写在 rules 段里的
     // "Do not invoke subagents unless the operator requested delegation..."，
@@ -593,6 +605,26 @@ mod tests {
         a.bundled_extensions = vec![dir.clone()];
         let argv = cli_args(&a).unwrap();
         assert!(argv.iter().any(|s| s == &std::ffi::OsString::from(&dir)));
+    }
+
+    #[test]
+    fn restricted_modes_disable_mcp_explicitly() {
+        /* `--tools` 在 pi 1.1.0 上**拦不住 MCP**（判据是"白名单里有没有 mcp__ 前缀"），
+        所以限制档必须显式带上 `--no-mcp`；完全权限档不带（那是"用你自己的配置"）。 */
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
+            let mut a = args(mode);
+            // 「工作区内修改」档要求守卫脚本存在（缺失是 fail-closed），这里给一个真的
+            a.guard_script = Some(tmp_file("piggy-guard-test.js"));
+            let argv = argv(&a);
+            assert!(argv.contains(&"--no-mcp".to_string()), "{mode:?} 档没关 MCP");
+            // 位置：末尾（老版本 pi 会把不认识的 `--flag` 收进 unknownFlags，
+            // 只有后面跟的不是值时才当布尔 —— 放末尾最安全）
+            assert_eq!(argv.last().map(String::as_str), Some("--no-mcp"));
+        }
+        assert!(
+            !argv(&args(PermissionMode::Full)).contains(&"--no-mcp".to_string()),
+            "完全权限档不该关 MCP"
+        );
     }
 
     #[test]
