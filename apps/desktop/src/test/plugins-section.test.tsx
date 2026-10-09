@@ -13,7 +13,9 @@
  *      用户看到开关就会以为是它说了算（docs/15 规矩 30）。
  *   ③ **停用态与"找不到文件"必须能看见**。后者是"声明了但没装上"，
  *      藏起来的话用户只会看到一条永远加载不出来的条目。
- *   ④ **pi 内置扩展不可管理**：开关必须禁用（pi 里 `-ne` 都关不掉它）。
+ *   ④ **pi 内置扩展可以停用**（pi 1.1.0 起）：它们是合成路径 `builtin:<name>`，
+ *      写全局 settings 的 `-builtin:<name>` 就能单独关掉 —— 开关必须**可用**，
+ *      而不是照抄 0.87 时代"不可管理"的说法（那条已经过期）。
  *   ⑤ **安装前要拦住裸包名**：pi 的 `isLocalPath` 只看前缀，`@scope/pkg` 会被
  *      当成本地路径，实测报 `Path does not exist`——不提示 `npm:` 用户查不出来。
  *   ⑥ **启停写完之后要重新拉取**，不做前端本地合并（否则界面显示的和 pi 读到的会分叉）。
@@ -125,6 +127,7 @@ const OVERVIEW = {
           path: '(pi 内置：…/llama)',
           removable: false,
           updatable: false,
+          replaceable: false,
           loadRank: -1,
         }),
       ],
@@ -210,7 +213,7 @@ describe('插件页', () => {
     expect(why).toContain('- 规则');
   });
 
-  it('pi 内置扩展的开关是禁用的（pi 里 -ne 都关不掉它）', async () => {
+  it('pi 内置扩展可以停用（pi 1.1.0 起写 -builtin:<name>），但不能卸载', async () => {
     prime();
     mountDom(<PluginsSection />);
     await flush();
@@ -220,9 +223,26 @@ describe('插件页', () => {
     )!;
     const sw = builtin.querySelector<HTMLButtonElement>('.ant-switch')!;
     expect(sw).toBeTruthy();
-    expect(sw.disabled).toBe(true);
-    // 也不该有删除按钮
+    // 开关可用：pi 1.1.0 的内置扩展是合成路径，settings 里能单独关掉
+    expect(sw.disabled).toBe(false);
+    // 但没有删除按钮（随 pi 发布，磁盘上没有可删的东西）
     expect(builtin.querySelector('.ant-btn-dangerous')).toBeNull();
+
+    // 点了要真的发 plugin_set_enabled，键回传的是 `builtin:builtin:<name>`
+    const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+    invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+      calls.push([name, args]);
+      if (name === 'plugin_overview') return structuredClone(OVERVIEW);
+      return { ok: true };
+    });
+    await act(async () => {
+      sw.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    const toggle = calls.find(([n]) => n === 'plugin_set_enabled');
+    expect(toggle, '点开关没有调用 plugin_set_enabled').toBeTruthy();
+    expect(toggle![1]?.key).toBe('builtin:builtin:llama.cpp');
+    expect(toggle![1]?.enabled).toBe(false);
   });
 
   it('启停走 plugin_set_enabled，写完重新拉取（不做本地合并）', async () => {

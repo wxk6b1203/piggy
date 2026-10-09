@@ -38,6 +38,8 @@ export interface PluginRow {
   entries: string[];
   removable: boolean;
   updatable: boolean;
+  /** 能不能被别的扩展顶替（pi 1.1.0 的 `omitReplacedExtensions`；只有内置条目会上报） */
+  replaceable: boolean;
   /** pi 的加载优先级：0 项目登记 / 1 项目发现 / 2 全局登记 / 3 全局发现 / 4 包 / -1 内置 */
   loadRank: number;
 }
@@ -100,6 +102,7 @@ function normalizeRow(raw: unknown): PluginRow | null {
     entries: Array.isArray(r.entries) ? r.entries.filter((e): e is string => typeof e === 'string') : [],
     removable: r.removable === true,
     updatable: r.updatable === true,
+    replaceable: r.replaceable === true,
     loadRank: typeof r.loadRank === 'number' ? r.loadRank : 99,
   };
 }
@@ -261,7 +264,18 @@ export async function projectTrust(projectDir: string): Promise<ProjectTrust> {
 /** 一排插件里"启用/停用"之外还能做什么（按来源区分）。 */
 export function rowActions(row: PluginRow): { canToggle: boolean; canDelete: boolean; reason: string } {
   if (row.kind === 'builtin') {
-    return { canToggle: false, canDelete: false, reason: 'pi 内置扩展：随 pi 发布，不能停用也不能卸载' };
+    /* pi 1.1.0 起内置扩展**可以停用**：它们是合成路径 `builtin:<name>`，走普通资源解析，
+       settings 的 `extensions[]` 里写 `-builtin:<name>` 就能单独关掉（真机核对过 mcp 与
+       llama.cpp 各一遍）。0.87 时代那句"不可停用、-ne 也关不掉"已经过期 ——
+       后端 `plugin_set_enabled` 会把这条规则写进**全局** settings。
+       仍然不能卸载（随 pi 发布，磁盘上没有对应文件），所以 canDelete 保持 false。 */
+    return {
+      canToggle: true,
+      canDelete: false,
+      reason: row.replaceable
+        ? 'pi 内置扩展：可以停用（写全局 settings 的 -builtin:…），也可以被你自己装的扩展顶替'
+        : 'pi 内置扩展：可以停用（写全局 settings 的 -builtin:…），不能卸载',
+    };
   }
   if (row.kind === 'cli') {
     return { canToggle: false, canDelete: false, reason: '本次运行由命令行 -e 加载，改设置没用' };

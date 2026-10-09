@@ -13,7 +13,7 @@
     "build": "node scripts/build.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-coding-agent": "1.1.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"

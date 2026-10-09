@@ -65,11 +65,21 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
              清掉它们 —— 否则卡片会一直停在"等你回答"，点了提交只得到沉默的失败。 */
           useQuestions.getState().clearTab(tabId);
           /* 一轮落定时**还挂着流式行** = 那个 `message_end` 没来（用户中断、pi 出错后直接
-             收尾、扩展把消息吞了……）。落地成「已中止」，别让它永远转圈。
+             收尾、扩展把消息吞了……）。落地成一张卡片，别让它永远转圈。
+             pi 1.1.0 起 `agent_settled` 自带权威字段 **`aborted`**：true = 我们请求过中断
+             （用户按了 Esc / 点了停止），false = 这一轮是自己结束的却没给 `message_end`
+             —— 后者是**出错**，该画报警色而不是"你自己取消的"中性色。
              ⚠️ 顺序：先落地（要读 `pendingId`），再走下面那些"落定之后"的事。 */
+          const aborted = (ev as { aborted?: boolean }).aborted === true;
           useMessages
             .getState()
-            .interruptTurn(tabId, '本轮结束，但没有收到最终消息（已中止）');
+            .interruptTurn(
+              tabId,
+              aborted
+                ? '本轮已中止（中断请求已生效）'
+                : '本轮结束，但没有收到最终消息（pi 可能出错了；运行日志里通常有原因）',
+              { failed: !aborted },
+            );
           const t = useTabs.getState();
           if (t.activeTabId !== tabId) t.markUnread(tabId);
           windowEvents.emit('refresh-stats', tabId);

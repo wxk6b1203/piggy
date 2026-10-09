@@ -142,11 +142,18 @@ impl Scope {
             Self::Builtin => "pi 内置",
         }
     }
+    /// `as_str` 的逆。
+    ///
+    /// `builtin` 也收（2026-10-09）：内置扩展的启停键是 `builtin:builtin:<name>`，
+    /// 而"停用"落到**全局** settings 的 `-builtin:<name>` —— 命令层要先能把
+    /// 这个作用域读出来，再由 `plugin::set_enabled_at` 决定写到哪份文件。
+    /// 它没有自己的 `settings.json`（`ScopeDirs::settings_path` 会拒绝它）。
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim() {
             "project" => Ok(Self::Project),
             "global" => Ok(Self::Global),
-            _ => Err(format!("未知作用域 {s:?}（可选：project / global）")),
+            "builtin" => Ok(Self::Builtin),
+            _ => Err(format!("未知作用域 {s:?}（可选：project / global / builtin）")),
         }
     }
 }
@@ -410,6 +417,54 @@ pub fn scan_discovery_dir(dir: &Path) -> Vec<(PathBuf, bool)> {
 
 /// 极简 minimatch：`*` 不跨 `/`，`**` 跨，`?` 单字符。
 /// pi 用的是完整 minimatch（`package-manager.ts:653-676`）；这里覆盖 docs 承诺的
+/// pi 内置扩展的启停判据（**1.1.0 起它们是可以关的**）。
+///
+/// 三条实测事实（pi 1.1.0，隔离配置目录跑的）：
+///   · 内置扩展是**合成路径** `builtin:<name>`，走普通资源解析，所以 settings 的
+///     `extensions[]` 里 `-builtin:<name>` / `!builtin:<name>` 能**单独关掉**它，
+///     `+builtin:<name>` 显式打开（`resource-loader.ts` 的 `BUILTIN_PATH_PREFIX`）；
+///   · 关掉之后 `get_commands` 里对应命令消失（mcp / llama.cpp 各核对一遍）；
+///   · `--no-extensions` 也能关（`this.noExtensions ? cliEnabledExtensions : …`）——
+///     但 Piggy 不传 `-ne`，所以这里只按 settings 判。
+///
+/// 判据：**全局在前、项目在后，最后一条命中的说了算**（与 pi 那句
+/// "Built-in extensions wait for the final pass: project settings can disable them" 一致）。
+///
+/// @param name - 内置扩展名（`builtInExtensions[].name`）
+/// @param global - 全局 settings（`~/.pi/agent/settings.json`）
+/// @param project - 项目 settings（`<cwd>/.pi/settings.json`；没有项目时不传）
+/// @returns `(是否启用, 给用户看的一句话)`
+pub fn builtin_state(name: &str, global: &Value, project: Option<&Value>) -> (bool, String) {
+    let synthetic = format!("builtin:{name}");
+    let mut enabled = true;
+    let mut by = "pi 内置扩展：随 pi 发布；可以用设置里的 -builtin:".to_string() + name + " 关掉";
+    for (label, settings) in [("全局", Some(global)), ("本项目", project)] {
+        let Some(settings) = settings else { continue };
+        for raw in str_list(settings, "extensions") {
+            let trimmed = raw.trim();
+            let (on, body) = match trimmed.strip_prefix('-') {
+                Some(rest) => (false, rest),
+                None => match trimmed.strip_prefix('!') {
+                    Some(rest) => (false, rest), // `!` 与 `-` 同为排除（pi 的 override 语义）
+                    None => (true, trimmed.strip_prefix('+').unwrap_or(trimmed)),
+                },
+            };
+            let body = body.replace('\\', "/");
+            let body = body.trim_start_matches("./");
+            // 精确匹配合成路径；`builtin:*` 也认（整类通配）
+            if body == synthetic || body == "builtin:*" {
+                enabled = on;
+                by = if on {
+                    format!("{label} settings.json 里显式启用（+{body}）")
+                } else {
+                    format!("{label} settings.json 里被 -{body} 关掉")
+                };
+            }
+        }
+    }
+    (enabled, by)
+}
+
 /// 常用形态（`*.ts`、`extensions/*`、`**/*.ts`），超出范围的花式模式会退化为"精确/后缀"匹配。
 pub fn glob_match(pat: &str, text: &str) -> bool {
     fn go(p: &[u8], t: &[u8]) -> bool {
@@ -639,6 +694,17 @@ pub fn make_entry(
         "entries": entries.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         "removable": removable,
         "updatable": updatable,
+        // 内置扩展多一个字段：能不能被别的扩展顶替（pi 1.1.0 的 omitReplacedExtensions）。
+        // 非内置恒为 false —— 这个键只对 `kind === "builtin"` 有意义。
+        "replaceable": if kind == Kind::Builtin {
+            crate::plugin::builtins_generated::BUILTINS
+                .iter()
+                .find(|b| b.name == source)
+                .map(|b| b.replaceable)
+                .unwrap_or(false)
+        } else {
+            false
+        },
         "loadRank": load_rank,
     })
 }
@@ -787,13 +853,14 @@ pub fn overview(agent_dir: &Path, cwd: Option<&Path>) -> Result<Value, String> {
 
     /* ── 4. pi 内置 ── */
     for b in crate::plugin::builtins_generated::BUILTINS {
+        let state = builtin_state(b.name, &global_settings, cwd_owned.as_ref().map(|_| &project_settings));
         plugins.push(make_entry(
             Kind::Builtin,
             SourceKind::Builtin,
             Scope::Builtin,
             b.name,
             Path::new(b.path),
-            (true, "pi 内置扩展：随 pi 发布，不可增删，-ne 也关不掉".to_string()),
+            state,
             Vec::new(),
             -1,
         ));

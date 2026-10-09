@@ -300,6 +300,45 @@ pub fn set_enabled_at(
             inventory::write_settings(&dirs, scope, &settings)?;
             Ok(json!({ "ok": true, "wrote": settings_path.to_string_lossy(), "settings": settings }))
         }
+        /* 内置扩展（pi 1.1.0 起可以关）。
+
+        它在 pi 里是**合成路径** `builtin:<name>`，走普通资源解析，所以：
+        「停用」= 往 settings 的 `extensions[]` 写一条 `-builtin:<name>`；
+        「启用」= 把这条规则摘掉（不写 `+`：默认就是启用的，写 `+` 反而会让
+        项目级/全局的合并语义变得难读）。
+
+        **写全局 settings**：内置扩展是进程级的、只有一份，作用域选"全局"是唯一
+        说得通的位置；项目设置也能关掉它（pi 会把项目设置合并进来做最后一轮判定），
+        那是用户自己的选择，这里不去覆盖 —— 启用时只摘全局里的规则。 */
+        "builtin" => {
+            let synthetic = format!("builtin:{source}");
+            let dirs = ScopeDirs::new(agent_dir.to_path_buf(), cwd.clone().unwrap_or_default());
+            let settings_path = dirs.settings_path(Scope::Global);
+            let mut settings = inventory::read_settings(&dirs, Scope::Global)?;
+            let mut list = extension_array(&settings)?;
+            let before = list.len();
+            list.retain(|e| {
+                let body = e.trim_start_matches(['-', '+', '!']).replace('\\', "/");
+                body.trim_start_matches("./") != synthetic
+            });
+            let removed = before - list.len();
+            let mut noop = false;
+            if enabled {
+                // 本来就没关过 → 幂等成功（不是错误：界面上"启用"点在一个已启用的条目上
+                // 不该弹红字）
+                noop = removed == 0;
+            } else {
+                list.push(format!("-{synthetic}"));
+            }
+            set_or_clear(&mut settings, "extensions", list);
+            inventory::write_settings(&dirs, Scope::Global, &settings)?;
+            Ok(json!({
+                "ok": true,
+                "wrote": settings_path.to_string_lossy(),
+                "settings": settings,
+                "noop": noop,
+            }))
+        }
         other => Err(format!(
             "这类条目不支持启停：{other}（发现目录里的文件要停用请直接删文件）"
         )),
@@ -640,6 +679,62 @@ mod tests {
         assert!(out["settings"].get("extensions").is_none(), "{out}");
         let v = inventory::overview(&agent, None).unwrap();
         assert_eq!(v["groups"][0]["plugins"][0]["enabled"], json!(true));
+    }
+
+    /// 内置扩展（pi 1.1.0 起可关）：停用 = 全局 settings 里写 `-builtin:<name>`，
+    /// 启用 = 摘掉这条规则（**不写 `+`**），并且盘点要能读到真实状态。
+    ///
+    /// 这条链上有三个"以前是假话"的地方：0.87 时代界面写着"不可停用、`-ne` 也关不掉"，
+    /// 而 1.1.0 起内置扩展是合成路径 `builtin:<name>`、走普通资源解析，真机核对过
+    /// `-builtin:mcp` 能让 mcp 扩展与它的命令一起消失。
+    #[test]
+    fn builtin_toggle_writes_a_synthetic_path_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = tmp.path().join("agent");
+        fs::create_dir_all(&agent).unwrap();
+        write(&agent.join("settings.json"), &json!({}));
+
+        let off = set_enabled_at(&agent, "builtin:builtin:mcp", false, None).unwrap();
+        assert_eq!(off["settings"]["extensions"], json!(["-builtin:mcp"]), "{off}");
+        // 读写闭环：盘点必须说 mcp 被关掉了，而别的内置不受影响
+        let v = inventory::overview(&agent, None).unwrap();
+        let rows: Vec<&Value> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["plugins"].as_array().unwrap())
+            .filter(|p| p["kind"] == json!("builtin"))
+            .collect();
+        let mcp = rows
+            .iter()
+            .find(|p| p["name"] == json!("mcp"))
+            .expect("应有 mcp 内置条目");
+        assert_eq!(mcp["enabled"], json!(false));
+        assert!(mcp["enabledBy"].as_str().unwrap().contains("-builtin:mcp"), "{mcp}");
+        assert_eq!(mcp["removable"], json!(false), "内置不可卸载");
+        assert_eq!(mcp["replaceable"], json!(true), "pi 1.1.0 标记 mcp 可被顶替");
+        let llama = rows.iter().find(|p| p["name"] == json!("llama.cpp")).unwrap();
+        assert_eq!(llama["enabled"], json!(true), "别的内置不该被一起关掉");
+
+        // 再启用：规则摘干净（不留 `-builtin:mcp`，也不写 `+`），键被清掉
+        let on = set_enabled_at(&agent, "builtin:builtin:mcp", true, None).unwrap();
+        assert!(on["settings"].get("extensions").is_none(), "{on}");
+        let v2 = inventory::overview(&agent, None).unwrap();
+        let rows2: Vec<&Value> = v2["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["plugins"].as_array().unwrap())
+            .filter(|p| p["kind"] == json!("builtin"))
+            .collect();
+        assert_eq!(
+            rows2.iter().find(|p| p["name"] == json!("mcp")).unwrap()["enabled"],
+            json!(true)
+        );
+
+        // 幂等：本来就没关过时"启用"是 noop 而不是报错
+        let again = set_enabled_at(&agent, "builtin:builtin:mcp", true, None).unwrap();
+        assert_eq!(again["noop"], json!(true), "{again}");
     }
 
     /// 包的启停用 `autoload`，并且要清掉冲突的 `+`/`-` 规则。

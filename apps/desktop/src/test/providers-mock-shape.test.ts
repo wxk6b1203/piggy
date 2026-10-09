@@ -63,7 +63,7 @@ describe('mock 的 provider_overview 形状', () => {
     const out = await mockInvoke<Record<string, unknown>>('provider_overview', {});
     const catalog = out.catalog as { id: string; baseUrl: string }[];
     const byId = new Map(catalog.map((c) => [c.id, c.baseUrl]));
-    // 这几条是 pi 0.87.1 源码里的字面值（catalog_generated.rs 同源）
+    // 这几条是 pi 1.1.0 源码里的字面值（catalog_generated.rs 同源；升级 pi 要重跑生成器）
     expect(byId.get('deepseek')).toBe('https://api.deepseek.com');
     expect(byId.get('anthropic')).toBe('https://api.anthropic.com');
     expect(byId.get('openai')).toBe('https://api.openai.com/v1');

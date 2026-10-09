@@ -194,6 +194,30 @@ describe('worker 崩/休眠：这一轮当场落地', () => {
     expect(assistantRows()).toHaveLength(1);
     expect(tab().byId[assistantRows()[0]!]!.interrupted).toBe(true);
   });
+
+  /* pi 1.1.0 起 `agent_settled` 带权威字段 `aborted`：用户取消与 pi 出错
+     以前长得一模一样（都是"已中止"卡片），现在要分开 —— 出错是报警色 + 可能原因。 */
+  it('agent_settled.aborted 区分"你取消了"与"pi 出错了"', async () => {
+    await mount();
+    await startStreamingTurn();
+    await commit({ type: 'agent_settled', aborted: true });
+    const id = assistantRows()[0]!;
+    expect((tab().byId[id]!.message as { stopReason?: string }).stopReason).toBe('aborted');
+    expect(text(domContainer().querySelector('.pg-turn-failure'))).toContain('已中止');
+
+    // 第二轮：aborted=false（自己结束但没给 message_end）→ 走"出错"那一支
+    await commit({ type: 'agent_start' });
+    await commit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    await frame({ text: [{ contentIndex: 0, delta: '出错前的半截' }] });
+    await commit({ type: 'agent_settled', aborted: false });
+    const ids = assistantRows();
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    const last = tab().byId[ids[ids.length - 1]!]!;
+    expect((last.message as { stopReason?: string }).stopReason, '出错收尾却标成了"已中止"').toBe('error');
+    const card = domContainer().querySelector('.pg-turn-failure[data-kind="error"]');
+    expect(card, '出错收尾没有画成失败卡片').toBeTruthy();
+    expect(card!.getAttribute('role')).toBe('alert');
+  });
 });
 
 describe('pi 启动就失败：stderr 里那句真话要看得见', () => {

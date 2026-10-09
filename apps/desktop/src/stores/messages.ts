@@ -294,11 +294,16 @@ interface MessagesState {
    * 而 worker 崩掉时那个事件永远不会来 —— 实测（docs/15 §4）：崩了之后 `streaming`
    * 仍是 `true`、实时行还挂着、"停止"按钮仍然可用，界面**假装还在跑**。
    *
-   * 落地的形态复用"失败回合"那一套判读（`lib/turnFailure.ts`）：一条
-   * `stopReason: 'aborted'` 的助手消息 + 已流出的内容，于是 `TurnFailureCard` 直接
-   * 画出「已中止 + 原因」，不需要另造一套 UI。已流出的字**一个字都不丢**。
+   * 落地的形态复用"失败回合"那一套判读（`lib/turnFailure.ts`）：一条带 `stopReason`
+   * 的助手消息 + 已流出的内容，于是 `TurnFailureCard` 直接画出卡片，不需要另造一套 UI。
+   * 已流出的字**一个字都不丢**。
+   *
+   * @param opts.failed - `true` = 这不是"用户按了停止"，而是**出错收尾**
+   *   （`stopReason: 'error'`，卡片会走「本轮失败 + 可能原因」那一支，中性色变报警色）。
+   *   pi 1.1.0 起 `agent_settled` 自带权威字段 `aborted`，所以这一支能分得清楚了 ——
+   *   从前一律标 `aborted`，用户主动取消和 pi 出错长得一模一样。
    */
-  interruptTurn(tabId: string, reason: string): void;
+  interruptTurn(tabId: string, reason: string, opts?: { failed?: boolean }): void;
   /**
    * 记一条**扩展报错行**（`extension_error`、以及 pi 启动失败时 stderr 里那句真话）。
    *
@@ -857,7 +862,7 @@ export const useMessages = create<MessagesState>()(
       });
     },
 
-    interruptTurn(tabId, reason) {
+    interruptTurn(tabId, reason, opts) {
       set((s) => {
         const tab = s.tabs[tabId];
         if (!tab) return;
@@ -880,7 +885,8 @@ export const useMessages = create<MessagesState>()(
         row.message = {
           role: 'assistant',
           content: blocks,
-          stopReason: 'aborted',
+          // 出错收尾标 'error'（卡片走"本轮失败 + 可能原因"），用户取消标 'aborted'
+          stopReason: opts?.failed ? 'error' : 'aborted',
           errorMessage: reason,
           timestamp: Date.now(),
         } as unknown as AgentMessage;

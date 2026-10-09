@@ -9,10 +9,12 @@ allowBuilds:
   esbuild: true
   protobufjs: false
 
+# 这几个包是 pi 的发布单元，跟着 pi 的锚定版本走（2026-10-09：0.87.1 → 1.1.0，
+# 与 fetch-pi-standalone.mjs / ci.yml 的锚点保持一致，由 scripts/check-pi-pin.mjs 对账）。
 minimumReleaseAgeExclude:
-  - '@earendil-works/chord@0.87.1'
-  - '@earendil-works/pi-agent-core@0.87.1'
-  - '@earendil-works/pi-ai@0.87.1'
-  - '@earendil-works/pi-coding-agent@0.87.1'
-  - '@earendil-works/pi-telemetry@0.87.1'
-  - '@earendil-works/pi-tui@0.87.1'
+  - '@earendil-works/chord@1.1.0'
+  - '@earendil-works/pi-agent-core@1.1.0'
+  - '@earendil-works/pi-ai@1.1.0'
+  - '@earendil-works/pi-coding-agent@1.1.0'
+  - '@earendil-works/pi-telemetry@1.1.0'
+  - '@earendil-works/pi-tui@1.1.0'

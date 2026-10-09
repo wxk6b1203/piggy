@@ -871,7 +871,14 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(out.status.success(), "解析出的命令跑不起来：{text}");
-        assert!(text.contains("0.87"), "版本输出不像 pi：{text}");
+        /* 只要求"输出里有一个像版本号的片段"，**不钉具体版本** ——
+        2026-10-09 之前这里写的是 `contains("0.87")`，于是用户把 pi 升到 1.1.0 之后
+        这条会在 Windows 真机上红（macOS 因为提前 return 躲过去了）。
+        这条用例要守的是"解析出来的命令**真的能跑 pi**"，不是"用户装的是哪一版"。 */
+        let looks_like_version = text
+            .split_whitespace()
+            .any(|tok| tok.chars().next().is_some_and(|c| c.is_ascii_digit()) && tok.contains('.'));
+        assert!(looks_like_version, "版本输出不像 pi：{text}");
         eprintln!("真机核对：{} → {} {}", bin.display(), program.display(), args[0]);
     }
 

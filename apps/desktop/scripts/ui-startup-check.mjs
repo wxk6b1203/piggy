@@ -1974,11 +1974,22 @@ const plugins = await page.evaluate(async () => {
     .find((r) => r.getAttribute('data-plugin-key')?.includes('quiet.ts'))
     ?.getAttribute('data-plugin-enabled');
 
-  // 内置那条必须没有开关（pi 的内置扩展不可管理）
+  /* pi 内置扩展：**开关必须可点**（2026-10-09 改口径）。
+     它们是合成路径 `builtin:<name>`、走普通资源解析，settings 里写 `-builtin:<name>`
+     就能单独关掉（真机核对 mcp / llama.cpp 各一遍）。0.87 时代那句"不可停用、-ne 也
+     关不掉"已经过期，门禁以前按那句断言"开关必须 disabled" —— 断言跟着事实走。 */
   const builtinRow = qa('.pg-plugin-row').find((r) => r.getAttribute('data-plugin-key')?.startsWith('builtin:'));
-  // pi 内置扩展不可管理：开关要么不渲染，要么必须是 disabled（DSH 的做法是渲染但禁用）
   const builtinSwitchEl = builtinRow?.querySelector('.ant-switch') ?? null;
   const builtinSwitch = builtinSwitchEl ? { disabled: builtinSwitchEl.disabled } : null;
+  // 点一次：必须真的发出 plugin_set_enabled，且 key 是 `builtin:builtin:<name>`
+  let builtinToggle = null;
+  if (builtinSwitchEl && !builtinSwitchEl.disabled) {
+    const beforeBuiltin = ops().length;
+    builtinSwitchEl.click();
+    await sleep(400);
+    const sentB = ops().slice(beforeBuiltin).filter((o) => o.name === 'plugin_set_enabled');
+    builtinToggle = sentB.length > 0 ? { key: String(sentB.at(-1).args?.key ?? ''), enabled: sentB.at(-1).args?.enabled } : null;
+  }
 
   // 安装流程：裸包名要被拦下并给出 npm: 写法；填入示例后能装。
   //
@@ -2060,6 +2071,7 @@ const plugins = await page.evaluate(async () => {
     sent,
     afterToggle,
     builtinSwitch: builtinSwitch === null ? null : builtinSwitch.disabled,
+    builtinToggle,
     addBtnFound,
     dialogMs,
     bareProblem,
@@ -5036,9 +5048,16 @@ else {
   if (p.afterToggle !== '1') {
     bad.push(`插件页：点开关后那一行仍是 data-plugin-enabled=${String(p.afterToggle)}（没重拉或没生效）★`);
   }
-  // pi 内置扩展不可管理：不该有开关
-  if (p.builtinSwitch === false) {
-    bad.push('插件页：pi 内置扩展那行的开关是可点的（pi 里它不可停用，-ne 也关不掉）★');
+  /* pi 内置扩展（2026-10-09 改口径）：开关**必须可点**且点了真的写规则。
+     以前的断言是反的（"必须禁用"），依据是 0.87 时代的"内置不可停用"—— 已过期。 */
+  if (p.builtinSwitch === null) {
+    bad.push('插件页：pi 内置那行没有渲染开关（pi 1.1.0 起它是可以停用的）★');
+  } else if (p.builtinSwitch === true) {
+    bad.push('插件页：pi 内置那行的开关是禁用的（pi 1.1.0 起可以停用）★');
+  } else if (!p.builtinToggle) {
+    bad.push('插件页：点了内置扩展的开关却没有发出 plugin_set_enabled ★');
+  } else if (!String(p.builtinToggle.key).startsWith('builtin:builtin:')) {
+    bad.push(`插件页：内置扩展的开关回传的 key 不对（${String(p.builtinToggle.key)}）★`);
   }
   // 安装流程
   if (!(p.dialogMs >= 0)) bad.push('插件页：点「添加插件」没打开对话框 ★');

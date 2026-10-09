@@ -35,7 +35,13 @@ Piggy 实现约定：
 
 内置优先于 PATH 的理由：**发布确定性**——每个 Piggy 版本与契约矩阵验证过的 pi 版本成对发布；追求最新版的用户可在设置开启"优先使用系统 pi"。捆绑使最终用户**零前置安装**（无需 Node/npm/pi）。
 
-启动时执行 `pi --version` 做版本门禁：低于契约锚定版本（见 §9）时 UI 警告并阻止创建会话（给出升级命令）。未找到二进制时进入引导页（含 `curl -fsSL https://pi.dev/install.sh | sh` 与 `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` 两种安装指引）。
+启动时执行 `pi --version` 并**显示**它（设置页「运行」页签的"当前生效"那一行），
+但**没有**"低于锚点就阻止建会话"这道门禁 —— 2026-10-09 复查：全仓没有任何 semver 比较，
+`--version` 只被存进 `PiBinary.version` 供显示。这是刻意保留的状态：
+0.87.1 → 1.1.0 的 RPC/事件/会话条目面实测无破坏（docs/15 规矩 132），
+而版本门禁会在"用户自己装了更新的 pi"时挡住一个其实能用的组合。
+未找到二进制时进入引导页（含 `curl -fsSL https://pi.dev/install.sh | sh` 与
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent` 两种安装指引）。
 
 ### 2.2 spawn 参数
 
@@ -328,7 +334,7 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 
 另注意协议列出 RPC 模式下退化/不支持的 UI 方法（`custom()` 恒 undefined 等）——piggy-bridge 扩展（06 §4）设计时必须遵守：`ctx.mode === "rpc"`、`ctx.hasUI === true`，仅使用上表能力。
 
-## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1】
+## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1；**C1–C15 于 2026-10-09 在 pi 1.1.0 上重跑全绿 16/16**（含新增的 C15：建 tab 不持 registry 锁）】
 
 实现：`src-tauri/tests/contract.rs`（`pnpm test:contract`）。结论已回填下表；C11 留待 M1。
 
@@ -369,4 +375,4 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 | worker 崩溃 | 管道 EOF / 非零退出 | 01 §2.3 状态机；stderr 尾部展示 |
 | spawn 失败 | 立即错误 | 引导页（§2.1） |
 | 事件解析失败 | 单行 JSON 非法 | 计数 + 原始行留存日志，不中断流【pi 保证合法 JSONL，防御性处理】 |
-| 契约版本不符 | `pi --version` 低于锚点 | 阻断 + 升级指引 |
+| 契约版本不符 | `pi --version` 低于锚点 | **当前不阻断**（只显示版本；见 §2.1 的说明）。真出问题时的第一现场是 `pi:state` 事件里的 `stderrTail`，它会作为会话内一行显示出来 |

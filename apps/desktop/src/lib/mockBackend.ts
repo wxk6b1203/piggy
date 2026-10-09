@@ -647,7 +647,7 @@ interface MockPluginRow {
   sourceKind: string; sourceKindLabel: string; scope: string; scopeLabel: string;
   source: string; path: string; exists: boolean; enabled: boolean; enabledBy: string;
   version: string | null; description: string | null; entries: string[];
-  removable: boolean; updatable: boolean; loadRank: number;
+  removable: boolean; updatable: boolean; replaceable: boolean; loadRank: number;
 }
 
 /** 四种来源各一条，外加一条"声明了但没装上"。 */
@@ -662,7 +662,7 @@ const mockPluginRows: MockPluginRow[] = [
     exists: true, enabled: true, enabledBy: '默认加载（没有任何规则排除它）',
     version: null, description: null,
     entries: ['/mock/project/.pi/extensions/local.ts'],
-    removable: true, updatable: false, loadRank: 1,
+    removable: true, updatable: false, replaceable: false, loadRank: 1,
   },
   {
     key: 'global:package:npm:pi-guardrails',
@@ -675,7 +675,7 @@ const mockPluginRows: MockPluginRow[] = [
     enabledBy: '这条包在 settings.json 的 packages 里没有过滤规则 → pi 加载它提供的全部资源',
     version: '0.1.0', description: 'pi extension: read-before-write guard',
     entries: ['/mock/home/.pi/agent/npm/node_modules/pi-guardrails/index.ts'],
-    removable: true, updatable: true, loadRank: 4,
+    removable: true, updatable: true, replaceable: false, loadRank: 4,
   },
   {
     key: 'global:package:npm:@me/never-installed',
@@ -687,7 +687,7 @@ const mockPluginRows: MockPluginRow[] = [
     exists: false, enabled: true,
     enabledBy: '这条包在 settings.json 的 packages 里没有过滤规则 → pi 加载它提供的全部资源',
     version: null, description: null, entries: [],
-    removable: true, updatable: true, loadRank: 4,
+    removable: true, updatable: true, replaceable: false, loadRank: 4,
   },
   {
     key: 'global:discovered:/mock/home/.pi/agent/extensions/quiet.ts',
@@ -700,7 +700,7 @@ const mockPluginRows: MockPluginRow[] = [
     enabledBy: '被 /mock/home/.pi/agent/settings.json 的 - 规则强制排除',
     version: null, description: null,
     entries: ['/mock/home/.pi/agent/extensions/quiet.ts'],
-    removable: true, updatable: false, loadRank: 3,
+    removable: true, updatable: false, replaceable: false, loadRank: 3,
   },
   {
     key: 'builtin:builtin:llama.cpp',
@@ -709,9 +709,11 @@ const mockPluginRows: MockPluginRow[] = [
     scope: 'builtin', scopeLabel: 'pi 内置',
     source: 'llama.cpp', path: '(pi 内置：packages/coding-agent/src/extensions/llama)',
     exists: true, enabled: true,
-    enabledBy: 'pi 内置扩展：随 pi 发布，不可增删，-ne 也关不掉',
+    // pi 1.1.0 起内置扩展可以停用（写全局 settings 的 -builtin:<name>），
+    // 也可以被别的扩展顶替；只有 llama.cpp 两边都不行（replaceable=false）
+    enabledBy: 'pi 内置扩展：随 pi 发布；可以用设置里的 -builtin:llama.cpp 关掉',
     version: null, description: null, entries: [],
-    removable: false, updatable: false, loadRank: -1,
+    removable: false, updatable: false, replaceable: false, loadRank: -1,
   },
 ];
 
@@ -1542,11 +1544,14 @@ pub fn main() {
     const key = String(args.key ?? '');
     const row = mockPluginRows.find((r) => r.key === key);
     if (!row) throw new Error(`找不到插件 ${key}`);
-    if (row.kind === 'builtin') throw new Error('pi 内置扩展不能停用');
     row.enabled = args.enabled === true;
     row.enabledBy = row.enabled
-      ? '默认加载（没有任何规则排除它）'
-      : '被 /mock/home/.pi/agent/settings.json 的 - 规则强制排除';
+      ? row.kind === 'builtin'
+        ? 'pi 内置扩展：随 pi 发布；可以用设置里的 -builtin:… 关掉'
+        : '默认加载（没有任何规则排除它）'
+      : row.kind === 'builtin'
+        ? '全局 settings.json 里被 -builtin:… 关掉'
+        : '被 /mock/home/.pi/agent/settings.json 的 - 规则强制排除';
     return { ok: true };
   },
   plugin_delete_discovered: (args) => {

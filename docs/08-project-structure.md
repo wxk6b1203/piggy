@@ -144,7 +144,7 @@ piggy/
 
 目标：最终用户**零前置安装**（无需 Node/npm/pi），安装 Piggy 即用。
 
-- **捆绑物**：pi 官方 standalone 二进制（自包含运行时；MIT，保留归属声明）。release 构建按 target triple 从 pi GitHub Releases 下载资产（v0.87.0 实测：darwin-arm64 29MB / linux 40MB / windows 42MB 压缩级），**SHA256SUMS 校验**后解包进 `src-tauri/resources/pi/`，经 tauri `bundle.resources` 随应用分发；
+- **捆绑物**：pi 官方 standalone 二进制（自包含运行时；MIT，保留归属声明）。release 构建按 target triple 从 pi GitHub Releases 下载资产（**默认版本 1.1.0**，2026-10-09 起；资产体积 v0.87.0 实测 darwin-arm64 29MB / linux 40MB / windows 42MB 压缩级），**SHA256SUMS 校验**后解包进 `src-tauri/resources/pi/`，经 tauri `bundle.resources` 随应用分发；
 - **发现顺序**：见 02 §2.1（显式路径 > PI_BIN > 内置 > PATH）；
 - **版本策略**：Piggy 版本 ↔ pi 版本成对锚定（02 §9 契约矩阵验证该组合）；运行时 `pi --version` 门禁照常；"pi 运行时应用内更新"（拉取新 standalone，opt-in）= M3 评估；
 - **双 SKU**：`full`（捆绑 pi，默认）/ `lite`（不捆绑，体积敏感用户自装 pi）——同一构建管线，bundle.resources 条件化；
@@ -154,7 +154,7 @@ piggy/
 ### 7.2 版本
 
 - 语义版本：0.x 阶段 minor=功能、patch=修复；
-- 契约锚定：每个 release 注明验证过的 pi 版本区间（当前 **0.87.0**，2026-09-22 重跑 C1–C10 全绿；0.86.1→0.87.0 RPC 命令/事件面无变化，新增 `context_edit` 会话条目类型，透传兼容，M1 轨迹视图需渲染）；
+- 契约锚定：每个 release 注明验证过的 pi 版本区间（当前 **1.1.0**，2026-10-09 重跑 C1–C15 全绿 16/16；0.87.1→1.1.0 的 RPC 命令/事件/会话条目面**逐字段比对无破坏**，唯一新增是 `prompt/steer/follow_up` 响应里的 `disposition`，透传兼容。细节与实测过程见 docs/15 规矩 132）；
 - 更新通道：stable / beta（tauri-plugin-updater endpoints）；
 - piggy-bridge 随主应用节奏发布，但允许独立小版本（它只依赖文档化的扩展 API 与 subagents RPC v1 的能力协商，06 §4.3）。
 

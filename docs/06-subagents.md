@@ -170,7 +170,7 @@ lane 本来就是 registry 里的一个 worker/tab（06 §3.5），提升只是�
 
 | 层 | 机制 | 原文 |
 |---|---|---|
-| ① 工具门控 | `subagent` **默认不在激活工具表里**，只有一个空参数的 `subagents_enable`；模型得先主动调它，`subagent` 下一次请求才出现 | `tool-activation.js`（需 pi ≥ 0.86.1，本机 0.87.1 满足） |
+| ① 工具门控 | `subagent` **默认不在激活工具表里**，只有一个空参数的 `subagents_enable`；模型得先主动调它，`subagent` 下一次请求才出现 | `tool-activation.js`（需 pi ≥ 0.86.1；本机 1.1.0 满足） |
 | ② loader 描述 | 调不调它本身就是一次"要不要委派"的决策 | *"Direct execution is the default; **complexity alone never authorizes delegation**."* |
 | ③ 启用后的 guidelines | 进系统提示词 rules 段 | *"**Do not invoke subagents unless the operator requested delegation directly or through applicable instructions.**"* |
 

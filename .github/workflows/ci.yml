@@ -19,6 +19,9 @@ jobs:
       - run: pnpm -r --if-present lint
       # 收录的第三方插件不许被就地改过（docs/17 §2.2b：vendor.json 里的 sha256 对账）
       - run: node apps/desktop/scripts/vendor-plugin.mjs --check
+      # pi 版本锚点六处对账（2026-10-09 加）：升级 pi 时漏改任何一处都不会报错，
+      # 只会静默漂移（生成物、CI 安装版本、bridge 类型锚点、给用户看的 NOTICES…）
+      - run: node apps/desktop/scripts/check-pi-pin.mjs
       - run: pnpm -r --if-present test
       - run: pnpm --filter @piggy/desktop build
 
@@ -73,7 +76,11 @@ jobs:
         with: { workspaces: apps/desktop/src-tauri }
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
-      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+      # 固定版本（不是 @latest）：契约矩阵验证过的是**这一个** pi。
+      # 升级要用 apps/desktop/scripts/check-pi-pin.mjs 的清单走一遍（六处锚点一起改），
+      # 否则 CI 会在别的 PR 上突然变红/变绿 —— 那是"版本漂移"而不是"这次改动坏了"。
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+      - run: node apps/desktop/scripts/check-pi-pin.mjs --installed
       # 真机插件探针（docs/17 §2.2b）：核对外面那三条只有真 pi 才能验的事
       # （能加载 / `--tools` 会过滤插件工具 / 两份同名插件会让 pi 不进会话）。
       - run: node apps/desktop/scripts/pi-plugin-probe.mjs

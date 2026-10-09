@@ -777,11 +777,11 @@ async fn c14_fleet_lane_dag_with_real_pi() {
 
 /* ---------------- C15：建 tab 时**不持 registry 锁**握手（2026-10-09 复查的修复） ----------------
 
-   为什么值得一条契约级用例：这条不变量是**时间性质**的，单测（纯函数）证明不了它。
-   改造前 `create_tab` 是「锁内 spawn → 锁内 get_state（40s 预算）→ 锁内记账」，
-   于是一次慢启动会让**所有标签页**的命令一起卡住（`worker_of` 走同一把锁）。
-   这里在真实 pi 上建一个 tab，同时不停抢锁、量"最久一次等了多久"。
-   —— 测的是"锁没有被握手占着"，而不是某个实现细节。 */
+为什么值得一条契约级用例：这条不变量是**时间性质**的，单测（纯函数）证明不了它。
+改造前 `create_tab` 是「锁内 spawn → 锁内 get_state（40s 预算）→ 锁内记账」，
+于是一次慢启动会让**所有标签页**的命令一起卡住（`worker_of` 走同一把锁）。
+这里在真实 pi 上建一个 tab，同时不停抢锁、量"最久一次等了多久"。
+—— 测的是"锁没有被握手占着"，而不是某个实现细节。 */
 #[tokio::test]
 async fn c15_creating_a_tab_does_not_hold_the_registry_lock() {
     use piggy_lib::sessions::registry::{create_tab_unlocked, Registry, SharedRegistry};

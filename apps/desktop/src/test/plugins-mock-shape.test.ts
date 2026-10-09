@@ -34,6 +34,8 @@ const ROW_KEYS = [
   'entries',
   'removable',
   'updatable',
+  // pi 1.1.0 起内置条目的第三个能力字段（可被别的扩展顶替，`omitReplacedExtensions`）
+  'replaceable',
   'loadRank',
 ];
 
