@@ -148,12 +148,7 @@ pub fn existing_install(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 /// @param home - 用户主目录
 /// @param cwd - 会话工作目录
 /// @returns 每个插件的解析结果（顺序 = `bundled` 顺序）
-pub fn resolve(
-    bundled: &[PathBuf],
-    enabled: &[String],
-    home: Option<&Path>,
-    cwd: Option<&Path>,
-) -> Vec<BundledPlugin> {
+pub fn resolve(bundled: &[PathBuf], enabled: &[String], home: Option<&Path>, cwd: Option<&Path>) -> Vec<BundledPlugin> {
     let dirs = discovery_dirs(home, cwd);
     bundled
         .iter()
@@ -329,6 +324,52 @@ mod tests {
         assert!(!out[1].inject, "入口不存在的插件不该注入");
         assert!(out[1].skipped.as_deref().unwrap().contains("nope.js"));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// **随包分发必须真的随包**：两个 SKU 的 `bundle.resources` 都要登记插件目录。
+    ///
+    /// 这条闸门是 2026-10-09 补的：`pi-plugins/` 是 10-06 加进来的，而资源清单里
+    /// **从来没登记过它** —— 于是打包产物一个插件都没有，界面上只是"设置里没有捆绑插件"，
+    /// 而**在构建机上直接跑那个 .app 会看起来完全正常**（`resources.rs` 的第三候选
+    /// `CARGO_MANIFEST_DIR` 正好命中源码树）。这种"打包完全成功、功能静默消失"
+    /// 与 `pi-LICENSE.txt` 那次是同一类（docs/15 规矩 4），所以同样用测试钉住。
+    ///
+    /// 必须用 `**/*`：tauri 用 `glob` crate，`*` **不跨目录分隔符**，
+    /// 写成 `resources/pi-plugins/*` 会把 `pi-todo/src/*.ts` 全漏掉（docs/17 §3 第 6 条）。
+    #[test]
+    fn both_skus_register_the_plugin_directory() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for conf in ["tauri.conf.json", "tauri.full.conf.json"] {
+            let raw = std::fs::read_to_string(root.join(conf)).unwrap_or_else(|e| panic!("读不到 {conf}: {e}"));
+            let json: serde_json::Value =
+                serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{conf} 不是合法 JSON: {e}"));
+            let list = json["bundle"]["resources"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{conf} 里没有 bundle.resources"));
+            let items: Vec<&str> = list.iter().filter_map(|v| v.as_str()).collect();
+            assert!(
+                items.contains(&"resources/pi-plugins/**/*"),
+                "{conf} 的 bundle.resources 没登记插件目录（打包产物会一个插件都没有）：{items:?}"
+            );
+        }
+    }
+
+    /// 默认开关里的每个名字都要**真的在仓库里**，而且清单与入口齐全。
+    ///
+    /// 少了目录时 `lib.rs::bundled_plugin_dirs` 会静默跳过（filter_map），
+    /// 于是"默认开着的插件"在设置页里连一行都不出现 —— 这条把它变成一次红。
+    #[test]
+    fn every_default_bundled_plugin_is_in_the_repo() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("pi-plugins");
+        for name in crate::config::app::default_bundled_plugins() {
+            let dir = root.join(&name);
+            let m = read_manifest(&dir).unwrap_or_else(|| panic!("{name}: 缺少 {MANIFEST}（{}）", dir.display()));
+            assert_eq!(m.name, name, "清单里的 name 必须与目录名一致（开关按目录名匹配）");
+            assert!(!m.entry.is_empty(), "{name}: 清单没写 entry");
+            assert!(dir.join(&m.entry).is_file(), "{name}: 入口 {} 不存在", m.entry);
+        }
     }
 
     /// 清单里的工具名要能被收集出来（限制档位拼 `--tools` 白名单靠它）。

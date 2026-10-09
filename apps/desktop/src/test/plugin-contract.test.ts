@@ -183,4 +183,23 @@ describe('随包分发的每个插件（自研 + 收录的第三方）', () => {
       }
     }
   });
+
+  /* 2026-10-09 补：插件目录 10-06 就进来了，而**两个 SKU 的 bundle.resources 都没登记它**
+     —— 打包产物一个插件都没有，而构建机上直接跑那个 .app 会看起来正常
+     （`pi/resources.rs` 的第三候选 `CARGO_MANIFEST_DIR` 正好命中源码树），换台机器才消失。
+     Rust 侧有一条同样的闸门（`pi/plugins.rs::both_skus_register_the_plugin_directory`），
+     两条都要留：这条跑在 frontend 作业（ubuntu），那条跑在 rust 作业（macos）。 */
+  it('两个 SKU 的 bundle.resources 都登记了插件目录，而且必须是 **/*', () => {
+    const appDir = join(HERE, '..', '..');
+    for (const conf of ['tauri.conf.json', 'tauri.full.conf.json']) {
+      const c = JSON.parse(readFileSync(join(appDir, 'src-tauri', conf), 'utf8')) as {
+        bundle: { resources: string[] };
+      };
+      // `**/*` 而不是 `*`：tauri 用 glob crate，`*` 不跨目录分隔符，
+      // 写成 `resources/pi-plugins/*` 会把 `pi-todo/src/*.ts` 全漏掉（docs/17 §3 第 6 条）
+      expect(c.bundle.resources, `${conf} 的 bundle.resources 少了插件目录（打包产物会零插件）`).toContain(
+        'resources/pi-plugins/**/*',
+      );
+    }
+  });
 });

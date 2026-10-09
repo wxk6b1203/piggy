@@ -15,7 +15,7 @@ pnpm tauri build --config src-tauri/tauri.full.conf.json --bundles app
 
 默认（lite）SKU 用 `tauri.conf.json`，不捆绑 pi，只需要系统上有一个 `pi`。
 
-## 两条必须遵守的规则
+## 三条必须遵守的规则
 
 ### 1. `resources` 要把基础配置的项**原样重复**一遍
 
@@ -36,6 +36,22 @@ tauri 用 `glob` crate 展开资源通配符（`tauri-utils/src/resources.rs:250
 另外 `glob` **匹配不到任何文件时会直接报错**（`Error::GlobPathNotFound`），
 所以没有先跑 `fetch-pi-standalone.mjs` 就构 full SKU 会失败 —— 这是有意的，
 比打出一个没有 pi 的包要好。
+
+### 3. 捆绑的 pi 插件目录也要登记（`resources/pi-plugins/**/*`）
+
+`resources/pi/` 是 pi 自己，`resources/pi-plugins/<name>/` 是**随包分发的功能插件**
+（`pi-ask`、`pi-todo`，docs/17 §2.2b）。两者是**两个条目**，只登记前者不会把后者带进包。
+
+这个坑 2026-10-09 实测踩过：插件目录 10-06 就进来了，而两个 SKU 的 `resources` 里
+**都没有它**。症状是"打包完全成功、功能静默消失"，而且**在构建机上直接跑那个 `.app`
+看起来完全正常** —— `pi/resources.rs` 的定位顺序是「resource_dir 两级 → 源码树兜底」，
+第三候选 `CARGO_MANIFEST_DIR` 在构建机上正好命中源码树。换台机器才消失。
+
+现在有两个闸门守着（改坏了会红，不是靠记性）：
+`src/pi/plugins.rs::both_skus_register_the_plugin_directory` 与
+`apps/desktop/src/test/plugin-contract.test.ts`。
+
+同样必须用 `**/*`：`pi-todo/src/*.ts` 在子目录里，`*` 打不进包（同规则 2）。
 
 ## 用自定义（fork）的 pi
 

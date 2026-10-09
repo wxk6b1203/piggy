@@ -123,7 +123,7 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 ### 2.2b 捆绑的 **pi 插件**（功能插件，和 pi 本身分开）
 
 `resources/pi/` 装的是 **pi 自己**；`resources/pi-plugins/<name>/` 装的是**给模型用的功能插件**
-（今天有一个：`pi-ask` 结构化提问 + `/plan` 计划模式）。区别与理由：
+（自研 `pi-ask` 结构化提问 + `/plan` 计划模式；收录的第三方 `pi-todo`）。区别与理由：
 
 | | `piggy-guard.js` / `piggy-bridge.js` | `pi-plugins/<name>/` |
 |---|---|---|
@@ -135,7 +135,7 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 是 spawn 系统 `npm` 来装的（`package-manager.js`）。捆绑 + `-e` 不需要任何包管理器，
 插件目录就是最终产物（plain ESM JS，不需要构建，也没有 npm 依赖）。
 
-三条纪律（都有真机证据，`node scripts/pi-plugin-probe.mjs` 可复现）：
+四条纪律（都有真机证据，`node apps/desktop/scripts/pi-plugin-probe.mjs` 可复现）：
 
 1. **重复加载会让 pi 直接不进会话**：同名工具从两个不同路径注册时，pi 打印
    `Tool "ask_user_question" conflicts with …` 并**根本不建立会话**（同一个路径传两次
@@ -149,6 +149,14 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
    `piggy-plugin.json` 里申报的工具名加进去（`pi/process.rs::cli_args`）。
 3. **清单缺失/入口不存在就不注入**：pi 对"加载失败的扩展"的处理是报诊断并退出 ——
    宁可少一个功能，也不能让用户开不了会话。
+4. **目录必须登记进两个 SKU 的 `bundle.resources`，而且要用 `**/*`**（2026-10-09 补）：
+   `pi-plugins/` 是 10-06 进来的，而资源清单里**从来没登记过它** → 打包产物零插件；
+   更阴的是**在构建机上直接跑那个 `.app` 会看起来完全正常**（`pi/resources.rs` 的第三候选
+   `CARGO_MANIFEST_DIR` 正好命中源码树），换台机器才消失。
+   现在由两条闸门守着：`pi/plugins.rs::both_skus_register_the_plugin_directory`（rust 作业）
+   与 `src/test/plugin-contract.test.ts`（frontend 作业）。
+   `*` 不跨目录分隔符（glob crate），写成 `resources/pi-plugins/*` 会把 `pi-todo/src/*.ts` 全漏掉
+   —— 与 `resources/pi/**/*` 是同一个坑（§3 第 6 条）。
 
 ### 2.2c 收录第三方插件（`scripts/vendor-plugin.mjs`）
 
@@ -156,9 +164,9 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 （今天一个：`pi-todo`，MIT，来自 `~/Project/pi-todo`）。收录走脚本，不手工复制：
 
 ```bash
-node scripts/vendor-plugin.mjs --from ~/Project/pi-todo --name pi-todo \
+node apps/desktop/scripts/vendor-plugin.mjs --from ~/Project/pi-todo --name pi-todo \
      --entry index.ts --tools todo_enable,todo_write --commands todos --title '任务清单（DSH 风格）'
-node scripts/vendor-plugin.mjs --check     # CI 跑这条：文件内容与 vendor.json 对不上就红
+node apps/desktop/scripts/vendor-plugin.mjs --check   # CI 跑这条：文件内容与 vendor.json 对不上就红
 ```
 
 脚本钉住三件事：
@@ -172,7 +180,8 @@ node scripts/vendor-plugin.mjs --check     # CI 跑这条：文件内容与 vend
 `--tools` 白名单，猜错就等于告诉模型"你有这个工具"而它并不存在。
 
 收录完有两步收尾（脚本会提醒）：把名字加进 `config/app.rs::default_bundled_plugins()`、
-跑一次 `node scripts/pi-plugin-probe.mjs`（真 pi 能不能加载它）。
+跑一次 `node apps/desktop/scripts/pi-plugin-probe.mjs`（真 pi 能不能加载它），
+以及确认新目录被两个 SKU 的 `bundle.resources` 的 `resources/pi-plugins/**/*` 覆盖（闸门会自动查）。
 契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
 有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
 
