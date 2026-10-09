@@ -13,7 +13,9 @@ use std::sync::Arc;
 use super::protocol::Ame;
 
 pub struct FrameCoalescer {
-    tab_id: String,
+    /// 共享的标签页句柄（**不是** spawn 时拷下来的字符串：预热池会把一个已起的
+    /// 进程重绑给另一个标签页，帧必须跟着走 —— 见 `client.rs::TabSlot`）
+    tab: super::client::TabSlot,
     sink: Arc<dyn EventSink>,
     text: Vec<(i64, String)>,
     thinking: Vec<(i64, String)>,
@@ -22,10 +24,16 @@ pub struct FrameCoalescer {
     usage: Option<Value>,
 }
 
+/// 测试用：把字符串包成共享句柄。
+#[cfg(test)]
+fn slot(tab: &str) -> super::client::TabSlot {
+    std::sync::Arc::new(std::sync::RwLock::new(tab.to_string()))
+}
+
 impl FrameCoalescer {
-    pub fn new(tab_id: String, sink: Arc<dyn EventSink>) -> Self {
+    pub fn new(tab: super::client::TabSlot, sink: Arc<dyn EventSink>) -> Self {
         Self {
-            tab_id,
+            tab,
             sink,
             text: Vec::new(),
             thinking: Vec::new(),
@@ -83,7 +91,8 @@ impl FrameCoalescer {
             "signals": self.signals,
             "usage": self.usage,
         });
-        self.sink.emit_json(&format!("pi:frame:{}", self.tab_id), frame);
+        let tab = self.tab.read().unwrap_or_else(|e| e.into_inner()).clone();
+        self.sink.emit_json(&format!("pi:frame:{tab}"), frame);
         self.text.clear();
         self.thinking.clear();
         self.tool_args.clear();
@@ -115,7 +124,7 @@ mod tests {
         let sink = Arc::new(CollectorSink {
             events: StdMutex::new(Vec::new()),
         });
-        let mut c = FrameCoalescer::new("t1".into(), sink.clone());
+        let mut c = FrameCoalescer::new(slot("t1"), sink.clone());
         c.push_delta(&ame("text_delta", 0, Some("Hel")));
         c.push_delta(&ame("text_delta", 0, Some("lo ")));
         c.push_delta(&ame("text_delta", 0, Some("world")));
@@ -141,12 +150,39 @@ mod tests {
         assert_eq!(payload["usage"]["totalTokens"], 5);
     }
 
+    /// **重绑之后帧必须跟着走**（2026-10-09，预热池的地基）。
+    ///
+    /// 复用进程的前提是"事件的通道名读的是**当前**绑定"，而不是 spawn 时拷下来的字符串。
+    /// 这条判据错了的形式是**静默串台**：新标签页的流式内容发到旧标签页的通道上，
+    /// 两边都不会报错，用户看到的是"打开新会话，字长到别的标签里"。
+    #[tokio::test]
+    async fn frames_follow_a_rebind() {
+        let sink = Arc::new(CollectorSink {
+            events: StdMutex::new(Vec::new()),
+        });
+        let s1 = slot("tab-old");
+        let mut c = FrameCoalescer::new(s1.clone(), sink.clone());
+        c.push_delta(&ame("text_delta", 0, Some("旧")));
+        c.flush().await;
+        assert_eq!(sink.events.lock().unwrap()[0].0, "pi:frame:tab-old");
+
+        // 预热池把同一个进程重绑给新标签页
+        *s1.write().unwrap() = "tab-new".to_string();
+        c.push_delta(&ame("text_delta", 0, Some("新")));
+        c.flush().await;
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events[1].0, "pi:frame:tab-new",
+            "重绑之后帧还发到旧标签页 —— 这是静默串台"
+        );
+    }
+
     #[tokio::test]
     async fn empty_flush_is_noop() {
         let sink = Arc::new(CollectorSink {
             events: StdMutex::new(Vec::new()),
         });
-        let mut c = FrameCoalescer::new("t1".into(), sink.clone());
+        let mut c = FrameCoalescer::new(slot("t1"), sink.clone());
         c.flush().await;
         c.flush().await;
         assert!(sink.events.lock().unwrap().is_empty());
@@ -157,7 +193,7 @@ mod tests {
         let sink = Arc::new(CollectorSink {
             events: StdMutex::new(Vec::new()),
         });
-        let mut c = FrameCoalescer::new("t1".into(), sink.clone());
+        let mut c = FrameCoalescer::new(slot("t1"), sink.clone());
         c.push_delta(&ame("thinking_delta", 1, Some("hmm")));
         c.push_signal(&ame("toolcall_start", 2, None));
         assert!(c.has_pending());

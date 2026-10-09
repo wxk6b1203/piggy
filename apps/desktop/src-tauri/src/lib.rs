@@ -324,6 +324,14 @@ pub fn run() {
                     for id in reaped {
                         eprintln!("[piggy] idle worker reaped: {id}");
                     }
+                    /* 预热 worker 也在这个心跳里过期（docs/05 §5.7）：它不属于任何 tab，
+                       `reap_idle` 看不见它 —— 不在这里收，开了预热开关的用户会一直挂着
+                       一个 200 MB 的 pi 进程（实测 RSS），哪怕他几小时没开会话。 */
+                    if let Some(w) = reg.take_expired_warm() {
+                        drop(reg);
+                        w.shutdown().await;
+                        eprintln!("[piggy] 预热 worker 过期回收（超过保鲜期没被用掉）");
+                    }
                 }
             });
             /* 「打开方式」图标预热（2026-10-09）：Windows 上每个应用要起一个 PowerShell

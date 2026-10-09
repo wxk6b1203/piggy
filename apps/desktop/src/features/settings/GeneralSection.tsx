@@ -44,6 +44,8 @@ export function GeneralSection() {
   const [perm, setPerm] = useState<string>('workspace');
   const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
   const [delegation, setDelegation] = useState(false);
+  /** 预热 worker（docs/05 §5.7，默认关） */
+  const [warm, setWarm] = useState(false);
   // source 是 Windows 事故后加的：默认地址出问题时，得能一眼看出这个目录是
   // 默认值、settings.json 里的自定义值、还是 PI_CODING_AGENT_SESSION_DIR 环境变量。
   const [sessionDir, setSessionDir] = useState<{
@@ -89,10 +91,12 @@ export function GeneralSection() {
       title_source?: string;
       title_model?: string | null;
       title_thinking?: string | null;
+      warm_worker?: boolean;
     }>('perf_config_load')
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
         setDelegation(c.subagent_delegation ?? false);
+        setWarm(c.warm_worker === true);
         if (c.permission_mode) setPerm(c.permission_mode);
         setTitleCfg({
           maxChars: c.title_max_chars ?? 20,
@@ -137,6 +141,8 @@ export function GeneralSection() {
     permissionMode?: string;
     perf?: typeof perf;
     delegation?: boolean;
+    /** 预热 worker（docs/05 §5.7） */
+    warm?: boolean;
     title?: { maxChars: number; source: string; model: string; thinking: string };
     /** 预览滚动条位置（off / left / right） */
     rail?: RailPlacement;
@@ -153,6 +159,7 @@ export function GeneralSection() {
         piPath: patch.piPath,
         // 不传 = 保持既有值（后端读-改-写，不会顺手抹掉别的字段）
         subagentDelegation: patch.delegation,
+        warmWorker: patch.warm,
         titleMaxChars: patch.title?.maxChars ?? titleCfg.maxChars,
         titleSource: patch.title?.source ?? titleCfg.source,
         titleModel: patch.title?.model ?? titleCfg.model,
@@ -554,6 +561,28 @@ export function GeneralSection() {
           `-e` 注入的扩展在"插件"页里看不见（那页扫的是 pi 自己的发现目录），
           所以在这里单列一块，免得用户找不到"我那个提问插件到底在不在"。 */}
       <BundledPluginsRow onChanged={reload} />
+
+      {/* 预热 worker（docs/05 §5.7）：**默认关**。
+          收益是把 pi 的启动提前付掉（实测：复用 208 ms vs 冷启动 527 ms），
+          代价是一个常驻 pi 进程与"进程池 + 会话切换"这条更复杂的路径。
+          为什么默认关要写在界面上：macOS 上只省 ~250 ms，而"点了没反应"已经由
+          乐观 UI 解决；真正的收益在 Windows（三层 cmd 垫片 + Defender）还没量过。 */}
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">预热会话进程</span>
+        <Switch
+          checked={warm}
+          disabled={busy}
+          data-warm-switch
+          onChange={(v) => {
+            setWarm(v);
+            void save({ warm: v });
+          }}
+        />
+        <span className="pg-fg-dim">
+          空闲时先起一个 pi 备用进程，打开会话时直接切过去（省掉约 0.3 秒的启动等待）。
+          代价是常驻一个 pi 进程；备用进程超过 10 分钟没用会被换掉。
+        </span>
+      </div>
 
       <div className="pg-settings-row">
         <span className="pg-settings-label">子代理委派</span>

@@ -832,3 +832,109 @@ async fn c15_creating_a_tab_does_not_hold_the_registry_lock() {
     reg.close_tab(&sink, &snapshot.tab_id).await.expect("close_tab");
     eprintln!("C15 ok：最长一次抢锁等待 {worst:?}");
 }
+
+/* ---------------- C16：预热 worker 复用（docs/05 §5.7） ----------------
+
+预热池默认关（`warm_worker`），所以这条用例**显式**调 `spawn_warm` 来验证机制本身：
+下一个打开的会话应当复用那个已经起好的进程（省掉 pi 的启动），并且
+① 会话文件正确（`switch_session` 真的切过去了）、
+② 事件通道跟着新标签页走（`rebind_tab`）、
+③ 备用槽被消费掉（不会有两个进程同时被认领）。 */
+#[tokio::test]
+async fn c16_warm_worker_is_reused_by_the_next_session() {
+    use piggy_lib::events::EventSink;
+    use piggy_lib::sessions::registry::{create_tab_unlocked, spawn_warm, Registry, SharedRegistry};
+    use std::sync::Arc as StdArc;
+    use tokio::sync::Mutex;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().to_path_buf();
+    let shared: SharedRegistry = StdArc::new(Mutex::new(Registry::new(Some(
+        discover(PiSource::default(), None, None).expect("pi not found"),
+    ))));
+    let sink: StdArc<dyn EventSink> = StdArc::new(NullSink);
+
+    // 预创建一个空会话文件（Piggy 新建会话就是这么做的），cwd 与预热进程相同
+    let file = cwd.join("warm-session.jsonl");
+    std::fs::write(&file, "").unwrap();
+
+    let t0 = std::time::Instant::now();
+    spawn_warm(&shared, &sink, cwd.clone(), PermissionMode::Full).await;
+    let warm = { shared.lock().await.warm_worker() };
+    let warm = warm.expect("预热 worker 没起来（spawn_warm 失败会打日志）");
+    let warm_ms = t0.elapsed();
+    assert_eq!(warm.state(), WorkerState::Ready, "预热 worker 应当已经握手完成");
+
+    // 打开那个"新会话"：应当直接复用备用进程
+    let t_warm_open = std::time::Instant::now();
+    let snap = create_tab_unlocked(
+        &shared,
+        &sink,
+        cwd.clone(),
+        SessionTarget::Path(file.to_string_lossy().into_owned()),
+        None,
+        PermissionMode::Full,
+        8,
+    )
+    .await
+    .expect("建 tab 失败");
+    let warm_open_ms = t_warm_open.elapsed();
+    let tab_worker = {
+        let reg = shared.lock().await;
+        assert!(reg.warm_worker().is_none(), "备用槽应当已被消费掉");
+        reg.snapshot(&snap.tab_id);
+        reg.tabs
+            .get(&snap.tab_id)
+            .and_then(|t| t.worker.clone())
+            .expect("tab 上没有 worker")
+    };
+    assert!(
+        StdArc::ptr_eq(&warm, &tab_worker),
+        "打开会话没有复用预热 worker（又起了一个新进程）"
+    );
+    assert_eq!(tab_worker.tab_id(), snap.tab_id, "事件通道没跟着新标签页走（会串台）");
+    assert_eq!(
+        snap.session_file.as_deref(),
+        Some(file.to_string_lossy().as_ref()),
+        "复用之后没有切到目标会话文件"
+    );
+
+    // 收尾：关掉这个 tab（会把复用的进程收掉）
+    {
+        let mut reg = shared.lock().await;
+        reg.close_tab(&sink, &snap.tab_id).await.expect("close_tab");
+    }
+
+    /* ② 冷启动对照（同一个 cwd、同一类目标）：把备用槽清空，再开一次。
+       这一段的意义是**量出收益**，而不是只证明机制能跑 —— docs/05 §5.7 的数字就是这么来的。 */
+    if let Some(w) = { shared.lock().await.take_warm_for_shutdown() } {
+        w.shutdown().await;
+    }
+    let file2 = cwd.join("cold-session.jsonl");
+    std::fs::write(&file2, "").unwrap();
+    let t_cold = std::time::Instant::now();
+    let snap2 = create_tab_unlocked(
+        &shared,
+        &sink,
+        cwd.clone(),
+        SessionTarget::Path(file2.to_string_lossy().into_owned()),
+        None,
+        PermissionMode::Full,
+        8,
+    )
+    .await
+    .expect("冷启动建 tab 失败");
+    let cold_ms = t_cold.elapsed();
+    {
+        let mut reg = shared.lock().await;
+        reg.close_tab(&sink, &snap2.tab_id).await.expect("close_tab");
+    }
+
+    eprintln!(
+        "C16 ok：预热进程就绪耗时 {} ms；复用打开 {} ms vs 冷启动 {} ms（省 {} ms）",
+        warm_ms.as_millis(),
+        warm_open_ms.as_millis(),
+        cold_ms.as_millis(),
+        cold_ms.saturating_sub(warm_open_ms).as_millis()
+    );
+}

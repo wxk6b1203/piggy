@@ -450,6 +450,8 @@ pub async fn perf_config_save(
     transcript_detail: Option<String>,
     // 要注入哪些捆绑插件（docs/06 §7）。不传 = 保持既有值。
     bundled_plugins: Option<Vec<String>>,
+    // 预热 worker（docs/05 §5.7）。不传 = 保持既有值。
+    warm_worker: Option<bool>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -489,6 +491,9 @@ pub async fn perf_config_save(
     }
     if let Some(d) = transcript_detail.as_deref() {
         cfg.transcript_detail = crate::config::app::TranscriptDetail::parse(d)?;
+    }
+    if let Some(w) = warm_worker {
+        cfg.warm_worker = w;
     }
     if let Some(list) = bundled_plugins {
         // 只认随包带的那些名字：写进来一个不存在的插件名没有意义（而且会让界面显示一条
@@ -753,6 +758,17 @@ pub async fn boot_reset(app: AppHandle, state: State<'_, AppState>) -> Result<()
     for id in tab_ids {
         let mut reg = state.registry.lock().await;
         let _ = reg.close_tab(&sink(&app), &id).await;
+    }
+    /* 预热 worker 也要一起收（2026-10-09）：它不属于任何 tab，因此不在 `tab_ids` 里 ——
+    而 `boot_reset` 的语义正是"新 JS 上下文接管前收割上一上下文的遗留"。
+    漏掉它就是又一个"没人认领的 pi 进程"，正是这个函数存在的理由。 */
+    let warm = {
+        let mut reg = state.registry.lock().await;
+        reg.take_warm_for_shutdown()
+    };
+    if let Some(w) = warm {
+        w.shutdown().await;
+        eprintln!("[piggy] boot_reset 收掉了上一上下文的预热 worker");
     }
     Ok(())
 }

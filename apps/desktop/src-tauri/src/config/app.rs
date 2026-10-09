@@ -190,6 +190,16 @@ pub struct PerfConfig {
     /// 会给出空清单 —— 老用户升级之后插件一个都不开，而且从界面上看不出为什么。
     #[serde(default = "default_bundled_plugins")]
     pub bundled_plugins: Vec<String>,
+    /// **预热 worker**（docs/05 §5.7）：应用空闲时先起一个 `pi --mode rpc --no-session`
+    /// 备用进程，用户点开会话时用 `switch_session` 指到目标文件，省掉 pi 的启动
+    /// （实测：切到 11 MB 会话 208 ms vs 冷启动 527 ms）。
+    ///
+    /// **默认关**（2026-10-09 定）：收益在 macOS 上只有 ~250 ms，而"感知等待"
+    /// 已经由乐观 UI（占位标签，13 ms 出第一帧）解决；真正的收益在 Windows
+    /// （三层 cmd 垫片 + Defender，冷启动 2.2 s）而那台机器上还没量过。
+    /// 打开它的代价是一个常驻 pi 进程（数十 MB）与"进程池 + 会话切换"这条更复杂的路径。
+    #[serde(default)]
+    pub warm_worker: bool,
 }
 
 /// 默认注入的捆绑插件（目录名）。
@@ -250,6 +260,7 @@ impl Default for PerfConfig {
             transcript_rail: RailPlacement::default(),
             transcript_detail: TranscriptDetail::default(),
             bundled_plugins: default_bundled_plugins(),
+            warm_worker: false,
         }
     }
 }

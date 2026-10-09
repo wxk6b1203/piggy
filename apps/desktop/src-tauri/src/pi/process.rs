@@ -293,7 +293,7 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
     let (state_tx, state_rx) = tokio::sync::watch::channel(WorkerState::Spawning);
 
     let worker: Worker = Arc::new(WorkerInner {
-        tab_id: tab_id.to_string(),
+        tab_id: std::sync::Arc::new(std::sync::RwLock::new(tab_id.to_string())),
         cwd: args.cwd.clone(),
         stdin_tx,
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -349,18 +349,19 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
     {
         let w = worker.clone();
         let sink2 = sink.clone();
-        let tab = tab_id.to_string();
         tokio::spawn(async move {
-            run_reader(w, sink2, tab, stdout).await;
+            /* ⚠️ 不再把 tab_id 拷进闭包：reader 与合帧器都从 `worker.tab_slot()` 读
+            （预热池会把一个已起的进程重绑给另一个标签页，事件必须跟着走）。 */
+            run_reader(w, sink2, stdout).await;
         });
     }
 
     Ok(worker)
 }
 
-async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, stdout: ChildStdout) {
+async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, stdout: ChildStdout) {
     let mut decoder = JsonlDecoder::new();
-    let mut coalescer = FrameCoalescer::new(tab_id.clone(), sink.clone());
+    let mut coalescer = FrameCoalescer::new(worker.tab_slot(), sink.clone());
     let mut buf = vec![0u8; 64 * 1024];
     let mut stdout = stdout;
     let mut interval = tokio::time::interval(Duration::from_millis(16));
@@ -375,7 +376,7 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, st
                         let mut lines = Vec::new();
                         decoder.feed(&buf[..n], &mut lines);
                         for line in lines {
-                            handle_line(&line, &worker, &sink, &tab_id, &mut coalescer).await;
+                            handle_line(&line, &worker, &sink, &mut coalescer).await;
                         }
                     }
                 }
@@ -389,7 +390,7 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, st
     let mut lines = Vec::new();
     decoder.finish(&mut lines);
     for line in lines {
-        handle_line(&line, &worker, &sink, &tab_id, &mut coalescer).await;
+        handle_line(&line, &worker, &sink, &mut coalescer).await;
     }
     coalescer.flush().await;
     worker.fail_all_pending("pi worker exited").await;
@@ -406,6 +407,9 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, st
         WorkerState::Crashed
     };
     let stderr_tail: Vec<String> = worker.stderr_tail.lock().await.iter().cloned().collect();
+    /* 退出通知的通道名也要读**当前**绑定（预热池重绑之后，这个进程属于新标签页；
+    用 spawn 时的 id 会把"进程挂了"报到旧标签页上）。 */
+    let tab_id = worker.tab_id();
     sink.emit_json(
         &format!("pi:state:{tab_id}"),
         json!({
@@ -416,13 +420,13 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, tab_id: String, st
     );
 }
 
-async fn handle_line(
-    line: &str,
-    worker: &Worker,
-    sink: &Arc<dyn EventSink>,
-    tab: &str,
-    coalescer: &mut FrameCoalescer,
-) {
+/// 处理一行 pi 事件。
+///
+/// `tab` **每次调用都从 worker 读**（`worker.tab_id()`），不是参数：预热池会把一个
+/// 已经起好的进程重绑给另一个标签页，而事件通道名必须跟着新绑定走。
+async fn handle_line(line: &str, worker: &Worker, sink: &Arc<dyn EventSink>, coalescer: &mut FrameCoalescer) {
+    let tab = worker.tab_id();
+    let tab = tab.as_str();
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         // 防御：pi 保证合法 JSONL；非法行计数上报不中断（docs/02 §10）
         sink.emit_json(

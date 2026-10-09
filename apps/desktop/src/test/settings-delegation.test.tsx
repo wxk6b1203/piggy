@@ -38,11 +38,15 @@ beforeEach(() => {
     subagent_delegation: false,
   };
   invokeMock.mockReset();
-  invokeMock.mockImplementation(async (name: string) => {
+  invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
     switch (name) {
       case 'perf_config_load':
         return { ...cfg };
       case 'perf_config_save':
+        /* 真机是读-改-写：写下去的要能被下一次 `perf_config_load` 读到。
+           不落盘的话"再点一次关掉"这类用例会假绿/假红（组件 reload 后又回到旧值）。 */
+        if (args?.warmWorker !== undefined) cfg.warm_worker = Boolean(args.warmWorker);
+        if (args?.subagentDelegation !== undefined) cfg.subagent_delegation = Boolean(args.subagentDelegation);
         return null;
       case 'permission_modes':
         return {
@@ -145,5 +149,54 @@ describe('设置页：子代理委派开关', () => {
       await new Promise((r) => setTimeout(r, 30));
     });
     expect(savedDelegation()).toContain(false);
+  });
+});
+
+/**
+ * 预热 worker 开关（docs/05 §5.7）。
+ *
+ * 它默认**关**，理由必须能在界面上读到（macOS 上只省 ~250 ms、"点了没反应"已由
+ * 乐观 UI 解决；真正的收益在 Windows 还没量过）—— 所以这里钉三件事：
+ * 读得到真实值、点了真的写 `warmWorker`、默认是关的。
+ */
+describe('设置页：预热会话进程开关', () => {
+  function warmSwitch(): HTMLButtonElement {
+    const rows = [...domContainer().querySelectorAll<HTMLElement>('.pg-settings-row')];
+    const row = rows.find((r) => r.textContent?.includes('预热会话进程'));
+    if (!row) throw new Error('设置页里找不到「预热会话进程」这一行');
+    const sw = row.querySelector<HTMLButtonElement>('button[role="switch"]');
+    if (!sw) throw new Error('该行里没有 switch');
+    return sw;
+  }
+
+  it('默认关；后端说开着才 checked', async () => {
+    await mountRuntime();
+    expect(warmSwitch().getAttribute('aria-checked')).toBe('false');
+
+    cfg.warm_worker = true;
+    await mountRuntime();
+    expect(warmSwitch().getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('点一下把 warmWorker=true 存下去（关的时候存 false，不是"不传"）', async () => {
+    await mountRuntime();
+    await act(async () => {
+      warmSwitch().click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    const saves = invokeMock.mock.calls.filter((c) => c[0] === 'perf_config_save');
+    expect(saves.length, '点开关没有保存').toBeGreaterThan(0);
+    expect(saves.at(-1)![1]?.warmWorker).toBe(true);
+
+    // ⚠️ 等久一点：保存期间开关是 disabled 的（`busy` 守卫），点太快会点空
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 120));
+    });
+    await act(async () => {
+      warmSwitch().click();
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    const again = invokeMock.mock.calls.filter((c) => c[0] === 'perf_config_save');
+    expect(again.at(-1)![1]?.warmWorker, '关的时候必须显式写 false，否则关不掉').toBe(false);
   });
 });
