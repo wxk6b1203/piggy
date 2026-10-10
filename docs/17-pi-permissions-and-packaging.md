@@ -242,24 +242,54 @@ bash 证据化、重复调用提醒）。作者自研，`Copyright (c) 2026 wxk6
 真机探针里有组合断言：守卫 + pi-guardrails + `--tools read,grep,find,ls` →
 `getAllTools()` 里**没有** `write`/`edit`；不传 `--tools`（完全权限）→ 两个都在。
 
-**行为层的组合验证**（`node apps/desktop/scripts/guard-combo-probe.mjs`，三次极小模型调用，
-所以是诊断脚本、不进 CI；本机实测三个回合全绿）：
+**行为层的组合验证**（`pnpm --filter @piggy/desktop pi:guard-combo`，即
+`node apps/desktop/scripts/guard-combo-probe.mjs`；三次极小模型调用，所以是诊断脚本、不进 CI）：
 
-| 回合 | 期望 | 本机实测 |
+| 回合 | 期望 | 断言的是"拦截真的发生了" |
 |---|---|---|
-| 往工作区**外面**写 | 路径守卫拦（文件不出现） | ✅ 文件仍是原内容 |
-| 改工作区内**已存在但没读过**的文件 | pi-guardrails 拦（内容不变） | ✅ 内容未变 |
-| 在工作区内**新建**文件 | 放行（它明确不拦"创建不存在的文件"） | ✅ 文件创建成功 |
+| 往工作区**外面**写 | 路径守卫拦 | 事件流里有一条对该路径的拒绝、理由含 `在工作区之外`，且文件仍是原内容 |
+| 改工作区内**已存在但没读过**的文件 | pi-guardrails 拦 | 事件流里有一条对该文件的拒绝、理由含 `file has not been read`，且内容未变 |
+| 在工作区内**新建**文件 | 放行 | 调用没被拒 + 文件真建出来了（反向断言 —— 免得上面两条"永远绿"） |
+
+⚠️ **判据必须是"那次调用被拒了、理由是哪个护栏"，不能是"文件最终没变"**。
+第一版就是写的终态，结果**假绿**（2026-10-09 实测同一条命令 5 次里 2 绿 3 红）：
+被拦之后模型常常自己 `read` 一次再重试（那正是拦截文案建议的修复动作），文件**真的被改了** ——
+拦也拦了却判红；反过来模型没调工具时文件也没变 —— 没拦却判绿。两种情况的终态完全同形。
+现在读 `--mode json` 的事件流（`tool_execution_start` 带 `args`、`tool_execution_end` 带 `isError`
+与结果文案；两者靠 `toolCallId` 关联），并做了**反向验证**：把两个 `-e` 都摘掉后重跑，
+①② 如期变红（`outside/x.txt="HACKED"`）而 ③ 仍绿 —— 这才证明这三条不是"永远绿"。
 
 ⚠️ 本机跑这个脚本要带 `-ne`：`~/.pi/agent/extensions/pi-guardrails` 与随包那份同名，
 pi 会因工具名冲突**直接退出** —— 而 Piggy 自己会跳过自带那份（`pi/plugins.rs::existing_install`），
-所以这不是产品 bug，是脚本要自己处理的现场。
+所以这不是产品 bug，是脚本要自己处理的现场（`pi --help` 明说 `-ne` 只关发现，显式 `-e` 不受影响）。
+
 契约测试（`src/test/plugin-contract.test.ts`）会对**每一个**随包插件核对：入口存在、
 有 LICENSE、`vendor.json` 的哈希对得上、不依赖 npm 包。
 
 设置页那一块（`features/settings/BundledPluginsRow.tsx`）显示每个内置插件的名字、说明、
 申报的工具与命令、许可证、目录，以及**这次装不装 / 为什么不装**。它不在 pi 自己的
 "插件"页里，因为那一页扫的是 pi 的发现目录，`-e` 注入的东西天然不在其中。
+
+### 2.2d 写边界必须**每次调用现算**（2026-10-10 修）
+
+`piggy-guard.js` 是「工作区内修改」档**唯一**的边界执行点。它的边界原本读
+`PIGGY_GUARD_ROOTS` —— 而那是 Piggy 在 **spawn 那一刻**注入的（`pi/process.rs`），
+于是踩到一个静默越界：**预热 worker 会被复用去开别的项目的会话**，
+而 `switch_session` 改的是**会话 cwd**、**不改进程环境** ⇒ 被复用的进程切到项目 B 之后，
+写边界仍停在项目 A：**写 B 被拦、写 A 反而放行**（两个方向都错）。
+
+修法与判据：
+
+- 边界 = **会话自己的工作目录**：`ctx.sessionManager.getCwd()`（每次 `tool_call` 现算），
+  `PIGGY_GUARD_ROOTS` 降级为**兜底**，两者都没有则 fail-closed（拒绝一切写入）；
+- ⚠️ **不能**用 `ctx.cwd`：那在 pi 里是**冻结值**（`runner.js` 构造时赋值一次，
+  `createContext()` 只是读出来），`switch_session` 之后不会变 —— 用它等于换了个名字踩同一个坑；
+  `sessionManager` 才是活的（pi 自己也用它建会话上下文：`agent-session.js` 的 `getCwd()`）；
+- 真机验证：进程在 A 起、会话 cwd 是 B → 守卫算出的边界是 `["…/projB"]`，
+  写 A 的**绝对路径**被拒（理由里写明"只允许改动 …/projB"），写 B 正常放行；
+- 单测在 `src/test/permission-guard.test.ts`：除纯函数 `boundaryFor` 外，**入口那条必须有**
+  —— 反向验证时把守卫改回"加载时算一次"，`boundaryFor` 的用例**照样全绿**，
+  只有入口那条变红。**"逻辑对"不等于"接线对"。**
 
 ### 2.3 必须保持的契约
 

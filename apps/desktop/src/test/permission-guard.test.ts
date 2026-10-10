@@ -11,11 +11,14 @@ import { delimiter, join, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   PIGGY_GUARDED_TOOLS,
+  boundaryFor,
   canonicalize,
   checkWrite,
   guardRoots,
   isInside,
+  sessionCwdOf,
   default as piggyGuard,
+  type PiggyGuardHookCtx,
 } from '../../src-tauri/resources/piggy-guard.js';
 
 let root: string;
@@ -255,6 +258,89 @@ describe('扩展入口', () => {
       })) as { block?: boolean };
       expect(v?.block).toBe(true);
     } finally {
+      errSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * 边界的**来源**：会话 cwd 优先，环境变量兜底（2026-10-10 修）。
+ *
+ * 为什么这组用例必须存在：Piggy 的 `PIGGY_GUARD_ROOTS` 是 **spawn 那一刻**写死的
+ * （`pi/process.rs`），而预热 worker 会被复用去开**别的项目**的会话 ——
+ * `switch_session` 改的是会话 cwd，**不改进程环境**。若守卫在加载时把边界算一次，
+ * 切到项目 B 之后就会"写 B 被拦、写 A 反而放行"（两个方向都错，且是静默的）。
+ * 所以边界必须**每次调用现算**，而权威来源是会话自己的 cwd。
+ */
+describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
+  /** 假 ctx：`sessionManager.getCwd()` 是 pi 暴露给扩展的活接口。 */
+  const ctxAt = (cwd: string) => ({ sessionManager: { getCwd: () => cwd } });
+
+  it('sessionCwdOf：拿得到就规整成绝对路径；拿不到返回 null（不许瞎猜）', () => {
+    expect(sessionCwdOf(ctxAt(workspace))).toBe(canonicalize(workspace));
+    // 没有 ctx / 没有 sessionManager / cwd 不是字符串 / 空串 → 一律 null
+    expect(sessionCwdOf(undefined)).toBeNull();
+    expect(sessionCwdOf({})).toBeNull();
+    expect(sessionCwdOf({ sessionManager: {} })).toBeNull();
+    expect(sessionCwdOf({ sessionManager: { getCwd: () => 42 } })).toBeNull();
+    expect(sessionCwdOf(ctxAt('   '))).toBeNull();
+  });
+
+  it('边界 = 会话 cwd（**即使环境变量指着别的目录**）', () => {
+    /* 这就是预热复用的现场：进程是在 workspace 里预热的（环境变量 = workspace），
+       但会话切到了 outside —— 边界必须跟着会话走，否则写 outside 会被放行。 */
+    const roots = boundaryFor(ctxAt(outside), { PIGGY_GUARD_ROOTS: workspace });
+    expect(roots).toEqual([canonicalize(outside)]);
+
+    // 于是：写 outside（会话自己的目录）放行，写 workspace（旧环境变量那个）被拦
+    expect(checkWrite({ toolName: 'write', input: { path: join(outside, 'x') } }, roots, roots![0]!)).toBeUndefined();
+    const blocked = checkWrite({ toolName: 'write', input: { path: join(workspace, 'a.txt') } }, roots, roots![0]!);
+    expect(blocked?.block, '切到新项目后，旧项目的写必须被拦（这正是修掉的那个越界）').toBe(true);
+  });
+
+  it('拿不到会话 cwd 时回退环境变量；两边都没有则 null（fail-closed）', () => {
+    expect(boundaryFor(undefined, { PIGGY_GUARD_ROOTS: workspace })).toEqual(guardRoots({ PIGGY_GUARD_ROOTS: workspace }));
+    expect(boundaryFor({}, { PIGGY_GUARD_ROOTS: outside })).toEqual([canonicalize(outside)]);
+    expect(boundaryFor(undefined, {})).toBeNull();
+    // null 交给 checkWrite 就是"拒绝一切写入"
+    const v = checkWrite({ toolName: 'write', input: { path: join(workspace, 'a.txt') } }, boundaryFor({}, {}), workspace);
+    expect(v?.block).toBe(true);
+  });
+
+  it('入口：钩子用**本次调用的** ctx 算边界，而不是加载时冻结的那一份', async () => {
+    const handlers = new Map<string, (e: unknown, c?: PiggyGuardHookCtx) => unknown>();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.PIGGY_GUARD_ROOTS = workspace; // spawn 时写死的那个目录
+    try {
+      const pi = {
+        /* 钩子第二个参数的形状与 `piggy-guard.d.ts` 的 `PiggyGuardHookCtx` 对齐：
+           写成 `unknown` 会让 `tsc` 拒绝（守卫声明的 handler 参数类型更窄）—— 这是有意的，
+           免得测试里的假 ctx 与真实现漂移。 */
+        on: (_e: string, h: (x: unknown, c?: PiggyGuardHookCtx) => unknown) => {
+          handlers.set('tool_call', h);
+          return () => handlers.delete('tool_call');
+        },
+      };
+      piggyGuard(pi);
+      const handler = handlers.get('tool_call')!;
+
+      // 预热时在 workspace：写 workspace 放行
+      await expect(
+        handler({ toolName: 'write', input: { path: join(workspace, 'a.txt') } }, ctxAt(workspace)),
+      ).resolves.toBeUndefined();
+
+      // 同一个进程被复用去开 outside 的会话（环境变量没变）：写 outside 现在**必须**放行，
+      // 写 workspace 反而**必须**被拦 —— 这才是"边界跟着会话走"
+      await expect(
+        handler({ toolName: 'write', input: { path: join(outside, 'x') } }, ctxAt(outside)),
+      ).resolves.toBeUndefined();
+      const blocked = (await handler(
+        { toolName: 'write', input: { path: join(workspace, 'a.txt') } },
+        ctxAt(outside),
+      )) as { block?: boolean };
+      expect(blocked?.block, '旧项目的写必须被拦').toBe(true);
+    } finally {
+      delete process.env.PIGGY_GUARD_ROOTS;
       errSpy.mockRestore();
     }
   });

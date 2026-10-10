@@ -16,6 +16,25 @@ export declare function canonicalize(p: string): string;
 /** 解析 `PIGGY_GUARD_ROOTS`；缺失/为空返回 `null`（调用方必须 fail-closed）。 */
 export declare function guardRoots(env?: Record<string, string | undefined>): string[] | null;
 
+/**
+ * 扩展钩子的第二个参数里我们用到的部分。
+ *
+ * ⚠️ 用 `sessionManager.getCwd()` 而**不是** `ctx.cwd`：后者在 pi 里是冻结值
+ * （`runner.js` 构造时赋值一次），`switch_session` 之后不会变。
+ */
+export interface PiggyGuardHookCtx {
+  sessionManager?: { getCwd?: () => unknown };
+}
+
+/** 会话自己的工作目录（规整后的绝对路径）；拿不到返回 `null`。 */
+export declare function sessionCwdOf(ctx?: PiggyGuardHookCtx): string | null;
+
+/** 本次写操作的边界：优先会话 cwd，兜底 `PIGGY_GUARD_ROOTS`，都没有则 `null`（fail-closed）。 */
+export declare function boundaryFor(
+  ctx?: PiggyGuardHookCtx,
+  env?: Record<string, string | undefined>,
+): string[] | null;
+
 /** 目标是否落在某个根目录内（含根目录本身；不会把 `/work-other` 误判进 `/work`）。 */
 export declare function isInside(target: string, root: string): boolean;
 
@@ -28,5 +47,5 @@ export declare function checkWrite(
 
 /** 扩展入口：注册 `tool_call` 钩子。 */
 export default function piggyGuard(pi: {
-  on(event: string, handler: (event: unknown) => unknown): () => void;
+  on(event: string, handler: (event: unknown, ctx?: PiggyGuardHookCtx) => unknown): () => void;
 }): void;

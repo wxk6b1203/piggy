@@ -9,10 +9,17 @@
  * 边界只能靠扩展的 `tool_call` 钩子拦截：
  *   packages/coding-agent/src/core/extensions/types.ts:1217 `ToolCallEventResult.block`
  *
- * ## 策略来源
- * 白名单根目录从环境变量 `PIGGY_GUARD_ROOTS` 读取（平台路径分隔符分隔；Piggy 目前只传一个 = 标签页 cwd）。
- * **该变量缺失时一律拒绝写操作（fail-closed）** —— 宁可挡住，也不要在策略丢失时静默放开。
- * 相对路径以第一个根目录为基准解析（与 pi 的会话 cwd 一致）。
+ * ## 策略来源（**每次写调用现算**，见 `boundaryFor`）
+ * 边界 = **会话自己的工作目录**（`ctx.sessionManager.getCwd()`，即"工作区"这个词的定义）。
+ * 环境变量 `PIGGY_GUARD_ROOTS`（Piggy 在 spawn 时注入，平台路径分隔符分隔）是**兜底**：
+ * 拿不到会话 cwd 时才用它；两边都没有则一律拒绝写操作（fail-closed）——
+ * 宁可挡住，也不要在策略丢失时静默放开。
+ * 相对路径以边界根目录为基准解析（与 pi 的会话 cwd 一致）。
+ *
+ * ⚠️ 为什么不能"加载时读一次环境变量就定死"：预热 worker 会被复用去开**别的项目**的会话
+ * （`switch_session` 改的是会话 cwd，**不改进程环境**），那样边界会停留在"被预热时那个目录"，
+ * 切到项目 B 之后写 B 被拦、写 A 反而放行。2026-10-10 审计发现并修掉。
+ * 也别用 `ctx.cwd`：它在 pi 里是冻结值，`switch_session` 之后不会变。
  *
  * ## 覆盖范围（说清楚，不含糊）
  * 只拦截 `write` / `edit` 两个内置写工具。本档已用 `--tools` 白名单移除了 `bash` / `powershell`，
@@ -67,6 +74,45 @@ export function guardRoots(env = process.env) {
 }
 
 /**
+ * 会话自己的工作目录（pi 的 `ctx.sessionManager.getCwd()`）。
+ *
+ * ⚠️ 不要用 `ctx.cwd` 代替它：那个值在 pi 里是**冻结**的（`runner.js` 构造时赋值一次，
+ * `createContext()` 只是把它读出来），`switch_session` 之后不会变。
+ * 而 `sessionManager` 是活的 —— pi 自己也用它建会话上下文（`agent-session.js` 的
+ * `sessionManager.getCwd()`），所以它才是"这次写入的基准目录"的权威来源。
+ *
+ * @param {{sessionManager?: {getCwd?: () => unknown}}} [ctx] 扩展钩子的第二个参数
+ * @returns {string|null} 绝对路径；拿不到就返回 null（调用方回退）
+ */
+export function sessionCwdOf(ctx) {
+  const raw = ctx?.sessionManager?.getCwd?.();
+  return typeof raw === 'string' && raw.trim() !== '' ? canonicalize(raw) : null;
+}
+
+/**
+ * 本次写操作的边界（白名单根目录）。
+ *
+ * ## 为什么是"每次调用算一次"，而不是加载时算一次
+ *
+ * Piggy 的「工作区内修改」档会给进程注入 `PIGGY_GUARD_ROOTS=<标签页 cwd>`，而这个变量是
+ * **spawn 那一刻写死的**（`pi/process.rs`）。预热 worker 会被复用去开别的项目的会话
+ * （`switch_session` 改的是会话 cwd，**不改进程环境**），于是加载时算一次的边界会停留在
+ * "被预热时那个目录"：切到项目 B 之后，写 B 被拦、写 A 反而放行 —— 两个方向都错。
+ * 2026-10-10 审计发现（本机 full 档看不到，只有「工作区内修改」档才会踩）。
+ *
+ * 判据：**写边界 = 会话自己的工作目录**（"工作区"这个词的定义），环境变量只是兜底。
+ *
+ * @param {{sessionManager?: {getCwd?: () => unknown}}} [ctx] 扩展钩子的第二个参数
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string[]|null} 根目录；两边都拿不到返回 null（fail-closed）
+ */
+export function boundaryFor(ctx, env = process.env) {
+  const session = sessionCwdOf(ctx);
+  if (session !== null) return [session];
+  return guardRoots(env);
+}
+
+/**
  * 判断目标是否落在某个根目录内（含根目录本身）。
  * @param {string} target 已规整的绝对路径
  * @param {string} root 已规整的绝对根目录
@@ -111,11 +157,16 @@ export function checkWrite(event, roots, baseCwd) {
  * @param {import('@earendil-works/pi-coding-agent').ExtensionAPI} pi
  */
 export default function piggyGuard(pi) {
-  const roots = guardRoots();
-  const baseCwd = roots?.[0] ?? process.cwd();
-  if (roots === null) {
+  const envRoots = guardRoots();
+  if (envRoots === null) {
     // 提前告警：真到拦截时才报错会淹没在工具结果里
     console.error('[piggy-guard] PIGGY_GUARD_ROOTS 缺失，本会话所有写入都会被拒绝');
   }
-  pi.on('tool_call', async (event) => checkWrite(event, roots, baseCwd));
+  /* ⚠️ 边界**每次调用现算**（见 boundaryFor）：预热进程被复用去开别的项目的会话时，
+     spawn 时写死的 PIGGY_GUARD_ROOTS 已经过期，只有会话自己的 cwd 是权威。 */
+  pi.on('tool_call', async (event, ctx) => {
+    const roots = boundaryFor(ctx);
+    const baseCwd = roots?.[0] ?? process.cwd();
+    return checkWrite(event, roots, baseCwd);
+  });
 }
