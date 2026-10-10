@@ -22,7 +22,8 @@
     "ui:startup": "node scripts/ui-startup-check.mjs",
     "perf": "node scripts/perf-run.mjs",
     "perf:lite": "node scripts/perf-run.mjs --lite",
-    "pi:cost": "node scripts/pi-open-cost.mjs"
+    "pi:cost": "node scripts/pi-open-cost.mjs",
+    "pi:guard-combo": "node scripts/guard-combo-probe.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
