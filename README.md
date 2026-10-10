@@ -125,22 +125,26 @@ pnpm --filter @piggy/desktop perf                 # 全场景 S1–S6
 | 门禁 | 覆盖 | 最近一次实测 |
 |---|---|---|
 | `pnpm typecheck` | apps/desktop + packages/piggy-bridge（后者对着真实 pi 类型） | ✅ |
-| `pnpm test` | 前端 **599（61 文件）** + 桥接 37 + 协议 30 | ✅ **666 passed**（2026-09-25 实测；计数会随迭代变化，以 `pnpm -r test` 的输出为准） |
-| `pnpm test:rust` | Rust 单元 308 + fixtures 3 + IPC 契约 19 + 路径纪律 2；另 7 条 `#[ignore]` 真机核对 | ✅ **332 passed / 7 ignored** |
-| `pnpm test:contract` | 对真实 pi 0.87.1 跑 C1–C14（含桥接数据面、降级、两 lane DAG） | ✅ **347 passed**（其中对真实 pi 的 15 项耗时 41s） |
+| `pnpm test` | 前端 **662（68 文件）** + 桥接 37 + 协议 30 | ✅ **729 passed**（2026-10-10 实测；计数会随迭代变化，以 `pnpm -r test` 的输出为准）⚠️ 前端整套偶发 `exit 1`：React 19 scheduler 在 Node 下走 `setImmediate`，`unmount()` 之后排队的回调会在 jsdom 拆掉后才跑（`window is not defined`），662 个用例本身每次都全过 —— 已知 flake，判据见 docs/15 §4.3 |
+| `pnpm test:rust` | Rust 单元 370 + fixtures 3 + IPC 契约 21 + 路径纪律 2；另 9 条 `#[ignore]` 真机核对 | ✅ **396 passed / 9 ignored**（2026-10-10 实测） |
+| `pnpm test:contract` | 对真实 pi **1.1.0** 跑 C1–C16（含桥接数据面、降级、两 lane DAG、预热 worker 复用） | ✅ **17 passed**（2026-10-10 实测，17.6s） |
 | `cargo clippy --all-targets -- -D warnings` | 含 test 目标（只跑 lib 会漏掉 5 处旧提示，已修） | ✅ |
 | `pnpm build` | tsc + vite 产物 | ✅ |
 | `ui:startup` | 真浏览器 + mock：布局恢复一致性、Fleet A/B 两层、斜杠补全真滚动、代码块真高亮、文件预览按需语言包、折叠侧栏、空编辑区、打开方式（会话/文件）、Monaco 池、提供商页、会话标题（生成后**侧栏 / 上方标题 / 标签页**三处一致）、**分页几何**（打开即贴底 / 翻页不跳 / 换窗跳转 / 继续往下 / 滚轮续页）、**数字口径**、**压缩细节**、**展开态与切标签**（虚拟化卸载后展开态还在 / 后台跑完切回来贴底 / 读者的位置分毫不差地还回去）、**连点两次只开一个面板**、**实时块绑在当前那个节点上**（滚出虚拟窗口再回来一个字不丢 / 切走再切回按"通道发出的字数"对账）、**流式中手动往上滚**（真滚轮：位置留住、内容继续长也不拽回、滚回底部跟随自己回来） | ✅ 全部通过 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题 | ✅ 0/0/0 |
 | `pi:cost`（诊断，不是门禁） | 「打开会话的 1 秒花在哪」逐段实测：pi 地板 214ms / 你装的扩展 +530ms（pi-subagents 一个 +431）/ 会话文件 +50 / 我们的游标初始化曾经 +74（已挪到后台） | docs/05 §5.6 |
+| `pi:guard-combo`（诊断，不是门禁） | 两个护栏**一起装**还成不成立（三次极小模型调用）：越界写被路径守卫拒、未读就改被 `pi-guardrails` 拒、新建文件放行。断言的是**那次调用被拒了、理由是哪个护栏**（不是"文件最终没变"——那个口径假绿，见下）；反向验证过：摘掉两个 `-e` 后 ①② 如期变红 | ✅ 三条成立（2026-10-09 实测 3/3 轮） |
 | `perf:lite` | S1 流式帧率与长任务、S3 万条消息打开与滚动（预算见 docs/05 §2） | ✅ S1 **60fps / 0 longtask**；S3 hydrate **34ms** / 1 longtask |
 
-**已知不绿的两格**（不想让它们躲在表格外，详见 [docs/15](docs/15-handoff.md) §4）：
+**曾经不绿、现在已转绿的两格**（2026-10-10 复核；不想让"红"躲在表格外，也不想让"早就绿了"
+继续挂着 —— 留个记录，免得下次又有人以为它们还红，详见 [docs/15](docs/15-handoff.md) §4）：
 
-- `cargo fmt --check` —— 仓库里没有 `rustfmt.toml`，现有 Rust 代码按 ~120 列手写，格式化检查一直红
-  （CI 的 `rust` 作业因此整体是红的：**不是代码有问题，是这一格从未通过**）；
-- `pnpm lint` —— 没有任何包定义 `lint` 脚本，`pnpm -r --if-present lint` 一个文件都扫不到
-  （手工 `npx eslint .` 存量 189 error / 35 warning，含把构建产物当源码扫的问题）。
+- `cargo fmt --check` —— 曾经红，因为仓库里没有 `rustfmt.toml`（Rust 代码按 ~120 列手写）。
+  `358f37c` 接入 `apps/desktop/src-tauri/rustfmt.toml`（120 列）+ 一次性格式化后已绿，
+  CI 的 `rust` 作业不再被 fmt 挡死；
+- `pnpm lint` —— 曾经是**空转**（根 `package.json` 有 `lint` 脚本，但没有子包定义它，
+  `pnpm -r --if-present lint` 一个文件都扫不到）。现在 `apps/desktop` 定了
+  `eslint src scripts --max-warnings 0`，实测 0 error / 0 warning。
 
 另外，**UI 门禁（`ui:startup` / `ui:debug --strict`）只在本机跑**：它们需要 Chrome 与一个
 :5195 的 dev server，目前没有对应的 CI 作业（要接就得先在 runner 上确认真的绿过）。

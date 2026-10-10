@@ -584,11 +584,26 @@ pub async fn create_tab_unlocked(
     };
     /* 补一个备用 worker（**锁外**、后台）：下一次打开就能省掉 pi 的启动。
     放在"建成功之后"而不是应用启动时：这时我们才知道用户在哪个目录里工作。
-    失败只记日志（预热是纯优化）。 */
-    if crate::config::app::perf_config_load().warm_worker {
+    失败只记日志（预热是纯优化）。
+    ⚠️ 两道条件：用户开着开关 **且** 本平台支持（macOS 上 `warm_worker_supported()`
+    恒为 false —— 那里的 450 ms 被乐观 UI 遮住，不值 200 MB，见该函数的注释）。
+    闸门放在**使用点**而不是 `clamp()`：`warm_worker` 是持久化值，不能因为"这台机器
+    用不上"就把它写坏（用户可能在 Windows 上用的是同一份配置、或同步过来的家目录）。 */
+    if should_refill_warm(
+        crate::config::app::perf_config_load().warm_worker,
+        crate::config::app::warm_worker_supported(),
+    ) {
         spawn_warm(shared, sink, cwd, permission).await;
     }
     Ok(snapshot)
+}
+
+/// 建完 tab 之后要不要补一个备用 worker？
+///
+/// 抽成**纯函数**是为了能不 spawn 进程就测平台闸门（`enabled` 从配置来、
+/// `supported` 从平台来；两者都为真才补位）。
+pub(crate) fn should_refill_warm(enabled: bool, supported: bool) -> bool {
+    enabled && supported
 }
 
 /// 「改权限档位」的**锁内准备段**：校验、改档、把旧 worker 摘下来（由调用方在锁外停它）。

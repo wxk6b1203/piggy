@@ -44,8 +44,12 @@ export function GeneralSection() {
   const [perm, setPerm] = useState<string>('workspace');
   const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
   const [delegation, setDelegation] = useState(false);
-  /** 预热 worker（docs/05 §5.7，默认关） */
+  /** 预热 worker（docs/05 §5.7，默认关，且只在支持的平台显示） */
   const [warm, setWarm] = useState(false);
+  /* 本平台支不支持预热（后端判的 `warm_worker_supported()`）：macOS 上为 false。
+     平台判据只在后端有一份，前端不自己猜 —— 否则界面上"能开"而后端不执行，
+     用户会以为开了（那正是这次要修掉的毛病）。 */
+  const [warmSupported, setWarmSupported] = useState(true);
   // source 是 Windows 事故后加的：默认地址出问题时，得能一眼看出这个目录是
   // 默认值、settings.json 里的自定义值、还是 PI_CODING_AGENT_SESSION_DIR 环境变量。
   const [sessionDir, setSessionDir] = useState<{
@@ -92,11 +96,14 @@ export function GeneralSection() {
       title_model?: string | null;
       title_thinking?: string | null;
       warm_worker?: boolean;
+      /* 平台能力，不是配置项（后端一起下发；老后端没有这个字段时按"支持"处理） */
+      warmWorkerSupported?: boolean;
     }>('perf_config_load')
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
         setDelegation(c.subagent_delegation ?? false);
         setWarm(c.warm_worker === true);
+        setWarmSupported(c.warmWorkerSupported !== false);
         if (c.permission_mode) setPerm(c.permission_mode);
         setTitleCfg({
           maxChars: c.title_max_chars ?? 20,
@@ -562,27 +569,34 @@ export function GeneralSection() {
           所以在这里单列一块，免得用户找不到"我那个提问插件到底在不在"。 */}
       <BundledPluginsRow onChanged={reload} />
 
-      {/* 预热 worker（docs/05 §5.7）：**默认关**。
-          收益是把 pi 的启动提前付掉（实测：复用 208 ms vs 冷启动 527 ms），
-          代价是一个常驻 pi 进程与"进程池 + 会话切换"这条更复杂的路径。
-          为什么默认关要写在界面上：macOS 上只省 ~250 ms，而"点了没反应"已经由
-          乐观 UI 解决；真正的收益在 Windows（三层 cmd 垫片 + Defender）还没量过。 */}
-      <div className="pg-settings-row">
-        <span className="pg-settings-label">预热会话进程</span>
-        <Switch
-          checked={warm}
-          disabled={busy}
-          data-warm-switch
-          onChange={(v) => {
-            setWarm(v);
-            void save({ warm: v });
-          }}
-        />
-        <span className="pg-fg-dim">
-          空闲时先起一个 pi 备用进程，打开会话时直接切过去（省掉约 0.3 秒的启动等待）。
-          代价是常驻一个 pi 进程；备用进程超过 10 分钟没用会被换掉。
-        </span>
-      </div>
+      {/* 预热 worker（docs/05 §5.7）：**默认关**，且**只在支持的平台显示**。
+          收益是把 pi 的启动提前付掉（实测：复用打开 37-40 ms vs 冷启动 483-505 ms），
+          代价是一个常驻 pi 进程（实测 RSS 173→199 MB 空载）。
+          为什么 macOS 上不显示（2026-10-10，用户实测后决策）：省下的 ~450 ms **全部**落在
+          "打开会话"那一段，而那段已经被乐观 UI 占位遮住（13.7 ms 出第一帧）——
+          用户感知不到；"发第一条消息"一点没省（冷启动到出答案实测 5.3 s，pi 启动只占 ~470 ms）。
+          拿 200 MB 换一个看不见的 450 ms 不划算。真正的收益在 Windows
+          （三层 cmd 垫片 + Defender）那边，机制保留、那里的开关照旧。
+          ⚠️ 后端 `warm_worker_supported()` 是**同一判据的唯一出处**，它也会拒绝补位；
+          这里只是不显示（配置里的值**原样保留**，不写坏带过来的 Windows 设置）。 */}
+      {warmSupported && (
+        <div className="pg-settings-row">
+          <span className="pg-settings-label">预热会话进程</span>
+          <Switch
+            checked={warm}
+            disabled={busy}
+            data-warm-switch
+            onChange={(v) => {
+              setWarm(v);
+              void save({ warm: v });
+            }}
+          />
+          <span className="pg-fg-dim">
+            空闲时先起一个 pi 备用进程，打开会话时直接切过去（省掉约 0.45 秒的启动等待）。
+            代价是常驻一个 pi 进程（实测 200 MB 上下）；备用进程超过 10 分钟没用会被回收。
+          </span>
+        </div>
+      )}
 
       <div className="pg-settings-row">
         <span className="pg-settings-label">子代理委派</span>

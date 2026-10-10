@@ -849,6 +849,15 @@ async fn c16_warm_worker_is_reused_by_the_next_session() {
 
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().to_path_buf();
+    /* ⚠️ 配置目录必须隔离到临时目录：`create_tab_unlocked` 会按
+    `perf_config_load().warm_worker` 决定要不要**就地补一个备用 worker**。
+    那个开关来自 `~/.piggy/config.json` —— 也就是**跑测试这台机器的活配置**。
+    用户把开关打开时（2026-10-10 实测：`pnpm tauri dev` 正在跑、开关已落盘为 true），
+    下面那句"备用槽应当已被消费掉"必然失败，而产品行为完全正确。
+    所以这里让配置目录指向临时目录（空配置 → 开关为默认 false），用例只量"复用"本身；
+    guard 在 panic 时也会还原，不会带偏别的用例。 */
+    let _cfg = piggy_lib::config::app::ConfigDirGuard::new(tmp.path());
+
     let shared: SharedRegistry = StdArc::new(Mutex::new(Registry::new(Some(
         discover(PiSource::default(), None, None).expect("pi not found"),
     ))));

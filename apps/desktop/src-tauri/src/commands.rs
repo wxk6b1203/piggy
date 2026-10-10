@@ -356,7 +356,17 @@ pub async fn tab_sleep_idlest(app: AppHandle, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn perf_config_load() -> Result<Value, String> {
     let cfg = app::perf_config_load();
-    serde_json::to_value(cfg).map_err(|e| e.to_string())
+    let mut v = serde_json::to_value(cfg).map_err(|e| e.to_string())?;
+    /* 平台能力也一起下发（**不是**配置项，所以不在 PerfConfig 里、也不会被写回）。
+    界面上"预热会话进程"那一行要靠它决定显不显示 —— 平台判据只在后端有一份
+    （`app::warm_worker_supported()`），免得前端再猜一次、两边说法不一致。 */
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "warmWorkerSupported".to_string(),
+            Value::Bool(app::warm_worker_supported()),
+        );
+    }
+    Ok(v)
 }
 
 /// 保存 Piggy 自己的运行设置（读-改-写）。
