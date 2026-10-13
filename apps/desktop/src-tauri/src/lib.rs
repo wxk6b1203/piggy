@@ -45,6 +45,55 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 把 Windows 的 verbatim 前缀（`\\?\`）去掉，返回**普通**路径。
+///
+/// ## 为什么必须有这一层（2026-10-13，真机报障："pi worker exited"）
+///
+/// Tauri 的 `path().resource_dir()` 在 Windows 上返回 verbatim 路径
+/// （`\\?\C:\...\target\debug\resources`）。Rust 侧用它读文件一切正常 —— 但这里定位到的
+/// 东西**不是给自己用的，是给别的进程当命令行参数的**（`--extension <路径>` 交给 node，
+/// 内置 pi 的 `pi.exe` 交给 CreateProcess）。
+///
+/// node 的 fs 层能认 `\\?\`，**模块加载器不认目录形式的 verbatim 路径**：pi 加载
+/// `--extension <目录>` 时报 `EISDIR: illegal operation on a directory, lstat 'C:'`
+/// （把 `\\?\C:` 当成了模块标识符）→ 三条插件扩展全失败 → pi `process.exit(1)` →
+/// Piggy 报 `pi worker exited`，**建会话直接失败**。
+///
+/// 迷惑点（真机 A/B，见 docs/15 §4.4）：**单文件**扩展（`piggy-guard.js`）带前缀照样能加载，
+/// **只有目录形式**的插件会炸 —— 所以这个坑在插件以目录注入之前一直藏着，只在 Windows 上
+/// 出现，且表现为"pi 起不来"而不是"路径写错了"。
+///
+/// 放在 crate 根而不是 `pi/resources.rs`：这是**全局路径约定**，`pi/process.rs` 组装 argv 时
+/// 也要用它兜底（bundled_extensions 是上层传下来的，谁传都可能带前缀）。
+///
+/// ## 处理范围
+///
+/// - `\\?\C:\a` → `C:\a`（盘符形式）
+/// - `\\?\UNC\server\share` → `\\server\share`（还原成普通 UNC）
+/// - 其它一律原样返回（**不做** canonicalize、不转分隔符、不去尾部分隔符）
+///
+/// UNC 那条在真机上没验证过（本项目不在网络盘上跑）。取舍明确：带前缀的 UNC 对 node 的
+/// 模块加载器**一定**是坏的，还原成普通 UNC 至少可能对。
+///
+/// @param p - 任意路径
+/// @returns 摘掉 verbatim 前缀的路径（没有前缀时是 `p` 本身）
+pub fn plain_path(p: &std::path::Path) -> std::path::PathBuf {
+    let Some(s) = p.to_str() else {
+        // 非 UTF-8 路径：摘前缀得按字节做，这里宁可不摘也不猜
+        return p.to_path_buf();
+    };
+    const VERBATIM: &str = r"\\?\";
+    const VERBATIM_UNC: &str = r"\\?\UNC\";
+    const UNC: &str = r"\\";
+    if let Some(rest) = s.strip_prefix(VERBATIM_UNC) {
+        return std::path::PathBuf::from(format!("{UNC}{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(VERBATIM) {
+        return std::path::PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
 /// 内置 pi 路径启发式（08 §7.1）：macOS bundle = Contents/Resources/resources/pi/pi，
 /// windows/linux = exe 同级 resources/pi/pi。setup 里会以 resource_dir 权威值覆盖。
 fn builtin_pi_path() -> Option<PathBuf> {
@@ -209,10 +258,25 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 let state = app4.state::<crate::commands::AppState>();
                 match app4.path().resource_dir() {
-                    Ok(rd) => eprintln!("[piggy] resource_dir = {}", rd.display()),
+                    Ok(rd) => {
+                        // Windows 上 Tauri 给的是 verbatim 路径（`\\?\C:\...`）。它不能原样
+                        // 交给外部进程当参数：pi（node）加载**目录形式**的 `--extension` 时会
+                        // 报 `EISDIR ... lstat 'C:'` 然后 exit(1)，直接导致建会话失败。
+                        // 这里把原始值与摘掉前缀后的值都打出来 —— 这个坑的现场线索只有这一行。
+                        let plain = crate::pi::resources::plain_path(&rd);
+                        if plain == rd {
+                            eprintln!("[piggy] resource_dir = {}", rd.display());
+                        } else {
+                            eprintln!(
+                                "[piggy] resource_dir = {}（已摘掉 verbatim 前缀 → {}）",
+                                rd.display(),
+                                plain.display()
+                            );
+                        }
+                    }
                     Err(e) => eprintln!("[piggy] resource_dir 不可用: {e}"),
                 }
-                let resource_dir = app4.path().resource_dir().ok();
+                let resource_dir = crate::pi::resources::plain_resource_dir(app4.path().resource_dir().ok().as_deref());
                 if let Some(rd) = resource_dir.as_ref() {
                     let builtin = if cfg!(windows) {
                         rd.join("resources").join("pi").join("pi.exe")

@@ -99,6 +99,14 @@ impl WorkerHandle {
 - 状态机（Spawning/Ready/Busy/Recycled/Crashed/Stopped）由本模块维护并广播，registry 与 UI 只消费；
 - **stderr**：行缓冲捕获环形缓冲（尾部 256 行），仅用于错误呈现与日志。
 
+**argv 里的路径必须是没有 verbatim 前缀的普通路径**（2026-10-13 用户报的 `pi worker exited`，
+完整记录见 15 §4.4）：Tauri 的 `resource_dir()` 在 Windows 上给的是 `\\?\C:\...`，而
+`--extension <**目录**>` 交给 pi（node）时，它的模块加载器不认 verbatim 路径 —— 报
+`EISDIR: illegal operation on a directory, lstat 'C:'` 然后 `exit(1)`，表现为**建会话直接失败**。
+所以 `cli_args` 推 `--extension` 时一律过一遍 `crate::plain_path`（守卫、桥接、捆绑插件三处；
+`pi/resources.rs` 的定位函数也各摘一次）。迷惑点：**单文件**扩展（`piggy-guard.js`）带前缀照样能加载，
+**只有目录形式**会炸，所以这个坑在插件以目录注入之前一直藏着，且只在 Windows 上出现。
+
 ### 2.4 `pi/client.rs` — 命令客户端
 
 - id 分配、pending map、超时（02 §3.1）；`bash`/`compact` 长命令不设超时、由取消语义终结；

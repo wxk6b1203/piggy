@@ -8,6 +8,7 @@ use crate::pi::coalesce::FrameCoalescer;
 use crate::pi::codec::JsonlDecoder;
 use crate::pi::permission::PermissionMode;
 use crate::pi::protocol::{classify, Ame, PiEvent, DELTA_KINDS};
+use crate::plain_path;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -134,13 +135,13 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
             );
         };
         out.push("--extension".into());
-        out.push(guard.into());
+        out.push(plain_path(guard).into());
     }
     // 桥接扩展（piggy-bridge）：所有档位都注入。它只注册 `/piggy:*` 命令与数据面，
     // 不注册任何工具，因此不影响 `--tools` 白名单的语义。
     if let Some(bridge) = args.bridge_script.as_ref().filter(|p| p.is_file()) {
         out.push("--extension".into());
-        out.push(bridge.into());
+        out.push(plain_path(bridge).into());
     }
     /* 捆绑的 pi 插件（docs/06 §7）：目录形式注入，pi 的 `-e` 接受目录。
     ⚠️ 与 `--tools` 的关系：pi 的帮助写得很清楚 —— `--tools` 是"内置、扩展与自定义工具"
@@ -150,7 +151,11 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
     想用插件工具就得用「完全权限」档，或者把工具名加进白名单。 */
     for ext in args.bundled_extensions.iter().filter(|p| p.is_dir()) {
         out.push("--extension".into());
-        out.push(ext.into());
+        // ⚠️ 必须摘掉 verbatim 前缀：这一批是**目录形式**的扩展，而 pi（node）加载目录形式的
+        // `--extension` 时不认 `\\?\` —— 报 `EISDIR ... lstat 'C:'` 然后 exit(1)（真机 A/B 见
+        // docs/15 §4.4）。单文件形式反而没事，所以只有这几条会让 pi 起不来。
+        // 这里再摘一次是**兜底**：bundled_extensions 由上层传下来，谁传都可能带前缀。
+        out.push(plain_path(ext).into());
     }
     /* 限制档位**显式关掉 MCP**（pi 1.0.4 起的 `--no-mcp`）。
     ⚠️ 为什么不能只靠 `--tools`：pi 1.1.0 的判据是"白名单里有没有 `mcp__` 前缀的名字"
@@ -627,6 +632,47 @@ mod tests {
         assert!(
             !rendered.iter().any(|s| s.contains("does-not-exist")),
             "不存在的插件目录不该出现在 argv 里：{rendered:?}"
+        );
+    }
+
+    /// **argv 里的路径不许带 verbatim 前缀**（`\\?\`）。
+    ///
+    /// 真机 A/B（2026-10-13）：完全相同的三条插件目录，普通路径下 pi `exit=0`，
+    /// 带上 `\\?\` 则 pi 报
+    /// `Failed to load extension ...: EISDIR: illegal operation on a directory, lstat 'C:'`
+    /// 然后 `process.exit(1)` —— 表现为建会话失败（`pi worker exited`）。
+    /// 我们的 argv 对象是 `OsString`，**不是** String，所以任何 `String` 侧的
+    /// contains/replace 都碰不到它：这条闸门直接钉字节前缀。
+    #[test]
+    fn extension_args_never_carry_the_verbatim_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ext = tmp.path().join("pi-ask");
+        std::fs::create_dir_all(&ext).unwrap();
+        // 造一份真路径，再把 verbatim 前缀拼回去 —— 模拟 Tauri 的 resource_dir
+        let verbatim = |p: &std::path::Path| {
+            let s = p.to_string_lossy();
+            let bare = s.strip_prefix(r"\\?\").unwrap_or(s.as_ref());
+            PathBuf::from(format!(r"\\?\{bare}"))
+        };
+        let mut a = args(PermissionMode::Workspace);
+        a.guard_script = Some(tmp_file("piggy-test-verbatim-guard.js"));
+        a.bridge_script = Some(tmp_file("piggy-test-verbatim-bridge.js"));
+        a.bundled_extensions = vec![verbatim(&ext)];
+
+        let raw = cli_args(&a).expect("argv 组装失败");
+        let bad: Vec<String> = raw
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| s.starts_with(r"\\?\"))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "argv 里出现了 verbatim 路径（pi 会直接 exit(1)）：{bad:?}"
+        );
+        // 插件目录还得真的被注入了，否则这条测试会因为"什么都没注入"而空过
+        assert!(
+            raw.iter().any(|s| s.to_string_lossy().ends_with("pi-ask")),
+            "插件目录没被注入，这条测试等于没验：{raw:?}"
         );
     }
 

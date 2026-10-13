@@ -538,7 +538,7 @@ pub async fn perf_config_save(
     // 开关打开前先确认策略文件真的在 —— 否则这次保存会写下一个"看起来生效、
     // 实际每次建会话都拒绝启动"的配置（cli_args 里 fail-closed）。
     if subagent_delegation == Some(true) {
-        let dir = app.path().resource_dir().ok();
+        let dir = crate::pi::resources::plain_resource_dir(app.path().resource_dir().ok().as_deref());
         if crate::pi::resources::subagent_policy_path(dir.as_deref()).is_none() {
             return Err(
                 "SUBAGENT_POLICY_MISSING: 找不到子代理委派策略文件 piggy-subagent-policy.md，\

@@ -1595,6 +1595,63 @@ React 19 的 scheduler 在 Node 下走 **`setImmediate`**（不是 jsdom 的定�
 只在并发全量时偶发 —— 与 `dom-render.tsx` 记的"8 次中 2 次"是同一类。
 **判据：`pnpm test` 偶发非零退出 ≠ 有回归，先单跑那个文件确认。** 本轮没动它（drain 试过，修不掉）。
 
+### 4.4 `pi worker exited`：Tauri 给的路径带 `\\?\`，pi(node) 不认（2026-10-13）
+
+用户在另一台机器上更新代码并拉取到最新之后，本机建会话**每次都失败**，日志形状是
+`[piggy] spawn pi [...]` 打出完整命令行，紧接着 `[piggy] tab_create FAILED: pi worker exited`。
+注意它**不是** §4.1 那个 `get_state timed out` —— 超时是"pi 不理我们"，这个是"pi 自己退了"。
+
+**查法（一趟就够，值得抄）**：把那条命令行**原样**手工跑一遍，看 pi 自己的 stderr。
+`Start-Process -RedirectStandardError` 拿到的第一手现场：
+
+```
+Error: Failed to load extension "...\resources\pi-plugins\pi-ask":
+       Failed to load extension: EISDIR: illegal operation on a directory, lstat 'C:'
+Error: Failed to load extension "...\resources\pi-plugins\pi-todo": Cannot find module '\\?\C:\...'
+Hint: Start without extensions using "pi -ne".
+```
+
+**根因**：Tauri 的 `path().resource_dir()` 在 Windows 上返回 **verbatim 路径**（`\\?\C:\...`）。
+Rust 侧用它读文件一切正常，我们也就一直原样往下传 —— 但这些路径**不是给自己用的，是给
+node 当命令行参数的**。node 的 fs 层认 `\\?\`（本机探针验证：`statSync` / `pathToFileURL` /
+`import.meta.resolve` 三种都对），**模块加载器不认**：pi 加载目录形式的 `--extension` 时报
+`EISDIR ... lstat 'C:'`（把 `\\?\C:` 当成了模块标识符），三条插件扩展全部失败 → `exit(1)`。
+
+**A/B 对照**（只改"前缀"这一个变量，同一台机器同一份资源）：
+
+| argv 里的 `--extension` | pi 退出码 | 说明 |
+|---|---|---|
+| 普通路径 `C:\…\resources\…` | **0** | 守卫 + 桥接 + 三个插件目录全部加载成功 |
+| `\\?\C:\…\resources\…` | **1** | 与用户日志逐字一致 |
+
+**为什么以前没暴露**（这条比根因更值钱）：**单文件**扩展带前缀照样能加载，
+**只有目录形式**的插件会炸。`piggy-guard.js` / `piggy-bridge.js` 一直是文件，
+而 `pi-plugins/` 是后来才以**目录**形式注入的（`pi-guardrails` 更是这一轮才收录）——
+所以这个坑在"插件还是文件"的那些版本里根本不存在，**只在 Windows 上出现**，
+而且表现为"pi 起不来"而不是"路径写错了"。
+
+**处置**：`lib.rs::plain_path`（摘 `\\?\` 与 `\\?\UNC\`，不做别的规范化）+
+`resources.rs::plain_resource_dir` 在定位处各摘一次 + `process.rs::cli_args` 推
+`--extension` 时兜底再摘一次（`bundled_extensions` 是上层传下来的，谁传都可能带前缀）。
+启动日志把**原始值与摘后的值**都打出来，以后再撞见这个坑第一眼就能认。
+四条用例钉住：`plain_path` 的盘符/UNC/无前缀/POSIX 四种形状、带前缀的 resource_dir
+仍能定位且结果不带前缀、以及**argv 里不许出现 `\\?\` 前缀**（`OsString` 侧直接比字节前缀 ——
+argv 不是 `String`，任何 `String::replace` 都碰不到它）。真机验收：把三个插件目录按
+普通路径交给 pi，`exit=0`。
+
+**回归对比**（本机实测，改动前后都跑全量 `cargo test --lib`）：`HEAD` = **354 passed / 19 failed / 9 ignored**，
+改动后 = **357 passed / 19 failed / 9 ignored** —— 差额正好是新增的 3 条，**19 条红全是 §4.1 记的那批
+POSIX 路径断言**（本轮一条没碰，名单逐条核对过）。另外 `pi::resources` 原有的四条用例在 HEAD 上
+**本来就是绿的**：Windows 上 Rust 的 `is_file()`/`is_dir()` 认 `\\?\`，问题只出在**把路径交给 node 之后** ——
+所以这个 bug 不可能被"路径存在性"那类断言抓到，只能靠断言"argv 里不许出现前缀"。
+
+**最强的那步验收**（比手工复现更硬）：让**生产代码自己**组装命令行（`cli_args` + `worker_command` +
+`resources` 的真实定位逻辑，只把 pi 换成发现链给的那个），并**故意喂 verbatim 的 resource_dir**，
+然后真起一次 pi 并做 `get_state` 握手。结果：五条 `--extension` 全部无前缀、pi 零 stderr、
+`get_state` 回 `success:true`。顺带又验了 §4.1 那条改动 —— worker 起的是真 `node.exe` + `cli.js`，
+**不再经 `cmd.exe` 垫片**（`worker_command` 剥掉了它）。
+⚠️ 这个探针是临时 `examples/` 程序，**没有提交**（跑完即删）；要复现就照上面这段描述重写一个。
+
 ## 5. 验收方式
 
 **已完成。** `pnpm tauri dev` 起窗、人工确认渲染正常（2026-09-23）；

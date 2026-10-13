@@ -14,22 +14,32 @@
 
 use std::path::{Path, PathBuf};
 
+pub use crate::plain_path;
+
+/// resource_dir 一律先摘掉 verbatim 前缀再往下传（见 {@link crate::plain_path}）。
+///
+/// @param resource_dir - Tauri 给的资源目录
+/// @returns 普通形式的资源目录
+pub fn plain_resource_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    resource_dir.map(plain_path)
+}
+
 /// 在 resource_dir 与源码树里依次寻找 `filename`。
 ///
 /// `resource_dir` 为 None（拿不到 Tauri 路径）或文件缺失时回落到源码树；
 /// 都找不到返回 None——**由调用方决定缺失是错误还是可降级**。
 pub fn extension_script(resource_dir: Option<&Path>, filename: &str) -> Option<PathBuf> {
-    if let Some(rd) = resource_dir {
+    if let Some(rd) = plain_resource_dir(resource_dir).as_deref() {
         for cand in [rd.join("resources").join(filename), rd.join(filename)] {
             if cand.is_file() {
-                return Some(cand);
+                return Some(plain_path(&cand));
             }
         }
     }
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join(filename);
-    dev.is_file().then_some(dev)
+    dev.is_file().then(|| plain_path(&dev))
 }
 
 /// Piggy **捆绑的 pi 插件**目录（`resources/pi-plugins/<name>/`）。
@@ -77,14 +87,17 @@ impl PluginOrigin {
 /// 同上，但连"从哪儿找到的"一起返回。
 pub fn bundled_plugin_dir_with_origin(resource_dir: Option<&Path>, name: &str) -> Option<(PathBuf, PluginOrigin)> {
     // 目录判定用 `is_dir`（上面两个是单文件脚本，用 is_file）
+    let resource_dir = plain_resource_dir(resource_dir);
     let candidates = [
-        resource_dir.map(|rd| {
+        resource_dir.as_deref().map(|rd| {
             (
                 rd.join("resources").join("pi-plugins").join(name),
                 PluginOrigin::ResourceDir,
             )
         }),
-        resource_dir.map(|rd| (rd.join("pi-plugins").join(name), PluginOrigin::ResourceDirFlat)),
+        resource_dir
+            .as_deref()
+            .map(|rd| (rd.join("pi-plugins").join(name), PluginOrigin::ResourceDirFlat)),
         Some((
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources")
@@ -93,7 +106,11 @@ pub fn bundled_plugin_dir_with_origin(resource_dir: Option<&Path>, name: &str) -
             PluginOrigin::SourceTree,
         )),
     ];
-    candidates.into_iter().flatten().find(|(p, _)| p.is_dir())
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|(p, _)| p.is_dir())
+        .map(|(p, o)| (plain_path(&p), o))
 }
 
 /// 权限守卫扩展（`piggy-guard.js`）。缺失 → 「工作区内修改」档拒绝启动（fail-closed）。
@@ -156,5 +173,62 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // resource_dir 里没有、源码树里也没有的名字
         assert!(extension_script(Some(tmp.path()), "no-such-extension.js").is_none());
+    }
+
+    /// verbatim 前缀（`\\?\`）要摘掉：**给外部进程当参数**的路径不能带它。
+    ///
+    /// 真机 A/B（2026-10-13）：同样的三条插件目录，普通路径 `exit=0`，带 `\\?\` 则
+    /// pi 报 `EISDIR ... lstat 'C:'` 并 `exit=1` → 建会话直接失败（`pi worker exited`）。
+    #[test]
+    fn plain_path_strips_the_windows_verbatim_prefix() {
+        assert_eq!(
+            plain_path(Path::new(r"\\?\C:\a\b")),
+            PathBuf::from(r"C:\a\b"),
+            "盘符形式要摘成普通路径"
+        );
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x"),
+            "UNC 形式要还原成普通 UNC"
+        );
+        assert_eq!(
+            plain_path(Path::new(r"C:\a\b")),
+            PathBuf::from(r"C:\a\b"),
+            "本来就没有前缀的路径必须原样返回"
+        );
+        assert_eq!(
+            plain_path(Path::new("/home/u/.pi")),
+            PathBuf::from("/home/u/.pi"),
+            "POSIX 路径不受影响"
+        );
+        // 摘前缀不能顺手做别的规范化：路径要与 `is_file()` 的判定结果保持一致
+        assert_eq!(
+            plain_path(Path::new(r"\\?\C:\a\b\")),
+            PathBuf::from(r"C:\a\b\"),
+            "不做尾部分隔符归一"
+        );
+    }
+
+    /// 定位出来的东西**不能带 verbatim 前缀** —— 它们是 `--extension` 的参数值。
+    ///
+    /// 这条不依赖真机：直接拿一个带前缀的 resource_dir，看返回的路径形不形。
+    /// 它在改造前是红的（`plain_resource_dir` 摘完前缀才过得了 `is_file()`）。
+    #[test]
+    fn located_resources_never_carry_the_verbatim_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let packaged = tmp.path().join("resources");
+        std::fs::create_dir_all(packaged.join("pi-plugins").join("pi-ask")).unwrap();
+        std::fs::write(packaged.join("piggy-bridge.js"), "// packaged").unwrap();
+        let verbatim = PathBuf::from(format!(r"\\?\{}", tmp.path().display()));
+
+        let script = extension_script(Some(&verbatim), "piggy-bridge.js").expect("守卫/桥接脚本应当能找到");
+        let dir = bundled_plugin_dir(Some(&verbatim), "pi-ask").expect("插件目录应当能找到");
+        for p in [&script, &dir] {
+            let shown = p.display().to_string();
+            assert!(
+                !shown.starts_with(r"\\?\"),
+                "定位结果带上了 verbatim 前缀，交给 pi(node) 会加载失败：{shown}"
+            );
+        }
     }
 }
