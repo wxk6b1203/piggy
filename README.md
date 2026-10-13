@@ -73,7 +73,7 @@ Piggy 把 `resources/pi-plugins/<name>/` 以 `pi --extension <dir>` 注入
 | Node | ≥ 20（本仓开发用 24） |
 | pnpm | ≥ 10（`packageManager` 锁 11.24.0） |
 | Rust | stable（Tauri 2 工具链） |
-| **pi** | **契约锚定 0.87.1**。发现顺序：设置里的显式路径 → `PI_BIN` → 应用内置（full SKU 捆绑的官方 standalone）→ `PATH`。启动时跑 `pi --version` 做版本门禁 |
+| **pi** | **契约锚定 1.2.0**（2026-10-13 起；六处锚点由 `apps/desktop/scripts/check-pi-pin.mjs` 对账）。发现顺序：设置里的显式路径 → `PI_BIN` → 应用内置（full SKU 捆绑的官方 standalone）→ `PATH`。启动时跑 `pi --version` 做版本门禁 |
 | 可选 | 浏览器（只跑前端门禁/截图时需要）：`ui:debug` / `ui:startup` / `ui:shot` 用系统 **Chrome**（`channel:'chrome'`），`perf` 用 Playwright 自带的 **chromium**（`pnpm exec playwright install chromium`）。**不需要**为了跑前端而装 pi——浏览器里跑的是 mock IPC |
 
 ## 快速开始
@@ -107,7 +107,7 @@ pnpm tauri build --config src-tauri/tauri.full.conf.json
 pnpm dev                                          # Vite :5195（mock IPC）
 pnpm test                                         # vitest：前端 + 协议包 + 桥接扩展
 pnpm test:rust                                    # Rust 单元 + fixtures 对拍 + IPC 契约
-pnpm test:contract                                # 对**真实 pi** 的契约测试 C1–C14（走已配置 provider，消耗少量 token）
+pnpm test:contract                                # 对**真实 pi** 的契约测试 C1–C16（走已配置 provider，消耗少量 token）
 pnpm typecheck                                    # tsc（apps/desktop + packages/piggy-bridge）
 pnpm build:bridge                                 # 桥接扩展源码 → resources/piggy-bridge.js（改扩展后必跑）
 
@@ -127,7 +127,7 @@ pnpm --filter @piggy/desktop perf                 # 全场景 S1–S6
 | `pnpm typecheck` | apps/desktop + packages/piggy-bridge（后者对着真实 pi 类型） | ✅ |
 | `pnpm test` | 前端 **662（68 文件）** + 桥接 37 + 协议 30 | ✅ **729 passed**（2026-10-10 实测；计数会随迭代变化，以 `pnpm -r test` 的输出为准）⚠️ 前端整套偶发 `exit 1`：React 19 scheduler 在 Node 下走 `setImmediate`，`unmount()` 之后排队的回调会在 jsdom 拆掉后才跑（`window is not defined`），662 个用例本身每次都全过 —— 已知 flake，判据见 docs/15 §4.3 |
 | `pnpm test:rust` | Rust 单元 370 + fixtures 3 + IPC 契约 21 + 路径纪律 2；另 9 条 `#[ignore]` 真机核对 | ✅ **396 passed / 9 ignored**（2026-10-10 实测） |
-| `pnpm test:contract` | 对真实 pi **1.1.0** 跑 C1–C16（含桥接数据面、降级、两 lane DAG、预热 worker 复用） | ✅ **17 passed**（2026-10-10 实测，17.6s） |
+| `pnpm test:contract` | 对真实 pi **1.2.0** 跑 C1–C16（含桥接数据面、降级、两 lane DAG、预热 worker 复用） | ✅ **17 passed**（2026-10-13 实测，18.0s） |
 | `cargo clippy --all-targets -- -D warnings` | 含 test 目标（只跑 lib 会漏掉 5 处旧提示，已修） | ✅ |
 | `pnpm build` | tsc + vite 产物 | ✅ |
 | `ui:startup` | 真浏览器 + mock：布局恢复一致性、Fleet A/B 两层、斜杠补全真滚动、代码块真高亮、文件预览按需语言包、折叠侧栏、空编辑区、打开方式（会话/文件）、Monaco 池、提供商页、会话标题（生成后**侧栏 / 上方标题 / 标签页**三处一致）、**分页几何**（打开即贴底 / 翻页不跳 / 换窗跳转 / 继续往下 / 滚轮续页）、**数字口径**、**压缩细节**、**展开态与切标签**（虚拟化卸载后展开态还在 / 后台跑完切回来贴底 / 读者的位置分毫不差地还回去）、**连点两次只开一个面板**、**实时块绑在当前那个节点上**（滚出虚拟窗口再回来一个字不丢 / 切走再切回按"通道发出的字数"对账）、**流式中手动往上滚**（真滚轮：位置留住、内容继续长也不拽回、滚回底部跟随自己回来） | ✅ 全部通过 |
