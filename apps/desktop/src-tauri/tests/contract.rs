@@ -260,6 +260,15 @@ async fn c6_no_session() {
 }
 
 /// C7：>1MB 单事件（bash 巨量输出）下的管道行为。
+///
+/// ⚠️ 造输出的解释器用 **node**，不用 `python3`（2026-10-13 修）。
+/// 原来写的是 `python3 -c "print('x'*1_500_000)"`，在 Windows 上 `python3` 往往是
+/// **Microsoft Store 的占位程序**（`WindowsApps\python3.exe`，实测退出码 49、零输出）——
+/// 于是命令根本没跑起来，`update_count` 为 0，用例红在一个与它要验的东西无关的地方
+/// （"没有流式分片"看上去像产品缺陷，其实是环境差异）。
+/// node 是更稳的选择：**pi 本身就是 node 程序**，能跑契约测试的机器必然有它。
+///
+/// 同时补了一条 `exitCode` 断言：命令失败时必须**当场说清**，不能再伪装成"没有事件"。
 #[tokio::test]
 async fn c7_megabyte_lines() {
     let tmp = tempfile::tempdir().unwrap();
@@ -285,7 +294,15 @@ async fn c7_megabyte_lines() {
     )
     .await
     .unwrap();
-    let out = w.bash("python3 -c \"print('x'*1_500_000)\"").await.expect("bash");
+    let out = w
+        .bash("node -e \"process.stdout.write('x'.repeat(1_500_000))\"")
+        .await
+        .expect("bash");
+    assert_eq!(
+        out["exitCode"].as_i64(),
+        Some(0),
+        "造 1.5MB 输出的命令没跑成功，下面的断言会变成假的 —— 原始返回：{out}"
+    );
     let truncated = out["truncated"].as_bool().unwrap_or(false);
     eprintln!(
         "C7: 1.5MB bash 输出 => truncated={truncated}, fullOutputPath={:?}",
