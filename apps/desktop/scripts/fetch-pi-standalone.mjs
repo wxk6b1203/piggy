@@ -70,7 +70,7 @@ if (!OS_NAME) {
 /* 默认版本 = **与 Piggy 一起验证过的那个 pi**（docs/08 §7.1 的成对锚定）。
    2026-10-09 从 0.87.1 升到 1.1.0：契约测试 C1–C15 在 1.1.0 上重跑全绿（16/16），
    provider 目录与内置扩展表也按 1.1.0 重新生成过（两个生成器都有 --check）。 */
-const VERSION = arg('--version', '1.1.0');
+const VERSION = arg('--version', '1.2.0');
 const OS = arg('--os', OS_NAME);
 const ARCH = arg('--arch', process.arch);
 const ASSET = `pi-${OS}-${ARCH}${OS === 'windows' ? '.zip' : '.tar.gz'}`;

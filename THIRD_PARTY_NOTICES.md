@@ -16,7 +16,7 @@ Piggy 自身的许可是 **GPL-3.0-or-later**（见 [LICENSE](LICENSE) 与 READM
   - **lite SKU**：不使用捆绑 pi，运行期用用户机器上装的 pi（不涉及再分发）；
   - **full SKU**：`apps/desktop/scripts/fetch-pi-standalone.mjs` 从 pi 的 GitHub Release
     下载对应平台的完整分发包，解包到 `src-tauri/resources/pi/`，由 `tauri.full.conf.json`
-    的 `bundle.resources` **随安装包一起分发**（版本见该脚本的 `--version`，当前 1.1.0）。
+    的 `bundle.resources` **随安装包一起分发**（版本见该脚本的 `--version`，当前 1.2.0）。
 - **许可**：MIT，`Copyright (c) 2025 Mario Zechner`
 
 ### 署名（MIT 履行）

@@ -79,7 +79,7 @@ jobs:
       # 固定版本（不是 @latest）：契约矩阵验证过的是**这一个** pi。
       # 升级要用 apps/desktop/scripts/check-pi-pin.mjs 的清单走一遍（六处锚点一起改），
       # 否则 CI 会在别的 PR 上突然变红/变绿 —— 那是"版本漂移"而不是"这次改动坏了"。
-      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.2.0
       - run: node apps/desktop/scripts/check-pi-pin.mjs --installed
       # 真机插件探针（docs/17 §2.2b）：核对外面那三条只有真 pi 才能验的事
       # （能加载 / `--tools` 会过滤插件工具 / 两份同名插件会让 pi 不进会话）。

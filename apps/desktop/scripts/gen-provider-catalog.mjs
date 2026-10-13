@@ -91,6 +91,32 @@ for (const m of envTs.matchAll(/if \(provider === "([\w-]+)"\) \{\s*return \[([^
 }
 if (envMap.size < 20) throw new Error('envMap 解析失败');
 
+/**
+ * 取 `createProvider({…})` 里的 `baseUrl`。
+ *
+ * 两种情况：
+ *  1. 字面量 `baseUrl: "https://…"` —— 直接用；
+ *  2. 同文件常量 `baseUrl: OPENROUTER_BASE_URL` —— 到**同一个文件**里找
+ *     `const OPENROUTER_BASE_URL = "https://…"`（pi 1.2.0 把 openrouter 改成了这种写法）。
+ *
+ * 只认"同文件 + 名字对得上 + 值确实是字符串字面量"这一种；其余一律返回空串。
+ * 判据：**这不是替 pi 推断**（pi 确实声明了这个值），但也**不越界**去别的模块找、
+ * 不执行表达式 —— 那才会变成猜。
+ *
+ * @param {string} body - `createProvider({…})` 的实参文本
+ * @param {string} src - 该 provider 源文件全文（常量声明在文件作用域）
+ * @returns {string} baseUrl；解析不出来返回 `''`
+ */
+function resolveBaseUrl(body, src) {
+  const literal = /(?:^|\s)baseUrl:\s*"([^"]+)"/.exec(body)?.[1];
+  if (literal !== undefined) return literal;
+
+  const ident = /(?:^|\s)baseUrl:\s*([A-Za-z_$][\w$]*)\s*[,\n]/.exec(body)?.[1];
+  if (ident === undefined) return '';
+  const decl = new RegExp(`(?:^|\\n)\\s*const\\s+${ident}\\s*=\\s*"([^"]+)"`).exec(src)?.[1];
+  return decl ?? '';
+}
+
 /* ---------- 组装 ---------- */
 // 少数提供商不是用 `createProvider({...})` 字面量构造的（radius 是动态网关），
 // 源码里读不到 name/api 就在这里显式列出，并注明出处——不做猜测。
@@ -104,7 +130,13 @@ for (const file of order) {
   const id = /(?:^|\s)id:\s*"([^"]+)"/.exec(body)?.[1] ?? file;
   const manual = MANUAL[id] ?? {};
   const name = /(?:^|\s)name:\s*"([^"]+)"/.exec(body)?.[1] ?? manual.name ?? id;
-  const baseUrl = /(?:^|\s)baseUrl:\s*"([^"]+)"/.exec(body)?.[1] ?? '';
+  /* `baseUrl` 有两种写法：字面量 `baseUrl: "https://…"` 与**同文件常量**
+     `baseUrl: OPENROUTER_BASE_URL`（pi 1.2.0 把 openrouter 改成了后者）。
+     后者以前会被正则漏掉、静默记成空串 —— 2026-10-13 升级时实测踩到。
+     ⚠️ 这不是"替 pi 推断"：pi **确实声明了**这个常量，只是写成了引用。
+     只解析**同一个文件里的 `const NAME = "字面量"`**，解析不出来就照旧记空串
+     （下一条注释里那条"不猜"的原则没变）。 */
+  const baseUrl = resolveBaseUrl(body, src);
   // `api:` 有三种写法：单协议 `api: xApi(),`、多协议映射 `api: { "a": xApi(), … }`、
   // 包装 `api: cloudflareStreams(openAICompletionsApi())`。多协议映射的键就是协议 id
   // （最可靠），其余从工厂函数名反查 api/*.lazy.ts 的文件名。

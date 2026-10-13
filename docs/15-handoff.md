@@ -15,7 +15,7 @@ DSH UI 对齐 + 权限档位 + pi 打包修复 + **子代理双层（M3）** + �
 | `vitest` | **2026-10-09 本机（Windows）复核**：**66 文件全过 / 633 passed + 7 skipped（640）**。⚠️ 两点与 macOS 上不同：① `permission-guard.test.ts` 有 **7 条 skip**（POSIX 专属，见 §4.2）；② **exit code 仍可能是 1** —— React scheduler 的 `setImmediate` 在 jsdom 拆除后才跑，vitest 记为 unhandled error（已知 flake，见 §4.3）。本轮修掉两条稳定超时（`session-name-sync` / `feedback`，原因都是"用例体里 `await import()` 一棵重模块树"，见 §4.2）。历史留档：**2026-09-25 复核**：apps/desktop **599（61 文件）**、`packages/piggy-bridge` **37/37**、`packages/pi-protocol` **30/30** —— 全部通过。⚠️ 本节下面那段历史留档里写的「572（57 文件）」与「bridge `artifact.test.ts` 既存红」**都已过期**：产物是新鲜的（`node packages/piggy-bridge/scripts/build.mjs --check` → ✓），那条用例也一直绿；本地若要复现，先 `pnpm install`（`packages/*/node_modules/vitest` 的软链会随 lockfile 更新而悬空）。以下为历史明细（数字按当时算）：apps/desktop 明细：**566**（57 文件）。**2026-09-24 本轮（转录重整 + 流式 Markdown）：删 11 条旧实时块引擎单测（`live.test.ts`，那个引擎没有了）、新增 5 条**流式行模型**（两条助手消息不串块 / 工具结果并进调用行 / 转正不重挂 / 新一轮落定掉队行 / 换窗期间不建流式行）、`transcript-scroll` 从 12 条改成 16 条（跟随判定改测 `ScrollFollow` 类）、`stores.test` 增 1 条（工具结果不单独成行 + 调用不在窗口时的兜底）、**`markdown.test` 增 6 条流式增量（节点身份跨冻结边界不变 / 尾部跟长 / 非追加输入整段重置 / 六种构造不变义 / 安全口径一致 / 流式围栏不上色）**。其余明细（历史留档）：含 20 条守卫扩展、16 条失败回合可见性、9 条布局生命周期判据、2 条恢复时序、8 条 fleetStore、9 条 FleetView、20 条 Composer 斜杠补全、44 条代码块高亮/折叠/源码门、4 条同一会话重复打开去重、5 条子代理委派开关、8 条预览语言表、5 条折叠侧栏图标轨、4 条空编辑区占位、22 条「打开方式」、6 条 Monaco 池策略、2 条 IPC 命令名契约、**17 条提供商配置页**、**8 条提供商 IPC 边界**、**3 条 mock 形状跨语言金标**、**本轮新增 73 条：13 条数字口径（`formatPercent` 的 3 位小数 / 整数模式 / 夹取）、8 条尺寸订阅（全应用一个 `ResizeObserver` + 代码块不自建 + 探针把「我们/别人」分开）、7 条错误上报（三种 `window.onerror` 形状 / 探针现场 / 连发折叠）、3 条上下文占用百分比端到端、**9 条压缩细节**（轨迹快照/实时三事件合成一行/失败不说完成/中断改口、对话行的边界+文件+用量+systemMessage 不外泄）**）、**本轮新增 56 条：21 条清单模型（含与 Rust 状态白名单的跨语言一致性）、8 条清单行、9 条计划面板、16 条 todo store（能力探测的坏形状 / seed / 实时增量 / 项目级补探）、2 条转录接线（端到端两行写入，钉住差异基线按调用 id 配对）**）、**本轮新增 20 条：7 条行内展开态记忆（键口径 / LRU / 清理）、7 条展开态跨卸载重挂（思考行 / 工具行 / 工具正文代码块 / 行与行·标签与标签不串 / 关标签要忘）、4 条读者位置锚点（口径 / 钳制 / 行没了退回裸位置）、2 条面板不在前台的几何（隐藏期间不许写位置·不许丢跟随 / 读者接管则分毫不差还回去）**）、**本轮新增 8 条：会话名的同步（按会话文件推给打开的标签 / 不误改别的会话 / 空白=清掉 / 路径字面比较 / 头部响应式跟着变 / 命令面板那条入口也会推 / 后端说没写下去就不许本地改口）**）、**本轮新增 3 条：连点两次只 addPanel 一次且不弹报错 / 同一快照连开两次只加一个面板 / 双击只读一次尾页**）、**本轮新增 6 条：4 条实时块引擎（节点摘掉再挂到新节点不丢字 / 块的形状随 pending 重建 / 同一节点重复 attach 幂等 / 无布局不写 scrollTop 且有布局才贴底）、2 条转录接线（实时行滚出窗口再回来必须长在可见节点上 / 新一轮清掉上一轮残留）**）、**本轮新增 4 条：1 条引擎跟随意图（读者接管之后一个像素都不写 / 交还后继续贴底）、3 条转录回滚（上滚交还且内容继续长也不拽回 / 一格 25px 也交还 —— 容差不许吞手势 / 滚回底部跟随自己回来）**）|
 | `cargo test` | **336 + 3 + 21 + 2**（另有 9 条 `#[ignore]` 的真机核对：`real_home` / `real_network` / `real_machine_page` 等）全绿。本轮新增：`plugin::capabilities` 9 条、`transcript::todo_projection` 12 条（折叠/清空/坏形状/预筛/分支/**载荷在前的 custom 条目**/半行/真机）、`tests/ipc_contract.rs` 2 条（两个新命令的返回形状逐个锁死）|
 | `cargo clippy --all-targets -- -D warnings` | **通过**（本轮新加的这条比原来的 `cargo clippy -- -D warnings` 更严：后者不 lint test 目标）。清掉的 5 处：`tests/fixtures_parse.rs` 的单分支 `match`、`sessions/transcript.rs` 的死赋值与 `format!` 套 `format!`、`open_in_app/icons.rs` 测试桩里没人读的字段、`fleet.rs` 的 `== false` |
-| `cargo test --features contract` | **16/16 全绿**（**2026-10-09 起在 pi 1.1.0 上重跑**，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG / C15 建 tab 不持锁）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 PNG data URL（**2026-10-09 改口径：macOS 128×128、Windows 32×32**，Windows 那一支此前返回 None，写死 128 会在 Windows 上误报）/ 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
+| `cargo test --features contract` | **17/17 全绿**（**2026-10-13 起在 pi 1.2.0 上重跑**，含 C12 bridge 数据面 / C13 降级 / C14 两 lane DAG / C15 建 tab 不持锁）；另 IPC 契约 **19** 条（2026-09-23 复核：文件里就是 19 个 `#[test]`，此前这里写的 11 是旧数）：`fs_list_dir` 形状 + 「打开方式」id 数组 / 图标真的是 PNG data URL（**2026-10-09 改口径：macOS 128×128、Windows 32×32**，Windows 那一支此前返回 None，写死 128 会在 Windows 上误报）/ 文件关联 `{id,name,default,icon}` 形状 / 目录也能查关联 / 拒绝面 + **提供商行键集合逐个锁死**、保存返回值与落盘一致、被拒请求一个字节都不写 |
 | `ui:debug --strict` | 零 pageerror / 零 console error / 零布局问题（退出码 0） |
 | `ui:startup` | 全绿，第 4 段覆盖：右栏 Fleet 面板 → A 层启动 3 条 lane（scout/review/build，验证 camelCase 参数名）→ steer 回车清空 → B 层刷新后 PIGGY:1 载荷落到面板（reviewer · correctness）→ **斜杠补全真滚动**（52 行、`scrollHeight 1508 > clientHeight 258`、`scrollTop` 真的变了、滚到底最后一条在可视区内）→ **代码块真高亮**（4 张卡 / diff 1 增 1 删 1 块头带底色 / go 的 token 有 4 种颜色 / 静默失败数 0） |
 | `ui:startup` 数字口径（本轮新增） | **百分比不许露出 f64 尾巴**（用户报的 `上下文占用 20.316000000000003%`）：先核对夹具**有复现能力**（mock 的原始 `percent` = `15400/75800×100` 必须 >3 位小数），再断言三处显示——环的短标签 `20%`（DSH 整数口径）、环的 title `上下文占用 20.317%（15.400K / 75.800K）`、右栏「上下文」`20.317%` 且与 `data-ctx-percent` 一致。红检实测：把三处改回 `${pct}%` 时门禁逐条点名（原文就是 `20.316622691292878%`） |
@@ -1418,6 +1418,24 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      接线必须有自己的一条断言）。
 
 
+
+141. **升级 pi 时，先看"生成器读的是哪种写法"，再看版本号。**（2026-10-13，1.1.0 → 1.2.0）
+     这次升级的六个锚点全是机械替换，真正有信息量的是**生成物**那一格：
+     pi 1.2.0 把 openrouter 的 `baseUrl: "https://…"` 改成了 `baseUrl: OPENROUTER_BASE_URL`
+     （同文件常量）—— 而 `gen-provider-catalog.mjs` 只认字面量，于是**静默记成空串**。
+     危害是用户可见的：配置页里 OpenRouter 的 API 地址不再预填、模型探测也没了默认端点，
+     而 `--check` 会显示"目录不一致"看起来像"pi 改了内容"（其实是我们的解析器瞎了）。
+     修法：解析**同文件**的 `const NAME = "字面量"`（只在同文件、只认字符串字面量；
+     解析不出来照旧记空串 —— "不替 pi 推断"的原则没变）。
+     判据：**生成器的输入是"源码写法"而不是"语义"**，所以上游一次无害的重构
+     （抽个常量）就能让它静默降级；升级时**先 `--check`、再逐行看 diff**，
+     凡是"内容变了"都要问一句"是 pi 变了，还是我的解析器漏了"。
+     这次 1.2.0 的结论：① `modes/rpc/` 与 1.1.0 **零 diff**；② 扩展 API 是**加法**
+     （`BeforeAgentStartEvent` 变成 user/custom 联合、新增 `ToolDefinition.reachesTools`
+     与 `ToolNamespace.aliases`）；③ 两个快照的**内容**与 1.1.0 完全相同，只有版本头变。
+     验证：契约 17/17、真机插件探针全绿、pi-guardrails 对 1.2.0 `tsc` 干净 + 90/90 通过、
+     bridge 类型校验与 37 条单测干净。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |
@@ -1455,13 +1473,13 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | dockview 主题变量漂移 | 已补齐当前被引用的全部变量，但 dockview 升级时可能新增。`src/styles.css` 的 dockview 段落记了自检方法（按"被引用且无 fallback"算差集） |
 | 自定义 pi 的配置目录 | `pi_files.rs` 硬编码 `$HOME/.pi/agent`，且 spawn 时**不传** `PI_CODING_AGENT_DIR`（`SpawnArgs.envs` 已具备透传能力，只差设置项）。要支持需加设置项（docs/17 §2.3） |
 | `--tools` 与插件工具 | 限制档位的白名单会连**扩展/自定义工具一起过滤**（pi 的设计）。自定义 pi 的插件工具只在「完全权限」档可见。若希望插件只读工具在限制档也可用，需改用 `--exclude-tools` 语义并重新论证边界 |
-| **提供商目录随 pi 版本漂移** | `provider/catalog_generated.rs` 是从 pi v1.1.0 源码生成的快照（2026-10-09 重生成）。pi 升级后必须重跑 `node apps/desktop/scripts/gen-provider-catalog.mjs <pi 源码根>`（可用 `--check` 复核）。不重跑不会报错，只会"少几个新提供商"或"某个 baseUrl 过时"—— 属于**静默漂移**，所以这一行留在这里当提醒 |
+| **提供商目录随 pi 版本漂移** | `provider/catalog_generated.rs` 是从 pi v1.2.0 源码生成的快照（2026-10-13 重生成；**内容与 1.1.0 相同** —— 只有版本头变了）。pi 升级后必须重跑 `node apps/desktop/scripts/gen-provider-catalog.mjs <pi 源码根>`（可用 `--check` 复核）。不重跑不会报错，只会"少几个新提供商"或"某个 baseUrl 过时"—— 属于**静默漂移**，所以这一行留在这里当提醒 |
 | 提供商「检测」的 **Windows/Linux 真机** | 列举端点的 URL/鉴权头规则有单测（含 anthropic 系的 `/v1/models` 与 `x-api-key`）、真 socket 集成测试、以及一次**真机网络**核对（`cargo test --lib -- --ignored real_network`：不带密钥打 `https://api.deepseek.com/models`，拿到 401 + 端点原文"Authentication Fails"）。但只在 macOS 上跑过；代理/企业证书等环境差异未验证 |
 | 提供商「检测」的 **非标准鉴权协议** | Azure（`api-key` 头 + `api-version` 查询）、Codex（OAuth）这类**不猜**：`discovery.ts` 的 DSH 版本也把它们排除在外（"猜错会把鉴权失败报成'这家没有模型'"）。这些提供商仍可保存配置，只是「获取可用模型」会返回明确的"不支持列举" |
 | 提供商「检测」的 **自定义 headers** | pi 支持 `providers.<id>.headers`（含 `${ENV}` 模板），但配置页不编辑它们，检测请求也不带 —— 靠 header 鉴权的网关会得到 401。要支持得先决定**怎么把带密钥的 header 安全地送到前端以外的 Rust 侧**（现在的做法是前端只送 baseUrl/api/一次性 key） |
 | auth.json **没有原始 JSON 编辑器** | 有意为之：密钥只在 Rust 侧脱敏读出（`provider_list` 的 `keyMasked`），明文不进渲染进程。「高级」节只有 models.json / settings.json。要改密钥走「模型」页 |
 | 提供商页的 **模型能力标记** | pi 的模型定义还有 `cost`、`compat`、`thinkingLevelMap`、`inputLimits` 等界面没暴露的字段。现在靠"未知字段原样保留"保证不丢，但没有表单 —— 要改用「高级」节的原始 JSON 编辑器 |
-| **插件内置表随 pi 版本漂移** | `plugin/builtins_generated.rs` 是从 pi v1.1.0 源码的 `builtInExtensions` 生成的快照（**4 条**：`llama.cpp` + `codemode`/`tool-search`/`mcp`，后三条 `replaceable: true`）。pi 升级后要重跑 `node apps/desktop/scripts/gen-plugin-builtins.mjs <pi 源码根>`（`--check` 可复核）。与提供商目录同类的**静默漂移** |
+| **插件内置表随 pi 版本漂移** | `plugin/builtins_generated.rs` 是从 pi v1.2.0 源码的 `builtInExtensions` 生成的快照（**4 条**：`llama.cpp` + `codemode`/`tool-search`/`mcp`，后三条 `replaceable: true`）。pi 升级后要重跑 `node apps/desktop/scripts/gen-plugin-builtins.mjs <pi 源码根>`（`--check` 可复核）。与提供商目录同类的**静默漂移** |
 | 插件页的 **Windows/Linux 真机** | 发现规则、路径解析、通配符判定、落点布局都有单测，且有一条**真机核对**（`cargo test --lib -- --ignored real_machine`：读出这台机器真实的 3 个 npm 包 + `pi-guardrails` 发现目录 + `llama.cpp` 内置）。但只在 macOS 上跑过；Windows 的盘符/`\` 路径与 git-bash 路径未验证 |
 | 插件**安装/升级没在真机上完整跑过一次** | 参数拼装（`plugin_cli_plan_matches_pi_flags`）与流式任务机制有单测 + 门禁（mock），但"点安装 → npm 真的从网上装下来"这一步要联网，没在自动化里跑。失败路径（网络/权限/依赖冲突）靠任务面板显示原始输出，**未实测各种失败文案** |
 | 插件**工具名冲突会让 pi 直接退出** | 两个扩展注册同名工具时 pi 在**所有模式**下 `exit(1)`（`resource-loader.ts:1064-1100` + `main.ts:896-906`），而且是启动即失败。界面**不检测**这种情况（要检测得先真的加载一遍扩展）。用户看到的现象是"新装的插件一装上 pi 就起不来了"，只能靠 `pi -ne` 或删插件自救。已记在 docs/03 §2.15 的来源说明里 |
@@ -1477,7 +1495,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | 标题**没有"输出 token 上限"** | DSH 有 `maxOutputTokens`（默认 64）。`pi -p` 没有对应命令行参数，所以只能靠提示词约束 + 结果截断。模型话痨时那次调用会多花一点钱 |
 | 标题生成的**并发** | 界面上同一时刻只允许一个（`titling` 状态），但后端没有全局队列——多窗口/多入口同时点会并发起多个 pi 进程。概率低，先不做 |
 | 右键菜单**没有子菜单/快捷键提示列** | 也不在多个位置复用（只有会话行）。要做成通用组件得先有第二个用它的地方 |
-| pi 扩展 API 版本耦合 | `packages/piggy-bridge` 的类型对着 pi 1.1.0 校验（devDependency 已随之升到 1.1.0）；pi 升级后需重跑 `pnpm --filter piggy-bridge typecheck` 与 `pnpm test:contract`（C12–C15+）。这是唯一会因 pi 升级而静默失效的接缝 |
+| pi 扩展 API 版本耦合 | `packages/piggy-bridge` 的类型对着 pi 1.2.0 校验（devDependency 已随之升到 1.2.0）；pi 升级后需重跑 `pnpm --filter piggy-bridge typecheck` 与 `pnpm test:contract`（C12–C15+）。这是唯一会因 pi 升级而静默失效的接缝 |
 | ~~worker 崩/休眠时"这一轮"没有落地信号~~ **已修（2026-09-25，B 期第 1 条）** | 现场（当时记的）：探针 `streamFor(2400,16,tabId)` 跑到一半 → `pi:state:crashed`，之后 `streaming` 仍是 **true**、实时行还挂着、"停止"按钮仍可用 —— 界面**假装还在跑**，而那个能把这一轮落地的 `message_end` 永远不会来。<br>现在：`stores/messages.ts::interruptTurn(tabId, reason)` 把实时块**转正**成一条 `stopReason:'aborted'` 的助手消息（`TurnFailureCard` 直接画「已中止」+ 原因，已流出的字一个字不丢）并落地 `streaming=false`；触发点是 `lib/tabEvents.ts` 的两处：`pi:state` 报 `crashed`/`sleeping`，以及 `agent_settled` 时**还挂着流式行**（用户中断、pi 直接收尾等）。<br>两个当时没定的口径现在定了：① **部分输出算一条消息**（它就是用户已经看到的东西，丢掉才是 bug）；② 与 `piggy:resync` 的去重靠行上的 `interrupted` 标记 —— resync 前先 `dropInterrupted`（那一行不在会话文件里，pi 只在 `message_end` 落盘），所以文件里那一轮的真身回来时**不会出现两行**。一个字都没流出来时**不留空行**。<br>钉住它的：`turn-interrupt.test.tsx`（5 条：崩溃/休眠/空输出/settled 无 end/resync 去重）+ 门禁第 24 段（在"崩"与"resync"之间量，所以 `mockCrash`/`mockRevive` 拆成了两个 helper） |
 | **todo 界面没在真窗口里点过一次** | 已验证的是三段：① 真 pi 在**本仓**跑了一场带清单的会话（`pi -p …` → 会话文件里有 `pi-todo/state` + 8 条 `todo/write`）；② Piggy 的 Rust 投影读那份真会话（`PIGGY_TODO_SESSION=<path> cargo test --release --lib real_machine_todo -- --ignored` → 3 条、来源 `event`、677 µs）；③ 浏览器门禁在真布局里量了行高/面板位置/闸门正反两面（mock IPC，形状由 `ipc_contract` 锁着）。**没做**的是：在真 Tauri 窗口里打开那场会话、用眼睛确认一遍（agent 没有截图权限，见第 4 节） |
 | todo 能力探测的 **Windows/Linux 真机** | 声明式/内容探测、目录入口下探、截断标记、未知能力报错都有单测，真机核对只在 macOS 上跑过（`cargo test --lib real_machine_todo_capability -- --ignored --nocapture` → 命中 `pi-todo`、`pi-web-access/dist/index.js` 超限被如实标出）。Windows 的盘符路径与 CRLF 未验证 |
