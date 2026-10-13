@@ -8,7 +8,7 @@ use crate::pi::permission::PermissionMode;
 use crate::pi::process::{spawn_worker, SessionTarget, SpawnArgs};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -68,33 +68,7 @@ pub struct Registry {
     /// **正在复活**的 tab_id 集合。复活必须"锁外握手"（见 `revive_unlocked`），
     /// 而两个并发复活会给同一个 tab 拉起两个 pi、写同一份会话文件 —— 所以要有占位。
     reviving: std::collections::HashSet<String>,
-    /// **预热 worker**（docs/05 §5.7）：一个已经起好、还没认领给任何标签页的空闲
-    /// `pi --mode rpc --no-session` 进程。用户点开会话时直接 `switch_session` 指过去，
-    /// 省掉 pi 的启动（实测 208 ms vs 冷启动 527 ms）。
-    ///
-    /// 只在配置 `warm_worker = true` 时才会有值（默认关，理由见 `config/app.rs`）。
-    warm: Option<Warm>,
 }
-
-/// 一个备用 worker + 它"出生时"的现场。
-///
-/// `cwd` 与 `permission` 必须与请求一致才能复用：
-///   · `--tools`/`-e` 是 CLI 参数 → 权限档位只能是同一个（否则等价于偷偷降/提权）；
-///   · 新会话（预创建的空文件）没有会话头，pi 会用**进程的 cwd** 当会话 cwd ——
-///     所以只有 cwd 相同才能复用（已有会话的文件里有 cwd 头，任意 cwd 都能切，见下）。
-pub(crate) struct Warm {
-    pub worker: Worker,
-    pub cwd: PathBuf,
-    pub permission: PermissionMode,
-    pub spawned: Instant,
-}
-
-/// 备用 worker 的保鲜期：超过这个时间没被用掉就换一个。
-///
-/// 为什么要过期：它是**常驻**进程（pi 会读配置、连模型目录），放在那儿越久越可能与
-/// 用户随后的改动（改设置/装扩展/换模型）不一致；而且用户可能压根不打算再开会话。
-/// 10 分钟与空闲回收同一个量级（`idle_timeout_min` 默认 10）。
-const WARM_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 pub type SharedRegistry = Arc<Mutex<Registry>>;
 
@@ -137,7 +111,6 @@ impl Registry {
             tabs: HashMap::new(),
             open_files: HashMap::new(),
             reviving: std::collections::HashSet::new(),
-            warm: None,
         }
     }
 
@@ -299,32 +272,6 @@ impl Registry {
             // SESSION_CWD_MISSING（项目目录已删）/ GUARD_SCRIPT_MISSING 等：不重试，直接透传
             Err(e) => Err(e),
         }
-    }
-
-    /// 取走过期的备用 worker（给心跳回收用；没过期返回 None）。
-    ///
-    /// 过期判据与消费时同一条（`WARM_TTL`）——两处用**同一个 `warm_matches` 里的常量**，
-    /// 免得"能消费但不回收"或反之。
-    pub fn take_expired_warm(&mut self) -> Option<Worker> {
-        let expired = self.warm.as_ref().is_some_and(|w| w.spawned.elapsed() > WARM_TTL);
-        if expired {
-            self.warm.take().map(|w| w.worker)
-        } else {
-            None
-        }
-    }
-
-    /// 当前备用 worker（**给契约测试与诊断用**：确认"这一次打开真的复用了它"）。
-    pub fn warm_worker(&self) -> Option<Worker> {
-        self.warm.as_ref().map(|w| w.worker.clone())
-    }
-
-    /// 取走预热 worker（**给 boot_reset 用**：新 JS 上下文接管前把它一并收掉）。
-    ///
-    /// 单独一个入口而不是让调用方读 `self.warm`：字段是私有的，而"取走"这个动作
-    /// 必须**原子**（取走之后没人能再拿走同一个进程）。
-    pub fn take_warm_for_shutdown(&mut self) -> Option<Worker> {
-        self.warm.take().map(|w| w.worker)
     }
 
     pub fn tab_ids(&self) -> Vec<String> {
@@ -529,81 +476,35 @@ pub async fn create_tab_unlocked(
         name,
         permission,
     };
-    /* 预热池（docs/05 §5.7，默认关）：能用现成的备用进程就省掉 pi 的启动
-    （实测 208 ms vs 527 ms）。**消费失败必须回退冷启动**，而不是把这次打开搞失败：
-    备用进程可能在这几秒里崩了/被系统回收了。 */
-    let warm_used = {
-        let mut reg = shared.lock().await;
-        if max_workers > 0 && reg.alive_worker_count() >= max_workers {
+    /* 活跃会话上限（锁内只做这一次毫秒级检查）。
+    2026-10-13：这一段以前还顺带"取走预热 worker"，所以锁的作用域必须跨住整个取用过程；
+    预热池删掉之后锁就只包这一次检查 —— 与上面"别握着锁 spawn"的口径一致。 */
+    if max_workers > 0 {
+        let reg = shared.lock().await;
+        if reg.alive_worker_count() >= max_workers {
             return Err(format!(
                 "MAX_WORKERS: 活跃会话已达上限 {max_workers}。可关闭或休眠不用的标签后重试。"
             ));
         }
-        take_warm(&mut reg, &tab.cwd, tab.permission, &session).await
-    };
-    let worker = match warm_used {
-        Some(w) => match adopt_warm(&w, &tab, &session).await {
-            Ok(()) => {
-                // 事件通道必须跟着新绑定走（否则发到旧标签的通道上 —— 静默串台）
-                w.rebind_tab(&tab.tab_id);
-                eprintln!("[piggy] tab_create 复用了预热 worker: {}", tab.tab_id);
-                w
-            }
-            Err(e) => {
-                eprintln!("[piggy] 预热 worker 不可用（回退冷启动）: {e}");
-                let mut reg = shared.lock().await;
-                reg.spawn_with_rediscovery(
-                    &tab.tab_id,
-                    tab.cwd.clone(),
-                    session,
-                    tab.name.clone(),
-                    tab.permission,
-                    sink.clone(),
-                )
-                .await?
-            }
-        },
-        None => {
-            let mut reg = shared.lock().await;
-            reg.spawn_with_rediscovery(
-                &tab.tab_id,
-                tab.cwd.clone(),
-                session,
-                tab.name.clone(),
-                tab.permission,
-                sink.clone(),
-            )
-            .await?
-        }
+    }
+    let worker = {
+        let mut reg = shared.lock().await;
+        reg.spawn_with_rediscovery(
+            &tab.tab_id,
+            tab.cwd.clone(),
+            session,
+            tab.name.clone(),
+            tab.permission,
+            sink.clone(),
+        )
+        .await?
     };
     let state = handshake(&worker).await?;
-    let (cwd, permission) = (tab.cwd.clone(), tab.permission);
     let snapshot = {
         let mut reg = shared.lock().await;
         reg.bind_new_tab(sink, tab, worker, state).await?
     };
-    /* 补一个备用 worker（**锁外**、后台）：下一次打开就能省掉 pi 的启动。
-    放在"建成功之后"而不是应用启动时：这时我们才知道用户在哪个目录里工作。
-    失败只记日志（预热是纯优化）。
-    ⚠️ 两道条件：用户开着开关 **且** 本平台支持（macOS 上 `warm_worker_supported()`
-    恒为 false —— 那里的 450 ms 被乐观 UI 遮住，不值 200 MB，见该函数的注释）。
-    闸门放在**使用点**而不是 `clamp()`：`warm_worker` 是持久化值，不能因为"这台机器
-    用不上"就把它写坏（用户可能在 Windows 上用的是同一份配置、或同步过来的家目录）。 */
-    if should_refill_warm(
-        crate::config::app::perf_config_load().warm_worker,
-        crate::config::app::warm_worker_supported(),
-    ) {
-        spawn_warm(shared, sink, cwd, permission).await;
-    }
     Ok(snapshot)
-}
-
-/// 建完 tab 之后要不要补一个备用 worker？
-///
-/// 抽成**纯函数**是为了能不 spawn 进程就测平台闸门（`enabled` 从配置来、
-/// `supported` 从平台来；两者都为真才补位）。
-pub(crate) fn should_refill_warm(enabled: bool, supported: bool) -> bool {
-    enabled && supported
 }
 
 /// 「改权限档位」的**锁内准备段**：校验、改档、把旧 worker 摘下来（由调用方在锁外停它）。
@@ -665,160 +566,6 @@ pub async fn set_permission_unlocked(
         })),
         Err(e) => Err(format!("已切换到「{}」，但 worker 重启失败：{e}", mode.label())),
     }
-}
-
-/// 把一个备用 worker 切到目标会话上（**锁外**；失败由调用方回退冷启动）。
-///
-/// 三件事：
-///   1. `switch_session <path>` —— 已有会话（文件里有 cwd 头）会按头重绑 cwd；
-///      新会话（预创建的空文件）用进程 cwd（所以只有 cwd 相同的备用进程才会被选中）；
-///   2. 名字：`--name` 是 spawn 时的参数，复用进程只能用 `set_session_name` 补；
-///   3. 握手一次确认它真的可用（这一步同时是"备用进程还活着吗"的探针）。
-///
-/// 失败时**不改动备用进程的状态**就直接放弃（调用方冷启动）——不在这里 shutdown：
-/// 一个能应答但 switch 失败的进程仍然可能是有用的备用进程，
-/// 而"它坏了"这件事交给下一次 `handshake` 判定（那才是权威判据）。
-async fn adopt_warm(worker: &Worker, tab: &NewTab, session: &SessionTarget) -> Result<(), String> {
-    if let SessionTarget::Path(p) = session {
-        worker.switch_session(p).await?;
-    }
-    if let Some(name) = &tab.name {
-        // 新会话的临时名（"新会话"）也走这条路：pi 会把它写进 session_info
-        worker.set_session_name(name).await?;
-    }
-    handshake(worker).await.map(|_| ())
-}
-
-/// 起一个备用 worker（预热池）。**在锁外调用**（spawn 本身几毫秒，但要读配置/资源）。
-///
-/// 只有 `warm_worker = true` 时才会被调用（调用方判）。
-/// 失败只记一行日志：预热是**纯优化**，它失败不该影响任何用户可见的行为。
-pub async fn spawn_warm(shared: &SharedRegistry, sink: &Arc<dyn EventSink>, cwd: PathBuf, permission: PermissionMode) {
-    let tab_id = format!("warm:{}", uuid::Uuid::new_v4());
-    let worker = {
-        let mut reg = shared.lock().await;
-        if reg.warm.is_some() {
-            return; // 已经有一个了（并发预热不该养出第二个进程）
-        }
-        match reg
-            .spawn_with_rediscovery(
-                &tab_id,
-                cwd.clone(),
-                SessionTarget::NoSession,
-                None,
-                permission,
-                sink.clone(),
-            )
-            .await
-        {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("[piggy] 预热 worker 启动失败（不影响使用）: {e}");
-                return;
-            }
-        }
-    };
-    // 握手也在锁外：冷启动预算 40s，不能握着全局锁等
-    if let Err(e) = handshake(&worker).await {
-        eprintln!("[piggy] 预热 worker 握手失败（不影响使用）: {e}");
-        return;
-    }
-    worker.set_state(WorkerState::Ready);
-    let mut reg = shared.lock().await;
-    if reg.warm.is_some() {
-        // 期间已经有别的预热进去了：把这个多出来的收掉（不能留着，它没人认领）
-        drop(reg);
-        worker.shutdown().await;
-        return;
-    }
-    eprintln!("[piggy] 预热 worker 就绪（{tab_id}，cwd={}）", cwd.display());
-    reg.warm = Some(Warm {
-        worker,
-        cwd,
-        permission,
-        spawned: Instant::now(),
-    });
-}
-
-/// 取出可用的备用 worker（不匹配时**把它收掉**并返回 None，让调用方走冷启动）。
-///
-/// 为什么"不匹配就收掉"而不是留着下次用：留着就是一个常驻进程 + 一份过期配置
-/// （用户可能刚改了设置/装了扩展），而它下一轮大概率还是不匹配（cwd/档位是稳定的）。
-async fn take_warm(
-    reg: &mut Registry,
-    cwd: &Path,
-    permission: PermissionMode,
-    target: &SessionTarget,
-) -> Option<Worker> {
-    let has_header = match target {
-        SessionTarget::Path(p) => session_file_has_header(Path::new(p)),
-        // 没有文件（懒落盘）或临时草稿：pi 会用**进程 cwd**，必须同一个目录
-        SessionTarget::New | SessionTarget::NoSession => false,
-    };
-    let ok = warm_matches(reg.warm.as_ref().map(Warm::meta), cwd, permission, has_header);
-    let warm = reg.warm.take()?;
-    if !ok {
-        let _ = warm.worker.shutdown().await;
-        return None;
-    }
-    Some(warm.worker)
-}
-
-/// 预热池：能不能用现成的备用 worker 服务这次建 tab（**纯判据，便于单测**）。
-///
-/// 三条都必须满足：
-///   1. 权限档位一致（`--tools`/`-e` 是 CLI 参数，档位不同就是另一个进程的语义）；
-///   2. 还在保鲜期内（见 `WARM_TTL`）；
-///   3. cwd 一致 —— **仅当目标会话没有 cwd 头时**（预创建的空文件、或 `--no-session`）：
-///      pi 的 `SessionManager.open` 对"没有 header 的文件"用**进程的 cwd** 兜底，
-///      所以那种情况下备用进程必须本来就生在目标目录里；已有会话的文件头里有 cwd，
-///      `switch_session` 会按头重绑（真机实测：bash 的 pwd 与项目级扩展都跟着走）。
-///
-/// @param warm - 备用 worker 的现场（没有则 None）
-/// @param wanted_cwd - 这次要开的会话的 cwd
-/// @param wanted_permission - 这次要用的权限档位
-/// @param target_has_header - 目标会话文件里已经有 pi 的会话头（`{"type":"session",…}`）
-/// @returns 能不能复用
-pub(crate) fn warm_matches(
-    warm: Option<(&Path, PermissionMode, std::time::Duration)>,
-    wanted_cwd: &Path,
-    wanted_permission: PermissionMode,
-    target_has_header: bool,
-) -> bool {
-    let Some((w_cwd, w_perm, age)) = warm else { return false };
-    if w_perm != wanted_permission {
-        return false;
-    }
-    if age > WARM_TTL {
-        return false;
-    }
-    target_has_header || w_cwd == wanted_cwd
-}
-
-impl Warm {
-    /// 判据需要的三项（`warm_matches` 只吃这三项 —— 这样它能脱离 `Worker` 单测）。
-    fn meta(&self) -> (&Path, PermissionMode, std::time::Duration) {
-        (&self.cwd, self.permission, self.spawned.elapsed())
-    }
-}
-
-/// 会话文件里有没有 pi 的会话头（首行 `{"type":"session",…}`）。
-///
-/// 只读**首行**（pi 自己也只扫头部：`readSessionHeader`），空文件/读不动都算"没有"。
-fn session_file_has_header(path: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = vec![0u8; 4096];
-    let Ok(n) = f.read(&mut buf) else { return false };
-    let head = String::from_utf8_lossy(&buf[..n]);
-    let first = head.lines().next().unwrap_or("");
-    serde_json::from_str::<Value>(first)
-        .ok()
-        .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_string))
-        .as_deref()
-        == Some("session")
 }
 
 /// 一次复活的"现场"：锁内取，**锁外**干活。
@@ -1186,89 +933,6 @@ mod tests {
         assert!(!fill_cursor_if_empty(&mut empty, None));
         assert!(!fill_cursor_if_empty(&mut empty, Some("  ".into())));
         assert!(empty.last_cursor.is_none());
-    }
-
-    /* ---------------- 预热池（docs/05 §5.7，默认关） ---------------- */
-
-    /// 判据本身：**只有三件事都成立才能复用**（档位、保鲜期、cwd —— 最后一条只对
-    /// "没有会话头的目标"严格）。判据错了的形式是"新会话落进别的项目目录"或"偷偷换档"。
-    #[test]
-    fn warm_pool_matching_rules() {
-        let cwd = PathBuf::from("/work/proj");
-        let other = PathBuf::from("/work/other");
-        let fresh = std::time::Duration::from_secs(0);
-        let stale = WARM_TTL + std::time::Duration::from_secs(1);
-        // 闭包在这里会因为生命周期推断吵（返回引用），直接写一个函数
-        fn meta(
-            p: &Path,
-            perm: PermissionMode,
-            age: std::time::Duration,
-        ) -> Option<(&Path, PermissionMode, std::time::Duration)> {
-            Some((p, perm, age))
-        }
-        let m = meta;
-
-        // ① 档位不同 → 不能复用（`--tools` 是 CLI 参数，换档等于换能力）
-        assert!(!warm_matches(
-            m(&cwd, PermissionMode::Full, fresh),
-            &cwd,
-            PermissionMode::ReadOnly,
-            true
-        ));
-        // ② 同档 + 同 cwd → 可以（新会话，没有会话头）
-        assert!(warm_matches(
-            m(&cwd, PermissionMode::Full, fresh),
-            &cwd,
-            PermissionMode::Full,
-            false
-        ));
-        // ③ 同档但 cwd 不同 + 目标没有会话头 → 不能（pi 会用**进程 cwd** 当会话 cwd）
-        assert!(!warm_matches(
-            m(&other, PermissionMode::Full, fresh),
-            &cwd,
-            PermissionMode::Full,
-            false
-        ));
-        // ④ 同档 + cwd 不同 + 目标**有会话头** → 可以（switch_session 按头重绑）
-        assert!(warm_matches(
-            m(&other, PermissionMode::Full, fresh),
-            &cwd,
-            PermissionMode::Full,
-            true
-        ));
-        // ⑤ 过期 → 不能（常驻进程越久越可能与用户随后的改动不一致）
-        assert!(!warm_matches(
-            m(&cwd, PermissionMode::Full, stale),
-            &cwd,
-            PermissionMode::Full,
-            true
-        ));
-        // ⑥ 没有备用进程 → 不能
-        assert!(!warm_matches(None, &cwd, PermissionMode::Full, true));
-    }
-
-    /// 会话头识别：pi 只看首行（`readSessionHeader`），我们也只看首行。
-    /// 空文件（Piggy 的预创建）必须判成"没有头" —— 判错就会让新会话落进备用进程的 cwd。
-    #[test]
-    fn session_header_detection() {
-        let tmp = tempfile::tempdir().unwrap();
-        let empty = tmp.path().join("empty.jsonl");
-        std::fs::write(&empty, "").unwrap();
-        assert!(!session_file_has_header(&empty), "空文件不该被当成有头");
-
-        let with = tmp.path().join("real.jsonl");
-        std::fs::write(
-            &with,
-            "{\"type\":\"session\",\"version\":3,\"id\":\"x\",\"cwd\":\"/work\"}\n{\"type\":\"message\"}\n",
-        )
-        .unwrap();
-        assert!(session_file_has_header(&with));
-
-        let junk = tmp.path().join("junk.jsonl");
-        std::fs::write(&junk, "not json\n").unwrap();
-        assert!(!session_file_has_header(&junk), "不是 JSON 就不算头");
-
-        assert!(!session_file_has_header(&tmp.path().join("missing.jsonl")));
     }
 
     /// **复活占位**：同一个 tab 同时只允许一个复活在跑。

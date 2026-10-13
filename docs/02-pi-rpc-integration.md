@@ -334,7 +334,7 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 
 另注意协议列出 RPC 模式下退化/不支持的 UI 方法（`custom()` 恒 undefined 等）——piggy-bridge 扩展（06 §4）设计时必须遵守：`ctx.mode === "rpc"`、`ctx.hasUI === true`，仅使用上表能力。
 
-## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1；**C1–C16 于 2026-10-13 在 pi 1.2.0 上重跑全绿 17/17**（含 C15 建 tab 不持 registry 锁、C16 预热 worker 复用）】
+## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1；**C1–C15 于 2026-10-13 在 pi 1.2.0 上重跑全绿 16/16**（C16 预热 worker 复用已随该功能一起删除，见 docs/05 §5.7）】
 
 实现：`src-tauri/tests/contract.rs`（`pnpm test:contract`）。结论已回填下表；C11 留待 M1。
 

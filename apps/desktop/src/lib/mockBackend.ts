@@ -530,8 +530,6 @@ export const mockTitleCfg = {
   rail: 'right' as string,
   /** 注入哪些捆绑插件（与 Rust `PerfConfig.bundled_plugins` 同义，默认全开）。 */
   bundled: ['pi-ask'] as string[],
-  /** 预热 worker（与 Rust `PerfConfig.warm_worker` 同义，**默认关**，docs/05 §5.7）。 */
-  warm: false,
   /* 工作步骤展示档位（与 Rust `PerfConfig.transcript_detail` 同义，默认 standard）。
      ⚠️ 初值从 localStorage 读：浏览器门禁的**行级**核对（工具行、清单行、分页锚点…）
      需要关掉折叠才能量到行，而门禁中间会重载页面 —— 只改内存里的值会在重载后丢。
@@ -957,7 +955,6 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     title_source: mockTitleCfg.source,
     title_model: mockTitleCfg.model || null,
     title_thinking: mockTitleCfg.thinking || null,
-    warm_worker: mockTitleCfg.warm,
     transcript_rail: mockTitleCfg.rail,
     transcript_detail: mockTitleCfg.detail,
     bundled_plugins: [...mockTitleCfg.bundled],
@@ -979,7 +976,6 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (a.titleThinking !== undefined) mockTitleCfg.thinking = String(a.titleThinking ?? '');
     if (a.transcriptRail !== undefined) mockTitleCfg.rail = String(a.transcriptRail);
     if (Array.isArray(a.bundledPlugins)) mockTitleCfg.bundled = a.bundledPlugins.map(String);
-    if (a.warmWorker !== undefined) mockTitleCfg.warm = Boolean(a.warmWorker);
     if (a.transcriptDetail !== undefined) {
       mockTitleCfg.detail = String(a.transcriptDetail);
       // 存一份：门禁切档之后重载页面还要是这一档（见 `mockTitleCfg.detail` 的注释）

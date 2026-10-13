@@ -380,22 +380,6 @@ pub fn run() {
                 loop {
                     tick.tick().await;
                     let timeout_min = state.perf.read().map(|p| p.idle_timeout_min).unwrap_or(10);
-                    /* ⚠️ 预热 worker 的过期**必须放在这个 early-continue 之前**。
-                    它不属于任何 tab，`reap_idle` 看不见它；以前这段 `continue` 排在它前面，
-                    于是 `idle_timeout_min = 0`（"永不回收"是**给 tab 的**语义）的用户
-                    永远不回收预热进程 —— 现象是白挂一个 200 MB 的 pi 几小时，
-                    而设置页那句"备用进程超过 10 分钟没用会被换掉"是假的
-                    （2026-10-10 实测：用户配置正好是 `idle_timeout_min: 0` + `warm_worker: true`）。
-                    两件事的开关是分开的：tab 的回收看 `idle_timeout_min`，
-                    预热的过期只看 `WARM_TTL`。 */
-                    {
-                        let mut reg = state.registry.lock().await;
-                        if let Some(w) = reg.take_expired_warm() {
-                            drop(reg);
-                            w.shutdown().await;
-                            eprintln!("[piggy] 预热 worker 过期回收（超过保鲜期没被用掉）");
-                        }
-                    }
                     if timeout_min == 0 {
                         continue; // 0 = tab 永不回收
                     }

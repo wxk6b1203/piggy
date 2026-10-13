@@ -95,9 +95,10 @@ export function sessionCwdOf(ctx) {
  * ## 为什么是"每次调用算一次"，而不是加载时算一次
  *
  * Piggy 的「工作区内修改」档会给进程注入 `PIGGY_GUARD_ROOTS=<标签页 cwd>`，而这个变量是
- * **spawn 那一刻写死的**（`pi/process.rs`）。预热 worker 会被复用去开别的项目的会话
- * （`switch_session` 改的是会话 cwd，**不改进程环境**），于是加载时算一次的边界会停留在
- * "被预热时那个目录"：切到项目 B 之后，写 B 被拦、写 A 反而放行 —— 两个方向都错。
+ * **spawn 那一刻写死的**（`pi/process.rs`）。但**会话的 cwd 可以在同一个进程里变**：
+ * `switch_session`（崩溃复活、切权限档位重启都走它）按会话文件头把会话切到目标目录，
+ * 改的是会话 cwd、**不改进程环境**。于是加载时算一次的边界会停留在"起进程时那个目录"：
+ * 切到项目 B 之后，写 B 被拦、写 A 反而放行 —— 两个方向都错。
  * 2026-10-10 审计发现（本机 full 档看不到，只有「工作区内修改」档才会踩）。
  *
  * 判据：**写边界 = 会话自己的工作目录**（"工作区"这个词的定义），环境变量只是兜底。
@@ -162,8 +163,8 @@ export default function piggyGuard(pi) {
     // 提前告警：真到拦截时才报错会淹没在工具结果里
     console.error('[piggy-guard] PIGGY_GUARD_ROOTS 缺失，本会话所有写入都会被拒绝');
   }
-  /* ⚠️ 边界**每次调用现算**（见 boundaryFor）：预热进程被复用去开别的项目的会话时，
-     spawn 时写死的 PIGGY_GUARD_ROOTS 已经过期，只有会话自己的 cwd 是权威。 */
+  /* ⚠️ 边界**每次调用现算**（见 boundaryFor）：会话可能在同一个进程里被 switch_session
+     切到别的目录，spawn 时写死的 PIGGY_GUARD_ROOTS 那时已经过期，只有会话自己的 cwd 是权威。 */
   pi.on('tool_call', async (event, ctx) => {
     const roots = boundaryFor(ctx);
     const baseCwd = roots?.[0] ?? process.cwd();

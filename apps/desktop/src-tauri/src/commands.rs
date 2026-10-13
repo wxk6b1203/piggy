@@ -356,17 +356,7 @@ pub async fn tab_sleep_idlest(app: AppHandle, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn perf_config_load() -> Result<Value, String> {
     let cfg = app::perf_config_load();
-    let mut v = serde_json::to_value(cfg).map_err(|e| e.to_string())?;
-    /* 平台能力也一起下发（**不是**配置项，所以不在 PerfConfig 里、也不会被写回）。
-    界面上"预热会话进程"那一行要靠它决定显不显示 —— 平台判据只在后端有一份
-    （`app::warm_worker_supported()`），免得前端再猜一次、两边说法不一致。 */
-    if let Some(obj) = v.as_object_mut() {
-        obj.insert(
-            "warmWorkerSupported".to_string(),
-            Value::Bool(app::warm_worker_supported()),
-        );
-    }
-    Ok(v)
+    serde_json::to_value(cfg).map_err(|e| e.to_string())
 }
 
 /// 保存 Piggy 自己的运行设置（读-改-写）。
@@ -460,8 +450,6 @@ pub async fn perf_config_save(
     transcript_detail: Option<String>,
     // 要注入哪些捆绑插件（docs/06 §7）。不传 = 保持既有值。
     bundled_plugins: Option<Vec<String>>,
-    // 预热 worker（docs/05 §5.7）。不传 = 保持既有值。
-    warm_worker: Option<bool>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
@@ -501,9 +489,6 @@ pub async fn perf_config_save(
     }
     if let Some(d) = transcript_detail.as_deref() {
         cfg.transcript_detail = crate::config::app::TranscriptDetail::parse(d)?;
-    }
-    if let Some(w) = warm_worker {
-        cfg.warm_worker = w;
     }
     if let Some(list) = bundled_plugins {
         // 只认随包带的那些名字：写进来一个不存在的插件名没有意义（而且会让界面显示一条
@@ -768,17 +753,6 @@ pub async fn boot_reset(app: AppHandle, state: State<'_, AppState>) -> Result<()
     for id in tab_ids {
         let mut reg = state.registry.lock().await;
         let _ = reg.close_tab(&sink(&app), &id).await;
-    }
-    /* 预热 worker 也要一起收（2026-10-09）：它不属于任何 tab，因此不在 `tab_ids` 里 ——
-    而 `boot_reset` 的语义正是"新 JS 上下文接管前收割上一上下文的遗留"。
-    漏掉它就是又一个"没人认领的 pi 进程"，正是这个函数存在的理由。 */
-    let warm = {
-        let mut reg = state.registry.lock().await;
-        reg.take_warm_for_shutdown()
-    };
-    if let Some(w) = warm {
-        w.shutdown().await;
-        eprintln!("[piggy] boot_reset 收掉了上一上下文的预热 worker");
     }
     Ok(())
 }

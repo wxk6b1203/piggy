@@ -18,13 +18,19 @@ pub enum WorkerState {
     Stopped,
 }
 
-/// 当前绑定的标签页 id（**共享、可重绑**）。
+/// 当前绑定的标签页 id（**共享槽**）。
 ///
-/// 为什么不是普通的 `String`（2026-10-09 为预热池改造）：stdout reader 与合帧器
-/// **每发一个事件**都要用它拼通道名（`pi:frame:<tab>`），而从前它是 spawn 时被
-/// 捕获进闭包的字符串 —— 等于把 tab 烧死在进程里。预热池要复用一个已经起好的
-/// pi 进程给**另一个**标签页，就必须让这两处读的是同一份可改写的值；
-/// 否则新标签页的事件会全发到旧标签页的通道上（静默串台，最难查的一类）。
+/// 为什么不是普通的 `String`：stdout reader 与合帧器**每发一个事件**都要用它拼通道名
+/// （`pi:frame:<tab>`），而如果它是 spawn 时被捕获进闭包的字符串，就等于把 tab 烧死在
+/// 进程里。做成共享槽之后，那两处读的永远是**同一份当前值**（`tab_id()` / `tab_slot()`）——
+/// 于是"事件发到哪个标签"只有一个事实来源。
+///
+/// **历史**（2026-10-13）：这个槽当年是为**预热池**改造的 —— 预热池要把一个已经起好的
+/// 进程重绑给另一个标签页，所以需要一个可改写的槽 + `rebind_tab`。预热池已删
+/// （见 docs/05 §5.7，实测省 1.0–2.1 s 但那一窗已被乐观 UI 遮住，不值 200 MB 常驻），
+/// `rebind_tab` 也随之删掉 —— 生产代码里现在没有任何路径会重绑。
+/// 槽**留着**（没有退回成裸 `String`）：它让"worker 的 tab_id"与"合帧器读的通道名"
+/// 是同一份值而不是两份拷贝，哪天真要再复用进程，这里就是那个入口。
 pub type TabSlot = Arc<std::sync::RwLock<String>>;
 
 pub struct WorkerInner {
@@ -45,11 +51,6 @@ impl WorkerInner {
     /// 当前绑定的标签页 id（读锁，出错也返回内部值：毒化的锁不该让事件发不出去）。
     pub fn tab_id(&self) -> String {
         self.tab_id.read().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// 把 worker 重绑到另一个标签页（**只该由预热池的消费路径调用**）。
-    pub fn rebind_tab(&self, tab_id: &str) {
-        *self.tab_id.write().unwrap_or_else(|e| e.into_inner()) = tab_id.to_string();
     }
 
     /// 给合帧器的共享句柄（它每个帧都要拼一次通道名）。

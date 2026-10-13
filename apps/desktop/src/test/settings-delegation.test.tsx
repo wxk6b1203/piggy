@@ -36,9 +36,6 @@ beforeEach(() => {
     pi_source: 'system',
     pi_path: null,
     subagent_delegation: false,
-    /* 平台能力（不是配置项）：老后端没有这个字段时界面按"支持"处理。
-       默认 true = Windows/其它平台；macOS 上后端会下发 false。 */
-    warmWorkerSupported: true,
   };
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
@@ -48,7 +45,6 @@ beforeEach(() => {
       case 'perf_config_save':
         /* 真机是读-改-写：写下去的要能被下一次 `perf_config_load` 读到。
            不落盘的话"再点一次关掉"这类用例会假绿/假红（组件 reload 后又回到旧值）。 */
-        if (args?.warmWorker !== undefined) cfg.warm_worker = Boolean(args.warmWorker);
         if (args?.subagentDelegation !== undefined) cfg.subagent_delegation = Boolean(args.subagentDelegation);
         return null;
       case 'permission_modes':
@@ -152,78 +148,5 @@ describe('设置页：子代理委派开关', () => {
       await new Promise((r) => setTimeout(r, 30));
     });
     expect(savedDelegation()).toContain(false);
-  });
-});
-
-/**
- * 预热 worker 开关（docs/05 §5.7）。
- *
- * 它默认**关**；2026-10-10 起还**只在支持的平台显示**（macOS 上不显示：省下的 450 ms
- * 全落在"打开会话"那一段、已被乐观 UI 占位遮住，而代价是常驻 ~200 MB）。
- * 所以这里钉四件事：读得到真实值、点了真的写 `warmWorker`、默认是关的、
- * **后端说不支持时这一行不出现**。
- */
-describe('设置页：预热会话进程开关', () => {
-  /** 这一行（找不到返回 null —— "不该显示"的用例要能断言它不存在）。 */
-  function warmRow(): HTMLElement | null {
-    const rows = [...domContainer().querySelectorAll<HTMLElement>('.pg-settings-row')];
-    return rows.find((r) => r.textContent?.includes('预热会话进程')) ?? null;
-  }
-
-  function warmSwitch(): HTMLButtonElement {
-    const row = warmRow();
-    if (!row) throw new Error('设置页里找不到「预热会话进程」这一行');
-    const sw = row.querySelector<HTMLButtonElement>('button[role="switch"]');
-    if (!sw) throw new Error('该行里没有 switch');
-    return sw;
-  }
-
-  it('默认关；后端说开着才 checked', async () => {
-    await mountRuntime();
-    expect(warmSwitch().getAttribute('aria-checked')).toBe('false');
-
-    cfg.warm_worker = true;
-    await mountRuntime();
-    expect(warmSwitch().getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('后端说不支持（macOS）→ 这一行不显示，且配置里的值原样保留', async () => {
-    /* 关键点有两个：
-       ① 界面不该给出一个"开了也不生效"的开关（那正是用户报的毛病）；
-       ② 后端 `warm_worker_supported()` 才是真正的闸门 —— 这里只断言界面，
-          补位那一步由 Rust 用例 `warm_worker_refill_is_gated_by_platform` 钉住。 */
-    cfg.warm_worker = true; // 从 Windows 带过来的配置：值要被保留，不能被界面写坏
-    cfg.warmWorkerSupported = false;
-    await mountRuntime();
-    expect(warmRow(), '不支持的平台上不该显示这一行').toBeNull();
-    const saves = invokeMock.mock.calls.filter((c) => c[0] === 'perf_config_save');
-    expect(saves, '只是不显示，不该顺手写配置').toHaveLength(0);
-    expect(cfg.warm_worker, '配置里的意图要原样留着（换到 Windows 还认它）').toBe(true);
-
-    cfg.warmWorkerSupported = true; // 支持的平台照旧显示
-    await mountRuntime();
-    expect(warmRow()).not.toBeNull();
-  });
-
-  it('点一下把 warmWorker=true 存下去（关的时候存 false，不是"不传"）', async () => {
-    await mountRuntime();
-    await act(async () => {
-      warmSwitch().click();
-      await new Promise((r) => setTimeout(r, 30));
-    });
-    const saves = invokeMock.mock.calls.filter((c) => c[0] === 'perf_config_save');
-    expect(saves.length, '点开关没有保存').toBeGreaterThan(0);
-    expect(saves.at(-1)![1]?.warmWorker).toBe(true);
-
-    // ⚠️ 等久一点：保存期间开关是 disabled 的（`busy` 守卫），点太快会点空
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 120));
-    });
-    await act(async () => {
-      warmSwitch().click();
-      await new Promise((r) => setTimeout(r, 60));
-    });
-    const again = invokeMock.mock.calls.filter((c) => c[0] === 'perf_config_save');
-    expect(again.at(-1)![1]?.warmWorker, '关的时候必须显式写 false，否则关不掉').toBe(false);
   });
 });

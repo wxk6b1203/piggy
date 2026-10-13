@@ -3,21 +3,7 @@
 //! M2：性能配置 config.json（maxWorkers / idleTimeoutMin，05 §4.1–4.2）。
 
 use crate::config::paths;
-use std::cell::RefCell;
 use std::path::PathBuf;
-
-thread_local! {
-    /* 配置目录的**线程本地**覆盖，只给测试用。
-       为什么需要它：契约用例 C16（预热 worker 复用）会经过 `create_tab_unlocked`，
-       而那里按 `perf_config_load()` 决定要不要补一个备用 worker —— 于是这个用例的
-       结果取决于**跑测试这台机器上 ~/.piggy/config.json 里 warm_worker 是不是 true**。
-       2026-10-10 实测踩到：GUI（`pnpm tauri dev`）正在跑，用户把预热开关打开并落盘，
-       C16 立刻从绿变红（断言"备用槽应当已被消费掉"失败，因为开关为真时会就地补一个）。
-       这不是产品缺陷（补位是设计），是用例**读了活配置**。
-       线程本地而不是环境变量：契约测试是多线程的（CI 用 `--test-threads=2`），
-       进程级 env 覆盖会顺手把别的用例也改掉。 */
-    static CONFIG_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
 
 /// Piggy 自己的配置目录 `~/.piggy`。
 ///
@@ -25,36 +11,7 @@ thread_local! {
 /// 解析成**空路径** → `~/.piggy` 退化成**相对路径**，layout.json / config.json
 /// 于是落到进程 cwd（装在 Program Files 下通常还没写权限）——设置存不下来。
 fn config_dir() -> PathBuf {
-    CONFIG_DIR_OVERRIDE
-        .with(|o| o.borrow().clone())
-        .unwrap_or_else(|| paths::home_dir_or_temp().join(".piggy"))
-}
-
-/// 在本线程把配置目录临时指向别处；返回原来的值（调用方负责还原）。
-pub fn set_config_dir_for_test(dir: Option<PathBuf>) -> Option<PathBuf> {
-    CONFIG_DIR_OVERRIDE.with(|o| o.replace(dir))
-}
-
-/// 退出作用域即还原配置目录（见 [`set_config_dir_for_test`]）。
-///
-/// 用 guard 而不是手工配对：断言失败（panic）时也要还原 ——
-/// 否则后面所有用例都会被带偏，比"一条用例红"难查得多。
-pub struct ConfigDirGuard {
-    prev: Option<PathBuf>,
-}
-
-impl ConfigDirGuard {
-    /// 把配置目录指向 `dir`，直到这个 guard 被丢弃。
-    pub fn new(dir: &std::path::Path) -> Self {
-        let prev = set_config_dir_for_test(Some(dir.to_path_buf()));
-        Self { prev }
-    }
-}
-
-impl Drop for ConfigDirGuard {
-    fn drop(&mut self) {
-        set_config_dir_for_test(self.prev.take());
-    }
+    paths::home_dir_or_temp().join(".piggy")
 }
 
 fn layout_path() -> PathBuf {
@@ -233,36 +190,6 @@ pub struct PerfConfig {
     /// 会给出空清单 —— 老用户升级之后插件一个都不开，而且从界面上看不出为什么。
     #[serde(default = "default_bundled_plugins")]
     pub bundled_plugins: Vec<String>,
-    /// **预热 worker**（docs/05 §5.7）：应用空闲时先起一个 `pi --mode rpc --no-session`
-    /// 备用进程，用户点开会话时用 `switch_session` 指到目标文件，省掉 pi 的启动
-    /// （实测：切到 11 MB 会话 208 ms vs 冷启动 527 ms）。
-    ///
-    /// **默认关**（2026-10-09 定）：收益在 macOS 上只有 ~250 ms，而"感知等待"
-    /// 已经由乐观 UI（占位标签，13 ms 出第一帧）解决；真正的收益在 Windows
-    /// （三层 cmd 垫片 + Defender，冷启动 2.2 s）而那台机器上还没量过。
-    /// 打开它的代价是一个常驻 pi 进程（实测 RSS 173→199 MB 空载）与"进程池 + 会话切换"这条更复杂的路径。
-    ///
-    /// **这个字段只是一份"意图"，能不能生效见 [`warm_worker_supported`]**（macOS 上不生效）。
-    /// ⚠️ 刻意**不在 `clamp()` 里改它**：那是**持久化值**，改了就等于把用户（或另一台
-    /// Windows 机器同步过来的）设置悄悄写坏。macOS 上真正的闸门在**使用点**。
-    #[serde(default)]
-    pub warm_worker: bool,
-}
-
-/// 本平台支持"预热 worker"这套机制吗？（**唯一的平台判据**，后端与界面都问这一个函数）
-///
-/// macOS 上**不支持**（2026-10-10 定，用户实测 + 复测后决策）：省下的那一笔只有
-/// 443–474 ms（C16 三次实测：复用打开 37/38/40 ms vs 冷启动 483/505/484 ms），
-/// 而它**全部**落在"打开会话"这一段 —— 那一段已经由乐观 UI 占位遮住（13.7 ms 出第一帧），
-/// 用户感知不到；"发第一条消息"一点没省（`switch_session` 会重建 runtime，
-/// 实测冷启动到出答案 5.3 s，其中 pi 启动只占 ~470 ms）。
-/// 代价却是常驻一个 pi 进程（实测 RSS 173→199 MB，还会连带用户全部扩展）：
-/// 拿 200 MB 换一个看不见的 450 ms，不划算。
-/// Windows 才可能有感（三层 cmd 垫片 + Defender），所以机制保留、开关在那边仍然可用。
-///
-/// 判据：**"省下的时间"必须大于"用户能感知到的等待"**；被占位遮住的等待不算收益。
-pub fn warm_worker_supported() -> bool {
-    !cfg!(target_os = "macos")
 }
 
 /// 默认注入的捆绑插件（目录名）。
@@ -334,7 +261,6 @@ impl Default for PerfConfig {
             transcript_rail: RailPlacement::default(),
             transcript_detail: TranscriptDetail::default(),
             bundled_plugins: default_bundled_plugins(),
-            warm_worker: false,
         }
     }
 }
@@ -396,40 +322,28 @@ pub fn perf_config_save(cfg: &PerfConfig) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// 预热开关的平台闸门：**配置里写着 true，在 macOS 上也不该生效**。
+    /// **删掉一个字段不能弄坏老配置**（2026-10-13 删预热池时补）。
     ///
-    /// 这条测的是"闸门真的接在决策上"（`should_refill_warm` 是补位的唯一判据），
-    /// 不是重复测 `warm_worker_supported()` 这个常量 —— 后者在 macOS 上恒为 false，
-    /// 单独断言它等于什么都没验（永远绿的用例）。
+    /// 用户机器上真实的 config.json 里就躺着 `"warm_worker": true`（那是预热池的开关）。
+    /// 这一层用的是 serde 的默认行为（**不认识的多余字段直接忽略**），所以老配置能照读；
+    /// 这条把它钉住 —— 哪天有人给 `PerfConfig` 加上 `deny_unknown_fields`，
+    /// 用户升级后**整份配置都会解析失败并悄悄回到默认值**（会话目录、权限档位、
+    /// 捆绑插件开关全没了，而且界面上看不出为什么）。那种"静默回默认"正是本项目最怕的失败。
     #[test]
-    fn warm_worker_refill_is_gated_by_platform() {
-        let supported = warm_worker_supported();
-        assert!(
-            !cfg!(target_os = "macos") || !supported,
-            "macOS 上必须判为不支持（450 ms 被乐观 UI 遮住，不值 200 MB，见该函数注释）"
-        );
-        // 开关关着 → 永远不补位（与平台无关）
-        assert!(!crate::sessions::registry::should_refill_warm(false, true));
-        assert!(!crate::sessions::registry::should_refill_warm(false, false));
-        // 开关开着 → 只有平台支持才补位
-        assert_eq!(
-            crate::sessions::registry::should_refill_warm(true, supported),
-            supported,
-            "开着开关时补不补位只能由平台决定"
-        );
-    }
-
-    /// 配置里的 `warm_worker: true` 是**持久化值**，`clamp()` 不许把它改掉。
-    ///
-    /// 否则同一份配置在 macOS 上被读一次就写坏一次，用户换到 Windows 会发现开关自己关了。
-    #[test]
-    fn clamp_never_rewrites_the_warm_worker_intent() {
-        let mut cfg = PerfConfig {
-            warm_worker: true,
-            ..PerfConfig::default()
-        };
-        cfg.clamp();
-        assert!(cfg.warm_worker, "clamp 只夹数值边界，不替用户改平台相关的意图");
+    fn an_unknown_legacy_field_does_not_break_the_whole_config() {
+        let raw = r#"{
+            "max_workers": 8,
+            "idle_timeout_min": 10,
+            "permission_mode": "workspace",
+            "bundled_plugins": ["pi-ask"],
+            "warm_worker": true
+        }"#;
+        let cfg: PerfConfig = serde_json::from_str(raw).expect("多了一个旧字段不该让整份配置失败");
+        assert_eq!(cfg.max_workers, 8, "同一条里的其它字段要照读");
+        assert_eq!(cfg.bundled_plugins, vec!["pi-ask".to_string()]);
+        // 存回去时那个字段自然消失（字段本身已删）
+        let back = serde_json::to_string(&cfg).unwrap();
+        assert!(!back.contains("warm_worker"), "删掉的字段不该再被写回：{back}");
     }
 
     /// 预览滚动条的三态：默认右、能解析、**认不出的值收回默认**（而不是整份配置失败）。

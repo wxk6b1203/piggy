@@ -267,10 +267,17 @@ describe('扩展入口', () => {
  * 边界的**来源**：会话 cwd 优先，环境变量兜底（2026-10-10 修）。
  *
  * 为什么这组用例必须存在：Piggy 的 `PIGGY_GUARD_ROOTS` 是 **spawn 那一刻**写死的
- * （`pi/process.rs`），而预热 worker 会被复用去开**别的项目**的会话 ——
- * `switch_session` 改的是会话 cwd，**不改进程环境**。若守卫在加载时把边界算一次，
- * 切到项目 B 之后就会"写 B 被拦、写 A 反而放行"（两个方向都错，且是静默的）。
- * 所以边界必须**每次调用现算**，而权威来源是会话自己的 cwd。
+ * （`pi/process.rs`），而**会话的 cwd 可以在同一个进程里变**：
+ *   · `switch_session`（崩溃复活、切权限档位重启走的都是它）会把会话切到目标文件，
+ *     按**文件头里的 cwd**重绑 —— 改的是会话 cwd，**不改进程环境**；
+ *   · `pi --session <file>` 那条路同理：会话文件里的 cwd 与 worker 的启动目录可以不同
+ *     （`docs/03` 的 `spawn_worker`：cwd 不匹配时要靠会话头兜正）。
+ * 若守卫在加载时把边界算一次，切到项目 B 之后就会"写 B 被拦、写 A 反而放行"
+ * （两个方向都错，且是静默的）。所以边界必须**每次调用现算**，而权威来源是会话自己的 cwd。
+ *
+ * ⚠️ 2026-10-13：这段注释原来举的例子是"预热 worker 被复用去开别的项目的会话"。
+ * 预热池已删（docs/05 §5.7），但**不变量本身与删除无关** —— 上面那两条路径
+ * 照样会让会话 cwd 与进程环境不一致，所以用例与断言原样保留。
  */
 describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
   /** 假 ctx：`sessionManager.getCwd()` 是 pi 暴露给扩展的活接口。 */
@@ -287,8 +294,9 @@ describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
   });
 
   it('边界 = 会话 cwd（**即使环境变量指着别的目录**）', () => {
-    /* 这就是预热复用的现场：进程是在 workspace 里预热的（环境变量 = workspace），
-       但会话切到了 outside —— 边界必须跟着会话走，否则写 outside 会被放行。 */
+    /* 现场：进程是在 workspace 里起的（环境变量 = workspace），
+       但会话被 `switch_session` 切到了 outside —— 边界必须跟着会话走，
+       否则写 outside 会被放行、写 workspace 反而被拦。 */
     const roots = boundaryFor(ctxAt(outside), { PIGGY_GUARD_ROOTS: workspace });
     expect(roots).toEqual([canonicalize(outside)]);
 
@@ -324,12 +332,12 @@ describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
       piggyGuard(pi);
       const handler = handlers.get('tool_call')!;
 
-      // 预热时在 workspace：写 workspace 放行
+      // 起进程时在 workspace：写 workspace 放行
       await expect(
         handler({ toolName: 'write', input: { path: join(workspace, 'a.txt') } }, ctxAt(workspace)),
       ).resolves.toBeUndefined();
 
-      // 同一个进程被复用去开 outside 的会话（环境变量没变）：写 outside 现在**必须**放行，
+      // 同一个进程里的会话被切到 outside（环境变量没变）：写 outside 现在**必须**放行，
       // 写 workspace 反而**必须**被拦 —— 这才是"边界跟着会话走"
       await expect(
         handler({ toolName: 'write', input: { path: join(outside, 'x') } }, ctxAt(outside)),
