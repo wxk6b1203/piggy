@@ -40,6 +40,8 @@ interface BundledPlugin {
 export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
   const [plugins, setPlugins] = useState<BundledPlugin[] | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 刚复制过哪个插件的目录（1 秒后自己消失，做法同 `DiffBlock`）。 */
+  const [copied, setCopied] = useState<string | null>(null);
   /* 当前会话的工作目录：项目级 `<cwd>/.pi/extensions` 里的同名扩展同样会让 pi 直接退出，
      所以"这次会不会注入"必须**按这个 cwd** 算 —— 不传的话界面上说"会注入"、
      真实 spawn 时却被跳过，用户只会以为 Piggy 在骗他。 */
@@ -54,6 +56,24 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
       });
   }, [projectDir]);
   useEffect(load, [load]);
+
+  /**
+   * 复制某个插件的目录（等宽路径手抄不现实）。
+   *
+   * 复制的是**完整路径**，不是上面显示的那个掐过的 —— 否则粘出来的东西不能用。
+   * 失败要**说出来**（剪贴板被拒 / 非安全上下文）：照着"已复制"去粘贴却发现是空的，
+   * 比没有这个按钮更糟。做法与 `features/dialogs/AboutDialog.tsx` 一致。
+   */
+  const copyDir = useCallback(async (p: BundledPlugin): Promise<void> => {
+    if (p.dir === null) return;
+    try {
+      await navigator.clipboard.writeText(p.dir);
+      setCopied(p.name);
+      window.setTimeout(() => setCopied((cur) => (cur === p.name ? null : cur)), 1000);
+    } catch (e) {
+      toast.error(`复制失败：${String(e)}`);
+    }
+  }, []);
 
   const toggle = async (p: BundledPlugin, on: boolean): Promise<void> => {
     if (busy) return;
@@ -136,9 +156,29 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
             ) : null}
             {/* 目录：超长的**掐中间**（`/a/…/pi-todo`），不是尾巴省略号 ——
                 尾巴省略留下的正好是最没信息量的前缀，而"是哪个目录"在末尾。
-                完整路径仍在 title 上，悬停可看。见 `lib/paths.ts::abbreviatePath`。 */}
-            <span className="pg-bundled-dir" title={p.dir ?? undefined}>
-              {p.dir === null ? '（这一份安装里没有这个目录）' : abbreviatePath(p.dir)}
+                完整路径仍在 title 上，悬停可看。见 `lib/paths.ts::abbreviatePath`。
+                旁边跟一个复制图标（复制的是**完整**路径，不是掐过的显示值）。 */}
+            <span className="pg-bundled-dir">
+              <span className="pg-bundled-dir-text" title={p.dir ?? undefined}>
+                {p.dir === null ? '（这一份安装里没有这个目录）' : abbreviatePath(p.dir)}
+              </span>
+              {p.dir !== null ? (
+                <button
+                  type="button"
+                  className="pg-bundled-copy"
+                  data-bundled-copy={p.name}
+                  aria-label={`复制 ${p.title} 的目录`}
+                  title="复制完整路径"
+                  onClick={() => void copyDir(p)}
+                >
+                  <Icon name="copy" size={12} />
+                </button>
+              ) : null}
+              {copied === p.name ? (
+                <span className="pg-bundled-copied" data-bundled-copied>
+                  已复制
+                </span>
+              ) : null}
             </span>
           </div>
         ))}

@@ -20,6 +20,12 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock('@/lib/mockBackend', () => ({ isMock: false, mockInvoke: vi.fn(), mockOn: vi.fn() }));
+/* 复制失败必须说出来（剪贴板被拒 / 非安全上下文），所以这里要能断言它真的报错。
+   做法与 `features/dialogs/AboutDialog.tsx` 一致：不假装成功。 */
+const { errorToast } = vi.hoisted(() => ({ errorToast: vi.fn() }));
+vi.mock('@/lib/feedback', () => ({
+  toast: { success: vi.fn(), error: errorToast, info: vi.fn() },
+}));
 
 import { BundledPluginsRow } from '@/features/settings/BundledPluginsRow';
 import { useTabs } from '@/stores/tabs';
@@ -144,7 +150,7 @@ describe('设置页「内置插件」', () => {
     mountDom(<BundledPluginsRow onChanged={() => {}} />);
     await flush();
 
-    const long = q('[data-bundled="pi-todo"] .pg-bundled-dir') as HTMLElement;
+    const long = q('[data-bundled="pi-todo"] .pg-bundled-dir-text') as HTMLElement;
     const shown = text(long);
     expect(shown.length, `渲染出来的路径仍然过长（${shown.length}）：${shown}`).toBeLessThanOrEqual(56);
     expect(shown, '掐中间之后必须还能看出它是哪一份安装').toContain('pi-todo');
@@ -155,11 +161,51 @@ describe('设置页「内置插件」', () => {
     );
 
     // 短路径不动：不该为了统一而把能看清的东西也掐掉
-    const short = text(q('[data-bundled="pi-ask"] .pg-bundled-dir'));
+    const short = text(q('[data-bundled="pi-ask"] .pg-bundled-dir-text'));
     expect(short).toBe('/app/Contents/Resources/resources/pi-plugins/pi-ask');
 
     // 缺目录那行说的是人话，不是被掐过的路径
     expect(text(q('[data-bundled="pi-ghost"] .pg-bundled-dir'))).toContain('没有这个目录');
+  });
+
+  it('目录旁边的复制图标：复制的是**完整**路径，不是上面那个掐过的显示值', async () => {
+    /* 为什么复制完整路径：显示值是给人看的（掐中间），复制值是给人用的（要能粘到终端 /
+       文件管理器里）。把掐过的 `…` 粘出去是个坏掉的路径 —— 那比没有这个按钮更糟。 */
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    mountDom(<BundledPluginsRow onChanged={() => {}} />);
+    await flush();
+
+    const btn = q('[data-bundled="pi-todo"] [data-bundled-copy]') as HTMLButtonElement;
+    expect(btn, '有目录的行没给复制入口').toBeTruthy();
+    await act(async () => {
+      btn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0]![0], '复制出去的是显示值（带 …）就没法用了').toBe(
+      '/repo/apps/desktop/src-tauri/resources/pi-plugins/pi-todo',
+    );
+    // 复制成功的即时反馈（1 秒后自己消失，做法同 DiffBlock）
+    expect(text(q('[data-bundled="pi-todo"] [data-bundled-copied]'))).toContain('已复制');
+
+    // 目录缺失那行**不给**复制入口（没有东西可复制）
+    expect(q('[data-bundled="pi-ghost"] [data-bundled-copy]'), '缺目录的行不该有复制按钮').toBeNull();
+  });
+
+  it('复制失败要如实报错（不假装成功：用户会去粘贴然后发现是空的）', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('NotAllowedError'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    mountDom(<BundledPluginsRow onChanged={() => {}} />);
+    await flush();
+    await act(async () => {
+      (q('[data-bundled="pi-ask"] [data-bundled-copy]') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(errorToast, '剪贴板被拒时必须说出来').toHaveBeenCalled();
+    expect(String(errorToast.mock.calls.at(-1)?.[0] ?? '')).toContain('复制失败');
+    // 失败时不该显示"已复制"
+    expect(q('[data-bundled="pi-ask"] [data-bundled-copied]')).toBeNull();
   });
 
   it('覆盖型插件要说明它顶替了内置工具、且不进限制档白名单', async () => {
