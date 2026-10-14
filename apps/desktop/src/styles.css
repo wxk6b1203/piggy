@@ -548,7 +548,11 @@ body {
 .pg-bundled-license { margin-left: auto; }
 .pg-bundled-desc { color: var(--pg-fg-secondary); font-size: var(--pg-fs-12); }
 .pg-bundled-meta, .pg-bundled-dir { color: var(--pg-fg-dim); font-size: var(--pg-fs-11); }
-.pg-bundled-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--pg-mono); }
+/* 目录（2026-10-13）：超长路径由 `lib/paths.ts::abbreviatePath` **掐中间**（两端都留着），
+   这里只是**兜底**——`min-width: 0` 让这一列能真的被压缩（flex 项的默认 `min-width:auto`
+   会被 nowrap 内容顶住，于是整行溢出卡片），字符估算万一不准时 `break-all` 再折一行。 */
+.pg-bundled-list, .pg-bundled { min-width: 0; }
+.pg-bundled-dir { word-break: break-all; font-family: var(--pg-mono); }
 .pg-bundled-skip { display: inline-flex; align-items: center; gap: 4px; color: var(--pg-error); font-size: var(--pg-fs-12); }
 
 /* ── 提问卡（docs/06 §7）────────────────────────────────────────────────────

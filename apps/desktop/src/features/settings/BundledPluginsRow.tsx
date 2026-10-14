@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
+import { abbreviatePath } from '@/lib/paths';
 import { Icon } from '@/features/common/Icon';
 import { useTabs } from '@/stores/tabs';
 
@@ -133,8 +134,11 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
                 出现即说明资源清单漏登记了
               </span>
             ) : null}
+            {/* 目录：超长的**掐中间**（`/a/…/pi-todo`），不是尾巴省略号 ——
+                尾巴省略留下的正好是最没信息量的前缀，而"是哪个目录"在末尾。
+                完整路径仍在 title 上，悬停可看。见 `lib/paths.ts::abbreviatePath`。 */}
             <span className="pg-bundled-dir" title={p.dir ?? undefined}>
-              {p.dir ?? '（这一份安装里没有这个目录）'}
+              {p.dir === null ? '（这一份安装里没有这个目录）' : abbreviatePath(p.dir)}
             </span>
           </div>
         ))}

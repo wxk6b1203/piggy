@@ -63,3 +63,35 @@ export function resolveAgainst(cwd: string | null | undefined, path: string): st
   const sep = cwd.includes('\\') && !cwd.includes('/') ? '\\' : '/';
   return cwd.replace(/[\\/]+$/, '') + sep + path.replace(/^\.?[\\/]/, '');
 }
+
+/** 超长路径折中的上限（字符数）；超过就掐中间，两端都留着。 */
+export const PATH_DISPLAY_MAX = 56;
+
+/**
+ * 折中一条**过长**的路径：`/a/b/c/…/y/z`。
+ *
+ * 为什么不是"尾巴省略号"（CSS 的 `text-overflow: ellipsis`）：那样留下的正好是
+ * 最长、最没有信息量的**前缀**（`/Users/wxk/Documents/Project/piggy/apps/desktop/src-tauri/targ…`），
+ * 而用户要看的那一段（`…/pi-guardrails` —— 是哪个插件的哪份安装）在**末尾**被吃掉了。
+ * 2026-10-13 实测：设置 › 通用 ›「内置插件」三张卡上的目录长度在 70–110 字符，
+ * 卡片宽度放不下，尾省略等于"这一行白给"。
+ *
+ * 规则（纯函数，可测；不依赖布局）：
+ *   - 不超过 [`PATH_DISPLAY_MAX`] → **原样返回**（短路径不该被动）；
+ *   - 否则留头部 `PATH_DISPLAY_MAX - 28` 字符 + `…` + 尾部 27 字符，
+ *     所以"从哪来"（`/Users/…`、`/app/Contents/…`）与"是哪个目录"（`pi-todo`）都还在；
+ *   - 完整路径仍然挂在 `title` 上（悬停可看），所以这是一层**展示**折中，不丢信息。
+ *
+ * @param p - 平台原生路径（`/` 与 `\` 都当分隔符，见本模块开头）
+ * @param max - 展示上限，默认 {@link PATH_DISPLAY_MAX}
+ */
+export function abbreviatePath(p: string, max = PATH_DISPLAY_MAX): string {
+  if (p.length <= max) return p;
+  /* 尾巴的预算随上限缩放：写死 27 的话，`max` 很小（测试或极窄的场景）时
+     结果会比上限还长 —— 那就不叫"折中"了。上限 ≤ 3 时退化成"只留省略号"。 */
+  const budget = Math.max(0, max - 1);
+  if (budget === 0) return '…';
+  const tail = Math.min(27, budget);
+  const head = budget - tail;
+  return `${p.slice(0, head)}…${p.slice(-tail)}`;
+}

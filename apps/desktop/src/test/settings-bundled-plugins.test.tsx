@@ -135,6 +135,33 @@ describe('设置页「内置插件」', () => {
     expect(text(q('[data-bundled="pi-ghost"] .pg-bundled-dir'))).toContain('没有这个目录');
   });
 
+  it('超长目录折中间显示、完整路径留在 title（尾巴省略号会把"是哪个目录"吃掉）', async () => {
+    /* 为什么钉这条：真机上这三张卡的目录是 70–110 字符（开发态更甚），而卡片的可用宽度
+       放不下。原来的 `text-overflow: ellipsis` 留下的正好是最没信息量的前缀 ——
+       `/Users/wxk/Documents/…/target/debug/resources/pi-plugins/pi-guardr…`，
+       而"是哪个插件的哪份安装"在**末尾**。现在由 `abbreviatePath` 掐中间，
+       所以这里断言两件事：**渲染出来的短**（≤ 上限）且**两端都在**，以及 title 是完整路径。 */
+    mountDom(<BundledPluginsRow onChanged={() => {}} />);
+    await flush();
+
+    const long = q('[data-bundled="pi-todo"] .pg-bundled-dir') as HTMLElement;
+    const shown = text(long);
+    expect(shown.length, `渲染出来的路径仍然过长（${shown.length}）：${shown}`).toBeLessThanOrEqual(56);
+    expect(shown, '掐中间之后必须还能看出它是哪一份安装').toContain('pi-todo');
+    expect(shown, '开头要留着（是打包产物还是仓库源码树，看开头就知道）').toMatch(/^\/repo\//);
+    expect(shown, '掐掉了中间就该有省略号，不能让人以为路径本来就这样').toContain('…');
+    expect(long.getAttribute('title'), '完整路径不能丢 —— 悬停要能看到').toBe(
+      '/repo/apps/desktop/src-tauri/resources/pi-plugins/pi-todo',
+    );
+
+    // 短路径不动：不该为了统一而把能看清的东西也掐掉
+    const short = text(q('[data-bundled="pi-ask"] .pg-bundled-dir'));
+    expect(short).toBe('/app/Contents/Resources/resources/pi-plugins/pi-ask');
+
+    // 缺目录那行说的是人话，不是被掐过的路径
+    expect(text(q('[data-bundled="pi-ghost"] .pg-bundled-dir'))).toContain('没有这个目录');
+  });
+
   it('覆盖型插件要说明它顶替了内置工具、且不进限制档白名单', async () => {
     mountDom(<BundledPluginsRow onChanged={() => {}} />);
     await flush();
