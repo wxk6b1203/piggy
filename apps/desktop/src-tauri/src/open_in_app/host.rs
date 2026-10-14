@@ -350,23 +350,50 @@ pub fn opener_command(l: ShellLauncher) -> Option<&'static str> {
 /// `""` 是 `start` 的**窗口标题**占位。不传它的话，`start` 会把第一个带引号的参数当标题 ——
 /// 而 URL 一旦被当标题吞掉，就变成"什么都没发生"（正是用户报的现象）。
 ///
-/// 退出码**可信**（`cmd` 会把它带出来），所以这条路可以、也应该用 `spawn_watched`：
-/// 真机实测 `cmd /c start "" <url>` 成功时返回 0。
+/// ## ⚠️ 必须补回 `SystemRoot`（2026-10-14 第三次踩，真机矩阵量出来的）
+///
+/// `spawn_watched` 会 `env_clear()` 再放 `scrubbed_env`。而 **`cmd /c start` 需要
+/// `SystemRoot` 才能解析 URL 关联**：空环境下它**静默什么都不做**（浏览器进程数不变），
+/// 有时还返回 0 —— 也就是"报成功、什么都没发生"。最小环境矩阵（同机，数浏览器进程增量）：
+///
+/// | 环境 | 退出码 | 浏览器 |
+/// |---|---|---|
+/// | 空（≈ `env_clear()`） | 1 | **没开** |
+/// | **只加 `SystemRoot`** | 0 | **开了** |
+/// | 只加 `USERPROFILE` | 1 | 没开 |
+/// | 只加 `PATH` | 1 | 没开 |
+/// | `SystemRoot` + `USERPROFILE` | 0 | 开了 |
+///
+/// 所以这里把 `SystemRoot` 作为 `extra_env` 补回去（其它变量照旧洗掉 ——
+/// 凭据清洗的理由不变，只是这条命令**运行需要**它）。
+/// ⚠️ 这个坑**不可能靠退出码发现**：必须真的看"浏览器开了没有"。
 ///
 /// 安全性：URL 已在 `mod.rs::validate_external_url` 过了一遍 scheme 白名单
 /// （只放行 http/https/mailto）与控制字符检查，而且是作为**独立 argv 元素**传进去的
 /// （Rust 会做 cmd 转义），`&` 这类字符进不了提权面 —— 真机验证过带 `&b=2` 的查询串能正常打开。
 pub fn launch_url(url: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
-    spawn_watched(
-        "cmd.exe",
-        &["/c".into(), "start".into(), String::new(), url.to_string()],
-        watch,
-        env,
-        &[],
+    let (args, extra) = url_launch_spec(url, env);
+    spawn_watched("cmd.exe", &args, watch, env, &extra)
+}
+
+/// `launch_url` 的**纯**那一半：argv 形状 + 必须补回的环境变量（便于单测，不必真开浏览器）。
+///
+/// @param url - 已过白名单校验的 URL
+/// @param env - 清洗后的宿主环境（用来取 `SystemRoot`）
+/// @returns `(argv, extra_env)`
+fn url_launch_spec(url: &str, env: &HashMap<String, String>) -> (Vec<String>, Vec<(String, String)>) {
+    let system_root = env
+        .get("SystemRoot")
+        .or_else(|| env.get("windir"))
+        .cloned()
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    (
+        vec!["/c".into(), "start".into(), String::new(), url.to_string()],
+        vec![("SystemRoot".to_string(), system_root)],
     )
 }
 
-/// Windows 上"交给系统 shell"的唯一入口：`explorer.exe <参数>`（**目录或 URL 都吃**）。
+/// Windows 上打开一个**文件系统路径**（目录）：`explorer.exe <dir>`。
 ///
 /// ## 为什么必须单独一条（2026-10-14 用户报障："用文件资源管理器打开目录失败了"）
 ///
@@ -380,10 +407,13 @@ pub fn launch_url(url: &str, watch: Duration, env: &HashMap<String, String>) -> 
 ///
 /// ## 为什么不能用 `spawn_watched`（它按退出码判成功）
 ///
-/// 真机实测：`explorer.exe <已存在的目录>` 与 `explorer.exe <URL>` **成功打开后退出码都是 1**
-/// （不是 0）。走 `spawn_watched` 就会把成功判成 `Failed("在观察窗内退出（code 1）")` ——
-/// 东西明明开了，界面却报错。所以这里只看"能不能起得来"：
+/// 真机实测：`explorer.exe <已存在的目录>` **成功打开窗口后退出码是 1**（不是 0）。
+/// 走 `spawn_watched` 就会把成功判成 `Failed("在观察窗内退出（code 1）")` ——
+/// 目录明明开了，界面却报错。所以这里只看"能不能起得来"：
 /// 起不来（`NotFound`）才是 `Missing`，起来了就是 `Launched`。
+///
+/// ⚠️ **URL 不许走这条**（我第一版就是这么错的，见 `shell_launcher` 的注释）：
+/// `explorer.exe` 的位置参数只认文件系统路径，给它 URL 它**静默什么都不做**（退出码也是 1）。
 ///
 /// 路径**不转成 file URL**：`explorer.exe` 的位置参数吃的是普通路径
 /// （`/select,` 那条才需要 file URL，见 `paths.rs::windows_file_url`）。
@@ -651,12 +681,62 @@ mod tests {
         );
     }
 
+    /// **URL 那条必须补回 `SystemRoot`**（2026-10-14 第三次踩的回归闸门）。
+    ///
+    /// 为什么单独立一条：`spawn_watched` 会 `env_clear()`，而 `cmd /c start` 缺 `SystemRoot`
+    /// 时**静默什么都不做**（浏览器进程数不变），有时还返回 0 ——
+    /// 真机那个"真 spawn"的用例**只看 `Launched`，所以它漏掉了这个**。
+    /// 这条纯函数级的断言不依赖"浏览器真的开了没有"，任何平台都能跑。
+    ///
+    /// 红检方式：把 `url_launch_spec` 的 extra 改成 `vec![]`（也就是把环境清洗原样交出去），
+    /// 这条立刻红。
+    #[test]
+    fn url_launch_spec_keeps_system_root_alive() {
+        // ① 宿主有 SystemRoot 时：原样带过去
+        let mut env = HashMap::new();
+        env.insert("SystemRoot".to_string(), r"D:\Windows".to_string());
+        let (args, extra) = url_launch_spec("https://example.com/x", &env);
+        assert_eq!(
+            args,
+            vec![
+                "/c".to_string(),
+                "start".to_string(),
+                String::new(),
+                "https://example.com/x".to_string()
+            ],
+            "argv 形状必须是 cmd /c start \"\" <url>（第三个元素是 start 的窗口标题占位）；\
+             少了它 start 会把 URL 当标题吞掉"
+        );
+        assert_eq!(
+            extra,
+            vec![("SystemRoot".to_string(), r"D:\Windows".to_string())],
+            "这条命令缺 SystemRoot 就静默什么都不做 —— 必须补回去"
+        );
+
+        // ② 宿主没有 SystemRoot（清洗掉了）：兜底到 C:\Windows，而不是留空
+        let (_, extra_fallback) = url_launch_spec("https://example.com/x", &HashMap::new());
+        assert_eq!(extra_fallback.len(), 1);
+        assert!(!extra_fallback[0].1.is_empty(), "兜底值不许是空串（空 env 值 = 没有）");
+
+        // ③ windir 是同一件事的另一个常见拼写，也该认
+        let mut windir_env = HashMap::new();
+        windir_env.insert("windir".to_string(), r"E:\Win".to_string());
+        let (_, extra_windir) = url_launch_spec("https://example.com/x", &windir_env);
+        assert_eq!(
+            extra_windir[0].1, r"E:\Win",
+            "windir 也该被认（Windows 上两种拼写都存在）"
+        );
+    }
+
     /// **Windows 上打开一个 URL 必须真的起得来**（2026-10-14 第二处报障的回归闸门：
     /// "「关于」里的许可原文链接点了没反应"）。
     ///
+    /// ⚠️ 这条只断言"命令成功退出"，**证明不了浏览器真的开了**（真机实测存在
+    /// "退出码 0 但什么都没发生"的情形）—— 那件事由 `url_launch_spec_keeps_system_root_alive`
+    /// 在参数层面钉住，因为那是唯一能在无头/无人值守下断言的部分。
+    ///
     /// 红检方式：把 `shell_launcher(true)` 的 Windows 格改成 `ExplorerForDirectory` ——
-    /// `explorer.exe <url>` 会**启动成功但什么都不打开**（退出码 1），
-    /// 于是这条会红在"退出码非零"上（`spawn_watched` 路径会把它判成 Failed）。
+    /// `explorer.exe <url>` 会启动成功但什么都不打开（退出码 1），于是这条会红在退出码上。
     ///
     /// 副作用：在 Windows 上真的会用默认浏览器打开一个 `example.com` 链接。
     #[test]

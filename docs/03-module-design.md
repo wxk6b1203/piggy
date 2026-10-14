@@ -237,6 +237,12 @@ URL 走 `cmd /c start "" <url>`（退出码 0 可信，`""` 是窗口标题占�
 会把 URL 当标题吞掉，又变成"什么都没发生"）。判据只此一份（`shell_launcher`），
 **在任何平台上都能断言**。
 
+⚠️ **URL 那条还得把 `SystemRoot` 补回环境**（同一天第三次踩）：`spawn_watched` 会
+`env_clear()` 再放 `scrubbed_env`，而 `cmd /c start` 缺 `SystemRoot` 就解析不了 URL 关联 ——
+**静默什么都不做，有时还返回 0**（"报成功、什么都没发生"）。所以 `launch_url` 把
+`SystemRoot` 作为 `extra_env` 补回去（其它变量照旧洗掉）。
+**这条不可能靠退出码发现**，断言只能钉在参数层（`url_launch_spec_keeps_system_root_alive`）。
+
 ### 2.12 `provider/` — 提供商与模型配置（配置页的宿主半边）
 
 配置页「模型」一节的后端（前端见 04 §2.2）。**它不新增任何配置存储**：读写的都是
