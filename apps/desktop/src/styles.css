@@ -1103,12 +1103,18 @@ body {
 .dv-default-tab[data-busy] .dv-default-tab-content::after { content: ' ●'; color: var(--pg-accent); }
 .dv-default-tab[data-unread] .dv-default-tab-content::after { content: ' •'; color: var(--pg-accent); }
 
-/* 右栏 */
-.pg-rightbar { display: flex; height: 100%; min-width: 0; background: var(--pg-bg-sidebar); border-left: 1px solid var(--pg-border-l2); }
-.pg-rightbar-body { flex: 1; overflow-y: auto; min-width: 0; }
-.pg-rightrail { width: 40px; border-left: 1px solid var(--pg-border-l2); display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 4px; }
+/* 右栏（可折叠，docs/04 §1.2「右视图轨常驻」）。
+   折叠时 Panel 收成 `.pg-rightrail` 那么宽（AppFrame 的 RIGHT_RAIL_W = 40），所以
+   **外框边框与内容各归各位**：左边界线挂在 body 上，折叠后剩下的正好是图标轨自己那条
+   border-left —— 挂在 `.pg-rightbar` 上的话，40px 里会被这条 1px 框线挤掉 1px。 */
+.pg-rightbar { display: flex; height: 100%; min-width: 0; background: var(--pg-bg-sidebar); }
+.pg-rightbar-body { flex: 1; overflow-y: auto; min-width: 0; border-left: 1px solid var(--pg-border-l2); }
+/* `flex: none`：折叠到 40px 时容器里只剩这条轨，不许被 flex 压窄（压了与 collapsedSize 对不上） */
+.pg-rightrail { flex: none; width: 40px; border-left: 1px solid var(--pg-border-l2); display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 4px; }
 .pg-rail-btn { width: 30px; height: 30px; background: none; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--pg-fg-dim); }
 .pg-rail-btn:hover { background: var(--pg-bg-app); }
+/* 开合开关与视图按钮隔开一点：上面那颗管"面板开合"，下面几颗管"看哪个视图"，不是一类 */
+.pg-rail-toggle-right { margin-bottom: 4px; }
 .pg-rail-active { background: var(--pg-bg-app) !important; color: var(--pg-accent) !important; }
 .pg-rightbar-pad { padding: 12px; font-size: 12px; }
 .pg-stats { padding: 10px 12px; font-size: 12px; }

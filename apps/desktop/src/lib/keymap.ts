@@ -14,6 +14,7 @@ export const DEFAULT_KEYS: Record<string, string> = {
   'session.sleep': 'cmd+shift+s',
   'tab.close': 'cmd+w',
   'sidebar.toggle': 'cmd+b',
+  'rightpanel.toggle': 'cmd+\\',
   'theme.toggle': 'cmd+shift+t',
   'model.pick': 'cmd+l',
   'thinking.cycle': 'cmd+e',

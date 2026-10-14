@@ -37,15 +37,26 @@ const bad = [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
 const pageErrors = [];
-page.on('pageerror', (e) => pageErrors.push(String(e)));
+/* 全文留一份（`bad` 里只放首行，免得几百字的栈糊住输出）：
+   React 那几条**跨行**的警告（例如 "final argument passed to useEffect changed size"）
+   关键信息全在第二行以后（Previous/Incoming 两个依赖数组），只留首行等于把线索扔了。 */
+const pageErrorDetails = [];
+page.on('pageerror', (e) => {
+  pageErrors.push(String(e));
+  pageErrorDetails.push(String(e));
+});
 /* ⚠️ mock 里没实现的命令：`mockBackend` 的兜底分支只 warn + 返回 `{}`，
    界面表现是"点了没反应"而门禁全绿。这条把那种情况**变成可见的**：
    静态对账在 `ipc-mock-coverage.test.ts`（扫 `cmd('…')` 字面量），
    这里兜住静态扫不到的（例如 ErrorBoundary 直接 `internals.invoke('webview_log')`）。 */
 const unmockedCommands = [];
 page.on('console', (m) => {
-  const line = m.text().split('\n')[0];
-  if (m.type() === 'error') pageErrors.push(line);
+  const text = m.text();
+  const line = text.split('\n')[0];
+  if (m.type() === 'error') {
+    pageErrors.push(line);
+    pageErrorDetails.push(text);
+  }
   if (line.includes('[mock-ipc] 没有实现')) unmockedCommands.push(line);
 });
 
@@ -715,6 +726,85 @@ const sidebarRoundTrips = [];
     await page.waitForTimeout(250);
     sidebarRoundTrips.push({ round: i, collapsed, expanded: await snapshot() });
   }
+}
+
+/* ---------- 6b. 右栏折叠：折叠成"图标轨那么宽"，且折叠后仍拖得回来 ---------- */
+// 与第 6 段同源（折叠不能进死胡同），但机制不同：右栏用的是 react-resizable-panels
+// 自己的 `collapsible` —— 面板**不收走**，只收窄到 `collapsedSize`，所以折叠后那条
+// 图标轨还在（它就是折叠态唯一的出口，见 SidebarRail.tsx 那段教训）。
+// 这一段量的是**两个数必须相等**：折叠后 Panel 宽 === `.pg-rightrail` 宽。
+// AppFrame 的 `RIGHT_RAIL_W = 40` 与 styles.css 的 `.pg-rightrail { width: 40px }` 是
+// **手工镜像**（同 tokens.css ↔ monaco-setup.ts 那条规矩）：谁改了一处忘了另一处，
+// 表现是"轨道被裁掉几像素"或"折叠后旁边留一条空白"——都在 jsdom 里量不到，只有这里会红。
+const rightRoundTrips = [];
+{
+  const snapshot = () =>
+    page.evaluate(() => {
+      const rail = document.querySelector('.pg-rightrail');
+      const panel = rail?.closest('[data-panel]');
+      const bar = document.querySelector('.pg-rightbar');
+      const r = rail?.getBoundingClientRect();
+      const toggle = rail?.querySelector('button[aria-expanded]');
+      return {
+        panelW: panel ? Math.round(panel.getBoundingClientRect().width) : 0,
+        railW: r ? Math.round(r.width) : 0,
+        barW: bar ? Math.round(bar.getBoundingClientRect().width) : 0,
+        // 内容在折叠时是**卸载**的（不是 CSS 藏起来）：读屏与 DOM 查询都不该再看到它
+        body: !!document.querySelector('.pg-rightbar-body'),
+        railLabel: rail?.getAttribute('aria-label') ?? null,
+        railButtons: [...(rail?.querySelectorAll('button') ?? [])].map((x) => x.getAttribute('aria-label')),
+        toggleExpanded: toggle?.getAttribute('aria-expanded') ?? null,
+        tabs: document.querySelectorAll('.dv-tab').length,
+      };
+    });
+
+  for (let i = 1; i <= 2; i++) {
+    await page.click('.pg-rightrail button[aria-label="收起右栏"]');
+    await page.waitForTimeout(250);
+    const collapsed = await snapshot();
+    if (!collapsed.railW) {
+      rightRoundTrips.push({ round: i, collapsed, error: '折叠后找不到图标轨' });
+      break;
+    }
+    await page.click('.pg-rightrail button[aria-label="展开右栏"]');
+    await page.waitForTimeout(250);
+    rightRoundTrips.push({ round: i, collapsed, expanded: await snapshot() });
+  }
+
+  /* 拖 sash 是**面板 → store** 那条同步方向（点按钮走的是 store → 面板）：
+     拖到折叠阈值以下时面板自己会收起来，store 若不跟着走，图标按钮就说反话
+     （界面收着、按钮写着"收起右栏"，点下去是个空操作）——这一半只有真拖得出来。 */
+  const lastSash = () =>
+    page.evaluate(() => {
+      const rail = document.querySelector('.pg-rightrail');
+      const group = rail?.closest('[data-panel]')?.parentElement;
+      const sash = [...(group?.children ?? [])].filter((c) => c.className.includes('pg-sash')).at(-1);
+      if (!sash) return null;
+      const r = sash.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+  const dragSash = async (dx) => {
+    const at = await lastSash();
+    if (!at) return false;
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await page.mouse.move(at.x + dx, at.y, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    return true;
+  };
+  // 先收起，再从折叠态往左拖出来
+  await page.click('.pg-rightrail button[aria-label="收起右栏"]');
+  await page.waitForTimeout(250);
+  const draggedOut = (await dragSash(-160)) ? await snapshot() : null;
+  // 再往右拖回去（越过阈值自动折叠）
+  const draggedIn = (await dragSash(400)) ? await snapshot() : null;
+  rightRoundTrips.push({ round: 'drag', draggedOut, draggedIn });
+  // 收尾：回到展开态，别把后面的段落留在"右栏收着"的世界里
+  await page.evaluate(() => {
+    document.querySelector('.pg-rightrail button[aria-label="展开右栏"]')?.click();
+  });
+  await page.waitForTimeout(250);
 }
 
 /* ---------- 7. 空编辑区占位：水印 + 基础快捷键 + 中央入口 ---------- */
@@ -4210,7 +4300,7 @@ await browser.close();
 console.log(
   JSON.stringify(
     {
-      ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, emptyPane, emptyAfterClick,
+      ...probe, sessionPanelCount, pageErrors, fleet, preview, sidebarRoundTrips, rightRoundTrips, emptyPane, emptyAfterClick,
       emptyBack, openInCwd, openIn, openInMenu, openInPick, openInAfterReload,
       openInFile, afterPrimary, fileMenu, afterReveal,
       monacoBefore, monacoOpened, monacoSwitchedBack, providers, settingsEdge, contributions, plugins,
@@ -4490,6 +4580,66 @@ for (const r of sidebarRoundTrips) {
   }
   if (!(r.expanded?.sidebarW > 0)) bad.push(`${at}：点展开后侧栏没回来（宽 ${r.expanded?.sidebarW}）★`);
   if (r.expanded?.railW !== 0) bad.push(`${at}：展开后图标轨还在（宽 ${r.expanded?.railW}）★`);
+  if (r.expanded?.tabs !== r.collapsed.tabs) {
+    bad.push(`${at}：折来折去把标签数改了（${r.collapsed.tabs} → ${r.expanded?.tabs}）★`);
+  }
+}
+/* 右栏折叠：折叠宽必须等于图标轨宽（RIGHT_RAIL_W ↔ .pg-rightrail width 是一对镜像数字），
+   折叠后轨道还在、按钮都有可访问名，展开回得来，拖 sash 两个方向都跟得上 store */
+if (!rightRoundTrips.length) bad.push('右栏折叠：一轮都没跑成 ★');
+for (const r of rightRoundTrips) {
+  if (r.round === 'drag') {
+    if (!r.draggedOut) bad.push('右栏折叠（拖）：找不到右栏那条 sash，拖不动 ★');
+    else {
+      if (r.draggedOut.body !== true) bad.push('右栏折叠（拖）：从折叠态拖出来后内容没有回来 ★');
+      if (r.draggedOut.toggleExpanded !== 'true') {
+        bad.push('右栏折叠（拖）：拖出来了但按钮还说自己是"收起"态（面板 → store 没同步）★');
+      }
+      if (!(r.draggedOut.panelW > r.draggedOut.railW)) {
+        bad.push(`右栏折叠（拖）：拖出来的面板宽 ${r.draggedOut.panelW}px，不比轨道宽 ★`);
+      }
+    }
+    if (!r.draggedIn) bad.push('右栏折叠（拖）：找不到右栏那条 sash，拖不动 ★');
+    else {
+      if (r.draggedIn.body !== false) bad.push('右栏折叠（拖）：拖到阈值以下后内容还在（该折叠了）★');
+      if (r.draggedIn.toggleExpanded !== 'false') {
+        bad.push('右栏折叠（拖）：面板自己收起来了但按钮还说"收起"（面板 → store 没同步）★');
+      }
+      if (r.draggedIn.panelW !== r.draggedIn.railW) {
+        bad.push(`右栏折叠（拖）：折叠后面板 ${r.draggedIn.panelW}px ≠ 轨道 ${r.draggedIn.railW}px ★`);
+      }
+    }
+    continue;
+  }
+  const at = `右栏折叠第 ${r.round} 轮`;
+  if (r.error) {
+    bad.push(`${at}：${r.error} —— 折叠 = 进死胡同 ★`);
+    continue;
+  }
+  if (r.collapsed.body !== false) bad.push(`${at}：折叠后右栏内容还在（应卸载）★`);
+  if (r.collapsed.panelW !== r.collapsed.railW) {
+    bad.push(
+      `${at}：折叠后面板 ${r.collapsed.panelW}px ≠ 图标轨 ${r.collapsed.railW}px` +
+        '（AppFrame 的 RIGHT_RAIL_W 与 styles.css 的 .pg-rightrail width 要对账）★',
+    );
+  }
+  if (r.collapsed.railW <= 0) bad.push(`${at}：折叠后图标轨没了（折叠 = 无处可点）★`);
+  if (r.collapsed.railLabel !== '折叠的右栏') {
+    bad.push(`${at}：折叠态图标轨的 aria-label 是 ${r.collapsed.railLabel} ★`);
+  }
+  if (JSON.stringify(r.collapsed.railButtons) !== JSON.stringify(['展开右栏', '文件', '统计'])) {
+    bad.push(`${at}：折叠态图标轨按钮是 ${JSON.stringify(r.collapsed.railButtons)}（都要有可访问名）★`);
+  }
+  if (r.collapsed.toggleExpanded !== 'false') {
+    bad.push(`${at}：折叠后开关的 aria-expanded 是 ${r.collapsed.toggleExpanded} ★`);
+  }
+  if (r.expanded?.body !== true) bad.push(`${at}：点展开后右栏内容没回来 ★`);
+  if (!(r.expanded?.panelW > r.expanded?.railW)) {
+    bad.push(`${at}：展开后面板宽 ${r.expanded?.panelW}px，不比轨道宽 ★`);
+  }
+  if (r.expanded?.toggleExpanded !== 'true') {
+    bad.push(`${at}：展开后开关的 aria-expanded 是 ${r.expanded?.toggleExpanded} ★`);
+  }
   if (r.expanded?.tabs !== r.collapsed.tabs) {
     bad.push(`${at}：折来折去把标签数改了（${r.collapsed.tabs} → ${r.expanded?.tabs}）★`);
   }
@@ -5497,6 +5647,14 @@ if (liveRows.liveBold !== '加粗') {
    单独点名：它是"量自己 → 自己变 → 再量"的自触发循环（用户 2026-09-23 贴的日志里连着三条），
    表现是"没人滚，梯子自己在动"。门禁里若出现，直接指向两侧观察者（梯子的 band / 转录的贴底）。 */
 if (pageErrors.length) bad.push(`页面错误 ${pageErrors.length} 条：${pageErrors.slice(0, 2).join(' | ')}`);
+if (pageErrorDetails.length) {
+  // 全文（最多 3 条 / 每条 1200 字）：`bad` 那行只有首行，栈与"Previous/Incoming"全在后面
+  const detail = pageErrorDetails
+    .slice(0, 3)
+    .map((t, i) => `#${i + 1} ${t.slice(0, 1200)}`)
+    .join('\n');
+  console.log(`\n—— 页面错误全文（前 3 条）——\n${detail}\n—— 全文结束 ——`);
+}
 if (pageErrors.some((e) => /ResizeObserver loop/.test(e))) {
   bad.push('页面错误里出现 ResizeObserver 自触发循环（量了自己）★');
 }

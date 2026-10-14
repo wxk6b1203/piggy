@@ -9,8 +9,14 @@
  * 对齐 DSH（docs/12 §6）：DSH 右栏是**文档/代码预览**面板，token 用量等窗口级状态归 Composer dock，
  * 不占右栏。因此默认视图是「文件」，统计降为次级入口，避免同一份数据在两处重复呈现。
  * 图标统一用 VS Code codicons（docs/13），替换此前的 emoji。
+ *
+ * **可折叠（docs/04 §1.2「右视图轨常驻」）**：折叠 = 内容卸载、图标轨留下。
+ * 留下轨道是硬要求，不是美观问题：左栏当年就是 `{sidebarOpen && <Panel…>}` ——
+ * 折叠把侧栏连同它唯一的"展开"入口一起从 DOM 里删了，用户拿到的是**一屏黑、无处可点**
+ * （见 SidebarRail.tsx 与 src/test/sidebar-rail.test.tsx）。
+ * 几何（折叠到 40px）由 AppFrame 的 `collapsible` Panel 执行，这里只负责画什么。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { baseName } from '@/lib/paths';
 import { clampPercent, formatCacheHitPercent, formatPercent, formatTokens } from '@/lib/tokenFormat';
@@ -19,6 +25,7 @@ import { Icon } from '@/features/common/Icon';
 import { FileIcon } from '@/features/common/FileIcon';
 import { toast } from '@/lib/feedback';
 import { useTabs } from '@/stores/tabs';
+import { useUi } from '@/stores/ui';
 import { openPreviewTab } from './EditorArea';
 import { FleetView } from './FleetView';
 
@@ -35,42 +42,88 @@ const SHOW_FLEET_ENTRY = false;
 
 export function RightBar({ tabId }: { tabId: string | null }) {
   const [view, setView] = useState<RightView>('files');
+  // 开合状态在 store（命令 `rightpanel.toggle` / ⌘\ / 命令面板都要写它）；
+  // 真正的几何由 AppFrame 那个可折叠 Panel 执行，这里只决定"画不画内容"。
+  const open = useUi((s) => s.rightpanelOpen);
+  const setOpen = useUi((s) => s.setRightpanelOpen);
+
+  /** 切视图 = 顺带展开。折叠态下点图标却什么都不出来，用户会以为按钮坏了。 */
+  const show = useCallback(
+    (v: RightView) => {
+      setView(v);
+      setOpen(true);
+    },
+    [setOpen],
+  );
+
   // 视图也可由外部命令打开：`/session` → 统计（docs/04 §7.2）。
   // 走事件而不是把 view 提进 store：右栏视图是纯局部 UI 状态，提上去只会多一份要同步的东西。
+  // ⚠️ 只有**开合**进了 store —— 那是"内容"与"图标轨"两边都要读的状态（后者常驻且折叠时也画）。
   useEffect(
     () =>
       windowEvents.on('rightbar-view', (v) => {
-        if (v === 'files' || v === 'stats' || v === 'fleet') setView(v);
+        if (v === 'files' || v === 'stats' || v === 'fleet') show(v);
       }),
-    [],
+    [show],
   );
+
   return (
     <div className="pg-rightbar">
-      <div className="pg-rightbar-body">
-        {view === 'files' && <FilesView tabId={tabId} />}
-        {view === 'stats' && <StatsView tabId={tabId} />}
-        {view === 'fleet' && <FleetView tabId={tabId} />}
-      </div>
-      <div className="pg-rightrail">
+      {/* 内容是在**折叠时卸载**的（不是 CSS 藏起来）：折叠后 Panel 只有图标轨那么宽，
+          留着内容等于白跑一遍文件树/统计的 IPC，读屏也还会念到看不见的东西。 */}
+      {open && (
+        <div className="pg-rightbar-body">
+          {view === 'files' && <FilesView tabId={tabId} />}
+          {view === 'stats' && <StatsView tabId={tabId} />}
+          {view === 'fleet' && <FleetView tabId={tabId} />}
+        </div>
+      )}
+      {/* 折叠态留下的那条图标轨（40px）。**它是折叠后唯一还能点的地方**——
+          与左栏折叠轨（SidebarRail，56px）同一条教训：折叠绝不能把唯一的出口一起删掉。 */}
+      <div
+        className="pg-rightrail"
+        role="toolbar"
+        aria-label={open ? '右侧栏视图' : '折叠的右栏'}
+        aria-orientation="vertical"
+      >
         <button
-          className={`pg-rail-btn${view === 'files' ? ' pg-rail-active' : ''}`}
+          type="button"
+          className="pg-rail-btn pg-rail-toggle-right"
+          title={open ? '收起右栏（⌘\\）' : '展开右栏（⌘\\）'}
+          aria-label={open ? '收起右栏' : '展开右栏'}
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <Icon name={open ? 'layout-sidebar-right-off' : 'layout-sidebar-right'} size={15} />
+        </button>
+        <button
+          type="button"
+          className={`pg-rail-btn${view === 'files' && open ? ' pg-rail-active' : ''}`}
           title="文件（项目根）"
-          onClick={() => setView('files')}
+          aria-label="文件"
+          aria-pressed={view === 'files' && open}
+          onClick={() => show('files')}
         >
           <Icon name="files" size={15} />
         </button>
         <button
-          className={`pg-rail-btn${view === 'stats' ? ' pg-rail-active' : ''}`}
+          type="button"
+          className={`pg-rail-btn${view === 'stats' && open ? ' pg-rail-active' : ''}`}
           title="统计"
-          onClick={() => setView('stats')}
+          aria-label="统计"
+          aria-pressed={view === 'stats' && open}
+          onClick={() => show('stats')}
         >
           <Icon name="dashboard" size={15} />
         </button>
         {SHOW_FLEET_ENTRY ? (
           <button
-            className={`pg-rail-btn${view === 'fleet' ? ' pg-rail-active' : ''}`}
+            type="button"
+            className={`pg-rail-btn${view === 'fleet' && open ? ' pg-rail-active' : ''}`}
             title="Fleet（子代理）"
-            onClick={() => setView('fleet')}
+            aria-label="Fleet"
+            aria-pressed={view === 'fleet' && open}
+            onClick={() => show('fleet')}
           >
             <Icon name="server-process" size={15} />
           </button>

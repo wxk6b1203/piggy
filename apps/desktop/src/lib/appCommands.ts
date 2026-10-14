@@ -136,6 +136,15 @@ export function useAppCommands() {
       run: () => ui().setSidebarOpen(!ui().sidebarOpen),
     });
     registerCommand({
+      // id 与键位取自 docs/07 §2.1（`rightpanel.toggle` / `Cmd+\`），别再另起一个名字：
+      // 空编辑区的快捷键表、命令面板、快捷键速查都按注册表里的 id 显示。
+      id: 'rightpanel.toggle',
+      title: '切换右栏',
+      category: '视图',
+      keys: 'cmd+\\',
+      run: () => ui().setRightpanelOpen(!ui().rightpanelOpen),
+    });
+    registerCommand({
       id: 'theme.toggle',
       title: '切换主题',
       category: '视图',

@@ -23,6 +23,12 @@ interface UiState {
   sidebarOpen: boolean;
   setSidebarOpen(b: boolean): void;
 
+  /** 右栏开合（命令 `rightpanel.toggle`，⌘\；docs/04 §1.2、docs/07 §2.1）。
+   *  与左栏一样**不持久化**：跨重启记忆属于 docs/04 §1.8 的"按项目记两侧栏"，
+   *  等那块落地时左右一起接，不要先给右栏开一个 localStorage 的后门。 */
+  rightpanelOpen: boolean;
+  setRightpanelOpen(b: boolean): void;
+
   /** extension setStatus 槽位（docs/02 §8） */
   statusSlots: Record<string, string>;
   setStatusSlot(key: string, text: string | null): void;
@@ -62,6 +68,11 @@ export const useUi = create<UiState>()(
   sidebarOpen: true,
   setSidebarOpen(b) {
     set({ sidebarOpen: b });
+  },
+
+  rightpanelOpen: true,
+  setRightpanelOpen(b) {
+    set({ rightpanelOpen: b });
   },
 
   statusSlots: {},

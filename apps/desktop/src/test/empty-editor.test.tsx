@@ -104,7 +104,7 @@ describe('空编辑区占位', () => {
       await new Promise((r) => setTimeout(r, 40));
     });
     const shown = rows();
-    const want = ['session.new', 'palette.open', 'session.search', 'sidebar.toggle', 'model.pick', 'help.shortcuts'];
+    const want = ['session.new', 'palette.open', 'session.search', 'sidebar.toggle', 'rightpanel.toggle', 'model.pick', 'help.shortcuts'];
     for (const id of want) {
       const cmd = getCommand(id);
       const chord = keysFor(id);

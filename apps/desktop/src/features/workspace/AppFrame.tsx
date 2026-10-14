@@ -2,7 +2,8 @@
  *  对齐 DSH（docs/12 §1.5/§1.6）：**无自绘标题栏、无横贯底部状态栏**——
  *  品牌行在侧栏顶部，窗口级状态行在 Composer dock。 */
 import { Group, Panel, Separator } from 'react-resizable-panels';
-import { useEffect, useState } from 'react';
+import type { PanelImperativeHandle } from 'react-resizable-panels';
+import { useEffect, useRef, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { bootGate } from '@/lib/boot';
 import { windowEvents } from '@/lib/windowEvents';
@@ -59,13 +60,39 @@ export function resetBootForTest() {
   bg.__piggyBootPromise = undefined;
 }
 
+/**
+ * 折叠态右栏的宽度 = 图标轨宽度（px）。
+ *
+ * ⚠️ **必须与 `styles.css` 的 `.pg-rightrail { width: 40px }` 同值**：折叠时 Panel 收成
+ * 这么宽，里面正好只剩那条轨（内容在 RightBar 里是卸载掉的）。两处对不上就是
+ * "轨被裁掉几像素"或"旁边多一条空白"——所以 `ui:startup` 右栏折叠那一段量的是
+ * **真实几何**（折叠宽 === 轨宽），改了一处忘了另一处会直接变红。
+ */
+const RIGHT_RAIL_W = 40;
+
 export function AppFrame() {
   useAppCommands();
 
   const activeTabId = useTabs((s) => s.activeTabId);
   const banner = useTabs((s) => s.banner);
   const sidebarOpen = useUi((s) => s.sidebarOpen);
+  const rightpanelOpen = useUi((s) => s.rightpanelOpen);
   const [bashOpen, setBashOpen] = useState(false);
+  const rightPanel = useRef<PanelImperativeHandle | null>(null);
+
+  /* 右栏开合：store → 面板几何。
+     用库自己的 `collapsible`（而不是像左栏那样条件渲染整个 Panel）有两个原因：
+      ① 折叠后要**留下图标轨**，而轨就在 Panel 里面，Panel 不能整个消失；
+      ② 条件增删 Panel 会让 react-resizable-panels 重新计算相邻面板索引
+         （jsdom 下必抛 `Panel constraints not found for index 3`，真浏览器虽然干净，
+         但没必要为同一件事养两条不同的机制）。
+     按钮 / ⌘\ / 命令面板三条入口都只写 store，**这里是指挥几何的唯一一处**。 */
+  useEffect(() => {
+    const p = rightPanel.current;
+    if (!p) return;
+    if (rightpanelOpen) p.expand();
+    else p.collapse();
+  }, [rightpanelOpen]);
 
   useEffect(() => {
     void startBoot();
@@ -124,7 +151,25 @@ export function AppFrame() {
             </Group>
           </Panel>
           <Separator className="pg-sash" />
-          <Panel defaultSize="18%" minSize="13%" maxSize="34%">
+          <Panel
+            defaultSize="18%"
+            minSize="13%"
+            maxSize="34%"
+            collapsible
+            collapsedSize={RIGHT_RAIL_W}
+            collapsedThreshold={RIGHT_RAIL_W}
+            panelRef={rightPanel}
+            /* 面板 → store：用户拖 sash 把右栏拖到折叠阈值以下（或从折叠态拖出来）时，
+               store 得跟着走。不同步的话图标按钮会说反话 —— 界面明明收起来了，
+               按钮还写着"收起右栏"，点它调 collapse() 又是个空操作（已折叠），
+               用户看到的是"按钮坏了"。 */
+            onResize={() => {
+              const collapsed = rightPanel.current?.isCollapsed() ?? false;
+              const open = useUi.getState().rightpanelOpen;
+              if (collapsed && open) useUi.getState().setRightpanelOpen(false);
+              else if (!collapsed && !open) useUi.getState().setRightpanelOpen(true);
+            }}
+          >
             <RightBar tabId={activeTabId} />
           </Panel>
         </Group>

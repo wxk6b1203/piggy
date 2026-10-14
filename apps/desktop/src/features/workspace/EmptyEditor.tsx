@@ -26,6 +26,7 @@ const SHORTCUT_IDS = [
   'palette.open',
   'session.search',
   'sidebar.toggle',
+  'rightpanel.toggle',
   'model.pick',
   'help.shortcuts',
 ];
