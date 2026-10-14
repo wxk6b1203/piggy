@@ -120,6 +120,52 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 设置页同时显示**实际生效的那个二进制**（路径 + 版本 + 来源 + 怎么找到的）——
 设置值不等于结果，必须让人看得见。
 
+#### 2.1b 启动时补齐 `PATH`（`config/shell_env.rs`）——**打包产物专有的一课**
+
+**2026-10-14 用户报障**：`pnpm tauri build` 打出来的 `.app` 双击启动，
+界面上「系统 pi」起不来，日志是：
+
+```
+pi --version 失败: /Users/wxk/Library/pnpm/bin/pi: line 48: exec: node: not found
+```
+
+链路：macOS 从 Finder/Dock 启动的进程，环境来自 launchd 而**不是**终端 ——
+`PATH` 只有 `/usr/bin:/bin:/usr/sbin:/sbin`。于是
+
+1. pnpm/npm 装的 `pi` 是个 **`#!/bin/sh` + `exec node …` 的垫片**；
+2. 发现链的「常见安装位置」兜底**找得到**这个垫片（所以界面上不是"pi 未找到"，
+   而是"pi 明明在、就是跑不起来"——这一步最容易被误判成"用户没装 pi"）；
+3. 但 nvm/homebrew/pnpm 的 bin 一个都不在 `PATH` 里 → 垫片里的 `exec node` 失败。
+
+**修法**：启动时（`lib.rs::run` 的**第一件事**，早于 `discover()`）跑一次
+`$SHELL -ilc '<哨兵>; env'`，把 shell 那套 `PATH` 并回进程环境；之后所有子进程
+（pi worker、Fleet 的 `git`、插件 CLI、pty）都自动继承。
+
+为什么要补 `PATH` 而不是"把 node 目录塞进发现链"：后者只让 pi 垫片找得到解释器，
+pi 自己 `bash` 工具起的子进程仍然拿不到 `git`/`python`/用户自定义命令 ——
+用户看到的是"会话能开，但 agent 的工具全报 command not found"。
+
+护栏（都在 `config/shell_env.rs`，10 条单测）：
+
+| 点 | 做法 | 为什么 |
+|---|---|---|
+| **必须 `-i`** | `-ilc` 而不是 `-lc` | macOS 上 `zsh -lc` 只读 `.zshenv` + `.zprofile`，而 nvm 之类通常写在 `.zshrc`（**只对交互式 shell 生效**）。少了 `-i` 就变成"补了个 PATH 但 node 还是没有" |
+| **只认哨兵之后** | 输出里 `rfind(哨兵)` 之后的 `KEY=VALUE` 才算数 | rc 文件的横幅/警告会混进 stdout；哨兵用 `\x1f`，避免横幅恰好同形 |
+| **有超时** | 5 s（`LOGIN_SHELL_TIMEOUT`），超时就杀子进程 | 交互式 rc 可能很慢（本机实测 0.5–0.9 s）或挂住；超时**只意味着没补上**，绝不阻断启动 |
+| **stdin = null** | 子进程的标准输入立刻 EOF | rc 里若有 `read`，不给 EOF 就会挂到超时 |
+| **只改 `PATH`** | 不 `env_clear`，也不接管其它变量 | 别把 `HOME`、代理变量冲掉；`Windows` 直接跳过（GUI 本就继承完整环境） |
+| **不静默** | 启动日志必打一行（成功/跳过/失败都能看见） | 这一层失败的表现是"pi 起不来"，不写日志就只能靠猜 |
+
+复现与排查：`PIGGY_NO_SHELL_ENV=1` 关掉这一层（对照实验），
+`PIGGY_SHELL=/path/to/shell` 换一个 shell 来问。
+门禁是 `login_shell_path_makes_a_node_shim_runnable`：**造一个真的 `exec node` 垫片**，
+先用 Finder 那套 `PATH` 断言它报 `node: not found`（复现），再用补齐后的 `PATH`
+断言 `pi --version` 真的跑出 `1.2.0`（修好了）。把 `-ilc` 改回 `-lc` 它必须变红 ——
+已验证（红时报的就是用户那句 `exec: node: not found`）。
+
+⚠️ 因此 `PI_BIN` 这条**仍然**只适合开发/QA：GUI 启动时它本来就传不进来
+（`.app` 的环境来自 launchd），这一层补的是 `PATH`，不是把整个 shell 环境搬进来。
+
 ### 2.2 打包期：把你自己的 pi 放进安装包
 
 | 方式 | 怎么做 | 适用 |
@@ -331,7 +377,8 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
    `package.json` 的 `piConfig.configDir`（比如 `.pi2`），Piggy 的设置/认证/模型面板与侧栏会话列表
    都会指向**另一个目录**。`pi_source=system` 时这通常不是问题（系统装的就是标准 pi），
    但换自定义构建时要注意。目前没有设置项能改配置目录——需要的话得先加 `PI_CODING_AGENT_DIR` 透传。
-2. **`PI_BIN` 在 macOS GUI 启动时拿不到**：`.app` 的环境来自 launchd 而非 shell。
+2. **`PI_BIN` 在 macOS GUI 启动时拿不到**：`.app` 的环境来自 launchd 而非 shell
+   （§2.1b 补的是 `PATH`，不是把整个 shell 环境搬进进程）。
    要固定用自带/自定义二进制，走 §2.1 的打包路径，别依赖环境变量。
 
 ### 2.5 插件（pi 里叫 **extension**）

@@ -165,9 +165,19 @@ fn bundled_plugin_dirs(resource_dir: Option<&std::path::Path>) -> Vec<crate::pi:
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook(); // M4：崩溃安全
-                          // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
-                          // 启动时按持久化的来源解析（默认 system）；失败不阻断启动，
-                          // 由引导横幅 + 每次建 tab 时的重试兜底（02 §2.1）
+
+    /* PATH 补齐必须**第一个**做（docs/17 §2.1）：打包后的 `.app` 从 Finder 启动时拿到的是
+    launchd 那套环境（PATH=/usr/bin:/bin:/usr/sbin:/sbin），nvm/homebrew/pnpm 的 bin 都不在
+    里面 —— 而 pnpm 装的 `pi` 是 `#!/bin/sh` + `exec node …` 的垫片，于是
+    `pi --version` 报 `line 48: exec: node: not found`，界面上是"pi 明明在，却起不来"。
+    放在这里（而不是某个 setup 里）是因为下面这一句 `discover(...)` 就要用 PATH，
+    而之后所有子进程（pi worker / git / 插件 CLI / pty）都继承进程环境，一次修好整条链。 */
+    let path_env = crate::config::shell_env::enrich_process_path();
+    eprintln!("[piggy] {}", path_env.describe());
+
+    // 启动时 pi 缺失不再炸 app：引导横幅 + 每次建 tab 时按发现链重试（02 §2.1）
+    // 启动时按持久化的来源解析（默认 system）；失败不阻断启动，
+    // 由引导横幅 + 每次建 tab 时的重试兜底（02 §2.1）
     let boot_cfg = config::app::perf_config_load();
     let pi_bin = match discover(
         boot_cfg.pi_source,

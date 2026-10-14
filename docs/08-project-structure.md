@@ -18,7 +18,7 @@ piggy/
 │     │  │  ├─ commands/          # IPC 薄层（pi_*.rs session_*.rs config_*.rs fleet_*.rs app_*.rs）
 │     │  │  ├─ pi/                # discovery process codec client protocol coalesce
 │     │  │  ├─ sessions/          # registry list tree transcript（转录取页，03 §2.19）
-│     │  │  ├─ config/            # paths auth models settings app（03 §2.10/§2.18）
+│     │  │  ├─ config/            # paths auth models settings app shell_env（03 §2.10/§2.18；shell_env = 启动补 PATH，17 §2.1b）
 │     │  │  ├─ provider/          # 提供商目录/总览/编辑/联网列模型（03 §2.12）
 │     │  │  ├─ plugin/            # 插件盘点/安装升级/启停/路径登记（03 §2.15）
 │     │  │  ├─ fleet/

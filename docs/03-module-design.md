@@ -67,6 +67,13 @@ pub fn check_compat(v: &Version) -> Compatibility;   // Ok / Warn / Block
 五条纯函数/夹具测试覆盖这些规则（`exec_names_*`、`windows_prefers_the_cmd_shim_*`、
 `windows_ignores_a_lone_posix_shim`、`windows_well_known_dirs_*`），在 macOS 上就能跑。
 
+**启动时先补 `PATH`（`config/shell_env.rs`，2026-10-14）**：macOS 上从 Finder 启动的 `.app`
+拿到的是 launchd 那套环境（`PATH=/usr/bin:/bin:/usr/sbin:/sbin`），而 pnpm/npm 装的 `pi`
+是 `#!/bin/sh` + `exec node …` 的垫片 —— 上面的「常见安装位置」兜底**找得到**它，
+却跑不起来（`line 48: exec: node: not found`）。所以 `lib.rs::run` 的**第一件事**是问一次
+登录 shell（`$SHELL -ilc '<哨兵>; env'`）把 `PATH` 并回进程环境，之后所有子进程继承。
+细节、护栏与门禁见 docs/17 §2.1b。
+
 ### 2.2 `pi/codec.rs` — JSONL 分帧器
 
 ```rust
