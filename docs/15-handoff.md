@@ -1445,6 +1445,26 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      验证：契约 17/17、真机插件探针全绿、pi-guardrails 对 1.2.0 `tsc` 干净 + 90/90 通过、
      bridge 类型校验与 37 条单测干净。
 
+142. **`if linux { A } else { B }` 等于把 Windows 当成 macOS。**（2026-10-14，用户报"用文件资源管理器打开目录失败了"）
+     `LaunchSpec::ShellOpen` 的启动器选择写成了 `if cfg!(target_os = "linux") { "xdg-open" } else { "open" }`
+     —— 两个分支都写对了（Linux / macOS），但**Windows 落进 else**，去起 macOS 的 `open`。
+     Windows 上没有这个命令也没有 `.lnk` 之外的同名关联 ⇒ `Command::new("open")` 直接 `NotFound`
+     ⇒ 被映射成 `LaunchOutcome::Missing` ⇒ 上层按"这份解析过期了"报错（"explorer 的启动器失效了"）。
+     **报错信息把人指向"启动器失效"，而真相是我们从来没起过它。**
+     判据：**平台分支必须显式三分（macos / linux / 其它）**，不许用 else 兜一个具体平台 ——
+     else 的语义是"剩下全部"，而"剩下全部"里恰好住着另外一个真实存在的平台。
+     同类形状还有第 51 条（`HOME` 只在 unix 有）与第 53 条（分隔符）。
+     **同一个错误当时写了两份**：`mod.rs::open_external_url` 也有这一句，
+     于是受害面是两片功能 ——「打开方式」的文件管理器 + **界面里所有外部链接**
+     （markdown 链接、许可原文点了都没反应）。处置是把选择收成一个纯函数
+     `host::shell_opener() -> (命令, 退出码可不可信)`，判据只此一份、且**任何平台都能断言**。
+     两个平台事实：Windows 走 `explorer.exe <目录或 URL>`；
+     **`explorer.exe` 成功打开后退出码是 1**，所以不能套 `spawn_watched`（按退出码判成功会把成功判成失败）。
+     验证：三条用例钉住（纯函数派发表 + 真 spawn + "成功返回 1"这个平台事实），
+     **红检过**：把 Windows 格改回 `("open", true)`，两条立刻红、且消息点名"不许去起 macOS 的 `open`"。
+     **旧用例为什么没抓住**：`shell_open_uses_the_platform_opener` 只断言了 `describe() == "shell-open"`
+     —— 一个字符串常量，跟"到底起哪个可执行文件"毫无关系。**名字级的断言要对着那个名字。**
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |

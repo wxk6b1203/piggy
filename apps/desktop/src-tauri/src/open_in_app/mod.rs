@@ -345,11 +345,20 @@ pub fn validate_external_url(url: &str) -> Result<String, String> {
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
-    // macOS/Windows 用 `open`，Linux 用 `xdg-open` —— 与 `LaunchSpec::ShellOpen` 同一套
-    let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
-    match host::spawn_watched(opener, &[url], Duration::from_millis(1500), &HashMap::new(), &[]) {
+    /* 交给系统默认程序。**选择来自 `host::shell_opener`**（2026-10-14 修）：
+    以前这里写的是 `if linux { "xdg-open" } else { "open" }` —— Windows 落进 else，
+    去起 macOS 的 `open`，Windows 上根本没有这个命令，于是**界面里所有外部链接
+    （markdown 链接、许可原文）点了都没反应**。同一个错误在 `host.rs::ShellOpen` 也有一份，
+    现在两处共用同一个判据（它也说明了"explorer 成功也返回 1"这个坑）。 */
+    let (opener, trust_exit) = host::shell_opener();
+    let outcome = if trust_exit {
+        host::spawn_watched(opener, &[url], Duration::from_millis(1500), &HashMap::new(), &[])
+    } else {
+        host::launch_via_explorer(&url, &HashMap::new())
+    };
+    match outcome {
         LaunchOutcome::Launched => Ok(()),
-        other => Err(format!("交不出给系统打开器（{opener}）：{other:?}")),
+        other => Err(format!("交不出给系统打开器：{other:?}")),
     }
 }
 

@@ -213,6 +213,19 @@ pub struct TabDescriptor {
 为什么不用 `tauri-plugin-opener`（11 §2.1 原计划）：那个插件的权限面是"任意路径/任意 URL"，
 而这里需要的只是"用白名单应用打开一个已存在的目录/文件"。自建六个窄命令，权限面小得多（08 §6）。
 
+**「交给系统 shell」的命令由 `host.rs::shell_opener()` 一家决定，而且 Windows 上不能看退出码**（2026-10-14 修）：
+这个选择以前在**两处各写了一遍**、而且**两处都错在同一格** —— `LaunchSpec::ShellOpen`
+（`if linux { "xdg-open" } else { "open" }`）与 `open_external_url`（同一句）。
+Windows 落进 else，去起 macOS 的 `open`，而 Windows 上没有这个命令 ⇒ `NotFound`
+⇒ 上层按"这份解析过期了"报给用户，真相是**我们从来没起过 explorer**。
+受害面是两片用户可见的功能：**「打开方式」里的文件管理器**，以及**界面里所有外部链接**
+（markdown 链接、许可原文）—— 后者的注释当时还照着 `catalog.rs` 里"macOS/Windows `open`"
+那句错话写的。现在两者共用一个纯函数（`shell_opener()` 返回 `(命令, 退出码可不可信)`），
+判据只此一份、且**可在任何平台上断言**。
+两个平台事实写进注释与用例：① Windows 走 `explorer.exe <目录或 URL>`；
+② **`explorer.exe` 成功打开后退出码是 1**，所以那条链**不能**套 `spawn_watched`
+（它按退出码判成功，会把成功判成失败）。
+
 ### 2.12 `provider/` — 提供商与模型配置（配置页的宿主半边）
 
 配置页「模型」一节的后端（前端见 04 §2.2）。**它不新增任何配置存储**：读写的都是

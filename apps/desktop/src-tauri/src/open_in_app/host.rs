@@ -267,6 +267,9 @@ pub fn scrubbed_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
 pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
     match spec {
         LaunchSpec::ShellOpen => {
+            if cfg!(windows) {
+                return launch_via_explorer(dir, env);
+            }
             let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
             spawn_watched(opener, &[dir.to_string()], watch, env, &[])
         }
@@ -275,6 +278,85 @@ pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &Hash
             args,
             env: extra,
         } => spawn_watched(command, &launch_args(args, dir), watch, env, extra),
+    }
+}
+
+/// "交给系统 shell 打开一个参数"该起什么？（**纯函数，可跨平台断言**）
+///
+/// 返回 `(命令, 能不能用退出码判成败)`。
+///
+/// 抽出来的理由（2026-10-14）：这个选择以前在两处各写了一遍
+/// （`launch_detached` 的 `ShellOpen` 与 `mod.rs::open_external_url`），
+/// 而且**两处都写错了同一个地方**（`if linux { xdg-open } else { open }` → Windows 落进 else）。
+/// 收成一个纯函数之后，"Windows 上到底起哪个命令"这件事可以在任何平台上断言，
+/// 不必真的去起一个资源管理器。
+///
+/// 第二个返回值是那个平台怪癖：**`explorer.exe` 成功时也返回 1**，
+/// 所以 Windows 那格必须为 `false`（否则成功会被判成失败）。
+///
+/// @returns `(命令名, 退出码能否判成败)`
+pub fn shell_opener() -> (&'static str, bool) {
+    if cfg!(windows) {
+        ("explorer.exe", false)
+    } else if cfg!(target_os = "linux") {
+        ("xdg-open", true)
+    } else {
+        ("open", true)
+    }
+}
+
+/// Windows 上"交给系统 shell"的唯一入口：`explorer.exe <参数>`（**目录或 URL 都吃**）。
+///
+/// ## 为什么必须单独一条（2026-10-14 用户报障："用文件资源管理器打开目录失败了"）
+///
+/// 这里以前是 `if linux { "xdg-open" } else { "open" }` —— **Windows 落进了 else**，
+/// 于是去起 macOS 的 `open`。Windows 上既没有 `open` 这个命令、也没有注册 `.exe` 之外的
+/// 关联，`Command::new("open")` 直接 `NotFound` → `LaunchOutcome::Missing` →
+/// 上层把"这份解析过期了"报给用户（"explorer 的启动器失效了"），
+/// 而真相是**我们从来没起过 explorer**。
+/// 同一个错误在两处出现（这里的 `ShellOpen` 与 `mod.rs::open_external_url`），
+/// 所以收成一个入口 —— 下次再改只改这一处。
+///
+/// ## 为什么不能用 `spawn_watched`（它按退出码判成功）
+///
+/// 真机实测：`explorer.exe <已存在的目录>` 与 `explorer.exe <URL>` **成功打开后退出码都是 1**
+/// （不是 0）。走 `spawn_watched` 就会把成功判成 `Failed("在观察窗内退出（code 1）")` ——
+/// 东西明明开了，界面却报错。所以这里只看"能不能起得来"：
+/// 起不来（`NotFound`）才是 `Missing`，起来了就是 `Launched`。
+///
+/// 路径**不转成 file URL**：`explorer.exe` 的位置参数吃的是普通路径
+/// （`/select,` 那条才需要 file URL，见 `paths.rs::windows_file_url`）。
+///
+/// @param arg - 目录路径或 URL（两者的处理方式一致）
+pub fn launch_via_explorer(arg: &str, env: &HashMap<String, String>) -> LaunchOutcome {
+    let (opener, trust_exit) = shell_opener();
+    // 这条只服务"不能信退出码"的那一格（Windows）。判据与 `shell_opener` 同一处，
+    // 免得哪天平台表变了、这条还硬编码着 explorer。
+    debug_assert!(!trust_exit, "launch_via_explorer 只该被『退出码不可信』的平台用到");
+    let mut cmd = Command::new(opener);
+    cmd.arg(arg)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_clear()
+        .envs(scrubbed_env(env));
+    detach(&mut cmd);
+    match cmd.spawn() {
+        Ok(child) => {
+            // 交出去，但**不**看退出码（成功也是 1）。回收线程只为不留下僵尸。
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
+            LaunchOutcome::Launched
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                LaunchOutcome::Missing
+            } else {
+                LaunchOutcome::Failed(format!("启动 {opener} 失败: {e}"))
+            }
+        }
     }
 }
 
@@ -458,6 +540,102 @@ mod tests {
         let spec = LaunchSpec::ShellOpen;
         assert_eq!(spec.describe(), "shell-open");
         // 参数代入由 launch_args 负责（shell-open 直接把目录交给系统打开器）
+    }
+
+    /// **平台派发表**（2026-10-14 用户报"打开目录失败"之后的回归闸门）。
+    ///
+    /// 这条是纯的、**任何平台都能跑**：它钉住"哪个平台用哪个命令"以及
+    /// "退出码能不能判成败"。红检方式：把 `shell_opener` 的 Windows 格改回
+    /// `("open", true)`（也就是把当初那个 bug 写回去），Windows 上立刻红。
+    #[test]
+    fn shell_opener_dispatches_by_platform() {
+        let (cmd, trust_exit) = shell_opener();
+        if cfg!(windows) {
+            assert_eq!(
+                cmd, "explorer.exe",
+                "Windows 上不许去起 macOS 的 `open`（那个命令不存在）"
+            );
+            assert!(
+                !trust_exit,
+                "explorer.exe 成功打开时退出码是 1，所以退出码不能判成败（会把成功判成失败）"
+            );
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(cmd, "xdg-open");
+            assert!(trust_exit);
+        } else {
+            assert_eq!(cmd, "open");
+            assert!(trust_exit);
+        }
+        // 三个平台都不该落到空串（`Command::new("")` 是另一类难查的失败）
+        assert!(!cmd.is_empty());
+    }
+
+    /// **Windows 上"打开目录/URL"必须真的起得来**（2026-10-14 用户报障的回归闸门）。
+    ///
+    /// 红检方式（改坏哪一行会红）：把 `shell_opener` 的 Windows 格改回 `("open", true)` ——
+    /// Windows 上没有 `open`，这条立刻拿到 `Missing`。**所以它必须真的 spawn**
+    /// （用一个假启动器就测不出来了，这正是这个 bug 之前漏过去的原因：
+    /// 旧用例 `shell_open_uses_the_platform_opener` 只断言了 `describe()` 字符串）。
+    ///
+    /// 副作用：会在 Windows 上真的弹出一个资源管理器窗口（打开临时目录）。
+    #[test]
+    #[cfg(windows)]
+    fn windows_shell_open_launches_explorer_for_a_directory() {
+        let dir = std::env::temp_dir();
+        let facts = Facts::detect();
+        let outcome = launch_detached(
+            &LaunchSpec::ShellOpen,
+            &dir.to_string_lossy(),
+            Duration::from_millis(300),
+            &facts.env,
+        );
+        assert_eq!(
+            outcome,
+            LaunchOutcome::Launched,
+            "Windows 上「交给系统文件管理器」起不来（以前是去起不存在的 `open`）"
+        );
+    }
+
+    /// **成功时退出码是 1**，所以这条链不能用 `spawn_watched` 判成功。
+    ///
+    /// 这条量的是那个平台事实本身（不是我们的代码）：`explorer.exe <存在的目录>`
+    /// 打开窗口后退出码为 1。钉住它是为了说明白 `launch_via_explorer` 为什么不能用
+    /// 退出码判成败 —— 否则下一个人"顺手统一一下"就会把成功判成失败。
+    #[test]
+    #[cfg(windows)]
+    fn explorer_exits_nonzero_even_on_success() {
+        let dir = std::env::temp_dir();
+        let status = std::process::Command::new("explorer.exe")
+            .arg(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("explorer.exe 应当能启动");
+        assert!(
+            !status.success(),
+            "平台行为变了：explorer.exe 成功时居然返回 0（那么 launch_via_explorer 的注释要改）"
+        );
+    }
+
+    /// 非 Windows 上仍然走原来的系统打开器（这条**不** spawn，只钉选择逻辑）。
+    #[test]
+    #[cfg(not(windows))]
+    fn shell_open_still_uses_open_or_xdg_open_off_windows() {
+        let facts = Facts::detect();
+        let outcome = launch_detached(
+            &LaunchSpec::ShellOpen,
+            "/definitely/not/a/directory",
+            Duration::from_millis(200),
+            &facts.env,
+        );
+        // 这里只要求"不是因为我们没找到启动器而失败"：
+        // `open`/`xdg-open` 存在（在 PATH 上），所以结论不该是 Missing。
+        assert_ne!(
+            outcome,
+            LaunchOutcome::Missing,
+            "macOS/Linux 上系统打开器应当存在（Missing = 命令都找不到）"
+        );
     }
 
     #[test]

@@ -37,7 +37,12 @@ impl Platform {
 /// 静态启动方式（目录表里的形态；`{path}` 在解析后代入）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launch {
-    /// 交给操作系统 shell 的 open 动词（文件管理器）：macOS/Windows `open <path>`，Linux `xdg-open <path>`。
+    /// 交给操作系统 shell 的 open 动词（文件管理器）。**实际命令由 `host::shell_opener()` 决定**：
+    /// macOS `open <path>`、Linux `xdg-open <path>`、**Windows `explorer.exe <path>`**。
+    ///
+    /// ⚠️ 这里原来写的是"macOS/Windows `open <path>`" —— 那句是错的，而且 `mod.rs` 有一处
+    /// 照着它写成了 `if linux {…} else {…}`，于是 Windows 上去起 macOS 的 `open`，
+    /// 界面里"打开目录/外部链接"全部失败（2026-10-14 用户报障）。命令名只认 `shell_opener()`。
     ShellOpen,
     /// argv 直接执行，**永不经过 shell**（没有引号/注入面）。
     Argv {
