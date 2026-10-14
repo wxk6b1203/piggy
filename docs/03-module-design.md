@@ -213,18 +213,29 @@ pub struct TabDescriptor {
 为什么不用 `tauri-plugin-opener`（11 §2.1 原计划）：那个插件的权限面是"任意路径/任意 URL"，
 而这里需要的只是"用白名单应用打开一个已存在的目录/文件"。自建六个窄命令，权限面小得多（08 §6）。
 
-**「交给系统 shell」的命令由 `host.rs::shell_opener()` 一家决定，而且 Windows 上不能看退出码**（2026-10-14 修）：
+**「交给系统打开」的命令由 `host.rs::shell_launcher(is_url)` 一家决定；目录与 URL 是两条路**（2026-10-14 修，两轮）：
 这个选择以前在**两处各写了一遍**、而且**两处都错在同一格** —— `LaunchSpec::ShellOpen`
 （`if linux { "xdg-open" } else { "open" }`）与 `open_external_url`（同一句）。
 Windows 落进 else，去起 macOS 的 `open`，而 Windows 上没有这个命令 ⇒ `NotFound`
 ⇒ 上层按"这份解析过期了"报给用户，真相是**我们从来没起过 explorer**。
 受害面是两片用户可见的功能：**「打开方式」里的文件管理器**，以及**界面里所有外部链接**
 （markdown 链接、许可原文）—— 后者的注释当时还照着 `catalog.rs` 里"macOS/Windows `open`"
-那句错话写的。现在两者共用一个纯函数（`shell_opener()` 返回 `(命令, 退出码可不可信)`），
-判据只此一份、且**可在任何平台上断言**。
-两个平台事实写进注释与用例：① Windows 走 `explorer.exe <目录或 URL>`；
-② **`explorer.exe` 成功打开后退出码是 1**，所以那条链**不能**套 `spawn_watched`
-（它按退出码判成功，会把成功判成失败）。
+那句错话写的。
+
+**第二轮修的是我自己的错**：第一版把两者合并成"Windows 一律 `explorer.exe`"，
+理由是"explorer 成功也返回 1"且"`explorer.exe <url>` 也返回 1"。那个推断是错的 ——
+返回 1 不是成功怪癖，就是**失败**。真机对照（同一台机器、同一条 URL 形状、数浏览器进程增量）：
+
+| 方式 | 退出码 | 浏览器进程增量 |
+|---|---|---|
+| `explorer.exe <https url>` | 1 | **0（什么都没开）** |
+| `cmd /c start "" <https url>` | 0 | **+1（真的开了）** |
+
+**`explorer.exe` 的位置参数只认文件系统路径，URL 它会静默什么都不做。** 所以 Windows 上：
+目录走 `explorer.exe`（**它的成功退出码确实是 1**，那条链不能看退出码，只看"起没起来"）；
+URL 走 `cmd /c start "" <url>`（退出码 0 可信，`""` 是窗口标题占位 —— 不传它 `start`
+会把 URL 当标题吞掉，又变成"什么都没发生"）。判据只此一份（`shell_launcher`），
+**在任何平台上都能断言**。
 
 ### 2.12 `provider/` — 提供商与模型配置（配置页的宿主半边）
 

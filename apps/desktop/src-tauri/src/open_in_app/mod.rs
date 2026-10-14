@@ -345,16 +345,23 @@ pub fn validate_external_url(url: &str) -> Result<String, String> {
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
     let url = validate_external_url(&url)?;
-    /* 交给系统默认程序。**选择来自 `host::shell_opener`**（2026-10-14 修）：
-    以前这里写的是 `if linux { "xdg-open" } else { "open" }` —— Windows 落进 else，
-    去起 macOS 的 `open`，Windows 上根本没有这个命令，于是**界面里所有外部链接
-    （markdown 链接、许可原文）点了都没反应**。同一个错误在 `host.rs::ShellOpen` 也有一份，
-    现在两处共用同一个判据（它也说明了"explorer 成功也返回 1"这个坑）。 */
-    let (opener, trust_exit) = host::shell_opener();
-    let outcome = if trust_exit {
-        host::spawn_watched(opener, &[url], Duration::from_millis(1500), &HashMap::new(), &[])
-    } else {
-        host::launch_via_explorer(&url, &HashMap::new())
+    /* 交给系统默认程序。**判据来自 `host::shell_launcher`，而且这里传的是 `is_url = true`**
+    （2026-10-14 修，两轮）：第一轮的错误是 `if linux { "xdg-open" } else { "open" }` ——
+    Windows 落进 else 去起 macOS 的 `open`（命令不存在），于是所有外链点了没反应。
+    第二轮的错误是我把 URL 与目录合并成"Windows 一律 explorer.exe" —— 但
+    **`explorer.exe` 的位置参数只认文件系统路径，不认 URL**（真机实测：同样的 URL，
+    explorer 退出码 1 且浏览器进程增量为 0；`cmd /c start` 退出码 0 且 +1）。
+    所以 URL 在 Windows 上走 `cmd /c start ""`，见 `host::launch_url`。 */
+    let outcome = match host::shell_launcher(true) {
+        host::ShellLauncher::Open => {
+            host::spawn_watched("open", &[url], Duration::from_millis(1500), &HashMap::new(), &[])
+        }
+        host::ShellLauncher::XdgOpen => {
+            host::spawn_watched("xdg-open", &[url], Duration::from_millis(1500), &HashMap::new(), &[])
+        }
+        host::ShellLauncher::CmdStartForUrl => host::launch_url(&url, Duration::from_millis(1500), &HashMap::new()),
+        // 不会发生（is_url = true）；真发生了也别静默什么都不做
+        host::ShellLauncher::ExplorerForDirectory => host::launch_via_explorer(&url, &HashMap::new()),
     };
     match outcome {
         LaunchOutcome::Launched => Ok(()),

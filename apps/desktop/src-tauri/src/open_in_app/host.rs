@@ -266,13 +266,14 @@ pub fn scrubbed_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
 /// （kitty、JetBrains 这类启动器会以前台身份活到窗口关闭，等它退出等于永远不返回）。
 pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
     match spec {
-        LaunchSpec::ShellOpen => {
-            if cfg!(windows) {
-                return launch_via_explorer(dir, env);
-            }
-            let opener = if cfg!(target_os = "linux") { "xdg-open" } else { "open" };
-            spawn_watched(opener, &[dir.to_string()], watch, env, &[])
-        }
+        LaunchSpec::ShellOpen => match shell_launcher(false) {
+            // Windows 的**目录**：探索器成功也返回 1 → 走"只看起没起来"那条
+            ShellLauncher::ExplorerForDirectory => launch_via_explorer(dir, env),
+            ShellLauncher::Open => spawn_watched("open", &[dir.to_string()], watch, env, &[]),
+            ShellLauncher::XdgOpen => spawn_watched("xdg-open", &[dir.to_string()], watch, env, &[]),
+            // 不会发生（is_url = false），但别让它静默变成"什么都不做"
+            ShellLauncher::CmdStartForUrl => launch_url(dir, watch, env),
+        },
         LaunchSpec::Argv {
             command,
             args,
@@ -281,28 +282,88 @@ pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &Hash
     }
 }
 
-/// "交给系统 shell 打开一个参数"该起什么？（**纯函数，可跨平台断言**）
-///
-/// 返回 `(命令, 能不能用退出码判成败)`。
+/// "交给系统打开"该起什么？**目录与 URL 是两件事**（**纯函数，可跨平台断言**）。
 ///
 /// 抽出来的理由（2026-10-14）：这个选择以前在两处各写了一遍
 /// （`launch_detached` 的 `ShellOpen` 与 `mod.rs::open_external_url`），
-/// 而且**两处都写错了同一个地方**（`if linux { xdg-open } else { open }` → Windows 落进 else）。
-/// 收成一个纯函数之后，"Windows 上到底起哪个命令"这件事可以在任何平台上断言，
-/// 不必真的去起一个资源管理器。
+/// 而且**两处都错在同一格**（`if linux { xdg-open } else { open }` → Windows 落进 else，
+/// 去起 macOS 的 `open`）。收成一个判据之后，"Windows 上到底起哪个命令"可以在任何平台断言，
+/// 不必真的去开一个窗口。
 ///
-/// 第二个返回值是那个平台怪癖：**`explorer.exe` 成功时也返回 1**，
-/// 所以 Windows 那格必须为 `false`（否则成功会被判成失败）。
+/// ## ⚠️ 为什么 `Url` 与 `Directory` 不许合并（2026-10-14 当天就踩了）
 ///
-/// @returns `(命令名, 退出码能否判成败)`
-pub fn shell_opener() -> (&'static str, bool) {
+/// 我第一版把两者合成"Windows 一律 `explorer.exe`"，理由是"`explorer.exe` 成功时也返回 1"
+/// 以及"`explorer.exe <url>` 实测返回 1"。**那个推断是错的**：返回 1 不是成功怪癖，
+/// 就是**失败**。真机对照（同一台机器、同一条 URL 形状、数浏览器进程增量）：
+///
+/// | 方式 | 退出码 | 浏览器进程增量 |
+/// |---|---|---|
+/// | `explorer.exe <https url>` | 1 | **0（什么都没开）** |
+/// | `cmd /c start "" <https url>` | 0 | **+1（真的开了）** |
+///
+/// `explorer.exe` 的位置参数只认**文件系统路径**（目录/文件），URL 它不认。
+/// 所以 Windows 上：目录走 `explorer.exe`（它的成功退出码确实是 1，不能据它判失败），
+/// URL 走 `cmd /c start`（`start` 是 shell 的 URL 关联入口，退出码 0 可信）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellLauncher {
+    /// macOS：`open`。退出码可信。
+    Open,
+    /// Linux：`xdg-open`。退出码可信。
+    XdgOpen,
+    /// Windows **目录**：`explorer.exe <dir>`。
+    /// ⚠️ 它**成功时也返回 1**，所以这条路不能看退出码（只看"起没起来"）。
+    ExplorerForDirectory,
+    /// Windows **URL**：`cmd /c start "" <url>`。退出码可信（`cmd` 会把 `start` 的失败带出来）。
+    CmdStartForUrl,
+}
+
+/// 本平台上"打开目录 / 打开 URL"该用哪个启动器？
+///
+/// @param is_url - 这次要交出去的是 URL（true）还是文件系统路径（false）
+/// @returns 启动器
+pub fn shell_launcher(is_url: bool) -> ShellLauncher {
     if cfg!(windows) {
-        ("explorer.exe", false)
+        if is_url {
+            ShellLauncher::CmdStartForUrl
+        } else {
+            ShellLauncher::ExplorerForDirectory
+        }
     } else if cfg!(target_os = "linux") {
-        ("xdg-open", true)
+        ShellLauncher::XdgOpen
     } else {
-        ("open", true)
+        ShellLauncher::Open
     }
+}
+
+/// 非 Windows 的 `ShellLauncher` → 命令名；Windows 的两个变体在这里是 `None`
+/// （它们各有专门的启动函数，argv 形状也不同）。
+pub fn opener_command(l: ShellLauncher) -> Option<&'static str> {
+    match l {
+        ShellLauncher::Open => Some("open"),
+        ShellLauncher::XdgOpen => Some("xdg-open"),
+        ShellLauncher::ExplorerForDirectory | ShellLauncher::CmdStartForUrl => None,
+    }
+}
+
+/// Windows 上打开一个 **URL**：`cmd /c start "" <url>`。
+///
+/// `""` 是 `start` 的**窗口标题**占位。不传它的话，`start` 会把第一个带引号的参数当标题 ——
+/// 而 URL 一旦被当标题吞掉，就变成"什么都没发生"（正是用户报的现象）。
+///
+/// 退出码**可信**（`cmd` 会把它带出来），所以这条路可以、也应该用 `spawn_watched`：
+/// 真机实测 `cmd /c start "" <url>` 成功时返回 0。
+///
+/// 安全性：URL 已在 `mod.rs::validate_external_url` 过了一遍 scheme 白名单
+/// （只放行 http/https/mailto）与控制字符检查，而且是作为**独立 argv 元素**传进去的
+/// （Rust 会做 cmd 转义），`&` 这类字符进不了提权面 —— 真机验证过带 `&b=2` 的查询串能正常打开。
+pub fn launch_url(url: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
+    spawn_watched(
+        "cmd.exe",
+        &["/c".into(), "start".into(), String::new(), url.to_string()],
+        watch,
+        env,
+        &[],
+    )
 }
 
 /// Windows 上"交给系统 shell"的唯一入口：`explorer.exe <参数>`（**目录或 URL 都吃**）。
@@ -327,14 +388,21 @@ pub fn shell_opener() -> (&'static str, bool) {
 /// 路径**不转成 file URL**：`explorer.exe` 的位置参数吃的是普通路径
 /// （`/select,` 那条才需要 file URL，见 `paths.rs::windows_file_url`）。
 ///
-/// @param arg - 目录路径或 URL（两者的处理方式一致）
-pub fn launch_via_explorer(arg: &str, env: &HashMap<String, String>) -> LaunchOutcome {
-    let (opener, trust_exit) = shell_opener();
-    // 这条只服务"不能信退出码"的那一格（Windows）。判据与 `shell_opener` 同一处，
-    // 免得哪天平台表变了、这条还硬编码着 explorer。
-    debug_assert!(!trust_exit, "launch_via_explorer 只该被『退出码不可信』的平台用到");
-    let mut cmd = Command::new(opener);
-    cmd.arg(arg)
+/// @param dir - 要打开的**目录路径**（URL 走 `launch_url`，别用它）
+pub fn launch_via_explorer(dir: &str, env: &HashMap<String, String>) -> LaunchOutcome {
+    /* 命令名从**同一个判据**来（`shell_launcher`），不在这里硬编码 "explorer.exe"：
+    否则哪天平台表变了，这条还留着旧名字。 */
+    let (command, trust_exit) = match shell_launcher(false) {
+        ShellLauncher::ExplorerForDirectory => ("explorer.exe", false),
+        ShellLauncher::Open => ("open", true),
+        ShellLauncher::XdgOpen => ("xdg-open", true),
+        ShellLauncher::CmdStartForUrl => ("cmd.exe", true), // 不会发生（is_url = false）
+    };
+    // 这条的**要点**就是"退出码不可信"：Windows 的 explorer 成功也返回 1。
+    // 真到了别的平台（退出码可信），说明调用方用错了入口。
+    debug_assert!(!trust_exit, "launch_via_explorer 只该被『退出码不可信』的环境用到");
+    let mut cmd = Command::new(command);
+    cmd.arg(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -343,7 +411,7 @@ pub fn launch_via_explorer(arg: &str, env: &HashMap<String, String>) -> LaunchOu
     detach(&mut cmd);
     match cmd.spawn() {
         Ok(child) => {
-            // 交出去，但**不**看退出码（成功也是 1）。回收线程只为不留下僵尸。
+            // 交出去，但**不**看退出码（explorer 成功也是 1）。回收线程只为不留下僵尸。
             std::thread::spawn(move || {
                 let mut child = child;
                 let _ = child.wait();
@@ -354,7 +422,7 @@ pub fn launch_via_explorer(arg: &str, env: &HashMap<String, String>) -> LaunchOu
             if e.kind() == std::io::ErrorKind::NotFound {
                 LaunchOutcome::Missing
             } else {
-                LaunchOutcome::Failed(format!("启动 {opener} 失败: {e}"))
+                LaunchOutcome::Failed(format!("启动 {command} 失败: {e}"))
             }
         }
     }
@@ -544,35 +612,73 @@ mod tests {
 
     /// **平台派发表**（2026-10-14 用户报"打开目录失败"之后的回归闸门）。
     ///
-    /// 这条是纯的、**任何平台都能跑**：它钉住"哪个平台用哪个命令"以及
-    /// "退出码能不能判成败"。红检方式：把 `shell_opener` 的 Windows 格改回
-    /// `("open", true)`（也就是把当初那个 bug 写回去），Windows 上立刻红。
+    /// 这条是纯的、**任何平台都能跑**。它钉住两件事：
+    /// ① 每个平台上"打开目录"用哪个命令；② **Windows 上"打开 URL"与"打开目录"不是同一条路**
+    /// （URL 必须走 `cmd /c start`，因为 `explorer.exe` 的位置参数只认文件系统路径）。
+    ///
+    /// 红检方式：把 Windows 那格改回 `Open`（也就是把当初那个 bug 写回去），Windows 上立刻红。
     #[test]
-    fn shell_opener_dispatches_by_platform() {
-        let (cmd, trust_exit) = shell_opener();
+    fn shell_launcher_dispatches_by_platform_and_purpose() {
+        let dir_launcher = shell_launcher(false);
+        let url_launcher = shell_launcher(true);
         if cfg!(windows) {
             assert_eq!(
-                cmd, "explorer.exe",
-                "Windows 上不许去起 macOS 的 `open`（那个命令不存在）"
+                dir_launcher,
+                ShellLauncher::ExplorerForDirectory,
+                "Windows 打开目录要走 explorer.exe（不许去起 macOS 的 `open`，那个命令不存在）"
             );
-            assert!(
-                !trust_exit,
-                "explorer.exe 成功打开时退出码是 1，所以退出码不能判成败（会把成功判成失败）"
+            assert_eq!(
+                url_launcher,
+                ShellLauncher::CmdStartForUrl,
+                "Windows 打开 URL 不能走 explorer.exe（它只认文件系统路径，URL 它会静默什么都不做）"
             );
+            assert_eq!(opener_command(dir_launcher), None, "Windows 的两个变体各有专门启动函数");
+            assert_eq!(opener_command(url_launcher), None);
         } else if cfg!(target_os = "linux") {
-            assert_eq!(cmd, "xdg-open");
-            assert!(trust_exit);
+            assert_eq!(dir_launcher, ShellLauncher::XdgOpen);
+            assert_eq!(url_launcher, ShellLauncher::XdgOpen);
+            assert_eq!(opener_command(dir_launcher), Some("xdg-open"));
         } else {
-            assert_eq!(cmd, "open");
-            assert!(trust_exit);
+            assert_eq!(dir_launcher, ShellLauncher::Open);
+            assert_eq!(url_launcher, ShellLauncher::Open);
+            assert_eq!(opener_command(dir_launcher), Some("open"));
         }
-        // 三个平台都不该落到空串（`Command::new("")` 是另一类难查的失败）
-        assert!(!cmd.is_empty());
+        // 非 Windows 上"目录/URL 同一个启动器"；Windows 上必须不同（这条就是那个 bug 的形状）
+        assert_eq!(
+            dir_launcher == url_launcher,
+            !cfg!(windows),
+            "只有 Windows 需要区分目录与 URL"
+        );
     }
 
-    /// **Windows 上"打开目录/URL"必须真的起得来**（2026-10-14 用户报障的回归闸门）。
+    /// **Windows 上打开一个 URL 必须真的起得来**（2026-10-14 第二处报障的回归闸门：
+    /// "「关于」里的许可原文链接点了没反应"）。
     ///
-    /// 红检方式（改坏哪一行会红）：把 `shell_opener` 的 Windows 格改回 `("open", true)` ——
+    /// 红检方式：把 `shell_launcher(true)` 的 Windows 格改成 `ExplorerForDirectory` ——
+    /// `explorer.exe <url>` 会**启动成功但什么都不打开**（退出码 1），
+    /// 于是这条会红在"退出码非零"上（`spawn_watched` 路径会把它判成 Failed）。
+    ///
+    /// 副作用：在 Windows 上真的会用默认浏览器打开一个 `example.com` 链接。
+    #[test]
+    #[cfg(windows)]
+    fn windows_url_open_goes_through_cmd_start() {
+        let facts = Facts::detect();
+        assert_eq!(shell_launcher(true), ShellLauncher::CmdStartForUrl);
+        let outcome = launch_url(
+            "https://example.com/?piggy=url-open-test",
+            Duration::from_millis(3000),
+            &facts.env,
+        );
+        assert_eq!(
+            outcome,
+            LaunchOutcome::Launched,
+            "Windows 上打开 URL 失败（外链点了没反应就是这个）"
+        );
+    }
+
+    /// **Windows 上"打开目录"必须真的起得来**（2026-10-14 用户报障的回归闸门）。
+    ///
+    /// 红检方式（改坏哪一行会红）：把 Windows 那格改回 `ShellLauncher::Open` ——
     /// Windows 上没有 `open`，这条立刻拿到 `Missing`。**所以它必须真的 spawn**
     /// （用一个假启动器就测不出来了，这正是这个 bug 之前漏过去的原因：
     /// 旧用例 `shell_open_uses_the_platform_opener` 只断言了 `describe()` 字符串）。
