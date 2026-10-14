@@ -151,10 +151,14 @@ describe('设置页的三档开关', () => {
 
   it('mock 真的把 transcriptRail 存下来了（浏览器门禁据此核对"选完生效"）', async () => {
     const actual = await vi.importActual<typeof import('@/lib/mockBackend')>('@/lib/mockBackend');
-    await actual.mockInvoke('perf_config_save', { transcriptRail: 'left' });
+    /* ⚠️ 必填参数要带全：mock 现在与 Tauri 一样会校验（缺了报
+       `missing required key maxWorkers`）。这条用例以前只发 `transcriptRail` ——
+       它自己就在演示真机上会报错的那种调用（2026-10-13 用户实测踩到）。 */
+    await actual.mockInvoke('perf_config_save', { maxWorkers: 8, idleTimeoutMin: 10, transcriptRail: 'left' });
     const cfg = await actual.mockInvoke<{ transcript_rail?: string }>('perf_config_load', {});
     expect(cfg.transcript_rail).toBe('left');
-    await actual.mockInvoke('perf_config_save', { transcriptRail: 'right' }); // 还原
+    // 还原
+    await actual.mockInvoke('perf_config_save', { maxWorkers: 8, idleTimeoutMin: 10, transcriptRail: 'right' });
   });
 
   it('读配置时把认不出的值收回默认（与 Rust 的 #[serde(other)] 同义）', async () => {

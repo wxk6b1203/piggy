@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Input, Select, Switch } from 'antd';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
+import { savePerfConfig } from '@/lib/perfConfig';
 import { loadTitleModels, type ModelOption } from '@/lib/sessionTitle';
 import { thinkingOptions } from '@/lib/thinking';
 import { useAppConfig, type RailPlacement, type TranscriptDetail } from '@/stores/appConfig';
@@ -146,18 +147,20 @@ export function GeneralSection() {
     if (busy) return;
     setBusy(true);
     try {
-      await cmd('perf_config_save', {
-        maxWorkers: patch.perf?.max_workers ?? perf.max_workers,
-        idleTimeoutMin: patch.perf?.idle_timeout_min ?? perf.idle_timeout_min,
+      /* 只说自己关心的字段：必填的 maxWorkers / idleTimeoutMin 由 `savePerfConfig`
+         从磁盘现值带上（那条命令缺了它们会直接报 "missing required key"）。
+         其余字段"不传 = 保持既有值" —— 后端本来就是读-改-写，前端不必把整份配置搬来搬去。 */
+      await savePerfConfig({
+        max_workers: patch.perf?.max_workers,
+        idle_timeout_min: patch.perf?.idle_timeout_min,
         piSource: patch.piSource,
         piPath: patch.piPath,
-        // 不传 = 保持既有值（后端读-改-写，不会顺手抹掉别的字段）
         subagentDelegation: patch.delegation,
-        titleMaxChars: patch.title?.maxChars ?? titleCfg.maxChars,
-        titleSource: patch.title?.source ?? titleCfg.source,
-        titleModel: patch.title?.model ?? titleCfg.model,
-        titleThinking: patch.title?.thinking ?? titleCfg.thinking,
-        /* ⚠️ 取**当前 store 值**而不是闭包里的变量：保存其它字段时会把这两项一起写回去，
+        titleMaxChars: patch.title?.maxChars,
+        titleSource: patch.title?.source,
+        titleModel: patch.title?.model,
+        titleThinking: patch.title?.thinking,
+        /* ⚠️ 这两项**总是**取当前 store 值：改设置页里任何别的开关时会把它们一起写回，
            而闭包里的值可能是这次渲染之前的（设置页开着不动、别处改了档位 → 一保存就写回旧值）。 */
         transcriptRail: patch.rail ?? useAppConfig.getState().railPlacement,
         transcriptDetail: patch.detail ?? useAppConfig.getState().transcriptDetail,

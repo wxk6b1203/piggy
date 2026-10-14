@@ -100,6 +100,9 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (name: string) => {
     if (name === 'plugin_bundled') return { plugins: structuredClone(PLUGINS) };
+    /* 保存是**读-改-写**（`savePerfConfig` 先读回来拿必填字段），所以这里要给一份像样的
+       现值 —— 返回 `{}` 的话 `maxWorkers` 会是 undefined，断言"必填字段在场"就失去意义。 */
+    if (name === 'perf_config_load') return { max_workers: 8, idle_timeout_min: 10 };
     if (name === 'perf_config_save') return { ok: true };
     return {};
   });
@@ -247,8 +250,13 @@ describe('设置页「内置插件」', () => {
     });
     const save = invokeMock.mock.calls.find((c) => c[0] === 'perf_config_save');
     expect(save, '点勾选框没有保存').toBeTruthy();
+    /* ⚠️ 必填参数必须在场：这是用户 2026-10-13 报的那条
+       （`missing required key maxWorkers`）—— 只发 bundledPlugins 就会被真机拒掉。 */
+    const args = save![1] as { maxWorkers?: number; idleTimeoutMin?: number; bundledPlugins?: string[] };
+    expect(args.maxWorkers, '缺 maxWorkers → 真机直接报 invalid args').toBeTypeOf('number');
+    expect(args.idleTimeoutMin, '缺 idleTimeoutMin → 同上').toBeTypeOf('number');
     // 关掉 pi-ask 之后，列表里仍开着的只剩 pi-todo 与 pi-ghost（它们本来就是 enabled）
-    const names = (save![1] as { bundledPlugins?: string[] }).bundledPlugins ?? [];
+    const names = args.bundledPlugins ?? [];
     expect(names).not.toContain('pi-ask');
     expect(names).toContain('pi-todo');
   });

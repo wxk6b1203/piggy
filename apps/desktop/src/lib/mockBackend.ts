@@ -906,6 +906,23 @@ export const MOCK_CONTEXT_TOKENS = 15_400;
 export const MOCK_CONTEXT_WINDOW = 75_800;
 export const MOCK_CONTEXT_PERCENT = (MOCK_CONTEXT_TOKENS / MOCK_CONTEXT_WINDOW) * 100;
 
+/**
+ * 真机上**必填**的 IPC 参数（Tauri 会按 Rust 签名校验，缺了直接报
+ * `invalid args \`x\` for command \`y\`: missing required key x`）。
+ *
+ * 为什么 mock 也要校验：2026-10-13 用户实测 —— 设置页里关掉「结构化提问」报
+ * `command perf_config_save missing required key maxWorkers`。那条路在浏览器门禁里
+ * **一次都没报过**，因为 mock 对缺参是宽容的（`Number(a.maxWorkers ?? appCfg.…)`），
+ * 于是"前端忘了带必填字段"这件事只有真机才看得见 —— 又一条"mock 比真机宽松"
+ * （docs/14 §6 记过这一类结构性风险）。
+ *
+ * 维护：Rust 侧把某个参数从 `Option<T>` 改成裸 `T` 时，这里要同步加进来。
+ * 判据：**mock 的宽容度必须 ≤ 真机** —— 宽松的 mock 会把真机的报错藏起来。
+ */
+const REQUIRED_ARGS: Record<string, string[]> = {
+  perf_config_save: ['maxWorkers', 'idleTimeoutMin'],
+};
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   boot_reset: () => {
     // 与真机一致：收割上一 JS 上下文遗留的全部 tab（registry 清空）。
@@ -2173,6 +2190,16 @@ export async function mockInvoke<T>(name: string, args?: Record<string, unknown>
   if (TAB_SCOPED.has(name)) {
     const id = String(args?.tabId ?? args?.tab_id ?? '');
     if (id && !liveTabs.has(id)) throw new Error(`tab 不存在: ${id}`);
+  }
+  const required = REQUIRED_ARGS[name];
+  if (required) {
+    const missing = required.filter((k) => args?.[k] === undefined);
+    if (missing.length > 0) {
+      // 文案照 Tauri 的来，方便和真机报错对上
+      throw new Error(
+        `invalid args \`${missing[0]}\` for command \`${name}\`: command ${name} missing required key ${missing[0]}`,
+      );
+    }
   }
   const h = handlers[name];
   if (!h) {

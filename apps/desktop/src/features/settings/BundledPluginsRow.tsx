@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
 import { abbreviatePath } from '@/lib/paths';
+import { savePerfConfig } from '@/lib/perfConfig';
 import { Icon } from '@/features/common/Icon';
 import { useTabs } from '@/stores/tabs';
 
@@ -81,7 +82,11 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
     try {
       // 按**配置**算（不是按"这次注入了吗"）：跳过是运行时判断，不该被写进配置
       const enabled = (plugins ?? []).filter((x) => (x.name === p.name ? on : x.enabled)).map((x) => x.name);
-      await cmd('perf_config_save', { bundledPlugins: enabled });
+      /* ⚠️ 必须走这个 helper，不能直接 `cmd('perf_config_save', {bundledPlugins})`：
+         真机那条命令的 `maxWorkers` / `idleTimeoutMin` 是**必填**的，缺了直接报
+         "missing required key maxWorkers"（2026-10-13 用户实测：点这个开关就报错）。
+         helper 会先把现值读回来带上，所以这里只说"我要改什么"。 */
+      await savePerfConfig({ bundledPlugins: enabled });
       toast.success('已保存（对新建会话生效）');
       load();
       onChanged();
