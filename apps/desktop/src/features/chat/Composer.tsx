@@ -12,8 +12,10 @@ import { useEffect, useRef, useState } from 'react';
 import { observeComposition } from '@/lib/keyboardComposition';
 import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
+import { fileToPendingImage, type PendingImage } from '@/lib/pendingImage';
 import { wakeIfNeeded } from '@/lib/sleep';
-import { useTabMsg } from '@/stores/messages';
+import { useMessages, useTabMsg } from '@/stores/messages';
+import { useQueue } from '@/stores/queue';
 import { useSessionStats } from '@/stores/stats';
 import { clampPercent, DECIMALS, formatPercent, formatTokens } from '@/lib/tokenFormat';
 import {
@@ -24,30 +26,10 @@ import {
 } from '@/lib/slashCommands';
 import { Icon } from '@/features/common/Icon';
 import { ModelPicker } from './ModelPicker';
+import { QueueDock } from './QueueDock';
 import { TodoPanel } from './TodoPanel';
 import { PermissionPicker } from './PermissionPicker';
 import { SessionStatusLine } from './SessionStatusLine';
-
-interface PendingImage {
-  data: string; // base64（无 data: 前缀）
-  mimeType: string;
-  name: string;
-}
-
-async function fileToBase64(file: File): Promise<PendingImage> {
-  const buf = await file.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(buf);
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return {
-    data: btoa(binary),
-    mimeType: file.type || 'image/png',
-    name: file.name || 'image',
-  };
-}
 
 /**
  * 补全列表一次最多放多少条。
@@ -71,18 +53,33 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const slashRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
-  const queue = useTabMsg(tabId, (t) => t.queue);
+  const queueRows = useQueue((s) => s.tabs[tabId]?.rows.length ?? 0);
+  const pausedRows = useQueue((s) => s.tabs[tabId]?.paused.length ?? 0);
 
+  /**
+   * 发送。三个投递语义（docs/02 §7.2 / docs/04 §7.3）：
+   *  - 空闲：普通 `prompt`（不带 `streamingBehavior`）；
+   *  - 流式中 `steer`：进 pi 的 steering 队列，下一个步进边界插进**当前**回合；
+   *  - 流式中 `followUp`：进 followUp 队列，等这一轮真的结束才成为下一回合。
+   *
+   * ⚠️ 流式中**必须**带 `streamingBehavior`：pi 对没带的直接报错
+   * （`Agent is already processing. Specify streamingBehavior …`，`agent-session.ts:2099`）。
+   */
   const send = async (opts?: { behavior?: 'steer' | 'followUp' }) => {
     const value = text.trim();
     if (!value && images.length === 0) return;
+    /* 投递语义**必须在 `await` 之前定下来**（2026-10-15 单测逼出来的真 bug）：
+       老写法把它放在 `await wakeIfNeeded()` 之后，于是这个窗口里 `streaming` 一翻面，
+       `⌘↵`（插话）就被静默降级成入队 —— 用户按的是"立刻插进当前回合"，实际却排在队尾。
+       语义是**按手势**决定的，不该被一次 IPC 的往返时间左右。 */
+    const live = useMessages.getState().tabs[tabId]?.streaming ?? streaming;
+    const behavior = live ? (opts?.behavior ?? 'followUp') : undefined;
     try {
       await wakeIfNeeded(tabId); // 休眠标签：发送即透明唤醒（05 §4.3）
-      await cmd<boolean>('pi_prompt', {
-        tabId,
-        message: value || '（见图片）',
-        images: images.map((im) => ({ type: 'image', data: im.data, mimeType: im.mimeType })),
-        streamingBehavior: streaming ? (opts?.behavior ?? 'steer') : undefined,
+      await useQueue.getState().enqueue(tabId, {
+        text: value || '（见图片）',
+        images,
+        behavior,
       });
       setText('');
       setImages([]);
@@ -93,7 +90,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   };
 
   /**
-   * 提交：**先当指令认一遍**，认出来就地执行，认不出才走 `pi_prompt`（docs/04 §7.2）。
+   * 提交：**先当指令认一遍**，认出来就地执行，认不出才走队列（docs/04 §7.2）。
    *
    * 两条入口（Enter / 发送按钮）都必须走这里——只改一处的话，点按钮发出去的
    * `/compact` 仍然是字符串，模型会一本正经地回答"好的，我来压缩"。
@@ -111,14 +108,40 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     await send(opts);
   };
 
-  const abortAndRestore = async () => {
+  /**
+   * 空草稿 `⌘/Ctrl+Enter`：把队列里剩下的**全部**插话进当前回合（DSH `steerQueue`）。
+   *
+   * 逐条**顺序**下发（不是 `Promise.all`）：插话顺序对模型可见，而且并发下发在
+   * pi 侧的到达顺序没有保证。中途失败就停在那儿，剩下的仍在队列里。
+   */
+  const steerAll = async () => {
+    const rows = useQueue.getState().tabs[tabId]?.rows ?? [];
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      try {
+        await useQueue.getState().enqueue(tabId, {
+          text: row.text,
+          images: row.images,
+          behavior: 'steer',
+        });
+      } catch (e) {
+        toast.error(`插话发送失败，请重试。（${String(e)}）`);
+        return;
+      }
+    }
+  };
+
+  /**
+   * Esc：只中断这一轮，**不动队列**。
+   *
+   * 老实现是"中断 + 把队列拼回草稿"（`clear_queue` + `pi_abort`），那是把两件事绑死了：
+   * 用户只想让 agent 停下来，结果草稿被覆盖、队列消失。现在队列有自己的一行行 UI
+   * （可编辑/取回/插话），中断就只是中断 —— 队列留在 dock 里，由用户决定。
+   */
+  const abortTurn = async () => {
     if (!streaming) return;
     try {
-      const q = await cmd<{ steering: string[]; followUp: string[] }>('pi_clear_queue', { tabId });
-      const restored = [...(q.steering ?? []), ...(q.followUp ?? [])].join('\n');
       await cmd('pi_abort', { tabId });
-      if (restored) setText(restored);
-      toast.info('已中断，排队消息已还原');
     } catch (e) {
       toast.error(String(e));
     }
@@ -223,19 +246,33 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     }
     if (e.key === 'Escape' && streaming) {
       e.preventDefault();
-      void abortAndRestore();
+      void abortTurn();
+      return;
+    }
+    /* ── 手势表（docs/04 §7.3，对齐 DSH `submission-policy`）──
+       空闲：`↵` 发送 ／ `⌘↵` 也是发送（DSH 空闲时两个手势同义）。
+       流式中：`↵` **入队**（默认 busyEnter='queue'，老实现是"按了没反应"）；
+              `⌘↵` 立刻插话（steer）；`⌘⇧↵` 显式追加（followUp，等这一轮结束）。 */
+    const accelerated = e.metaKey || e.ctrlKey;
+    /* ⚠️ 这里**不能**再写 `!e.shiftKey`（2026-10-15 单测逼出来的真 bug）：
+       带上它之后 `⌘⇧↵` 既不满足这一支、也不满足下面那支（下面那支要求不带 shift），
+       于是这个**文档里写着的手势**在流式中什么都不做 —— 静默失效。
+       现在只按"有没有加速键"分：⌘↵ 插话、⌘⇧↵ 追加、裸 ↵ 入队。 */
+    if (e.key === 'Enter' && accelerated) {
+      e.preventDefault();
+      // 空草稿的 ⌘↵ = 把队列全部插话（DSH `steerQueue`）—— 队列非空时优先它
+      if (text.trim() === '' && images.length === 0 && streaming && queueRows + pausedRows > 0) {
+        void steerAll();
+        return;
+      }
+      void submit({ behavior: e.shiftKey ? 'followUp' : 'steer' });
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
-      // 流式中 Enter 不发送（走 Steer/Follow-up 按钮）——**内建指令除外**：
-      // `/compact` 之类的动作是客户端调用，不是插进当前回合的消息。
-      if (streaming && !isKnownSlashCommand(text)) return;
+      // 内建指令在流式中**照样就地执行**（`/compact` 是客户端调用，不是插进回合的消息）；
+      // 其余一律入队（pi 侧 `streamingBehavior:'followUp'`）。
       e.preventDefault();
       void submit();
-    }
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      void submit({ behavior: e.shiftKey ? 'followUp' : 'steer' });
     }
   };
 
@@ -249,7 +286,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     }
     if (files.length > 0) {
       e.preventDefault();
-      const imgs = await Promise.all(files.map(fileToBase64));
+      const imgs = await Promise.all(files.map(fileToPendingImage));
       setImages((prev) => [...prev, ...imgs].slice(0, 6));
     }
   };
@@ -258,21 +295,13 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
     if (files.length > 0) {
       e.preventDefault();
-      const imgs = await Promise.all(files.map(fileToBase64));
+      const imgs = await Promise.all(files.map(fileToPendingImage));
       setImages((prev) => [...prev, ...imgs].slice(0, 6));
     }
   };
 
   return (
     <div className="pg-composer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      {streaming ? (
-        <div className="pg-queuebar">
-          <span className="pg-streaming-dot" /> agent 运行中
-          {queue.steering.length + queue.followUp.length > 0 && (
-            <span>· 排队 {queue.steering.length + queue.followUp.length} 条（Esc 取回并中断）</span>
-          )}
-        </div>
-      ) : null}
       {images.length > 0 && (
         <div className="pg-imgs">
           {images.map((im, i) => (
@@ -294,6 +323,9 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
           DSH 渲染这个槽就在输入卡**正上方**（ConversationContent.tsx:155-161 先 dock 再 inputBar），
           这里保持同一位置。没有 todo 能力时组件自己返回 null。 */}
       <TodoPanel tabId={tabId} />
+      {/* 等待队列（DSH `QueueDock` @ 同一个 dock 槽，order 20 —— docs/04 §7.3）。
+          空队列自己返回 null，所以这里不需要条件渲染。 */}
+      <QueueDock tabId={tabId} running={streaming} />
 
       <div className="pg-composer-card">
         <div className="pg-composer-box">
@@ -301,11 +333,12 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
             ref={areaRef}
             className="pg-composer-input"
             value={text}
-            placeholder={
-              streaming
-                ? '输入转向指令…（⌘↵ steer / ⌘⇧↵ follow-up / Esc 中断）'
-                : '发消息或创建任务, / 调用指令, @ 文件或对话'
-            }
+            placeholder={composerPlaceholder({
+              streaming,
+              empty: text.trim() === '' && images.length === 0,
+              queued: queueRows + pausedRows,
+              paused: pausedRows,
+            })}
             onChange={(e) => {
               setText(e.target.value);
               refreshSlash(e.target.value);
@@ -366,7 +399,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
               onChange={async (e) => {
                 const files = Array.from(e.target.files ?? []);
                 if (files.length) {
-                  const imgs = await Promise.all(files.map(fileToBase64));
+                  const imgs = await Promise.all(files.map(fileToPendingImage));
                   setImages((prev) => [...prev, ...imgs].slice(0, 6));
                 }
                 e.target.value = '';
@@ -379,10 +412,12 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
           <div className="pg-composer-tools-right">
             {streaming ? (
               <>
+                {/* 流式中两个投递语义的**显式**入口（手势之外的等价路径：⌘↵ / ⌘⇧↵）。
+                    普通 ↵ 只入队（DSH 默认 busyEnter='queue'），所以按钮上写明各自的去向。 */}
                 <button
                   className="pg-pill pg-pill-action"
                   onClick={() => void send({ behavior: 'steer' })}
-                  title="打断当前回合并立即插入（⌘↵）"
+                  title="插话发送：下一个步进边界插进当前回合（⌘↵）"
                 >
                   转向
                 </button>
@@ -395,8 +430,8 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
                 </button>
                 <button
                   className="pg-round-btn pg-round-danger"
-                  onClick={() => void abortAndRestore()}
-                  title="中断并取回排队消息（Esc）"
+                  onClick={() => void abortTurn()}
+                  title="中断这一轮（Esc）—— 队列留在下面，不会被清掉"
                 >
                   <Icon name="debug-stop" size={14} />
                 </button>
@@ -405,9 +440,16 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
             <ModelPicker tabId={tabId} />
             <button
               className="pg-send-btn"
+              data-send-mode={streaming ? (text.trim() ? 'queue' : 'stop') : 'send'}
               disabled={!text.trim() && images.length === 0}
               onClick={() => void submit()}
-              title="发送（↵）"
+              title={
+                !streaming
+                  ? '发送（↵）'
+                  : text.trim()
+                    ? '排队发送：等这一轮结束再发（↵）；插话发送用 ⌘↵'
+                    : '把队列里的消息全部插话发送（⌘↵）'
+              }
             >
               <Icon name="arrow-up" size={16} />
             </button>
@@ -460,4 +502,31 @@ function ContextMeter({ tabId }: { tabId: string }) {
       <span>{formatPercent(value, 0)}%</span>
     </button>
   );
+}
+
+/**
+ * 输入框占位文案（DSH `InputBar` 的 placeholder 优先级，docs/12 §3.8）。
+ *
+ * 优先级（第一个命中就用它）：
+ *   1. **空草稿 + 队列非空 + 运行中** → `⌘↵` 会把队列全部插话，这句话必须说出来
+ *      （DSH 里这是 `placeholder.steerQueue` 唯一的存在理由：这个手势没有任何别的发现入口）；
+ *   2. 运行中（草稿非空）→ 说明 ↵ 是入队、⌘↵ 是插话；
+ *   3. 空闲 → 默认文案。
+ *
+ * ⚠️ 老实现里这条提示是错的（`输入转向指令…（⌘↵ steer / ⌘⇧↵ follow-up / Esc 中断）`），
+ * 而那时 **Enter 在流式中是空操作** —— 文案承诺了一个不存在的通道。
+ */
+function composerPlaceholder(o: {
+  streaming: boolean;
+  empty: boolean;
+  queued: number;
+  paused: number;
+}): string {
+  if (o.streaming && o.empty && o.queued > 0) {
+    return o.paused > 0
+      ? `⌘/Ctrl+Enter 插话发送队列里的 ${o.queued} 条（其中 ${o.paused} 条已暂停）`
+      : 'Cmd/Ctrl+Enter 插话发送全部排队消息';
+  }
+  if (o.streaming) return '回车入队等这一轮结束；⌘/Ctrl+回车立刻插话，Esc 中断';
+  return '发消息或创建任务, / 调用指令, @ 文件或对话';
 }

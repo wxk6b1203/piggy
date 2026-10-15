@@ -8,6 +8,7 @@
 import { on, cmd } from '@/lib/ipc';
 import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
+import { dropQueueTab, useQueue } from '@/stores/queue';
 import { useTodo } from '@/stores/todo';
 import { useTabs } from '@/stores/tabs';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
@@ -53,6 +54,30 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
          * 开头已经收到的帧抹掉，那一行最后是空的。
          */
         useMessages.getState().applyCommit(tabId, ev);
+        /* 等待队列的影子（`stores/queue.ts`）：pi 的队列是权威，影子只补它给不了的东西
+           （稳定 id / 图片 / 归属）。三条线都必须接在这里，因为队列的生命周期完全由
+           pi 的事件驱动：
+             · `queue_update` → 对账（唯一的内容来源，pi 没有同步读取队列的 RPC）；
+             · 落地的**用户消息** → 这一条已经进转录了，影子摘掉它；
+             · `agent_settled` → `steering` 队列必然已空（`followUp` 要留着：它们正是
+               "等这轮结束就发"的那批，pi 会在下一次 run 开头把它们变成新回合）。 */
+        if (ev.type === 'queue_update') {
+          const q = ev as unknown as { steering?: string[]; followUp?: string[] };
+          /* `userText`：这一帧里落地的用户消息。pi 消费掉队列项之后 `queue_update`
+             里就没有它了 —— 不把"它已经进转录了"这件事一起告诉对账，影子会把它
+             当成外来行重新造一条出来（见 `reconcileRows` 的注释）。 */
+          const userText = userMessageText(ev);
+          useQueue.getState().reconcile(
+            tabId,
+            { steering: q.steering ?? [], followUp: q.followUp ?? [] },
+            userText ? [userText] : [],
+          );
+        }
+        if (ev.type === 'message_end') {
+          const text = userMessageText(ev);
+          if (text) useQueue.getState().delivered(tabId, text);
+        }
+        if (ev.type === 'agent_settled') useQueue.getState().settled(tabId);
         // 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
         useTodo.getState().noteCommit(tabId, ev);
         useTrajectory.getState().appendCommit(tabId, ev);
@@ -164,6 +189,29 @@ export function disposeTabListeners(tabId: string) {
     void p.then((f) => f());
     listeners.delete(tabId);
   }
+  // tab 关了，队列影子跟着走（它只是 pi 队列的镜像，留着就是一堆幽灵行）
+  dropQueueTab(tabId);
 }
 
 type TabModel = { id?: string; provider?: string } | null;
+
+/**
+ * 一条事件里"用户消息的纯文本"（没有就是空串）。
+ *
+ * 队列影子要用它把"已经进转录的那条"从队列里摘掉：pi 消费队列项之后队列里就没有它了，
+ * 而 `queue_update` 只有文本、没有 id，所以只能按文本对上。
+ * 内容可能是裸字符串，也可能是 `[{type:'text',text}]` 块数组（真机是后者）。
+ */
+function userMessageText(ev: unknown): string {
+  const m = (ev as { message?: { role?: string; content?: unknown } }).message;
+  if (m?.role !== 'user') return '';
+  if (typeof m.content === 'string') return m.content;
+  if (!Array.isArray(m.content)) return '';
+  return m.content
+    .map((b) =>
+      b && typeof b === 'object' && (b as { type?: string }).type === 'text'
+        ? String((b as { text?: string }).text ?? '')
+        : '',
+    )
+    .join('');
+}

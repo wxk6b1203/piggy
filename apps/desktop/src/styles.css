@@ -771,9 +771,87 @@ body {
   padding: 0 var(--pg-sp-6) var(--pg-sp-1);
   background: var(--pg-bg-app);
 }
-.pg-queuebar {
+
+/* 等待队列 dock（DSH `QueueDock`，docs/04 §7.3）：输入卡正上方，宽度与输入卡对齐，
+   底边与输入卡**贴合**（DSH 用 -3px 负外边距 —— 两块读起来像一个面）。
+   造型与 `.pg-todo-panel` 同族（同一个 dock 槽里的两个条目）。 */
+.pg-queue {
+  flex: none; box-sizing: border-box;
+  margin: 0 auto -6px;
   width: 100%; max-width: var(--pg-composer-max-w);
-  font-size: var(--pg-fs-12); color: var(--pg-fg-dim); margin-bottom: var(--pg-sp-2);
+  border: 0.5px solid var(--pg-border-l1); border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  background: var(--pg-menu, var(--pg-bg-layer-2));
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+/* 与计划面板之间的间距（两者可能同时在） */
+.pg-todo-panel + .pg-queue { margin-top: 6px; }
+
+.pg-queue-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px 4px 12px; min-height: 32px;
+  color: var(--pg-fg-dim);
+}
+.pg-queue-head-toggle {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+  padding: 0; border: none; background: transparent; cursor: pointer;
+  color: inherit; font-size: var(--pg-fs-13); line-height: 20px; text-align: left;
+}
+.pg-queue-head-toggle:disabled { cursor: default; opacity: 0.6; }
+.pg-queue-confirm {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; font-size: var(--pg-fs-12); line-height: 18px;
+  color: var(--pg-fg); background: var(--pg-bg-layer-2);
+  border-bottom: 0.5px solid var(--pg-border-l1);
+}
+.pg-queue-confirm > span { flex: 1 1 auto; min-width: 0; }
+.pg-queue-act-text {
+  flex: none; padding: 0 6px; border: none; background: transparent; cursor: pointer;
+  color: var(--pg-accent); font-size: var(--pg-fs-12); line-height: 20px;
+}
+.pg-queue-act-text:disabled { opacity: 0.45; cursor: default; }
+.pg-queue-list {
+  display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none;
+  max-height: 180px; overflow-y: auto;
+}
+.pg-queue-row {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 34px; padding: 3px 5px 3px 12px;
+  box-shadow: inset 0 1px 0 var(--pg-border-l1);
+  font-size: var(--pg-fs-13); line-height: 20px; color: var(--pg-fg-secondary);
+}
+.pg-queue-row[data-foreign] { opacity: 0.85; }
+.pg-queue-thumbs { display: flex; flex: none; gap: 4px; }
+.pg-queue-thumb { width: 24px; height: 24px; object-fit: cover; border-radius: 4px; }
+.pg-queue-text {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-queue-badge {
+  margin-left: 8px; padding: 0 6px; border-radius: 8px;
+  background: var(--pg-hover-solid, var(--pg-bg-layer-2));
+  font-size: var(--pg-fs-11); color: var(--pg-fg-dim);
+}
+.pg-queue-badge-foreign { color: var(--pg-warn, var(--pg-fg-dim)); }
+.pg-queue-edit {
+  flex: 1 1 auto; min-width: 0; box-sizing: border-box;
+  padding: 3px 8px; border: 0.5px solid var(--pg-accent); border-radius: 6px;
+  background: var(--pg-input-major); color: var(--pg-fg);
+  font-family: var(--pg-font); font-size: var(--pg-fs-13); line-height: 18px;
+  resize: none; outline: none;
+}
+.pg-queue-actions { display: flex; flex: none; align-items: center; gap: 2px; }
+.pg-queue-act {
+  display: grid; place-items: center; width: 26px; height: 26px;
+  padding: 0; border: none; border-radius: 6px; background: transparent;
+  color: var(--pg-fg-dim); cursor: pointer;
+}
+.pg-queue-act:hover:not(:disabled) { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-queue-act:disabled { opacity: 0.45; cursor: default; }
+.pg-queue-sending { font-size: var(--pg-fs-12); color: var(--pg-fg-dim); }
+.pg-queue-note {
+  padding: 4px 12px 6px; font-size: var(--pg-fs-11); line-height: 16px; color: var(--pg-fg-dim);
 }
 /* .card：r22 / gap12 / padding-top8 / 底 specific-input-major */
 .pg-composer-card {

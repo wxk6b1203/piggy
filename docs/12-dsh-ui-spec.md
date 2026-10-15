@@ -965,6 +965,19 @@ div.root[.hero]
 | 排队插话提示 | `Cmd/Ctrl+Enter 插话发送全部排队消息` | `placeholder.steerQueue`（`:21`） |
 | 优先级 | steer 提示 > Plan 占位 > 默认（`InputBar.tsx:342-351`） | |
 
+**等待队列 dock（`conversation.input.dock`，`id:'queue'`，`order:20`）**——Piggy 已落地
+（04 §7.3），与 DSH 的**有意差异**要先看清，别照着 DSH 的字段改：
+
+| 维度 | DSH | Piggy | 为什么不同 |
+|---|---|---|---|
+| 行身份 | `MessageId`（host 侧的持久 id） | 影子自己的 `qN`（只在本地一份内唯一） | pi 的队列是 `string[]`，**没有 id** |
+| 行内容 | `content: ContentBlock[]`（含图片块 + 附件引用） | `text` + 图片 base64 | `queue_update` 里**没有图片**，只能自己捧着 |
+| 逐条动作 | `updateQueue(itemId, {kind:'edit'\|'remove'\|'steer'})` 原地改 | 编辑/取回/插话（取回=整条尾巴一起暂存） | pi **没有任何按条操作**，`clear_queue` 还是破坏性的（02 §7.2b） |
+| 悬挂态 | `queued` / `steering` 两态（含"已插话未落转录"） | 只有"在队列里"一态 | pi 没有权威的"已插话未落转录"状态，编一个只会骗人 |
+| 折叠 | 1 条裸行；>1 条默认收起（`collapsed=true`），列表 `max-height:180px` | 同 | 一致 |
+| 破坏性动作 | host notice（`queue.editFailed` 等） | **行内二次确认条** | chat 子树禁 antd，拿不到 `Modal.confirm` |
+| 失败语义 | steer 撞上 `steer-unavailable`/`queue-item-not-found` **静默收敛** | 没有对应的错误码可收敛，失败一律如实报出来 | pi 拒绝时只给一句通用错误，没有可判定的错误码 |
+
 **`+` 按钮 vs `@` 按钮**：
 - `+`（`.add`，`aria-label = t('input.commands') = "添加文件或调用指令"`，`InputBar.tsx:419-432`）打开命令菜单（`aria-haspopup="listbox"`），同时它旁边的隐藏 `<input type="file" multiple>` 承担文件选择。
 - **没有 `@` 按钮**。`@` 是**输入框内的触发符**：`ui-input-trigger` 监听草稿/光标，检测到 `@` 就打开引用菜单。触发源注册见 `#12-packages/client/ui-reference/src/client/index.ts:52`（`trigger: '@'`，文件 + 会话候选，`relativeTime` 标注会话年龄）。`/` 同理（命令菜单）。Piggy 若想要 `@` 图标按钮，属于额外加戏，DSH 只支持键入。

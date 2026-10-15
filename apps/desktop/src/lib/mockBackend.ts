@@ -70,6 +70,38 @@ export const externalOpenCalls: string[] = [];
 /** 被 `pi_abort` 打断过的 tab（假流式的循环会看它 —— 否则"停止"按钮在 mock 下没有反应）。 */
 const abortedTabs = new Set<string>();
 
+/**
+ * 排队中的消息（真机就是 pi 的那两个字符串数组）。
+ *
+ * ⚠️ 为什么 mock 必须有这个：真机的 `pi_prompt` 在**流式中**不带 `streamingBehavior`
+ * 会直接报错，带了就**只入队、立刻返回**（`agent-session.ts:2097-2111`）。老 mock 无视
+ * 这个字段、每次都从头流一遍 —— 于是"流式中发消息"在浏览器里表现得像新开了一轮，
+ * 队列 UI 永远测不到东西（规矩 4：mock 比真机宽松 = 藏真机 bug）。
+ */
+const mockQueues = new Map<string, { steering: string[]; followUp: string[] }>();
+
+/** 哪些 tab 的假流式正在跑（决定 `pi_prompt` 是"入队"还是"起一轮"）。 */
+const mockStreamingTabs = new Set<string>();
+
+function queueOf(tabId: string): { steering: string[]; followUp: string[] } {
+  let q = mockQueues.get(tabId);
+  if (!q) {
+    q = { steering: [], followUp: [] };
+    mockQueues.set(tabId, q);
+  }
+  return q;
+}
+
+/** 推一次 `queue_update`（pi 每改一次队列都推，含清空）。 */
+function emitQueue(tabId: string): void {
+  const q = queueOf(tabId);
+  emit(`pi:commit:${tabId}`, {
+    type: 'queue_update',
+    steering: [...q.steering],
+    followUp: [...q.followUp],
+  });
+}
+
 /** 内嵌登录终端的假 PTY 序号。 */
 let nextMockPtyId = 1;
 
@@ -1245,16 +1277,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     externalOpenCalls.push(String(a.url ?? ''));
     return null;
   },
-  /** 中断：把这一轮正在跑的假流式停掉（`streamFor` 的循环会看这个标记）。 */
+  /**
+   * 中断：把这一轮正在跑的假流式停掉（`streamFor` 的循环会看这个标记）。
+   *
+   * ⚠️ **不动队列** —— 真机的 `abort` 只管中止运行，队列里的消息会留到下一次 run
+   * （`docs/rpc-commands.md`：「abort continues queued messages when they remain in the
+   * session」）。老前端把"中断 + clear_queue"绑成 Esc，那是客户端行为，不是协议行为。
+   */
   pi_abort: (a) => {
     abortedTabs.add(String(a.tabId ?? a.tab_id ?? TAB));
     return null;
   },
-  /** 清空排队消息：真机返回清空后的队列，前端拿它刷新 Composer 的队列条。 */
+  /**
+   * 清空排队消息。真机 `clear_queue` 是**破坏性读**：清空并**返回被清掉的那批**
+   * （`agent-session.ts:2427-2435`），调用方靠它做"取回暂存"。mock 必须同形，
+   * 否则队列 dock 的取回逻辑在浏览器里永远拿到空数组、静默什么都不做。
+   */
   pi_clear_queue: (a) => {
     const tabId = String(a.tabId ?? a.tab_id ?? TAB);
-    emit(`pi:commit:${tabId}`, { type: 'queue_update', steering: [], followUp: [] });
-    return { steering: [], followUp: [] };
+    const q = queueOf(tabId);
+    const cleared = { steering: [...q.steering], followUp: [...q.followUp] };
+    q.steering = [];
+    q.followUp = [];
+    emitQueue(tabId);
+    return cleared;
   },
   /**
    * 扩展 UI 应答（DialogRouter 与提问卡用的就是它）。
@@ -1913,11 +1959,22 @@ pub fn main() {
   pi_abort_bash: () => null,
 };
 
-/** prompt：脚本化流式演示（合帧后的帧节奏，docs/04 §4.1 同构） */
+/**
+ * prompt：脚本化流式演示（合帧后的帧节奏，docs/04 §4.1 同构）。
+ *
+ * **队列语义照真机**（`agent-session.ts:2053-2136`）：
+ *  - 正在流式中且**没带** `streamingBehavior` → 报错（真机那句原文）；
+ *  - 正在流式中带了 → 只入队、推 `queue_update`、立刻返回（`success:true`）；
+ *  - 空闲 → 起一轮假流式（`streamingBehavior` 在这条路上被忽略，真机也是）。
+ *
+ * 队列的**消费**时机也对齐：`steering` 在助手消息结束后吃掉（`agent-loop.ts:295`），
+ * `followUp` 只在"本来要停了"的时候才吃（`:302-308`）—— 也就是本函数收尾那一处。
+ */
 async function mockPrompt(args: Record<string, unknown>) {
   // 前端 cmd() 直传 camelCase（Tauri 侧才做 snake_case 映射）
   const tabId = String(args.tabId ?? args.tab_id ?? TAB);
   const text = String(args.message ?? '');
+  const behavior = args.streamingBehavior ?? args.streaming_behavior;
   // 扩展命令：真实 pi 里 `/piggy:*` 由扩展即时执行、**不经过模型**（docs/06 §4.2），
   // mock 照抄这个语义——否则浏览器里点"刷新子代理"会得到一段假回复，掩盖链路问题。
   if (text.startsWith('/piggy:')) {
@@ -1926,23 +1983,57 @@ async function mockPrompt(args: Record<string, unknown>) {
   }
   const emitCommit = (type: string, extra: Record<string, unknown> = {}): void =>
     emit(`pi:commit:${tabId}`, { type, ...extra });
-  emitCommit('agent_start');
-  emitCommit('message_start', { message: { role: 'user', content: text, timestamp: now() } });
-  emitCommit('message_end', { message: { role: 'user', content: text, timestamp: now() } });
-  emitCommit('turn_start');
-  emitCommit('message_start', { message: { role: 'assistant', content: [] } });
-  const reply = `这是 **mock 流式回复**：你发送了「${text.slice(0, 40)}」。合帧器把它切成 60Hz 帧逐段上屏。`;
-  const chunk = Math.ceil(reply.length / 12);
-  for (let i = 0; i < reply.length; i += chunk) {
-    emitFrame(tabId, { text: [{ contentIndex: 0, delta: reply.slice(i, i + chunk) }], usage: { totalTokens: 500 + i * 10 } });
-    await new Promise((r) => setTimeout(r, 70));
+  if (mockStreamingTabs.has(tabId)) {
+    // 流式中：pi 只接受这两种投递语义，别的直接拒绝（disposition 才是真机回的东西）
+    if (behavior !== 'steer' && behavior !== 'followUp') {
+      throw new Error(
+        "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+      );
+    }
+    queueOf(tabId)[behavior === 'steer' ? 'steering' : 'followUp'].push(text);
+    emitQueue(tabId);
+    return;
   }
-  emitCommit('message_end', {
-    message: { role: 'assistant', content: [{ type: 'text', text: reply }], timestamp: now() },
-  });
-  emitCommit('turn_end', { message: {} });
-  emitCommit('agent_end', { messages: [] });
-  emitCommit('agent_settled');
+  mockStreamingTabs.add(tabId);
+  try {
+    emitCommit('agent_start');
+    emitCommit('message_start', { message: { role: 'user', content: text, timestamp: now() } });
+    emitCommit('message_end', { message: { role: 'user', content: text, timestamp: now() } });
+    emitCommit('turn_start');
+    emitCommit('message_start', { message: { role: 'assistant', content: [] } });
+    const reply = `这是 **mock 流式回复**：你发送了「${text.slice(0, 40)}」。合帧器把它切成 60Hz 帧逐段上屏。`;
+    const chunk = Math.ceil(reply.length / 12);
+    for (let i = 0; i < reply.length; i += chunk) {
+      emitFrame(tabId, { text: [{ contentIndex: 0, delta: reply.slice(i, i + chunk) }], usage: { totalTokens: 500 + i * 10 } });
+      await new Promise((r) => setTimeout(r, 70));
+    }
+    emitCommit('message_end', {
+      message: { role: 'assistant', content: [{ type: 'text', text: reply }], timestamp: now() },
+    });
+    emitCommit('turn_end', { message: {} });
+    /* 队列消费（顺序即 pi 的 drain 顺序）：
+       ① steering 在 `turn_end` 之后被吃掉 → 变成用户消息进转录；
+       ② followUp 只在"本来要停了"时吃 → 吃到了就再跑一轮（这里简化为把它当用户消息发出来）。 */
+    const q = queueOf(tabId);
+    const steering = [...q.steering];
+    q.steering = [];
+    if (steering.length > 0) emitQueue(tabId);
+    for (const m of steering) {
+      emitCommit('message_start', { message: { role: 'user', content: m, timestamp: now() } });
+      emitCommit('message_end', { message: { role: 'user', content: m, timestamp: now() } });
+    }
+    const followUp = [...q.followUp];
+    q.followUp = [];
+    if (followUp.length > 0) emitQueue(tabId);
+    for (const m of followUp) {
+      emitCommit('message_start', { message: { role: 'user', content: m, timestamp: now() } });
+      emitCommit('message_end', { message: { role: 'user', content: m, timestamp: now() } });
+    }
+    emitCommit('agent_end', { messages: [] });
+    emitCommit('agent_settled');
+  } finally {
+    mockStreamingTabs.delete(tabId);
+  }
 }
 function emitFrame(tabId: string, frame: unknown) {
   emit(`pi:frame:${tabId}`, frame);

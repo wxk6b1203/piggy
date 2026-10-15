@@ -347,7 +347,10 @@ describe('内建命令（pi 的 get_commands 不返回它们）', () => {
     expect(called('pi_compact')).toHaveLength(0);
   });
 
-  it('流式中内建命令仍可用（Enter 不发送普通消息，但指令是客户端动作）', async () => {
+  /* 2026-10-15 改口径：流式中 Enter 从"什么都不做"改成**入队**
+     （DSH 默认 busyEnter='queue'，docs/04 §7.3）。
+     内建命令那一半不变：它是客户端动作，流式中照样就地执行、绝不发给模型。 */
+  it('流式中内建命令仍就地执行；普通消息走入队（不是直发）', async () => {
     useMessages.getState().ensure('t-1');
     useMessages.setState((s) => {
       s.tabs['t-1']!.streaming = true;
@@ -360,7 +363,10 @@ describe('内建命令（pi 的 get_commands 不返回它们）', () => {
 
     await type('普通消息');
     await press('Enter');
-    expect(called('pi_prompt')).toHaveLength(0); // 流式中 Enter 依旧不发普通消息
+    const prompts = called('pi_prompt');
+    expect(prompts).toHaveLength(1);
+    // 关键差别：带 `streamingBehavior:'followUp'`（入队、等这一轮结束）
+    expect(prompts[0]![1]).toMatchObject({ message: '普通消息', streamingBehavior: 'followUp' });
   });
 });
 

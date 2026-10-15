@@ -287,11 +287,34 @@ pi `AgentSession` 的原文：
 - 排队条数与投递粒度另有 `steeringMode` / `followUpMode`（`all` / `one-at-a-time`）控制，
   Piggy 目前不暴露（用 pi 默认值）。
 
-界面：Composer 的「转向 / 追加」两个按钮，以及 `⏎`=转向 / `⇧⏎`=追加 / `Esc`=中断并取回排队文本（§7.3）。
+界面：Composer 的手势表 —— 流式中 `⏎`=**入队**（followUp，DSH 默认口径）、`⌘/Ctrl+⏎`=转向（steer）、
+`⌘⇧⏎`=追加（followUp，显式）、空草稿 `⌘/Ctrl+⏎`=把队列全部插话、`Esc`=只中断（**不动队列**）。
+文案与优先级见 04 §7.3。
 
-### 7.3 Esc 中断流（协议推荐流程）
+### 7.2b 队列的**能力边界**（2026-10-15 从 pi 源码逐条核实）
 
-`clear_queue` → 取回排队文本回填 composer → `abort`（响应到达 = 已 idle）。绑定到 `Esc`（07 键位表）。
+这一节的结论直接决定了队列 UI 能长什么样，别再重复试探：
+
+| 事实 | 出处 / 后果 |
+|---|---|
+| 队列是**两个 `string[]`**（`_steeringMessages` / `_followUpMessages`），`queue_update` 是它们的**全量快照** | `agent-session.ts:394-396`、`:1045-1051`。**没有 id**，pi 自己消费时也按**文本相等** `indexOf`（`:1127/:1133`） |
+| 事件里**没有图片** | 图片只活在 agent 内部队列的 `AgentMessage.content`（`:2266-2274`）。所以"排队中的图片"只能由 Piggy 自己捧着 |
+| **没有任何按条操作** | 33 条 RPC 里跟队列有关的只有 `prompt{streamingBehavior}` / `steer` / `follow_up` / `clear_queue`。改第 N 条 / 删第 N 条 / 插话第 N 条**都不存在** |
+| `clear_queue` 是**破坏性读** | 清空并**返回被清掉的那批**（`:2427-2435`）——pi 唯一能"读出队列内容"的接口，也是"取回"唯一的手法 |
+| `abort` **不清队列** | `rpc-mode.ts:426-429` 只调 `session.abort()`；剩下的会在下一次 run 开头被投递。pi 的 TUI"Esc 后回填编辑器"是**客户端行为**（`interactive-mode.ts:4754-4780`） |
+| 队列**不落盘** | `session-manager.ts` 的条目类型里没有队列；`pi -c` 恢复出来必然是空的 |
+| 插件注入的行**看不见但清得掉** | `pi.sendMessage({deliverAs})` 走 agent 队列、不碰镜像（`:2331-2338`）→ `queue_update` 与 `pendingMessageCount` 都不含它们，而 `clear_queue` 会把它们一起清 |
+| `steeringMode` / `followUpMode` 默认 `one-at-a-time` | 一个步进边界只 drain 一条（`agent.ts:143-174`） |
+
+**由此推出的唯一可行设计**（Piggy 的落地见 04 §7.3）：pi 的队列当权威、Piggy 侧维护影子
+（补 id / 图片 / 归属），"取回"落成"把这一条和它后面的尾巴一起 `clear_queue` 出来、
+缓存在本地，改完再按原序放回"。
+
+### 7.3 Esc 中断流
+
+`abort`（响应到达 = 已 idle）。**不要**再顺手 `clear_queue`：队列有自己的一行行 UI
+（可编辑/取回/插话），中断就只是中断。pi 的 `abort` 本来也不清队列，二者绑死会让
+"我只是想让它停下来"变成"我的排队消息没了"（老实现就这么干的，04 §7.3 记了原因）。
 
 ### 7.4 新会话/切换/分叉可被扩展取消
 

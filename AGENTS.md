@@ -57,7 +57,7 @@ apps/desktop/src/            React frontend (React 19 + Vite 7 + zustand/immer +
   features/chat/             transcript renderer, Composer, preview scrollbar, trajectory — the core UI
   features/workspace/        dockview layout, sidebar, right bar, editor area, Fleet view
   features/settings/         providers / general / advanced / plugins pages
-  stores/                    zustand stores: tabs, messages, trajectory, fleet, todo, stats, ui, dialogs
+  stores/                    zustand stores: tabs, messages, trajectory, fleet, todo, stats, ui, dialogs, queue
   lib/                       ipc.ts (+ mockBackend for browser mode), paging, keymap, layoutLifecycle, coalesce glue
   test/                      most unit/component tests (co-located `*.test.ts(x)` next to sources also runs)
 apps/desktop/src-tauri/      Rust host
