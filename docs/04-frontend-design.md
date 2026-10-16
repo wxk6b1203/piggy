@@ -1221,7 +1221,23 @@ DOM 里**、点开出现代码卡片、再点收起）。
   `pi_get_commands` 是异步的，到达后要按当前输入重算一次，否则第一轮 `/` 永远显示空列表；
   真滚动由 `ui:startup` 在浏览器里断言（行数 / `scrollHeight>clientHeight` / `scrollTop` 真的变了 /
   滚到底最后一条落在可视区内）—— jsdom 测不了滚动（`scrollHeight` 恒为 0）；
-- 图片：粘贴/拖拽/选择，缩略图 chips，经 Rust 读文件 → base64 → `prompt.images`（尺寸与 mime 校验，超过 provider 限制前置拦截）；
+- 图片：粘贴/拖拽/选择 → `prompt.images`（尺寸与 mime 校验，超过 provider 限制前置拦截）。
+  **呈现与预览**（2026-10-15 用户："这个图片框从左侧起放置，鼠标移动上去显示缩略图，
+  点开展示大图"）：
+  - 待发图片条 **最左起排、一行、超宽横向滚动**（老样式是 `flex-wrap` + 居中的文件名条，
+    图片一多就换行把输入卡顶高）；
+  - 每张是 28px 缩略图（本身是 `<button>`，Tab 可达、`aria-label="查看图片 <文件名>"`），
+    悬停时在 chip **上方**放大预览 —— 预览是 `::after` + 一个 CSS 变量
+    `--pg-img-preview: url(<同一份 data URL>)`，`pointer-events: none`
+    （否则预览盖住光标会让 `:hover` 抖动闪烁），且**不参与排版**（不会顶高输入卡）；
+  - **点开看大图**走 `features/common/ImageLightbox.tsx`：portal 到 `document.body` 的
+    覆盖层（转录行有自己的层叠上下文与 `overflow`，留在行内会被裁掉），`Esc` / 点背景关闭；
+  - 转录里的图片**同样**点开看大图（老实现是 `window.open(src)` —— 在 Tauri 里那是
+    "交给系统浏览器"，而 blob/asset URL 出了这个进程就失效，用户看到一张打不开的图）；
+  - ⚠️ 灯箱的 `Esc` **必须 `stopPropagation`**：会话里 `Esc` 是"中断这一轮"，
+    看大图时按 `Esc` 绝不能顺手把 agent 停了（单测钉着）；
+  - `fileToPendingImage` 在 `File.prototype.arrayBuffer` 缺失时退回 `FileReader`
+    （老 WebView 与 jsdom 上它就是 undefined）；
 - 流式中输入：输入区常开；**手势表与等待队列见 §7.3**（2026-10-15 重做 —— 老实现的
   "流式中 `⏎` 什么也不发生 + 队列只有一行灰字"就是用户截图报的那个问题）。
 

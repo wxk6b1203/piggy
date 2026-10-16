@@ -24,6 +24,7 @@ import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
+import { ImageLightbox } from '@/features/common/ImageLightbox';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Markdown, StreamingMarkdown } from './markdown';
 import { TextShimmer } from '@/features/common/TextShimmer';
@@ -529,6 +530,7 @@ const blobUrlCache = new WeakMap<object, string>();
 
 function ImageBlock({ block }: { block: object }) {
   const b = block as { data?: string; mimeType?: string; path?: string };
+  const [zoom, setZoom] = useState<string | null>(null);
   const url = useMemo(() => {
     if (b.path) return undefined; // path 分支在下方经 convertFileSrc 解析
     if (!b.data) return undefined;
@@ -553,13 +555,13 @@ function ImageBlock({ block }: { block: object }) {
   const src = url ?? assetUrl;
   if (!src) return null;
   return (
-    <img
-      className="pg-image"
-      src={src}
-      alt=""
-      loading="lazy"
-      onClick={() => window.open(src, '_blank')}
-    />
+    <>
+      {/* 点开看大图（2026-10-15 用户要求；同款交互也用在输入框的待发图片上）。
+          老实现是 `window.open(src)` —— 在 Tauri 里那是"交给系统浏览器"，
+          而 blob/asset URL 出了这个进程就失效，用户看到的是一张打不开的图。 */}
+      <img className="pg-image" src={src} alt="" loading="lazy" onClick={() => setZoom(src)} />
+      <ImageLightbox src={zoom} onClose={() => setZoom(null)} />
+    </>
   );
 }
 

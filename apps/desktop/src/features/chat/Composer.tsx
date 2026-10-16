@@ -25,6 +25,7 @@ import {
   type SlashRow,
 } from '@/lib/slashCommands';
 import { Icon } from '@/features/common/Icon';
+import { ImageLightbox } from '@/features/common/ImageLightbox';
 import { ModelPicker } from './ModelPicker';
 import { QueueDock } from './QueueDock';
 import { TodoPanel } from './TodoPanel';
@@ -53,6 +54,8 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const slashRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
+  /** 正在看大图的那张（`null` = 没开灯箱） */
+  const [lightbox, setLightbox] = useState<string | null>(null);
   const queueRows = useQueue((s) => s.tabs[tabId]?.rows.length ?? 0);
   const pausedRows = useQueue((s) => s.tabs[tabId]?.paused.length ?? 0);
 
@@ -302,19 +305,46 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
 
   return (
     <div className="pg-composer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} alt="待发送图片" />
+      {/* 待发图片（2026-10-15 用户："这个图片框从左侧起放置，鼠标移动上去显示缩略图，
+          点开展示大图"）：最左起排、悬停放大预览、点开走灯箱。
+          尺寸仍是 32px 缩略图 —— 一整排图不该把输入卡顶高。 */}
       {images.length > 0 && (
-        <div className="pg-imgs">
-          {images.map((im, i) => (
-            <span key={i} className="pg-img-chip" title={im.name}>
-              <Icon name="file-media" size={12} /> {im.name}
-              <button
-                className="pg-img-remove"
-                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+        <div className="pg-imgs" data-pending-images="">
+          {images.map((im, i) => {
+            const src = `data:${im.mimeType};base64,${im.data}`;
+            return (
+              /* `--pg-img-preview` 把同一份 base64 交给 CSS 做悬停预览：
+                 Monaco 那类"CSS 读不到 JS 常量"的镜像问题在这里只镜像**一个**变量，
+                 图片数据本身仍然只有一份（不额外解码、不额外内存）。 */
+              <span
+                key={`${im.name}-${i}`}
+                className="pg-img-chip"
+                title={im.name}
+                style={{ '--pg-img-preview': `url(${src})` } as React.CSSProperties}
               >
-                <Icon name="close" size={11} />
-              </button>
-            </span>
-          ))}
+                {/* 缩略图本身是按钮：键盘可达、读屏有名字（这个仓没装 jsx-a11y 插件，
+                    所以按"能 Tab 到、能 Enter 打开"来做，而不是靠一条 disable 注释）。 */}
+                <button
+                  type="button"
+                  className="pg-img-thumb-btn"
+                  aria-label={`查看图片 ${im.name}`}
+                  onClick={() => setLightbox(src)}
+                >
+                  <img className="pg-img-thumb" src={src} alt="" />
+                </button>
+                <span className="pg-img-name">{im.name}</span>
+                <button
+                  type="button"
+                  className="pg-img-remove"
+                  aria-label={`移除 ${im.name}`}
+                  onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  <Icon name="close" size={11} />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 
