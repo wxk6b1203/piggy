@@ -23,6 +23,12 @@ vi.mock('@/lib/feedback', () => ({
 
 import { SessionWorkspaceComposer } from '@/features/chat/Composer';
 import { ImageLightbox } from '@/features/common/ImageLightbox';
+import {
+  PREVIEW_MAX,
+  PREVIEW_MIN,
+  anchorStyle,
+  previewSize,
+} from '@/features/common/ImageHoverPreview';
 import { useMessages } from '@/stores/messages';
 import { useQueue } from '@/stores/queue';
 import { domContainer, mountDom, unmountDom } from './dom-render';
@@ -99,11 +105,40 @@ describe('待发图片（Composer）', () => {
     expect(big.src.startsWith('data:image/png;base64,')).toBe(true);
   });
 
-  it('悬停预览：chip 上带着 CSS 变量（一份数据，两个尺寸）', async () => {
+  it('悬停显示预览层，并且**跟着鼠标走**', async () => {
     mountDom(<SessionWorkspaceComposer tabId={TAB} />);
     await pickImage();
-    const chip = domContainer().querySelector('.pg-img-chip') as HTMLElement;
-    expect(chip.style.getPropertyValue('--pg-img-preview')).toContain('data:image/png;base64,');
+    expect(document.querySelector('[data-image-preview]')).toBeNull();
+
+    const btn = domContainer().querySelector('.pg-img-thumb-btn') as HTMLElement;
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: 300, clientY: 800 }));
+      await Promise.resolve();
+    });
+    const preview = document.querySelector('[data-image-preview]') as HTMLImageElement;
+    expect(preview).not.toBeNull();
+    expect(preview.src.startsWith('data:image/png;base64,')).toBe(true);
+    // 预览是"真实元素 + portal 到 body"：这样才能 fixed 跟随、且不被滚动容器裁掉
+    expect(preview.parentElement).toBe(document.body);
+    const at = (el: HTMLElement): { left: number; top: number } => ({
+      left: Number.parseFloat(el.style.left),
+      top: Number.parseFloat(el.style.top),
+    });
+    const first = at(preview);
+
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 500, clientY: 700 }));
+      await Promise.resolve();
+    });
+    const moved = at(document.querySelector('[data-image-preview]') as HTMLElement);
+    expect(moved.left).not.toBe(first.left);
+    expect(moved.top).not.toBe(first.top);
+
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-image-preview]')).toBeNull();
   });
 
   it('移除按钮仍在，且移除后条消失', async () => {
@@ -161,5 +196,54 @@ describe('灯箱的关闭语义', () => {
   it('src 为空时什么都不渲染（没开灯箱就不该有覆盖层）', () => {
     mountDom(<ImageLightbox src={null} onClose={() => {}} />);
     expect(document.querySelector('[data-image-lightbox]')).toBeNull();
+  });
+});
+
+/* ────────────────── 预览的尺寸与定位（纯函数，jsdom 里没有真实布局） ────────────────── */
+
+describe('预览尺寸：按原图宽高比、长边夹在上下限', () => {
+  it('大图缩到上限，比例不变（横图 / 竖图各一条）', () => {
+    const wide = previewSize(1600, 900);
+    expect(Math.max(wide.w, wide.h)).toBe(PREVIEW_MAX);
+    expect(Math.abs(wide.w / wide.h - 1600 / 900)).toBeLessThan(0.02);
+
+    const tall = previewSize(600, 1800);
+    expect(Math.max(tall.w, tall.h)).toBe(PREVIEW_MAX);
+    expect(Math.abs(tall.w / tall.h - 600 / 1800)).toBeLessThan(0.02);
+  });
+
+  it('小图放到下限为止，不把小图标拉成大果冻', () => {
+    const tiny = previewSize(16, 16);
+    expect(Math.max(tiny.w, tiny.h)).toBe(PREVIEW_MIN);
+    expect(tiny.w).toBe(tiny.h);
+  });
+
+  it('中间尺寸原样；尺寸未知时给一个方形下限', () => {
+    expect(previewSize(120, 90)).toEqual({ w: 120, h: 90 });
+    const unknown = previewSize(0, 0);
+    expect(unknown.w).toBe(PREVIEW_MIN);
+    expect(unknown.h).toBe(PREVIEW_MIN);
+  });
+});
+
+describe('预览定位：贴着光标，四个方向都不出屏', () => {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  it('默认在光标右上方（输入框在屏幕底部，往上飘才有空间）', () => {
+    const pos = anchorStyle({ x: 200, y: vh - 20, w: 400, h: 300 });
+    expect(pos.left).toBeGreaterThan(200);
+    expect(pos.top).toBeLessThan(vh - 20);
+  });
+
+  it('右边放不下就翻到左边', () => {
+    const pos = anchorStyle({ x: vw - 10, y: 400, w: 400, h: 300 });
+    expect(pos.left).toBeLessThan(vw - 10);
+    expect(pos.left + previewSize(400, 300).w).toBeLessThanOrEqual(vw);
+  });
+
+  it('上方放不下就翻到下面', () => {
+    const pos = anchorStyle({ x: 300, y: 4, w: 400, h: 300 });
+    expect(pos.top).toBeGreaterThan(4);
   });
 });

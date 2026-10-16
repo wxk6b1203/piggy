@@ -1223,15 +1223,18 @@ body {
   width: 28px; height: 28px; object-fit: cover;
   border-radius: 7px; display: block;
 }
-/* 悬停预览（更大一版）：绝对定位在图片条**上方**，不参与排版，所以既不顶高输入卡
-   也不会把别的 chip 挤走。`pointer-events: none` 是关键 —— 否则预览会盖住 cursor
-   导致 `:hover` 抖动（预览出现 → 悬停丢失 → 预览消失 → 循环闪烁）。 */
-.pg-img-chip:hover::after {
-  content: ''; position: absolute; left: 0; bottom: calc(100% + 8px);
-  width: 160px; height: 160px; z-index: 40; pointer-events: none;
-  background-image: var(--pg-img-preview); background-size: contain;
-  background-repeat: no-repeat; background-position: left bottom;
-  border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+/* 悬停预览（`features/common/ImageHoverPreview.tsx`）：**跟随光标**的一张预览，
+   位置与尺寸都由组件内联给出（fixed + portal）。
+   为什么不是 CSS `::after`：透明图没有边框=看不见、伪元素跟不上鼠标、
+   而且待发图片条是 `overflow-x: auto` 的滚动容器（还在屏幕最底部）——放上面就被裁。
+   `pointer-events: none` 仍然是关键：预览盖住光标会让 mouseenter/mousemove 抖动。 */
+.pg-img-preview {
+  position: fixed; z-index: 2500; pointer-events: none;
+  object-fit: contain; border-radius: 8px;
+  /* 边框 + 深色底：透明 PNG / 深色内容在小尺寸下也能看出这是一张图 */
+  border: 1px solid var(--pg-border-l2);
+  background: var(--pg-bg-layer-2);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
 .pg-img-name {
   max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

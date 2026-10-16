@@ -1226,10 +1226,15 @@ DOM 里**、点开出现代码卡片、再点收起）。
   点开展示大图"）：
   - 待发图片条 **最左起排、一行、超宽横向滚动**（老样式是 `flex-wrap` + 居中的文件名条，
     图片一多就换行把输入卡顶高）；
-  - 每张是 28px 缩略图（本身是 `<button>`，Tab 可达、`aria-label="查看图片 <文件名>"`），
-    悬停时在 chip **上方**放大预览 —— 预览是 `::after` + 一个 CSS 变量
-    `--pg-img-preview: url(<同一份 data URL>)`，`pointer-events: none`
-    （否则预览盖住光标会让 `:hover` 抖动闪烁），且**不参与排版**（不会顶高输入卡）；
+  - 每张是 28px 缩略图（本身是 `<button>`，Tab 可达、`aria-label="查看图片 <文件名>"`）；
+  - **悬停预览跟随光标**（`features/common/ImageHoverPreview.tsx`）：`position: fixed` + portal，
+    长边按原图宽高比夹在 96–140px（用户口径："放大一点点但是不要太多"），
+    贴在光标右上、四个方向都做翻转与夹取，`pointer-events: none`（否则预览盖住光标会抖动）。
+    ⚠️ **第一版是 CSS `::after` + `background-image`，用户反馈"没生效"**，三个原因各自都致命：
+    ① 没有边框/底色 → 透明 PNG 或深色内容在深色界面上就是一片空白（看起来像没触发）；
+    ② 伪元素只能贴宿主，**跟随不了鼠标**；
+    ③ 待发图片条是 `overflow-x: auto` 的滚动容器、且位于屏幕最底部 → 往上长一点就被裁。
+    结论：**"跟着鼠标/贴着内容"的预览必须是真的元素 + `fixed`**，别用伪元素凑；
   - **点开看大图**走 `features/common/ImageLightbox.tsx`：portal 到 `document.body` 的
     覆盖层（转录行有自己的层叠上下文与 `overflow`，留在行内会被裁掉），`Esc` / 点背景关闭；
   - 转录里的图片**同样**点开看大图（老实现是 `window.open(src)` —— 在 Tauri 里那是

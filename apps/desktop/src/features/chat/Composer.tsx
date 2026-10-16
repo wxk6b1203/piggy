@@ -26,6 +26,7 @@ import {
 } from '@/lib/slashCommands';
 import { Icon } from '@/features/common/Icon';
 import { ImageLightbox } from '@/features/common/ImageLightbox';
+import { ImageHoverPreview, type PreviewAnchor } from '@/features/common/ImageHoverPreview';
 import { ModelPicker } from './ModelPicker';
 import { QueueDock } from './QueueDock';
 import { TodoPanel } from './TodoPanel';
@@ -56,6 +57,16 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const streaming = useTabMsg(tabId, (t) => t.streaming);
   /** 正在看大图的那张（`null` = 没开灯箱） */
   const [lightbox, setLightbox] = useState<string | null>(null);
+  /**
+   * 悬停预览（04 §7）：光标在哪、原图多大。
+   *
+   * 为什么要把"原图尺寸"也存下来：预览要**按原图宽高比**缩放
+   * （用户："跟随鼠标、或者按图片实际宽高比自适应"），而 base64 图片的
+   * `naturalWidth/Height` 只有等它自己 load 完才知道 —— 在缩略图的 `onLoad` 里读一次，
+   * 存进这张小表（一条消息最多 6 张，不值得上 Map）。
+   */
+  const [preview, setPreview] = useState<{ src: string; anchor: PreviewAnchor | null } | null>(null);
+  const previewSizeRef = useRef<Record<string, { w: number; h: number }>>({});
   const queueRows = useQueue((s) => s.tabs[tabId]?.rows.length ?? 0);
   const pausedRows = useQueue((s) => s.tabs[tabId]?.paused.length ?? 0);
 
@@ -303,9 +314,22 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
     }
   };
 
+  /** 光标位置 + 原图尺寸（还没量到就按 1:1，等 `onLoad` 补上）。 */
+  const anchorFor = (src: string, e: React.MouseEvent): PreviewAnchor => {
+    const size = previewSizeRef.current[src] ?? { w: 0, h: 0 };
+    return { x: e.clientX, y: e.clientY, w: size.w, h: size.h };
+  };
+
   return (
     <div className="pg-composer" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} alt="待发送图片" />
+      {preview?.anchor && (
+        <ImageHoverPreview
+          src={preview.src}
+          anchor={preview.anchor}
+          alt=""
+        />
+      )}
       {/* 待发图片（2026-10-15 用户："这个图片框从左侧起放置，鼠标移动上去显示缩略图，
           点开展示大图"）：最左起排、悬停放大预览、点开走灯箱。
           尺寸仍是 32px 缩略图 —— 一整排图不该把输入卡顶高。 */}
@@ -314,15 +338,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
           {images.map((im, i) => {
             const src = `data:${im.mimeType};base64,${im.data}`;
             return (
-              /* `--pg-img-preview` 把同一份 base64 交给 CSS 做悬停预览：
-                 Monaco 那类"CSS 读不到 JS 常量"的镜像问题在这里只镜像**一个**变量，
-                 图片数据本身仍然只有一份（不额外解码、不额外内存）。 */
-              <span
-                key={`${im.name}-${i}`}
-                className="pg-img-chip"
-                title={im.name}
-                style={{ '--pg-img-preview': `url(${src})` } as React.CSSProperties}
-              >
+              <span key={`${im.name}-${i}`} className="pg-img-chip" title={im.name}>
                 {/* 缩略图本身是按钮：键盘可达、读屏有名字（这个仓没装 jsx-a11y 插件，
                     所以按"能 Tab 到、能 Enter 打开"来做，而不是靠一条 disable 注释）。 */}
                 <button
@@ -330,8 +346,21 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
                   className="pg-img-thumb-btn"
                   aria-label={`查看图片 ${im.name}`}
                   onClick={() => setLightbox(src)}
+                  onMouseEnter={(e) => setPreview({ src, anchor: anchorFor(src, e) })}
+                  onMouseMove={(e) => setPreview((cur) => (cur ? { src, anchor: anchorFor(src, e) } : cur))}
+                  onMouseLeave={() => setPreview(null)}
+                  // 键盘用户不该看到"粘在某个坐标上"的预览 —— 他们按 Enter 直接开大图
+                  onFocus={() => setPreview(null)}
                 >
-                  <img className="pg-img-thumb" src={src} alt="" />
+                  <img
+                    className="pg-img-thumb"
+                    src={src}
+                    alt=""
+                    onLoad={(e) => {
+                      const el = e.currentTarget;
+                      previewSizeRef.current[src] = { w: el.naturalWidth, h: el.naturalHeight };
+                    }}
+                  />
                 </button>
                 <span className="pg-img-name">{im.name}</span>
                 <button
