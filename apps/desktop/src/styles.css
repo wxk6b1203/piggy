@@ -1230,6 +1230,7 @@ body {
    `pointer-events: none` 仍然是关键：预览盖住光标会让 mouseenter/mousemove 抖动。 */
 .pg-img-preview {
   position: fixed; z-index: 2500; pointer-events: none;
+  user-select: none; -webkit-user-select: none; -webkit-user-drag: none;
   object-fit: contain; border-radius: 8px;
   /* 边框 + 深色底：透明 PNG / 深色内容在小尺寸下也能看出这是一张图 */
   border: 1px solid var(--pg-border-l2);
@@ -1252,11 +1253,23 @@ body {
   display: grid; place-items: center;
   background: rgba(0, 0, 0, 0.72);
   cursor: zoom-out;
+  /* 2026-10-15 用户："点开预览之后，有可能拖动选中底下的字，能不能不让选中"。
+     两道防线，缺一不可：
+     ① 灯箱自己 `user-select: none`（在它身上起手的拖选不该产生选区）；
+     ② 打开期间由 `lockPage()` 把 `user-select: none` 挂到**根元素**上 ——
+        `user-select` 是跨元素的：在灯箱上按下、拖出灯箱，选区会继续长到下面的转录里，
+        只挡自己这一层是不够的。
+     `overscroll-behavior: contain` 管住"在灯箱上滚轮/拖动把背后转录滚走"。 */
+  user-select: none; -webkit-user-select: none;
+  overscroll-behavior: contain;
 }
+/* 拖动图片本身不该触发浏览器的原生图片拖拽（那是另一个"把东西拖出去"的入口）；
+   文本与图片的选中在同一处一起关掉。 */
 .pg-lightbox-img {
   max-width: 92vw; max-height: 92vh;
   border-radius: 8px; box-shadow: 0 16px 60px rgba(0, 0, 0, 0.6);
   cursor: default;
+  user-select: none; -webkit-user-select: none; -webkit-user-drag: none;
 }
 .pg-lightbox-close {
   position: absolute; top: 16px; right: 16px;

@@ -12,9 +12,53 @@
  * - **`Esc` 只走 keydown、且 `stopPropagation`**：会话里 `Esc` 是"中断这一轮"，
  *   看大图时按 `Esc` 只该关图片，不能顺手把 agent 也停了。
  */
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
+
+/**
+ * 打开浮层时冻结页面的**选中与滚动**（2026-10-15 用户："点开预览之后，有可能拖动
+ * 选中底下的字，能不能不让选中"）。
+ *
+ * 光靠覆盖层挡不住两件事：
+ * - **选中**：`user-select` 是跨元素的 —— 在覆盖层上按下、拖到覆盖层之外，
+ *   选区会继续长到下面的转录里。所以必须把 `user-select: none` 加到**根元素**上，
+ *   关掉时再原样恢复（不是简单清空：别人可能本来就设过）。
+ * - **滚动**：在覆盖层上拖动会"滚动链"到背后的转录（`overscroll-behavior` 只管
+ *   自己这一层，挡不住整页滚动），所以同时锁 `body` 的 `overflow`。
+ *
+ * 用 **DOM 属性**而不是模块级计数器：同一时刻可能有多个浮层（灯箱 + 悬停预览），
+ * 计数器写错就会留下"永远解不开的锁"；属性是幂等状态，而且谁都能读、卸载后不留残留。
+ */
+/**
+ * 当前有几层浮层压着（灯箱 + 预览可能同时存在）。
+ *
+ * 为什么是**引用计数**而不是"给 body 打个标记"：标记方案分不清"这是第二个锁"与
+ * "这是第一个锁"，一旦谁先解锁就把标记删了，后面的解锁全成了空操作 ——
+ * 页面就永久停在"选不中字"的状态（单测 `锁是幂等的` 就是钉这条的）。
+ */
+let lockDepth = 0;
+/** 加锁前的原值（只有第一个加锁的人记，最后一个解锁的人恢复）。 */
+let prevUserSelect = '';
+let prevBodyOverflow = '';
+
+/** 打开浮层时冻结页面的选中与滚动。返回解锁函数（可重复调用）。 */
+export function lockPage(): () => void {
+  if (lockDepth === 0) {
+    prevUserSelect = document.documentElement.style.userSelect;
+    prevBodyOverflow = document.body.style.overflow;
+  }
+  lockDepth += 1;
+  document.documentElement.style.userSelect = 'none';
+  document.body.style.overflow = 'hidden';
+  return () => {
+    lockDepth = Math.max(0, lockDepth - 1);
+    // 还有别的浮层压着 → 什么都不做（锁继续保持）
+    if (lockDepth > 0) return;
+    document.documentElement.style.userSelect = prevUserSelect;
+    document.body.style.overflow = prevBodyOverflow;
+  };
+}
 
 export interface ImageLightboxProps {
   /** 图片源（blob: 或 asset 协议 URL）；为空时什么都不渲染 */
@@ -26,18 +70,30 @@ export interface ImageLightboxProps {
 }
 
 export function ImageLightbox({ src, onClose, alt = '' }: ImageLightboxProps) {
+  /* ⚠️ `onClose` 走 ref，**不进 effect 依赖**（2026-10-15，被单测逼出来的真 bug）：
+     调用方几乎总是传内联箭头函数（`onClose={() => setLightbox(null)}`），把它放进依赖
+     会让 effect 每次渲染都重跑一遍 —— 于是 `lockPage()`/`unlock()` 反复叠加，
+     卸载时留下一把**解不开的锁**（页面再也选不中字、body 也锁着滚动）。
+     锁的依赖只能是"浮层开没开"这一件事。 */
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
     if (!src) return;
+    const unlock = lockPage();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return;
       // 别让"关图片"变成"中断这一轮"（Composer 的 Esc 会 abort）
       e.stopPropagation();
       e.preventDefault();
-      onClose();
+      closeRef.current();
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [src, onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      unlock();
+    };
+  }, [src]);
 
   if (!src) return null;
   return createPortal(

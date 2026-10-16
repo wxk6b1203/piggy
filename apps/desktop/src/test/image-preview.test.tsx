@@ -24,6 +24,7 @@ vi.mock('@/lib/feedback', () => ({
 import { SessionWorkspaceComposer } from '@/features/chat/Composer';
 import { ImageLightbox } from '@/features/common/ImageLightbox';
 import {
+  ImageHoverPreview,
   PREVIEW_MAX,
   PREVIEW_MIN,
   anchorStyle,
@@ -246,5 +247,65 @@ describe('预览定位：贴着光标，四个方向都不出屏', () => {
   it('上方放不下就翻到下面', () => {
     const pos = anchorStyle({ x: 300, y: 4, w: 400, h: 300 });
     expect(pos.top).toBeGreaterThan(4);
+  });
+});
+
+/* ────────────────── 打开预览时不许选中底下的字 ────────────────── */
+
+describe('看大图时页面被冻结（用户："拖动选中底下的字，能不能不让选中"）', () => {
+  afterEach(() => {
+    // 用例之间别把锁带走
+    document.documentElement.style.userSelect = '';
+    document.body.style.overflow = '';
+
+  });
+
+  it('打开灯箱：根元素禁选中 + body 锁滚动；关掉后**原样**恢复', async () => {
+    document.documentElement.style.userSelect = 'text'; // 假装别人本来就设过
+    mountDom(<ImageLightbox src="data:image/png;base64,AAA" onClose={() => {}} />);
+
+    expect(document.documentElement.style.userSelect).toBe('none');
+    expect(document.body.style.overflow).toBe('hidden');
+    // 灯箱自己那一层也要禁（在它身上起手的拖选不该产生选区）
+    const box = document.querySelector('[data-image-lightbox]') as HTMLElement;
+    expect(box).not.toBeNull();
+
+    await unmountDom();
+    expect(document.documentElement.style.userSelect).toBe('text');
+    expect(document.body.style.overflow).toBe('');
+  });
+
+  it('悬停预览打开期间同样禁选中（预览是 pointer-events:none，拖选会直接落到转录上）', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    await pickImage();
+    const btn = domContainer().querySelector('.pg-img-thumb-btn') as HTMLElement;
+
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: 300, clientY: 700 }));
+      await Promise.resolve();
+    });
+    expect(document.documentElement.style.userSelect).toBe('none');
+
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+      await Promise.resolve();
+    });
+    expect(document.documentElement.style.userSelect).toBe('');
+  });
+
+  it('锁是幂等的：两个浮层叠加时，最后一个关掉才解锁', async () => {
+    mountDom(
+      <>
+        <ImageLightbox src="data:image/png;base64,AAA" onClose={() => {}} />
+        <ImageHoverPreview src="data:image/png;base64,AAA" anchor={{ x: 10, y: 10, w: 40, h: 40 }} />
+      </>,
+    );
+    expect(document.documentElement.style.userSelect).toBe('none');
+
+    await unmountDom();
+    // 两个都卸载之后必须恢复干净（不能留下"永远解不开的锁"）
+    expect(document.documentElement.style.userSelect).toBe('');
+    expect(document.body.style.overflow).toBe('');
+
   });
 });

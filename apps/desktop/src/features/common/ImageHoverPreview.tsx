@@ -20,7 +20,9 @@
  * 长边限制在 {@link PREVIEW_MIN}–{@link PREVIEW_MAX} 之间**等比**缩放：
  * 大图缩到 200，小图最多放到 128（不把小图标拉成大果冻）。比例始终是原图的。
  */
+import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { lockPage } from './ImageLightbox';
 
 /**
  * 预览长边的上下限（px）。
@@ -85,6 +87,14 @@ export interface ImageHoverPreviewProps {
 
 /** 光标在图片上时渲染的预览层；`anchor` 为 `null` 时什么都不渲染。 */
 export function ImageHoverPreview({ src, anchor, alt = '' }: ImageHoverPreviewProps) {
+  const open = anchor !== null;
+  /* 预览在的时候一样要挡住"拖选底下的字"（同 `ImageLightbox` 的理由）。
+     `pointer-events: none` 让指针事件穿过预览，所以拖选确实会落到下面的转录上。 */
+  useEffect(() => {
+    if (!open) return;
+    return lockPage();
+  }, [open]);
+
   if (!anchor) return null;
   const size = previewSize(anchor.w, anchor.h);
   const pos = anchorStyle(anchor);
