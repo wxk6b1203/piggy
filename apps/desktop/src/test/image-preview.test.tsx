@@ -218,8 +218,9 @@ describe('预览尺寸：按原图宽高比、长边夹在上下限', () => {
     expect(tiny.w).toBe(tiny.h);
   });
 
-  it('中间尺寸原样；尺寸未知时给一个方形下限', () => {
-    expect(previewSize(120, 90)).toEqual({ w: 120, h: 90 });
+  it('中间尺寸原样（长边落在区间内就不缩放）；尺寸未知时给一个方形下限', () => {
+    // 长边 180 落在 [PREVIEW_MIN, PREVIEW_MAX] 里 → 1:1 用原尺寸
+    expect(previewSize(180, 140)).toEqual({ w: 180, h: 140 });
     const unknown = previewSize(0, 0);
     expect(unknown.w).toBe(PREVIEW_MIN);
     expect(unknown.h).toBe(PREVIEW_MIN);
