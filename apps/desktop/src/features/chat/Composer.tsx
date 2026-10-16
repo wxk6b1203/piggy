@@ -410,33 +410,11 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
           </div>
 
           <div className="pg-composer-tools-right">
-            {streaming ? (
-              <>
-                {/* 流式中两个投递语义的**显式**入口（手势之外的等价路径：⌘↵ / ⌘⇧↵）。
-                    普通 ↵ 只入队（DSH 默认 busyEnter='queue'），所以按钮上写明各自的去向。 */}
-                <button
-                  className="pg-pill pg-pill-action"
-                  onClick={() => void send({ behavior: 'steer' })}
-                  title="插话发送：下一个步进边界插进当前回合（⌘↵）"
-                >
-                  转向
-                </button>
-                <button
-                  className="pg-pill pg-pill-action"
-                  onClick={() => void send({ behavior: 'followUp' })}
-                  title="等当前回合结束后追加（⌘⇧↵）"
-                >
-                  追加
-                </button>
-                <button
-                  className="pg-round-btn pg-round-danger"
-                  onClick={() => void abortTurn()}
-                  title="中断这一轮（Esc）—— 队列留在下面，不会被清掉"
-                >
-                  <Icon name="debug-stop" size={14} />
-                </button>
-              </>
-            ) : null}
+            {/* 流式中**不再放「转向 / 追加」两粒按钮**（2026-10-15 用户："这个转向/追加的
+                按钮是不要的"）。理由：投递语义已经由手势表唯一决定（↵ 入队 / ⌘↵ 插话 /
+                ⌘⇧↵ 追加），再摆两粒按钮等于把同一件事说三遍，而且它们在流式中突然出现、
+                结束时突然消失，正是用户截图里"编辑完突然冒出两个按钮"的那一下。
+                单个发送键仍在，标签随状态说明"按下去会发生什么"。 */}
             <ModelPicker tabId={tabId} />
             <button
               className="pg-send-btn"

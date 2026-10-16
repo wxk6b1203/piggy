@@ -888,15 +888,6 @@ body {
   background: var(--pg-selector); color: var(--pg-fg); cursor: pointer; padding: 0;
 }
 .pg-composer-add:hover { background: var(--pg-hover-solid); }
-/* 其余圆形图标按钮（中断等）保持同尺寸语言 */
-.pg-round-btn {
-  display: grid; place-items: center; width: 28px; height: 28px; flex: none;
-  background: none; color: var(--pg-fg-dim);
-  border: 1px solid var(--pg-border-l3); border-radius: var(--pg-r-pill); corner-shape: round;
-  cursor: pointer; padding: 0;
-}
-.pg-round-btn:hover { color: var(--pg-fg); border-color: var(--pg-fg-dim); }
-.pg-round-danger:hover { color: var(--pg-error); border-color: var(--pg-error); }
 /* 胶囊（DSH 权限选择器） */
 .pg-pill {
   display: inline-flex; align-items: center; gap: var(--pg-sp-3);
@@ -911,7 +902,6 @@ body {
 .pg-pill:disabled:hover { background: none; color: var(--pg-fg-secondary); }
 .pg-pill-static { cursor: default; }
 .pg-pill-static:hover { background: none; color: var(--pg-fg-secondary); }
-.pg-pill-action { color: var(--pg-accent); border-color: var(--pg-accent); }
 /* `.select` 模型胶囊：max-width220 / h28 / r8 / padding 0 20 0 8 / 透明底 */
 .pg-model-select { max-width: 220px; padding: 0 var(--pg-sp-6) 0 var(--pg-sp-4); border-color: transparent; }
 .pg-pill-strong { color: var(--pg-fg); overflow: hidden; text-overflow: ellipsis; }

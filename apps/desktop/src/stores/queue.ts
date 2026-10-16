@@ -103,6 +103,18 @@ export interface TabQueue {
   busy: boolean;
   /** 正在跑取回/放回事务（期间禁用一切队列动作） */
   taking: boolean;
+  /**
+   * 刚收到 `agent_settled`。
+   *
+   * 为什么需要它（2026-10-15 用户实报：编辑打勾之后排队的另一条没了）：
+   * pi **在回合结束时不会推 `queue_update`**（只在入队/消费/清空时推），所以
+   * `settled()` 之后最先到的那条快照可能是**回合结束前**的旧状态（最常见的形态：
+   * steering 已经被消费、快照是空的）。拿它去对账就会把 **followUp 行**一起抹掉 ——
+   * 而那些行恰恰是"等下一轮就发"的、必须留着的。
+   * 所以落定之后的那一次对账要跳过删除；下一条 `message_end`（下一轮真的开始了，
+   * 快照也重新变新鲜）再把标志清掉。
+   */
+  turnEnded: boolean;
   /** 「编辑」正在改哪一行（一次只许一条，同 DSH） */
   editingId: string | null;
   /** 折叠（只在 >1 行时有意义；行数归零时复位） */
@@ -115,6 +127,7 @@ const emptyTab = (): TabQueue => ({
   consumed: [],
   busy: false,
   taking: false,
+  turnEnded: false,
   editingId: null,
   collapsed: true,
 });
@@ -246,6 +259,15 @@ function tailFrom(rows: QueueRow[], id: string): QueueRow[] {
   return rows.slice(i);
 }
 
+/**
+ * `take` 阶段已经替哪些行重新下发过（键 = `tabId\0rowId`）。
+ *
+ * 为什么需要：`clear_queue` 会**整清**，连"保留的前缀"也清掉，所以 `take` 必须
+ * 立刻把它们按原序重发回去。等 `putBack` 时再发就会重复投递 —— 这份注册表让
+ * `putBack` 知道"这条已经发过了，只把它从暂存挪回队列"。
+ */
+const alreadySent = new Set<string>();
+
 export const useQueue = create<QueueState>((set, get) => {
   const patch = (tabId: string, fn: (t: TabQueue) => Partial<TabQueue>): void => {
     set((s) => {
@@ -284,6 +306,23 @@ export const useQueue = create<QueueState>((set, get) => {
          事务结束时 `take` 自己会用 `clear_queue` 的返回值把影子重建到位。 */
       patch(tabId, (cur) => {
         const consumed = [...new Set([...cur.consumed, ...delivered])];
+        /* 落定之后的那一次对账**不删行**：pi 在回合结束时根本不推 `queue_update`，
+           所以此刻手上这条快照可能还是回合结束前的旧状态（常见的空快照）。
+           照它删，就会把"等下一轮就发"的 followUp 行一起抹掉（用户实报的那个 bug）。
+           删除交给明确的信号：`delivered`（消费）、`take`/`clearAll`（我们自己清的）。 */
+        /* ⚠️ **空快照不许无理由地抹掉还在队列里的行**（2026-10-15 用户实报"编辑打勾之后
+           另一条也没了"）。空快照的来源太多：`clear_queue` 那次清空的回声、回合结束前
+           最后一次状态、我们自己取回时中间态……它们都不是"队列真的空了"的权威证据。
+           真正的删除有明确信号：`delivered`（被消费）、`take`/`clearAll`（我们自己清）。
+           这里只做**增量**：认领已有行、把对不上账的标成外来行。 */
+        if (snapshot.steering.length === 0 && snapshot.followUp.length === 0 && cur.rows.length > 0) {
+          return {};
+        }
+        if (cur.turnEnded) {
+          const have = new Set(cur.rows.map((r) => r.text));
+          const extra = reconcileRows([], snapshot, consumed).filter((r) => !have.has(r.text));
+          return { rows: [...cur.rows, ...extra] };
+        }
         const rows = reconcileRows(cur.rows, snapshot, consumed);
         // 行数与暂停堆都空了 → 折叠态复位（DSH 同款：下一波默认收起）
         const collapsed = rows.length === 0 && cur.paused.length === 0 ? true : cur.collapsed;
@@ -300,6 +339,7 @@ export const useQueue = create<QueueState>((set, get) => {
        `streamingBehavior:'steer'` 已经没有意义（agent 空闲时 pi 忽略这个字段）。 */
     settled: (tabId) =>
       patch(tabId, (cur) => ({
+        turnEnded: true,
         rows: cur.rows.filter((r) => r.target !== 'steering'),
         paused: cur.paused.map((r) => (r.target === 'steering' ? { ...r, target: 'followUp' as const } : r)),
       })),
@@ -309,8 +349,8 @@ export const useQueue = create<QueueState>((set, get) => {
         const consumed = cur.consumed.includes(text) ? cur.consumed : [...cur.consumed, text];
         // 只摘一条：pi 消费时也是 `indexOf` 先到先得
         const i = cur.rows.findIndex((r) => r.text === text);
-        if (i < 0) return { consumed };
-        return { rows: [...cur.rows.slice(0, i), ...cur.rows.slice(i + 1)], consumed };
+        if (i < 0) return { consumed, turnEnded: false };
+        return { rows: [...cur.rows.slice(0, i), ...cur.rows.slice(i + 1)], consumed, turnEnded: false };
       }),
 
     enqueue: async (tabId, row) => {
@@ -386,6 +426,15 @@ export const useQueue = create<QueueState>((set, get) => {
           .filter((r) => !missing.has(r.id))
           .map((r) => ({ ...r, sending: false }));
         const kept = before.filter((r) => !expecting.some((e) => e.id === r.id));
+        /* ⚠️ `clear_queue` 是**整清**：保留的那截前缀也被一起清掉了。必须立刻按原序
+           重新下发，否则"界面上还排着"与"pi 队列里其实已经没了"两边会越差越远
+           （用户实报：编辑打勾之后另一条也没了 —— 根因就是它在前缀里，被 clear 掉了，
+           而我们只在 `putBack` 时才会重发，中间任何一次对账都会把它判成"外来行"或删掉）。
+           重新下发的是**同一条内容、同一个位置**，用户看不到任何变化。 */
+        for (const r of kept) {
+          await sendToPi(tabId, wireOf(r));
+          alreadySent.add(`${tabId}\u0000${r.id}`);
+        }
         /* 池子里剩下的就是"我们不认识、但 pi 队列里确实有"的那些（插件注入的）。
            ⚠️ 文本与保留下来的行**同名**的要排除：同名在协议层本来就不可区分
            （pi 消费队列项时也是按文本 `indexOf`），再冒一条出来就是重复显示。 */
@@ -431,22 +480,34 @@ export const useQueue = create<QueueState>((set, get) => {
       if (cur.paused.length === 0) return { ok: true, paused: 0, foreign: 0, delivered: 0 };
       patch(tabId, () => ({ taking: true }));
       const done: string[] = [];
+      /** take 阶段已经被重新下发过的行（前缀）：绝不能再发一次。 */
+      const skip = (row: QueueRow): boolean => {
+        const key = `${tabId}\u0000${row.id}`;
+        if (!alreadySent.has(key)) return false;
+        alreadySent.delete(key);
+        return true;
+      };
       /** 放回时按**原序**逐条下发；每成功一条就把它从暂停堆挪回影子队列。 */
       const put = async (row: QueueRow): Promise<TakeOk | TakeErr> => {
         try {
           await sendToPi(tabId, wireOf(row));
           done.push(row.id);
-          /* 只把它从暂存堆里摘掉。**不要**在这里乐观插一行到 `rows`：
-             真机上这条消息马上就会由 pi 的 `queue_update` 带回来（`sendToPi` 成功 =
-             pi 已经收下了），再自己插一行就是"自己认领自己" —— 下一次对账发现
-             pi 队列里没有它（比如测试里没有 emit），那行会永远挂着 `sending: true`，
-             等到再下一次对账又被当成外来行重造一条。让权威来源说话。 */
+          /* 从暂存摘掉，并**把这一行认回队列**（保留原 id 与图片）。
+             为什么不能只等 `queue_update`：pi 的入队事件确实会推，但"我们正在事务里"
+             （`taking`）会把那次对账跳过 —— 只等它就等于等一次永远不会被处理的事件，
+             表现就是"放回之后那一行不见了"。这里只补"自己刚发出去的这条"，
+             不删任何东西，所以不会与权威快照打架。 */
           set((s) => {
             const t = s.tabs[tabId] ?? emptyTab();
+            const exists = t.rows.some((r) => r.text === row.text && r.target === row.target);
             return {
               tabs: {
                 ...s.tabs,
-                [tabId]: { ...t, paused: t.paused.filter((r) => r.id !== row.id) },
+                [tabId]: {
+                  ...t,
+                  paused: t.paused.filter((r) => r.id !== row.id),
+                  rows: exists ? t.rows : [...t.rows, { ...row, sending: false }],
+                },
               },
             };
           });
@@ -466,10 +527,27 @@ export const useQueue = create<QueueState>((set, get) => {
       };
       let last: TakeOk | TakeErr = { ok: true, paused: 0, foreign: 0, delivered: 0 };
       for (const row of [...cur.paused]) {
+        if (skip(row)) {
+          // 前缀那条：take 已经替它发过了，这里只把它从暂存挪回队列
+          set((s) => {
+            const t = s.tabs[tabId] ?? emptyTab();
+            return {
+              tabs: {
+                ...s.tabs,
+                [tabId]: {
+                  ...t,
+                  paused: t.paused.filter((r) => r.id !== row.id),
+                  rows: t.rows.some((r) => r.text === row.text) ? t.rows : [...t.rows, row],
+                },
+              },
+            };
+          });
+          continue;
+        }
         last = await put(row);
         if (!last.ok) return last;
       }
-      patch(tabId, () => ({ taking: false, editingId: null }));
+      patch(tabId, () => ({ taking: false, editingId: null, turnEnded: false }));
       return last;
     },
 

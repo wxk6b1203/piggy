@@ -184,6 +184,18 @@ async function press(key: string, mods: { meta?: boolean; shift?: boolean } = {}
   await flush();
 }
 
+/** 往"编辑排队消息"那个 textarea 里打字。 */
+async function typeEdit(value: string): Promise<void> {
+  const el = domContainer().querySelector('.pg-queue-edit') as HTMLTextAreaElement | null;
+  if (!el) throw new Error('找不到编辑框');
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
 async function click(sel: string, index = 0): Promise<void> {
   const el = domContainer().querySelectorAll(sel)[index] as HTMLElement | undefined;
   if (!el) throw new Error(`找不到 ${sel}[${index}]`);
@@ -198,6 +210,11 @@ const byData = (sel: string): Element[] => [...domContainer().querySelectorAll(s
 const rowTexts = (): string[] => (useQueue.getState().tabs[TAB]?.rows ?? []).map((r) => r.text);
 const pausedTexts = (): string[] => (useQueue.getState().tabs[TAB]?.paused ?? []).map((r) => r.text);
 const paused = (): QueueRow[] => useQueue.getState().tabs[TAB]?.paused ?? [];
+
+/** 这一轮跑完（`agent_settled`）：`settled()` 会摘掉 steering 行、清掉 stream 标志。 */
+function settle(): void {
+  setStreaming(false);
+}
 
 /** 走真实入口排队（`⌘↵` 是插话，所以追加要用 `↵` / `⌘⇧↵`）。 */
 async function enqueueVia(text: string, mods: { meta?: boolean; shift?: boolean } = {}): Promise<void> {
@@ -364,6 +381,7 @@ describe('取回与放回', () => {
     setStreaming(true);
     await seedThree();
     const b = useQueue.getState().tabs[TAB]!.rows.find((r) => r.text === 'B')!;
+    calls = []; // 只看取回期间发生了什么（入队 A/B/C 的那三次不算）
 
     await act(async () => {
       await useQueue.getState().take(TAB, b.id);
@@ -372,7 +390,10 @@ describe('取回与放回', () => {
     expect(pausedTexts()).toEqual(['B', 'C']);
     expect(rowTexts()).toEqual(['A']);
     expect(calls.some((c) => c.cmd === 'pi_clear_queue')).toBe(true);
-    expect(piQueue.followUp).toEqual([]); // pi 那边确实清空了
+    // `clear_queue` 是整清：**保留的前缀也要按原序重新下发**，否则"界面上还排着"
+    // 与"pi 里其实没了"会越差越远（用户实报的"另一条也没了"就是这个根因）
+    expect(piQueue.followUp).toEqual(['A']);
+    expect(prompts().map((c) => c.args.message)).toEqual(['A']);
   });
 
   it('取回时对不上账的那条**不重建**（它已经被 pi 吃进回合了）', async () => {
@@ -408,18 +429,17 @@ describe('取回与放回', () => {
     await act(async () => {
       await useQueue.getState().take(TAB, b.id);
     });
-    calls = [];
+    calls = []; // take 阶段重发前缀的调用不算在"放回"头上
     await act(async () => {
       await useQueue.getState().putBack(TAB);
     });
 
+    // A 在 take 阶段已经作为"前缀"重新下发过了，这里只发暂停的 B、C（**不重发 A**）
     expect(prompts().map((c) => c.args.message)).toEqual(['B', 'C']);
     expect(prompts().every((c) => c.args.streamingBehavior === 'followUp')).toBe(true);
     expect(pausedTexts()).toEqual([]);
-    // 只剩 B、C：A 是**运行中那一轮**的用户消息（`setStreaming(true)` 时被 pi 消费掉了），
-    // 它本来就不该回到队列里 —— 队列不是转录。
-    expect(rowTexts()).toEqual(['B', 'C']);
-    expect(piQueue.followUp).toEqual(['B', 'C']);
+    expect(rowTexts()).toEqual(['A', 'B', 'C']);
+    expect(piQueue.followUp).toEqual(['A', 'B', 'C']);
   });
 
   it('删除暂停行：只从暂存里去掉，放回时不再下发', async () => {
@@ -440,7 +460,7 @@ describe('取回与放回', () => {
     });
 
     expect(prompts().map((c2) => c2.args.message)).toEqual(['B']);
-    expect(rowTexts()).toEqual(['B']);
+    expect(rowTexts()).toEqual(['A', 'B']);
   });
 
   it('编辑暂停行：改的就是那一行的文本（其余顺序不动）', async () => {
@@ -595,6 +615,74 @@ describe('dock 交互', () => {
     expect((domContainer().querySelector('[data-take]') as HTMLButtonElement).disabled).toBe(true);
     expect((domContainer().querySelector('[data-steer]') as HTMLButtonElement).disabled).toBe(true);
     expect((domContainer().querySelector('[data-clear]') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+
+/* ────────────────── 用户实报：编辑打勾之后 ────────────────── */
+
+describe('编辑暂停行（用户截图报的那条路）', () => {
+  it('运行中：打勾保存后行回到队列、暂存清空，不弹"转向/追加"', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    setStreaming(true);
+    await enqueueVia('A');
+    await enqueueVia('B');
+    await click('.pg-queue-head-toggle');
+    // 编辑第二条（最后一条 → 不确认直接取回）
+    await click('[data-edit]', 1);
+    await typeEdit('B 改过');
+    await click('[aria-label="保存排队消息"]');
+
+    expect(pausedTexts()).toEqual([]);
+    expect(rowTexts()).toEqual(['A', 'B 改过']);
+    expect(prompts().map((c) => c.args.message)).toContain('B 改过');
+  });
+
+  it('**一轮已经结束**时编辑暂停行：不许冒第二条、不许把行丢掉', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    setStreaming(true);
+    await enqueueVia('A');
+    await enqueueVia('B');
+    await click('.pg-queue-head-toggle');
+    await click('[data-edit]', 1);
+    // 用户还在编辑框里打字时，这一轮结束了（真实时序：编辑不是瞬时的）
+    settle();
+    await typeEdit('B 改过');
+    await click('[aria-label="保存排队消息"]');
+
+    // 关键断言：编辑的那条**只出现一次**（既不是"外来行"多冒一条，也不是消失）
+    const rows = rowTexts();
+    expect(rows.filter((t) => t === 'B 改过')).toHaveLength(1);
+    expect(pausedTexts()).toEqual([]);
+  });
+});
+
+
+/* ────────────────── 工具行没有"转向/追加"按钮 ────────────────── */
+
+describe('输入卡工具行', () => {
+  it('流式中**不再**出现「转向 / 追加」按钮（用户实报：编辑完突然冒出两个按钮）', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    setStreaming(true);
+    await enqueueVia('A');
+    await enqueueVia('B');
+    await click('.pg-queue-head-toggle');
+    await click('[data-edit]', 1);
+    await typeEdit('B 改过');
+    await click('[aria-label="保存排队消息"]');
+
+    const tools = domContainer().querySelector('.pg-composer-tools-right')!;
+    expect(tools.textContent).not.toContain('转向');
+    expect(tools.textContent).not.toContain('追加');
+    // 投递语义只由手势表决定；发送键仍在（标签随状态说明按下去会发生什么）
+    expect(tools.querySelector('.pg-send-btn')).not.toBeNull();
+  });
+
+  it('空闲时也没有这两粒（它们从来只该是手势，不是按钮）', () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    const tools = domContainer().querySelector('.pg-composer-tools-right')!;
+    expect(tools.textContent).not.toContain('转向');
+    expect(tools.textContent).not.toContain('追加');
   });
 });
 
