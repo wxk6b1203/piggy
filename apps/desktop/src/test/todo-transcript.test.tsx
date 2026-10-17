@@ -163,6 +163,36 @@ describe('转录里的清单行', () => {
     expect(rows[1]!.querySelector('[data-todo-caption]')!.textContent).toContain('与上次清单相比');
   });
 
+  it('分页窗口从半途开始（hasMore）→ 说「旧清单不可用」，不谎称「首次记录」', async () => {
+    /* 2026-10-17 之前 `hasMore` 这个 prop 生产里**从没被传过**，于是这条判据是死分支：
+       窗口从半途载入（更早的清单不在内存里）时，界面仍说"首次记录" —— 那是假话。
+       现在 MessageView / ToolCallRow 各自从 tab 的 `hasMore` 取，这条用例钉住接线。 */
+    useMessages.getState().hydratePage(
+      TAB,
+      [
+        { role: 'user', message: { role: 'user', timestamp: 1, content: [{ type: 'text', text: '接着上次做' }] } },
+        {
+          role: 'assistant',
+          message: writeCall(2, 'c1', [
+            { content: '一', status: 'in_progress' },
+            { content: '二', status: 'pending' },
+          ]),
+        },
+        { role: 'toolResult', message: writeResult(3, 'c1', 'Updated todo list: 2 pending.') },
+      ] as never[],
+      { cursor: null, hasMore: true },
+    );
+    mountDom(<Transcript tabId={TAB} />);
+    await flush();
+
+    const row = qa('[data-todo-row]')[0];
+    expect(row, '清单行没渲染出来').toBeTruthy();
+    // 说明文案在展开后的正文里（清单行默认折叠，与工具行同一套 DisclosureRow）
+    await click(row!.querySelector('[data-disclosure-row]')!);
+    await flush();
+    expect(row!.querySelector('[data-todo-caption]')?.textContent).toContain('旧清单不可用');
+  });
+
   it('没探测到插件 → 转录里没有清单行（退回通用工具行）', async () => {
     setCapability(false);
     seedTwoWrites();

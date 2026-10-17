@@ -221,8 +221,12 @@ worker 空闲（`agent_settled` 后）超过 `idleTimeout`（默认 10min，可�
 > `warm_matches` / `should_refill_warm` / `take_expired_warm` / `take_warm_for_shutdown`、
 > 配置字段 `warm_worker` 与下发字段 `warmWorkerSupported`、设置页那一行、
 > 契约用例 C16、以及为 C16 才存在的 `ConfigDirGuard`（测试专用配置目录覆盖）。
-> ⚠️ **`TabSlot` 共享槽与 `coalesce.rs::frames_follow_a_rebind` 保留**：那条不变量
-> （"帧的通道名在 flush 时读、不在构造时拷"）与预热无关，坏了就是静默串台。
+> ⚠️ **`TabSlot` 共享槽也在 2026-10-17 删了**（本次简化）：复用进程的路径已经不存在，
+> 留着一个可改写但没人改的锁，代价是**合帧器每帧拿一次读锁**。
+> `client.rs` 的 `tab_id` 退回裸 `String`（spawn 时定死），
+> `coalesce.rs::frames_follow_a_rebind` 那条用例随能力一起删除 —— 它测的是"重绑之后帧跟着走"，
+> 而重绑已经不可能发生。**"事件归属"这件事仍然重要**，只是保证它的方式从"每次读锁"
+> 变成了"通道名在 spawn 时定、之后不可变"（docs/15 规矩 137 已同步）。
 > 本节的其余内容**按原样留档** —— 它是这次删除决策的依据，不是现状描述。
 
 

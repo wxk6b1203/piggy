@@ -29,6 +29,7 @@ import { SessionWorkspaceComposer } from '@/features/chat/Composer';
 import { toast } from '@/lib/feedback';
 import { useMessages } from '@/stores/messages';
 import { useQueue, reconcileRows, type QueueRow } from '@/stores/queue';
+import { applyCommitEvent } from '@/lib/tabEvents';
 import { domContainer, mountDom, unmountDom } from './dom-render';
 
 const TAB = 't-queue';
@@ -40,33 +41,15 @@ let piQueue: { steering: string[]; followUp: string[] };
 /** 哪些 tab 正在"流式"（决定 pi_prompt 是入队还是起一轮）。 */
 let streamingTabs: Set<string>;
 
+/** 把一条 `pi:commit` 事件喂进**生产接线**（`lib/tabEvents.applyCommitEvent`）。 */
 function emit(tabId: string, payload: Record<string, unknown>): void {
-  // 与 `lib/tabEvents.ts` 的接线一致：事件先落 store，再把 pi 的快照交给影子对账，
-  // 并告诉它"这一帧里哪条用户消息已经进转录了"（否则已消费的行会被当成外来行）。
   act(() => {
-    useMessages.getState().applyCommit(tabId, payload as never);
-    const text = userTextOf(payload);
-    useQueue.getState().reconcile(
-      tabId,
-      { steering: piQueue.steering, followUp: piQueue.followUp },
-      text ? [text] : [],
-    );
+    /* ⚠️ 必须走生产那个函数，不要在这里再抄一遍"applyCommit → 取文本 → reconcile"。
+       抄一遍的话，生产哪天换了 `delivered` 的口径，这 31 条仍然会绿（测试在验证自己）。 */
+    applyCommitEvent(tabId, payload as { type: string });
   });
-}
-
-/** 事件里的用户消息文本（与 `tabEvents.userMessageText` 同一口径）。 */
-function userTextOf(ev: Record<string, unknown>): string {
-  const m = ev.message as { role?: string; content?: unknown } | undefined;
-  if (m?.role !== 'user') return '';
-  if (typeof m.content === 'string') return m.content;
-  if (!Array.isArray(m.content)) return '';
-  return m.content
-    .map((b) =>
-      b && typeof b === 'object' && (b as { type?: string }).type === 'text'
-        ? String((b as { text?: string }).text ?? '')
-        : '',
-    )
-    .join('');
+  // `queue_update` 的对账发生在 `applyCommitEvent` 里；`piQueue` 只是**构造事件**用的，
+  // 不再是"影子从哪读快照"的第二个来源。
 }
 
 function installBackend(): void {

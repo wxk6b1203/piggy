@@ -47,6 +47,8 @@ export interface ToolCallRowProps {
 export function ToolCallRow({ tabId, callId, toolName, args, baseline, memory }: ToolCallRowProps) {
   const result = useToolResult(tabId, callId);
   const streaming = useTabMsg(tabId, (t) => t.streaming);
+  /* 分页窗口从半途开始 → 更早的清单不在内存里，TodoRow 据此说「旧清单不可用」 */
+  const hasMore = useTabMsg(tabId, (t) => t.hasMore);
   const todoOn = useTodoSupported();
   const text = result?.text ?? '';
   const isError = result?.isError === true;
@@ -70,6 +72,7 @@ export function ToolCallRow({ tabId, callId, toolName, args, baseline, memory }:
         text={text}
         isError={isError}
         baseline={baseline}
+        hasMore={hasMore}
         memory={memory}
       />
     );

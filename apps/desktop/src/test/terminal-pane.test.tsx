@@ -94,14 +94,6 @@ function installBackend(): void {
 
 const callsOf = (cmd: string): Call[] => calls.filter((c) => c.cmd === cmd);
 
-async function flush(times = 3): Promise<void> {
-  for (let i = 0; i < times; i += 1) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  }
-}
-
 /**
  * 等 TerminalPane 里那几层 await（dynamic import xterm → pty_open → 挂 pty:out 监听）落地。
  *

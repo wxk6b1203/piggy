@@ -19,7 +19,7 @@
  */
 import { useMemo, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import type { MessageView as MessageViewRow } from '@/stores/messages';
+import { useTabMsg, type MessageView as MessageViewRow } from '@/stores/messages';
 import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
@@ -138,6 +138,10 @@ export function MessageView({
   memory?: RowMemory | undefined;
 }) {
   const todoOn = useTodoSupported();
+  /* 分页窗口从半途开始时，本轮之前的清单**不在窗口里** —— TodoRow 要据此说
+     「旧清单不可用」而不是「首次记录」（`lib/todoModel.ts` 的 `todoDiff` 第三参）。
+     2026-10-17 之前这个 prop 从没被传过，那条判据是死分支。 */
+  const listHasMore = useTabMsg(tabId ?? null, (t) => t.hasMore);
   const m = view.message as AgentMessage & { content?: unknown };
   const role = view.role;
   /* 会话内提示行（正在重试 / 正在压缩）：不是会话内容，是**进程状态**的一行。
@@ -205,6 +209,7 @@ export function MessageView({
           text={text}
           isError={rm.isError === true}
           baseline={baseline}
+          hasMore={listHasMore}
           memory={memory}
         />
       );

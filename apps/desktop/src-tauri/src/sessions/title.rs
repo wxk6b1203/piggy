@@ -34,7 +34,7 @@
 //! 完全不进被命名那个会话的转录——与 DSH 的"titles never enter model input"同效，
 //! 但这里靠的是进程隔离而不是服务侧保证。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use serde_json::{json, Value};
@@ -434,41 +434,34 @@ pub struct GenRequest<'a> {
     pub max_chars: u32,
 }
 
-/// 一次性进程到底该执行谁：`(程序, 完整 argv)`。
-///
-/// Windows 上 pi 常是 pnpm/npm 的 `.cmd` 垫片，而标准库**拒绝**把含换行的参数交给
-/// 批处理文件（`batch file arguments are invalid`）—— 而标题的提示词天生多行。
-/// 所以先试着解析出垫片背后的真实命令（`node "<cli.js>" …`），把参数直接交给
-/// `CreateProcess`，那一层 `cmd.exe` 转义就不存在了。
-///
-/// **解析不出来必须回退到垫片本身**：宁可失败得和以前一样（用户至少能看到 pi 的原话），
-/// 也不能因为解析失败就换一个根本不存在的启动器。
-fn spawn_argv(pi_bin: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
-    match crate::pi::discovery::direct_command(pi_bin) {
-        Some((program, mut prefix)) => {
-            prefix.extend(args.iter().cloned());
-            (program, prefix)
-        }
-        None => (pi_bin.to_path_buf(), args.to_vec()),
-    }
+/// 一次性 pi 进程的运行结果。
+#[derive(Debug)]
+struct PiOnce {
+    stdout: String,
+    stderr: String,
+    status: std::process::ExitStatus,
 }
 
-/// 起一个一次性 pi 进程生成标题。**不写任何文件**。
-pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
-    let GenRequest {
-        pi_bin,
-        cwd,
-        provider,
-        model_id,
-        thinking,
-        system,
-        user,
-        max_chars,
-    } = req;
-    let started = std::time::Instant::now();
-    let args = generate_args(provider, model_id, thinking, system, user);
-
-    let (program, argv) = spawn_argv(pi_bin, &args);
+/// 跑一次一次性 pi 进程（标题生成 / 列模型共用，2026-10-17 合并）。
+///
+/// 三个细节都是**纪律**，不是风格 —— 此前两条路各写一遍，改一处漏一处就出事：
+/// 1. **先并发读干 stdout + stderr，再 `wait`**：顺序反过来会在管道写满时死锁
+///    （子进程等读者、我们等子进程）；
+/// 2. **超时后先杀树再 wait**：Windows 上 pi 是 `node` 垫片，只 kill 直接子进程会留下孤儿；
+/// 3. 启动器走 `pi::process::worker_command`（解析 `.cmd` 垫片背后的真实解释器）——
+///    批处理文件**不能**接收含换行的参数，而标题的提示词天生多行。
+///    解析不出来就回退垫片本身：宁可失败得和以前一样，也别换一个不存在的启动器。
+///
+/// @param what - 超时文案的主语（"生成标题" / "列出模型"）
+async fn run_pi_once(
+    pi_bin: &Path,
+    cwd: &Path,
+    args: &[String],
+    timeout: std::time::Duration,
+    what: &str,
+) -> Result<PiOnce, String> {
+    let (program, mut argv) = crate::pi::process::worker_command(pi_bin);
+    argv.extend(args.iter().cloned());
     let mut child = Command::new(&program)
         .args(&argv)
         .current_dir(cwd)
@@ -494,19 +487,45 @@ pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
         }
         (o, e)
     };
-    let collected = match tokio::time::timeout(GENERATE_TIMEOUT, collect).await {
+    let (out, err) = match tokio::time::timeout(timeout, collect).await {
         Ok(v) => v,
         Err(_) => {
             kill_tree_and_wait(&mut child).await;
-            return Err(format!("生成标题超过 {} 秒未返回，已中止", GENERATE_TIMEOUT.as_secs()));
+            return Err(format!("{what}超过 {} 秒未返回，已中止", timeout.as_secs()));
         }
     };
     let status = child.wait().await.map_err(|e| format!("等待 pi 失败：{e}"))?;
-    if !status.success() {
-        let tail = collected.1.trim().lines().last().unwrap_or("").to_string();
+    Ok(PiOnce {
+        stdout: out,
+        stderr: err,
+        status,
+    })
+}
+
+/// 起一个一次性 pi 进程生成标题。**不写任何文件**。
+pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
+    let GenRequest {
+        pi_bin,
+        cwd,
+        provider,
+        model_id,
+        thinking,
+        system,
+        user,
+        max_chars,
+    } = req;
+    let started = std::time::Instant::now();
+    let args = generate_args(provider, model_id, thinking, system, user);
+
+    let out = run_pi_once(pi_bin, cwd, &args, GENERATE_TIMEOUT, "生成标题").await?;
+    if !out.status.success() {
+        let tail = out.stderr.trim().lines().last().unwrap_or("").to_string();
         return Err(format!(
             "pi 生成标题失败（退出码 {}）{}",
-            status.code().map(|c| c.to_string()).unwrap_or_else(|| "信号".into()),
+            out.status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "信号".into()),
             if tail.is_empty() {
                 String::new()
             } else {
@@ -515,7 +534,7 @@ pub async fn generate(req: GenRequest<'_>) -> Result<Generated, String> {
         ));
     }
 
-    let raw = collected.0.trim().to_string();
+    let raw = out.stdout.trim().to_string();
     let title = sanitize(&raw, max_chars);
     Ok(Generated {
         usable: !title.is_empty(),
@@ -681,39 +700,8 @@ pub fn parse_list_models(stdout: &str) -> Vec<ModelOption> {
 /// 详见 docs/15 的已知缺口）。项目级模型仍可手动填入。
 pub async fn list_models(pi_bin: &Path, cwd: &Path) -> Result<ModelOptions, String> {
     let started = std::time::Instant::now();
-    let (program, argv) = spawn_argv(pi_bin, &["--list-models".to_string()]);
-    let mut child = Command::new(&program)
-        .args(&argv)
-        // 与一次性生成进程同样的处理：stdin 关掉，否则 pi 可能等着读输入
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("启动 {} 失败：{e}", pi_bin.display()))?;
-
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let collect = async {
-        let mut o = String::new();
-        let mut e = String::new();
-        if let Some(s) = stdout.as_mut() {
-            let _ = s.read_to_string(&mut o).await;
-        }
-        if let Some(s) = stderr.as_mut() {
-            let _ = s.read_to_string(&mut e).await;
-        }
-        (o, e)
-    };
-    let (out, err) = match tokio::time::timeout(LIST_TIMEOUT, collect).await {
-        Ok(v) => v,
-        Err(_) => {
-            kill_tree_and_wait(&mut child).await;
-            return Err(format!("列出模型超过 {} 秒未返回，已中止", LIST_TIMEOUT.as_secs()));
-        }
-    };
-    let status = child.wait().await.map_err(|e| format!("等待 pi 失败：{e}"))?;
+    let once = run_pi_once(pi_bin, cwd, &["--list-models".to_string()], LIST_TIMEOUT, "列出模型").await?;
+    let (out, err, status) = (once.stdout, once.stderr, once.status);
     let models = parse_list_models(&out);
     if models.is_empty() {
         // 成功退出但一个都没解析出来：把 pi 的原话（stdout 优先，其次 stderr 最后一行）
@@ -860,6 +848,95 @@ mod tests {
         // 超长上限不 panic
         assert_eq!(truncate_chars("短", 100), "短");
         assert_eq!(truncate_chars("短", 0), "");
+    }
+
+    /* ---------------- 一次性 pi 进程（run_pi_once，2026-10-17 合并后补的覆盖） ----------------
+    这两条以前**没有任何覆盖**：`generate` / `list_models` 各自写了一遍 spawn+超时+杀树，
+    只有那条 `#[ignore]` 的真机用例会经过它。现在共用 `run_pi_once`，用假 pi 脚本把它钉住。 */
+
+    #[cfg(unix)]
+    fn write_fake_pi(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("pi");
+        std::fs::write(&p, body).unwrap();
+        let mut perm = std::fs::metadata(&p).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&p, perm).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// 正常路径：跑完、收 stdout、收拾成标题。
+    #[cfg(unix)]
+    #[test]
+    fn generate_runs_the_shared_runner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pi = write_fake_pi(tmp.path(), "#!/bin/sh\nprintf '  A title from pi  \\n'\n");
+        let got = block_on(generate(GenRequest {
+            pi_bin: &pi,
+            cwd: tmp.path(),
+            provider: None,
+            model_id: None,
+            thinking: None,
+            system: "s",
+            user: "u",
+            max_chars: 20,
+        }))
+        .expect("假 pi 正常退出，应当成功");
+        assert_eq!(got.title, "A title from pi");
+        assert!(got.usable);
+    }
+
+    /// 失败路径：非零退出 → 错误里带 pi 的**最后一行 stderr**（不要只报退出码）。
+    #[cfg(unix)]
+    #[test]
+    fn generate_surfaces_the_last_stderr_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pi = write_fake_pi(tmp.path(), "#!/bin/sh\necho 'no key configured' >&2\nexit 3\n");
+        let err = block_on(generate(GenRequest {
+            pi_bin: &pi,
+            cwd: tmp.path(),
+            provider: None,
+            model_id: None,
+            thinking: None,
+            system: "s",
+            user: "u",
+            max_chars: 20,
+        }))
+        .unwrap_err();
+        assert!(err.contains("退出码 3"), "错误文案丢了退出码: {err}");
+        assert!(err.contains("no key configured"), "错误文案丢了 pi 的原话: {err}");
+    }
+
+    /// 超时：**先杀树再 wait**，不能让调用方干等子进程跑完。
+    #[cfg(unix)]
+    #[test]
+    fn run_pi_once_kills_the_tree_on_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pi = write_fake_pi(tmp.path(), "#!/bin/sh\nsleep 5\n");
+        let started = std::time::Instant::now();
+        let err = block_on(run_pi_once(
+            &pi,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_millis(150),
+            "测试",
+        ))
+        .unwrap_err();
+        assert!(err.contains("测试超过"), "超时文案不对: {err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "超时之后还在等子进程（杀树没生效）: {:?}",
+            started.elapsed()
+        );
     }
 
     /// 收拾模型输出：引号、前缀、句号、多行、连续空白。

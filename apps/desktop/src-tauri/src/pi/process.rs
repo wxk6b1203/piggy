@@ -298,7 +298,7 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
     let (state_tx, state_rx) = tokio::sync::watch::channel(WorkerState::Spawning);
 
     let worker: Worker = Arc::new(WorkerInner {
-        tab_id: std::sync::Arc::new(std::sync::RwLock::new(tab_id.to_string())),
+        tab_id: tab_id.to_string(),
         cwd: args.cwd.clone(),
         stdin_tx,
         pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -355,8 +355,8 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
         let w = worker.clone();
         let sink2 = sink.clone();
         tokio::spawn(async move {
-            /* ⚠️ 不再把 tab_id 拷进闭包：reader 与合帧器都从 `worker.tab_slot()` 读
-            （预热池会把一个已起的进程重绑给另一个标签页，事件必须跟着走）。 */
+            /* `tab_id` 在 spawn 时定死（2026-10-17 去掉共享槽，见 `client.rs` 的
+            `tab_id` 字段注释）：合帧器只读一次，不再每帧拿锁。 */
             run_reader(w, sink2, stdout).await;
         });
     }
@@ -366,7 +366,7 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
 
 async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, stdout: ChildStdout) {
     let mut decoder = JsonlDecoder::new();
-    let mut coalescer = FrameCoalescer::new(worker.tab_slot(), sink.clone());
+    let mut coalescer = FrameCoalescer::new(worker.tab_id(), sink.clone());
     let mut buf = vec![0u8; 64 * 1024];
     let mut stdout = stdout;
     let mut interval = tokio::time::interval(Duration::from_millis(16));

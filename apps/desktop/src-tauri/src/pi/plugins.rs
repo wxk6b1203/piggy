@@ -262,13 +262,17 @@ pub fn enabled_plugin_dirs(candidates: &[Candidate], cwd: Option<&Path>) -> Vec<
         .collect()
 }
 
-/// 用户主目录（`HOME` / `USERPROFILE`）。
+/// 用户主目录 —— **不要再自己解析**，直接转 [`crate::config::paths::home_dir`]。
+///
+/// 2026-10-17 起这里只是一层壳（保留是因为调用方与测试按名字引它）：`config::paths`
+/// 的那一份才是唯一口径 —— Windows 上 USERPROFILE 优先、空串过滤、HOMEDRIVE+HOMEPATH
+/// 兜底。老实现是 `HOME` 优先的裸读，于是在 Git Bash（`HOME=/c/Users/...`）里
+/// 插件判重会去查 MSYS 路径、找不到 pi 真正用的 `C:\Users\...\.pi\agent\extensions`，
+/// 于是"用户已装同名扩展"这条保护失效 → 注入两份 → pi 启动即因工具名冲突退出。
 ///
 /// @returns 主目录；拿不到返回 None（此时只查项目级目录）
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    crate::config::paths::home_dir()
 }
 
 #[cfg(test)]

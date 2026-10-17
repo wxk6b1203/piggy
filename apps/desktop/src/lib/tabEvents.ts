@@ -23,6 +23,8 @@ import type { Frame } from '@piggy/pi-protocol';
 const DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor']);
 
 type VoidFn = () => void;
+/** `pi:commit` 事件（`type` 是判别式，其余字段随类型而定）。 */
+type TabEvent = { type: string } & Record<string, unknown>;
 const listeners = new Map<string, Promise<VoidFn>>();
 
 export async function ensureTabListeners(tabId: string): Promise<void> {
@@ -46,77 +48,7 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
       }),
     );
     un.push(
-      await on(`pi:commit:${tabId}`, (ev: { type: string }) => {
-        /*
-         * 一轮的边界（流式那一行的生死）在**事件层**认，不在渲染侧：
-         * `message_start` 建行、`message_end` 转正都必须与帧走在同一条通道上
-         * （`agent_start` 与紧随其后的帧走同一条 IPC，到达顺序即发送顺序）。
-         * 渲染侧只能"下一帧再清"，没有这个保证 —— 探针实测过：清晚了会把新一轮
-         * 开头已经收到的帧抹掉，那一行最后是空的。
-         */
-        useMessages.getState().applyCommit(tabId, ev);
-        /* 等待队列的影子（`stores/queue.ts`）：pi 的队列是权威，影子只补它给不了的东西
-           （稳定 id / 图片 / 归属）。三条线都必须接在这里，因为队列的生命周期完全由
-           pi 的事件驱动：
-             · `queue_update` → 对账（唯一的内容来源，pi 没有同步读取队列的 RPC）；
-             · 落地的**用户消息** → 这一条已经进转录了，影子摘掉它；
-             · `agent_settled` → `steering` 队列必然已空（`followUp` 要留着：它们正是
-               "等这轮结束就发"的那批，pi 会在下一次 run 开头把它们变成新回合）。 */
-        if (ev.type === 'queue_update') {
-          const q = ev as unknown as { steering?: string[]; followUp?: string[] };
-          /* `userText`：这一帧里落地的用户消息。pi 消费掉队列项之后 `queue_update`
-             里就没有它了 —— 不把"它已经进转录了"这件事一起告诉对账，影子会把它
-             当成外来行重新造一条出来（见 `reconcileRows` 的注释）。 */
-          const userText = userMessageText(ev);
-          useQueue.getState().reconcile(
-            tabId,
-            { steering: q.steering ?? [], followUp: q.followUp ?? [] },
-            userText ? [userText] : [],
-          );
-        }
-        if (ev.type === 'message_end') {
-          const text = userMessageText(ev);
-          if (text) useQueue.getState().delivered(tabId, text);
-        }
-        if (ev.type === 'agent_settled') useQueue.getState().settled(tabId);
-        // 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
-        useTodo.getState().noteCommit(tabId, ev);
-        useTrajectory.getState().appendCommit(tabId, ev);
-        if (ev.type === 'bash_execution_update') {
-          const b = ev as unknown as { delta?: string };
-          useBash.getState().append(tabId, b.delta ?? '');
-        }
-        if (ev.type === 'agent_settled') {
-          /* 这一轮结束了：还挂着的待答提问已经没有去处（插件的 select 早被 pi 关掉），
-             清掉它们 —— 否则卡片会一直停在"等你回答"，点了提交只得到沉默的失败。 */
-          useQuestions.getState().clearTab(tabId);
-          /* 一轮落定时**还挂着流式行** = 那个 `message_end` 没来（用户中断、pi 出错后直接
-             收尾、扩展把消息吞了……）。落地成一张卡片，别让它永远转圈。
-             pi 1.1.0 起 `agent_settled` 自带权威字段 **`aborted`**：true = 我们请求过中断
-             （用户按了 Esc / 点了停止），false = 这一轮是自己结束的却没给 `message_end`
-             —— 后者是**出错**，该画报警色而不是"你自己取消的"中性色。
-             ⚠️ 顺序：先落地（要读 `pendingId`），再走下面那些"落定之后"的事。 */
-          const aborted = (ev as { aborted?: boolean }).aborted === true;
-          useMessages
-            .getState()
-            .interruptTurn(
-              tabId,
-              aborted
-                ? '本轮已中止（中断请求已生效）'
-                : '本轮结束，但没有收到最终消息（pi 可能出错了；运行日志里通常有原因）',
-              { failed: !aborted },
-            );
-          const t = useTabs.getState();
-          if (t.activeTabId !== tabId) t.markUnread(tabId);
-          windowEvents.emit('refresh-stats', tabId);
-          void cmd<Record<string, unknown>>('pi_get_state', { tabId }).then((st) => {
-            t.patch(tabId, {
-              model: (st.model as TabModel) ?? null,
-              thinkingLevel: (st.thinkingLevel as string) ?? null,
-            });
-          }).catch(() => {});
-        }
-      }),
+      await on(`pi:commit:${tabId}`, (ev: TabEvent) => applyCommitEvent(tabId, ev)),
     );
     un.push(
       await on(`pi:state:${tabId}`, (st: { state?: string } & Record<string, unknown>) => {
@@ -182,6 +114,94 @@ export async function ensureTabListeners(tabId: string): Promise<void> {
   })();
   listeners.set(tabId, promise);
   await promise;
+}
+
+
+/**
+ * `pi:commit` 的全部落库逻辑（**导出是为了让测试走生产接线**，2026-10-17）。
+ *
+ * 为什么必须抽出来：`queue-dock.test.tsx` 原先自己抄了一遍"applyCommit → 取用户消息文本
+ * → reconcile 三步"。那是**测试在验证自己** —— 生产哪天换了 `delivered` 的口径，
+ * 那 31 条仍然会绿。抽成函数后监听器只做分发，测试直接调它，两边是同一条路。
+ *
+ * 一轮的边界（流式那一行的生死）在**事件层**认，不在渲染侧：`message_start` 建行、
+ * `message_end` 转正都必须与帧走在同一条通道上（`agent_start` 与紧随其后的帧走同一条
+ * IPC，到达顺序即发送顺序）。渲染侧只能"下一帧再清"，探针实测过：清晚了会把新一轮
+ * 开头已经收到的帧抹掉，那一行最后是空的。
+ *
+ * @param tabId - 会话标签
+ * @param ev - `pi:commit` 的原始事件（`{ type, ... }`）
+ */
+export function applyCommitEvent(tabId: string, ev: TabEvent): void {
+  /*
+   * 一轮的边界（流式那一行的生死）在**事件层**认，不在渲染侧：
+   * `message_start` 建行、`message_end` 转正都必须与帧走在同一条通道上
+   * （`agent_start` 与紧随其后的帧走同一条 IPC，到达顺序即发送顺序）。
+   * 渲染侧只能"下一帧再清"，没有这个保证 —— 探针实测过：清晚了会把新一轮
+   * 开头已经收到的帧抹掉，那一行最后是空的。
+   */
+  useMessages.getState().applyCommit(tabId, ev);
+  /* 等待队列的影子（`stores/queue.ts`）：pi 的队列是权威，影子只补它给不了的东西
+     （稳定 id / 图片 / 归属）。三条线都必须接在这里，因为队列的生命周期完全由
+     pi 的事件驱动：
+       · `queue_update` → 对账（唯一的内容来源，pi 没有同步读取队列的 RPC）；
+       · 落地的**用户消息** → 这一条已经进转录了，影子摘掉它；
+       · `agent_settled` → `steering` 队列必然已空（`followUp` 要留着：它们正是
+         "等这轮结束就发"的那批，pi 会在下一次 run 开头把它们变成新回合）。 */
+  if (ev.type === 'queue_update') {
+    const q = ev as unknown as { steering?: string[]; followUp?: string[] };
+    /* `userText`：这一帧里落地的用户消息。pi 消费掉队列项之后 `queue_update`
+       里就没有它了 —— 不把"它已经进转录了"这件事一起告诉对账，影子会把它
+       当成外来行重新造一条出来（见 `reconcileRows` 的注释）。 */
+    const userText = userMessageText(ev);
+    useQueue.getState().reconcile(
+      tabId,
+      { steering: q.steering ?? [], followUp: q.followUp ?? [] },
+      userText ? [userText] : [],
+    );
+}
+if (ev.type === 'message_end') {
+  const text = userMessageText(ev);
+  if (text) useQueue.getState().delivered(tabId, text);
+}
+if (ev.type === 'agent_settled') useQueue.getState().settled(tabId);
+// 任务清单走同一条事件流：新一轮清空 / 新写入替换（DSH 的 turn/start 语义）
+useTodo.getState().noteCommit(tabId, ev);
+useTrajectory.getState().appendCommit(tabId, ev);
+if (ev.type === 'bash_execution_update') {
+  const b = ev as unknown as { delta?: string };
+  useBash.getState().append(tabId, b.delta ?? '');
+}
+if (ev.type === 'agent_settled') {
+  /* 这一轮结束了：还挂着的待答提问已经没有去处（插件的 select 早被 pi 关掉），
+     清掉它们 —— 否则卡片会一直停在"等你回答"，点了提交只得到沉默的失败。 */
+  useQuestions.getState().clearTab(tabId);
+  /* 一轮落定时**还挂着流式行** = 那个 `message_end` 没来（用户中断、pi 出错后直接
+     收尾、扩展把消息吞了……）。落地成一张卡片，别让它永远转圈。
+     pi 1.1.0 起 `agent_settled` 自带权威字段 **`aborted`**：true = 我们请求过中断
+     （用户按了 Esc / 点了停止），false = 这一轮是自己结束的却没给 `message_end`
+     —— 后者是**出错**，该画报警色而不是"你自己取消的"中性色。
+     ⚠️ 顺序：先落地（要读 `pendingId`），再走下面那些"落定之后"的事。 */
+  const aborted = (ev as { aborted?: boolean }).aborted === true;
+  useMessages
+    .getState()
+    .interruptTurn(
+      tabId,
+      aborted
+        ? '本轮已中止（中断请求已生效）'
+        : '本轮结束，但没有收到最终消息（pi 可能出错了；运行日志里通常有原因）',
+      { failed: !aborted },
+    );
+  const t = useTabs.getState();
+  if (t.activeTabId !== tabId) t.markUnread(tabId);
+  windowEvents.emit('refresh-stats', tabId);
+  void cmd<Record<string, unknown>>('pi_get_state', { tabId }).then((st) => {
+    t.patch(tabId, {
+      model: (st.model as TabModel) ?? null,
+      thinkingLevel: (st.thinkingLevel as string) ?? null,
+    });
+  }).catch(() => {});
+}
 }
 
 export function disposeTabListeners(tabId: string) {
