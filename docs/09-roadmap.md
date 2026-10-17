@@ -201,7 +201,8 @@ dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自�
 | 崩溃安全 | `lib.rs install_panic_hook`：panic 转储 `~/.piggy/logs/panic-*.log` 后交回默认 hook | ✅ |
 | 托盘 | `tray-icon` feature + TrayIconBuilder（显示/隐藏 + 退出） | ✅ |
 | 全局唤起 | `tauri-plugin-global-shortcut`：Cmd/Ctrl+Shift+P 显示并聚焦主窗（Rust 侧注册，无 webview 权限面） | ✅ |
-| 登录内嵌终端 | `src-tauri/src/pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `LoginTerminalModal`（@xterm/xterm + fit；关闭即 close 回收）**都在，但入口没接**：`LoginTerminalModal` 全仓**零渲染点**（`grep -rn LoginTerminalModal apps/desktop/src` 只有它自己的定义），设置页里没有任何"登录/认证"入口，`@xterm/xterm` 也**只被这一个组件 import**（2026-10-17 核对）。所以 `pty_*` 四条命令 + 设置里的入口 + 两个 npm 依赖，目前是**一条只有后端、没有前端出口的路** | ❌ 未完成（原标 ✅ 是错的；真机 OAuth 从来没走过） |
+| 内嵌终端 | `pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `TerminalPane`（xterm.js + fit，浏览器 mock 也回显）+ `BottomPanel` 两个 pane；入口：`Ctrl+``（`panel.terminal`）与会话头部图标按钮；**起始目录 = 当前会话 cwd**（04 §1.7） | ✅（2026-10-17；真机 shell 交互待你那边点一下） |
+| OAuth 登录**引导** | 原来的 `LoginTerminalModal`（设置 → 认证页入口）从未接线，已随内嵌终端落地**删除**（2026-10-17）。现在要登录就在终端里手动跑 `pi` 再 `/login`；要做成"点一下自动打开终端并跑 pi /login"，得先定认证页的入口位置 | ❌ 未做（不是回归：这个入口从来没存在过） |
 | 资源浏览器 | `fs_list_dir`（项目根子树、守卫校验、目录优先排序）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
 | 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）**都在，但前端从未接线**：`fs_write_edit` 全仓 0 调用、`FilePreview` 里没有任何编辑 UI（`git log -S fs_write_edit -- apps/desktop/src` 为空，说明不是后来删掉的，是从来没做） | ❌ 未完成（原标 ✅ 是错的） |
 | i18n | `lib/i18n.ts`：zh-CN/en-US 词典 + t() 回退链 + setLang 持久化/事件；已接 palette/welcome 文案；语言切换 UI 与全量文案迁移 = 持续项 | ✅ 骨架 |

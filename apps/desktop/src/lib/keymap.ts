@@ -19,6 +19,7 @@ export const DEFAULT_KEYS: Record<string, string> = {
   'thinking.cycle': 'cmd+e',
   'session.search': 'cmd+shift+f',
   'session.compact': 'cmd+shift+k',
+  'panel.terminal': 'ctrl+`',
   'bash.toggle': 'cmd+j',
   'help.shortcuts': 'cmd+/',
 };

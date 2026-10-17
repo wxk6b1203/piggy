@@ -208,11 +208,20 @@ export function useAppCommands() {
       },
     });
     registerCommand({
+      /* Ctrl+`（VS Code 的终端键）：终端是底部面板的**默认 pane** ——
+         已经开在 bash 上时按它会切回终端，开在终端上时按它是收起（与 VS Code 同义）。 */
+      id: 'panel.terminal',
+      title: '终端面板（内嵌终端，当前工作目录）',
+      category: '视图',
+      keys: 'ctrl+`',
+      run: () => useUi.getState().togglePanel('terminal'),
+    });
+    registerCommand({
       id: 'bash.toggle',
-      title: '切换终端面板',
+      title: 'bash 面板（让 pi 执行命令）',
       category: '视图',
       keys: 'cmd+j',
-      run: () => windowEvents.emit('toggle-bash-panel'),
+      run: () => useUi.getState().togglePanel('bash'),
     });
     registerCommand({
       id: 'help.shortcuts',

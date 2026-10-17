@@ -103,8 +103,13 @@ function emitQueue(tabId: string): void {
   });
 }
 
-/** 内嵌登录终端的假 PTY 序号。 */
+/** 内嵌终端的假 PTY 序号。 */
 let nextMockPtyId = 1;
+/** mock 的 PTY 表：只记 id → 起始目录（门禁用它核对"终端开在工作目录"）。 */
+const mockPtys = new Map<string, { cwd: string }>();
+function mockPtyOrThrow(id: string): void {
+  if (!mockPtys.has(id)) throw new Error(`PTY 不存在: ${id}`);
+}
 
 /** 提供商配置的 mock 副本：形状与 `provider_overview` 的一行一致，写入要真的记住。 */
 interface MockProvider {
@@ -1384,8 +1389,41 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     if (key) mockSessionNames.set(key, name);
     return null;
   },
-  /** 内嵌登录终端的 PTY：mock 没有真 PTY，给一个 id 让界面进入"已连接"形态。 */
-  pty_open: () => ({ id: `mock-pty-${nextMockPtyId++}` }),
+  /**
+   * 内嵌终端（`TerminalPane`）：mock 没有真进程，但要**有交互感** ——
+   * 打开时打一行欢迎语（带 cwd，门禁据此断言"起始目录 = 当前工作目录"），
+   * 之后回显输入、回车给一个新提示符。行为和真 PTY 的可见部分一致。
+   */
+  pty_open: (a) => {
+    const id = `mock-pty-${nextMockPtyId++}`;
+    const cwd = typeof a.cwd === 'string' && a.cwd !== '' ? a.cwd : '(未指定目录)';
+    mockPtys.set(id, { cwd });
+    // 异步推，避免在 invoke 返回**之前**就往还没挂好监听器的通道上发
+    setTimeout(() => {
+      emit(`pty:out:${id}`, { data: `\x1b[2mPiggy mock 终端 · ${cwd}\x1b[0m\r\n$ ` });
+    }, 0);
+    return { id, rows: 24, cols: 80 };
+  },
+  pty_write: (a) => {
+    const id = String(a.id ?? '');
+    mockPtyOrThrow(id);
+    for (const ch of String(a.data ?? '')) {
+      if (ch === '\r') emit(`pty:out:${id}`, { data: '\r\n$ ' });
+      else if (ch === '\u007f') emit(`pty:out:${id}`, { data: '\b \b' });
+      else emit(`pty:out:${id}`, { data: ch });
+    }
+    return null;
+  },
+  pty_resize: (a) => {
+    mockPtyOrThrow(String(a.id ?? ''));
+    return null;
+  },
+  pty_close: (a) => {
+    const id = String(a.id ?? '');
+    mockPtys.delete(id);
+    emit(`pty:out:${id}`, { exited: true });
+    return null;
+  },
   session_delete: () => {},
   session_rename: (args) => {
     // 重命名也走同一张覆盖表：不然门禁里"重命名之后列表变了"会与生成标题不一致

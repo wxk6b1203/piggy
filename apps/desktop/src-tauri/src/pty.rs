@@ -51,15 +51,20 @@ pub fn open_pty(
         })
         .map_err(|e| format!("PTY 打开失败: {e}"))?;
 
-    // 登录终端落在用户主目录（拿不到就退调用方给的 cwd）。老代码只看 HOME，
-    // Windows 上会拿不到 → 直接落到 cwd，行为上"看起来没问题"但和 macOS 不一致。
-    let home = crate::config::paths::home_dir()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cwd.to_string());
+    // 起始目录 = 调用方给的 cwd（内嵌终端要落在**当前工作区**，2026-10-17 用户明确要求）。
+    // 只有在 cwd 拿不到/不是目录时才退主目录：早先这一行写死 `home`（当时只服务 OAuth
+    // 登录），于是打开终端永远在 `~`，跟"当前项目"完全对不上。
+    let start = if std::path::Path::new(cwd).is_dir() {
+        cwd.to_string()
+    } else {
+        crate::config::paths::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cwd.to_string())
+    };
     let (prog, args) = build_login_shell();
     let mut cmd = CommandBuilder::new(prog);
     cmd.args(args);
-    cmd.cwd(home);
+    cmd.cwd(start);
     cmd.env("TERM", "xterm-256color");
     let child = pair
         .slave

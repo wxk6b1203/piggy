@@ -10,6 +10,7 @@ import { useMemo } from 'react';
 import { baseName } from '@/lib/paths';
 import { useTabs } from '@/stores/tabs';
 import { useTabMsg } from '@/stores/messages';
+import { useUi } from '@/stores/ui';
 import { Icon } from '@/features/common/Icon';
 import { textOfContent } from '@/lib/messageText';
 import { OpenInApp } from './OpenInApp';
@@ -41,6 +42,18 @@ export function SessionHead({ tabId }: { tabId: string }) {
         </h1>
       </div>
       <div className="pg-session-head-ops">
+        {/* 内嵌终端（docs/04 §1.7）：按钮在这里而不是标题栏 —— 终端的 cwd 就是**这个会话的
+            工作目录**，位置跟着语义走。快捷键 Ctrl+` 与它是同一个动作（`panel.terminal`）。 */}
+        <button
+          className="pg-icon-btn"
+          data-open-terminal
+          disabled={!tab?.cwd}
+          title={tab?.cwd ? `在 ${tab.cwd} 打开终端（Ctrl+\`）` : '这个会话还没有工作目录'}
+          aria-label="打开终端"
+          onClick={() => useUi.getState().togglePanel('terminal')}
+        >
+          <Icon name="terminal" size={14} />
+        </button>
         {/* 「打开方式」分裂胶囊（DSH `ui-open-in-app`）：主按钮 = 上次用过的应用，箭头 = 本机全部可用。
             这里**不是**只读展示：它真的调用宿主解析出来的启动器（Rust `open_in_app_*`）。
             宿主没解析出任何应用、或会话还没有 cwd 时，组件自己返回 null（不留死按钮）。 */}

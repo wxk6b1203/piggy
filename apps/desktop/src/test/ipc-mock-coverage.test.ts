@@ -24,10 +24,14 @@ const SRC = resolve(__dirname, '..');
  * 判据是"调用方不读返回值，且真机上它确实只做一件没有界面表现的事"。
  */
 const ALLOWED_WITHOUT_HANDLER = new Map<string, string>([
-  ['pty_write', '内嵌登录终端：真机把键盘输入写进真 PTY；mock 下没有终端可言（`pty_open` 有 handler）'],
-  ['pty_resize', '同上（窗口尺寸）'],
-  ['pty_close', '同上（关闭时回收进程）'],
+  // 2026-10-17 起 `pty_*` 四条**都有 mock handler**（内嵌终端接上了，浏览器里也要能敲）——
+  // 所以它们从这张白名单里退出；白名单只剩"确实没有界面表现"的命令。
 ]);
+
+/*
+ * `pty_*` 现在有 handler：`pty_open` 回一个 id 并推欢迎行（带 cwd），
+ * `pty_write` 回显输入、回车给提示符，`pty_resize` 空转，`pty_close` 删表并推 exited。
+ */
 
 /*
  * 另外两条**不在这张表里**，但也不由这条用例覆盖，写在这里免得下一个人以为漏了：

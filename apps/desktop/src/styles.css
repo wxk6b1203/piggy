@@ -2185,6 +2185,62 @@ body {
 .pg-bashpanel-prompt { color: var(--pg-accent); font-family: var(--pg-mono); }
 .pg-bashpanel-input input { flex: 1; background: none; border: none; outline: none; color: var(--pg-fg); font-family: var(--pg-mono); font-size: 12px; }
 
+/* ── 底部面板（终端 / bash，docs/04 §1.7）────────────────────────────────────
+   一条标题条 + 两个 pane。非活动的 pane 用 `hidden` 而不是卸载：切 pane 不该把终端里的
+   进程和现场一起杀掉（关面板才卸载 = 结束终端，见 TerminalPane 顶部注释）。 */
+.pg-bottompanel { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--pg-bg-app); }
+.pg-panel-tabs {
+  flex: none; display: flex; align-items: center; gap: var(--pg-sp-1);
+  height: 30px; padding: 0 var(--pg-sp-3);
+  background: var(--pg-bg-sidebar); border-bottom: 1px solid var(--pg-border-l2);
+}
+.pg-panel-tab {
+  display: inline-flex; align-items: center; gap: var(--pg-sp-2);
+  height: 100%; padding: 0 var(--pg-sp-4);
+  background: none; border: none; border-bottom: 1px solid transparent;
+  color: var(--pg-fg-dim); font-size: var(--pg-fs-12); cursor: pointer;
+}
+.pg-panel-tab:hover { color: var(--pg-fg-secondary); }
+.pg-panel-tab[aria-selected='true'] { color: var(--pg-fg); border-bottom-color: var(--pg-accent); }
+.pg-panel-tabs-spacer { flex: 1; }
+.pg-panel-kbd {
+  padding: 0 5px; border: 0.5px solid var(--pg-border-l2); border-radius: var(--pg-r-sm);
+  color: var(--pg-fg-caption); font-size: var(--pg-fs-11); font-family: var(--pg-font);
+}
+.pg-panel-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin-left: var(--pg-sp-2);
+  background: none; border: none; border-radius: var(--pg-r-sm);
+  color: var(--pg-fg-dim); cursor: pointer;
+}
+.pg-panel-close:hover { background: var(--pg-hover); color: var(--pg-fg); }
+.pg-panel-body { flex: 1; min-height: 0; display: flex; }
+.pg-panel-body[hidden] { display: none; }
+/* 终端：xterm 的宿主必须有确定宽高，`fit()` 才量得出行列数（0 宽高会抛） */
+.pg-terminal { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+.pg-terminal-host { flex: 1; min-width: 0; min-height: 0; padding: 6px 0 2px 8px; }
+.pg-terminal-note {
+  position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 80px);
+  display: flex; align-items: center; gap: var(--pg-sp-3);
+  padding: var(--pg-sp-2) var(--pg-sp-4); border-radius: var(--pg-r-md);
+  background: var(--pg-bg-layer-2); border: 1px solid var(--pg-border-l2);
+  color: var(--pg-fg-secondary); font-size: var(--pg-fs-12);
+}
+.pg-terminal-restart {
+  background: var(--pg-bg-sidebar); color: var(--pg-fg);
+  border: 1px solid var(--pg-border-l2); border-radius: var(--pg-r-sm);
+  padding: 1px 10px; font-size: var(--pg-fs-12); cursor: pointer;
+}
+.pg-terminal-restart:hover { border-color: var(--pg-accent); }
+.pg-terminal-reopen {
+  position: absolute; right: 10px; bottom: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: var(--pg-r-sm);
+  background: none; border: none; color: var(--pg-fg-dim); cursor: pointer; opacity: 0.55;
+}
+.pg-terminal:hover .pg-terminal-reopen { opacity: 1; }
+.pg-terminal-reopen:hover { background: var(--pg-hover); color: var(--pg-fg); }
+
 /* 会话工作面二级页签 + widgets + 状态槽位 */
 /* DSH B1 会话头部：标题 + 模式胶囊 + 右侧操作 */
 .pg-session-head {

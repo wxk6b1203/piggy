@@ -1659,7 +1659,9 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      - `monaco-setup.ts::registerPiggySchemas`（外加一段 40 行的 `PI_SCHEMAS` 常量 **全仓零调用点**）——
        schema 从来没被注册过，编辑器的 JSON 校验一直是 Monaco 自带的空 schema；
      - `LoginTerminalModal`（80 行）+ `pty_open/pty_write/pty_resize/pty_close` **后端全在、前端零渲染点**，
-       设置页里没有任何"登录/认证"入口，`@xterm/xterm` 也只被这一个组件 import；
+       设置页里没有任何"登录/认证"入口，`@xterm/xterm` 也只被这一个组件 import
+       （**2026-10-17 已处理**：改成真正的底部面板终端 `TerminalPane` + `BottomPanel`，
+       那个 modal 删掉 —— 见 04 §1.7）；
      - 「休眠标签」写着 `Cmd+Shift+S / 命令面板 ✅`，而 `session.sleep` **没有任何 `registerCommand`**、
        `sleepTab()` 零调用 —— 那个键位按下去静默无反应（`markSleeping`/`wakeIfNeeded` 是活的，
        但只服务于 Rust 的空闲回收）。
@@ -1673,8 +1675,9 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      - 发现"文档 ✅ / 代码没接"时，**两条路选一条并写进文档**：要么接上入口，
        要么把死代码删掉、把状态改成 ❌ 并写清"重做要从哪一步开始"——**不许两者都不做**；
      - 这一轮的处理：`registerPiggySchemas` 那套死代码**删掉**（docs/09 改成 ❌ + 重做路径）；
-       `LoginTerminalModal` + `pty_*` 是一整条**没出口的路**（约 280 行 + 两个 npm 依赖），
-       留待决策（接入口 or 整体删除），文档已如实标 ❌。
+       `LoginTerminalModal` + `pty_*` 那条"没出口的路"已按用户决定**接上**（2026-10-17）：
+       `TerminalPane` 用同一套 `pty_*` 做起底部面板的终端 pane，modal 删除；
+       剩下的 OAuth **引导**入口仍然没做（docs/09 已标 ❌）。
 
 ## 4. 未完成 / 待决策
 

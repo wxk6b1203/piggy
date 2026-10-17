@@ -3,14 +3,14 @@
  *  品牌行在侧栏顶部，窗口级状态行在 Composer dock。 */
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import type { PanelImperativeHandle } from 'react-resizable-panels';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { cmd } from '@/lib/ipc';
 import { bootGate } from '@/lib/boot';
 import { windowEvents } from '@/lib/windowEvents';
 import { useAppCommands } from '@/lib/appCommands';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { HelpOverlay } from '@/features/palette/HelpOverlay';
-import { BashPanel } from './BashPanel';
+import { BottomPanel } from './BottomPanel';
 import { useTabs } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
 import { EditorArea, closeActivePanel, openSessionTabOptimistic } from './EditorArea';
@@ -77,7 +77,9 @@ export function AppFrame() {
   const banner = useTabs((s) => s.banner);
   const sidebarOpen = useUi((s) => s.sidebarOpen);
   const rightpanelOpen = useUi((s) => s.rightpanelOpen);
-  const [bashOpen, setBashOpen] = useState(false);
+  /* 底部面板（终端 / bash）的开合在 store：`Ctrl+`` / ⌘J / 会话头部图标 / 命令面板
+     都要能开它，AppFrame 只负责画几何（docs/04 §1.7）。 */
+  const panelOpen = useUi((s) => s.panelOpen);
   const rightPanel = useRef<PanelImperativeHandle | null>(null);
 
   /* 右栏开合：store → 面板几何。
@@ -96,10 +98,8 @@ export function AppFrame() {
 
   useEffect(() => {
     void startBoot();
-    const offBash = windowEvents.on('toggle-bash-panel', () => setBashOpen((v: boolean) => !v));
     const offClose = windowEvents.on('close-active-tab', () => closeActivePanel());
     return () => {
-      offBash();
       offClose();
     };
   }, []);
@@ -140,11 +140,11 @@ export function AppFrame() {
               <Panel minSize="30%">
                 <EditorArea />
               </Panel>
-              {bashOpen && (
+              {panelOpen && (
                 <>
                   <Separator className="pg-sash" />
-                  <Panel defaultSize="35%" minSize="15%" maxSize="75%">
-                    <BashPanel tabId={activeTabId} />
+                  <Panel defaultSize="35%" minSize="12%" maxSize="75%">
+                    <BottomPanel tabId={activeTabId} />
                   </Panel>
                 </>
               )}

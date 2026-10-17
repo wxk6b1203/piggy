@@ -36,8 +36,8 @@ flowchart LR
 | `Cmd/Ctrl+1..9` | `tab.switch(n)` | 切换标签 |
 | `Cmd/Ctrl+Shift+F` | `session.search` | 会话/项目搜索 |
 | `Cmd/Ctrl+B` / `Cmd/Ctrl+\` | `sidebar.toggle` / `rightpanel.toggle` | 侧栏 / 右栏 |
-| `Cmd/Ctrl+J` | `panel.toggle` | 底部面板（终端/输出，VS Code 习惯） |
-| ``Ctrl+` `` | `panel.terminal` | 直达终端面板 |
+| ``Ctrl+` `` | `panel.terminal` | 内嵌终端（VS Code 同键）：开在 bash 上时切回终端，开在终端上时收起（04 §1.7） |
+| `Cmd/Ctrl+J` | `bash.toggle` | bash pane：让 pi 执行命令（输出随下一条消息进上下文，02 §3.3） |
 | `Cmd/Ctrl+Shift+E` | `view.files` | 右栏·文件视图（VS Code 习惯） |
 | `Cmd/Ctrl+Shift+A` | `view.subagents` | 右栏·子代理视图 |
 | `Cmd/Ctrl+K Z` | `layout.zen` | 专注模式（chord，04 §1.8） |
@@ -61,7 +61,8 @@ flowchart LR
 | `Cmd/Ctrl+Shift+K` | `session.compact` | 手动压缩 |
 | ~~`Cmd/Ctrl+G`~~ | ~~`session.tree`~~ | **已移除**（2026-09-24）：会话树视图删掉——`get_tree` 只读、没有就地切分支的 RPC 入口（02 §5.2 C11），留着是噪音 |
 | `Cmd/Ctrl+Shift+B` | `session.branch-here` | 从选中消息 fork |
-| `Cmd/Ctrl+J` | `terminal.toggle` | bash 直执行面板 |
+| ``Ctrl+` `` | `panel.terminal` | 内嵌终端（与全局那条同一个命令；详见 §2.1） |
+| `Cmd/Ctrl+J` | `bash.toggle` | bash pane（让 pi 执行命令） |
 | （未绑定） | `openin.pick` | 打开方式：在外部应用（VS Code/终端/访达…）里打开当前会话的工作目录。**故意不给默认键位** —— DSH 也只有会话头部那颗胶囊，与其编一个占用键位的组合，不如让它只在命令面板里可达 |
 
 ### 2.3 转录导航

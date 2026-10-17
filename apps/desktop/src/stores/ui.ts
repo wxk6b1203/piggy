@@ -5,6 +5,9 @@ import { immer } from 'zustand/middleware/immer';
 
 export type ThemeName = 'dark' | 'light';
 
+/** 底部面板的两个 pane（docs/04 §1.7）：真实终端 / pi 的 bash 直执行。 */
+export type PanelPane = 'terminal' | 'bash';
+
 const stored = (typeof localStorage !== 'undefined' && localStorage.getItem('pg.theme')) as ThemeName | null;
 
 interface UiState {
@@ -28,6 +31,21 @@ interface UiState {
    *  等那块落地时左右一起接，不要先给右栏开一个 localStorage 的后门。 */
   rightpanelOpen: boolean;
   setRightpanelOpen(b: boolean): void;
+
+  /**
+   * 底部面板（终端 / bash）——**开合与当前 pane 都在这里**（2026-10-17）。
+   *
+   * 为什么从 AppFrame 的 `useState` 提上来：`Ctrl+`` / ⌘J / 会话头部那颗图标按钮 /
+   * 命令面板都要能开它，而 `useState` 只有 AppFrame 自己够得着（此前靠
+   * `windowEvents.emit('toggle-bash-panel')` 这条一次性事件桥）。提到 store 之后只有一份真相，
+   * 门禁也能直接读状态。
+   */
+  panelOpen: boolean;
+  panelPane: PanelPane;
+  /** 开/合面板；给了 pane 就顺带切过去（已开且同 pane = 关掉，VS Code 的 Ctrl+` 同义）。 */
+  togglePanel(pane?: PanelPane): void;
+  setPanelPane(pane: PanelPane): void;
+  setPanelOpen(open: boolean): void;
 
   /** extension setStatus 槽位（docs/02 §8） */
   statusSlots: Record<string, string>;
@@ -73,6 +91,29 @@ export const useUi = create<UiState>()(
   rightpanelOpen: true,
   setRightpanelOpen(b) {
     set({ rightpanelOpen: b });
+  },
+
+  panelOpen: false,
+  panelPane: 'terminal',
+  togglePanel(pane) {
+    set((s) => {
+      if (pane === undefined) {
+        s.panelOpen = !s.panelOpen;
+        return;
+      }
+      if (s.panelOpen && s.panelPane === pane) {
+        s.panelOpen = false;
+        return;
+      }
+      s.panelOpen = true;
+      s.panelPane = pane;
+    });
+  },
+  setPanelPane(pane) {
+    set({ panelPane: pane, panelOpen: true });
+  },
+  setPanelOpen(open) {
+    set({ panelOpen: open });
   },
 
   statusSlots: {},
