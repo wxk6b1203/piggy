@@ -22,6 +22,8 @@
  * 于是"预览全部 / 展示部分"同时成立，而且不需要把没看过的内容读进内存。
  */
 
+import { textOfContent } from '@/lib/messageText';
+
 /** 一条刻度（一个回合）。 */
 export interface RailItem {
   /** 第几轮，从 1 开始。**全会话的绝对编号**（轮廓给的，不随分页窗口漂） */
@@ -65,17 +67,8 @@ export function condense(text: string, max: number): string {
 
 /** 提取一条消息的纯文本（与 Transcript 的行渲染口径一致：只取 text 块）。 */
 export function messageText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  let out = '';
-  for (const block of content) {
-    const b = block as { type?: string; text?: string } | null;
-    if (b?.type === 'text' && typeof b.text === 'string') {
-      if (out) out += '\n';
-      out += b.text;
-    }
-  }
-  return out;
+  // `'\n'`：刻度梯的预览按"一段一行"压，`condense` 再把换行统一成空格
+  return textOfContent(content, '\n');
 }
 
 /** `messagesStore` 里一行的形状（只取这里要用的字段）。 */

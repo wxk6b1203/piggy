@@ -13,10 +13,9 @@
  *   tok/s = stats store 的实测增量速率，只在流式中显示
  */
 import { useStats } from '@/stores/stats';
-import type { SessionStats } from '@/stores/stats';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
-import { formatCacheHitPercent, formatTokens } from '@/lib/tokenFormat';
+import { cacheHitPercentOf, formatTokens } from '@/lib/tokenFormat';
 
 export function SessionStatusLine({ tabId }: { tabId: string | null }) {
   const stats = useStats((s) => (tabId ? s.byTab[tabId] : undefined));
@@ -28,7 +27,7 @@ export function SessionStatusLine({ tabId }: { tabId: string | null }) {
   const turns = stats.userMessages ?? 0;
   const steps = (stats.assistantMessages ?? 0) + (stats.toolCalls ?? 0);
   const tokPerSec = streaming && rate && rate.tokPerSec > 0 ? Math.round(rate.tokPerSec) : null;
-  const hit = cacheHitPercent(stats);
+  const hit = cacheHitPercentOf(stats.tokens);
   const total = stats.tokens?.total ?? 0;
 
   return (
@@ -57,11 +56,4 @@ export function SessionStatusLine({ tabId }: { tabId: string | null }) {
       ) : null}
     </>
   );
-}
-
-/** 命中率 = 缓存读 /（输入 + 缓存读）；分母为 0 时无意义（口径见 lib/tokenFormat）。 */
-function cacheHitPercent(s: SessionStats): string | null {
-  const read = s.tokens?.cacheRead ?? 0;
-  const input = s.tokens?.input ?? 0;
-  return formatCacheHitPercent(read, input + read);
 }

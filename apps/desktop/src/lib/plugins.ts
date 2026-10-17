@@ -203,22 +203,6 @@ export async function setPluginEnabled(
   await cmd('plugin_set_enabled', { key, enabled, projectDir: projectDir ?? null });
 }
 
-export async function addPluginPath(
-  path: string,
-  scope: 'global' | 'project',
-  projectDir?: string | null,
-): Promise<void> {
-  await cmd('plugin_add_path', { path, scope, projectDir: projectDir ?? null });
-}
-
-export async function removePluginPath(
-  entry: string,
-  scope: 'global' | 'project',
-  projectDir?: string | null,
-): Promise<void> {
-  await cmd('plugin_remove_path', { entry, scope, projectDir: projectDir ?? null });
-}
-
 /** 删除发现目录里的插件（走回收站，可撤销）。 */
 export async function deleteDiscovered(key: string): Promise<void> {
   await cmd('plugin_delete_discovered', { key });
@@ -244,22 +228,6 @@ export async function checkSource(source: string): Promise<SourceCheck> {
   };
 }
 
-export interface ProjectTrust {
-  trusted: boolean;
-  matched: string | null;
-  dir: string;
-  trustFile: string;
-}
-
-export async function projectTrust(projectDir: string): Promise<ProjectTrust> {
-  const r = await cmd<Record<string, unknown>>('plugin_project_trust', { projectDir });
-  return {
-    trusted: r.trusted === true,
-    matched: typeof r.matched === 'string' ? r.matched : null,
-    dir: asString(r.dir),
-    trustFile: asString(r.trustFile),
-  };
-}
 
 /** 一排插件里"启用/停用"之外还能做什么（按来源区分）。 */
 export function rowActions(row: PluginRow): { canToggle: boolean; canDelete: boolean; reason: string } {

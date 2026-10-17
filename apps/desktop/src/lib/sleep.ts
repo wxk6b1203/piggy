@@ -1,23 +1,22 @@
 /**
- * 休眠标签（05 §4.3，M2）：主动回收 worker 并丢弃内存消息（保留会话指针 + 游标），
- * 激活/交互时透明唤醒——Rust ensure_worker 复活 worker + 游标补齐，前端重建消息。
+ * 休眠标签（05 §4.3，M2）：worker 被回收之后，前端这边的**标记与透明唤醒**。
+ *
+ * 三个入口：Rust 空闲回收（`pi:state = 'sleeping'` → `markSleeping`）、
+ * 以及发送前的 `wakeIfNeeded`（休眠标签：发送即透明唤醒）。
+ *
+ * ⚠️ **没有"手动休眠"入口**（2026-10-17 核实）：`tab_sleep` 命令在 Rust 侧可用，但前端
+ * 从来没有登记过那个动作 —— `DEFAULT_KEYS` 里曾经留着 `session.sleep: cmd+shift+s`，
+ * 而没有任何 `registerCommand`，按下去静默无反应。那个死绑定与 `sleepTab()` 一起删掉了
+ * （见 docs/15 规矩 154）。要恢复手动休眠，顺序是：先给 `tab_sleep` 加上"这一轮在跑就拒绝"
+ * 的守卫，再登记命令与键位。
  *
  * 重建走**分页装载**（docs/03 §2.19）：唤醒只需要会话文件尾部的当前状态，
  * 没有理由把整段历史再搬一遍。
  */
-import { cmd } from '@/lib/ipc';
-import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
-import { useTrajectory } from '@/stores/trajectory';
-import { useBash } from '@/stores/bash';
 import { loadTail } from '@/lib/transcriptPage';
-import { forgetRowTab } from '@/lib/rowMemory';
 
 const sleeping = new Set<string>();
-
-export function isSleeping(tabId: string): boolean {
-  return sleeping.has(tabId);
-}
 
 /** 标记休眠（本地主动调用或 Rust 空闲回收事件触发） */
 export function markSleeping(tabId: string): void {
@@ -26,15 +25,6 @@ export function markSleeping(tabId: string): void {
 }
 
 /** 休眠：回收 worker + 丢弃内存态（tab 与游标保留在 Rust registry） */
-export async function sleepTab(tabId: string): Promise<void> {
-  await cmd('tab_sleep', { tabId });
-  markSleeping(tabId);
-  useMessages.getState().remove(tabId);
-  // 唤醒时行是**新的 id**（`stores/messages.ts` 的 nextId），旧记忆再也对不上
-  forgetRowTab(tabId);
-  useTrajectory.getState().clear(tabId);
-  useBash.getState().clear(tabId);
-}
 
 /** 唤醒：worker_of 自动复活 + 游标补齐；前端重建消息（尾页） */
 export async function wakeIfNeeded(tabId: string): Promise<void> {

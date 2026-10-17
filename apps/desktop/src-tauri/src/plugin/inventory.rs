@@ -212,7 +212,7 @@ pub fn write_settings(dirs: &ScopeDirs, scope: Scope, v: &Value) -> Result<(), S
 /* ============================ 路径工具 ============================ */
 
 /// 相对路径，统一用 `/`（pi 全程 `toPosixPath`，Windows 上也用 `/` 比通配符）。
-fn rel_posix(base: &Path, path: &Path) -> String {
+pub(crate) fn rel_posix(base: &Path, path: &Path) -> String {
     let b: Vec<_> = base.components().collect();
     let p: Vec<_> = path.components().collect();
     let common = b.iter().zip(p.iter()).take_while(|(x, y)| x == y).count();

@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Modal } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
+import { copyText } from '@/lib/clipboard';
 import { openExternalUrl } from '@/lib/externalLink';
 import { useUi } from '@/stores/ui';
 
@@ -144,13 +145,9 @@ export function AboutDialog() {
       '',
       info.gplText,
     ].join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success('许可与第三方声明已复制');
-    } catch (e) {
-      // 剪贴板被拒（无权限/非安全上下文）时不能假装成功——用户会去粘贴然后发现是空的
-      toast.error(`复制失败：${e}`);
-    }
+    // 剪贴板被拒（无权限/非安全上下文）时不能假装成功——用户会去粘贴然后发现是空的。
+    // 失败提示由 `copyText` 统一弹（含原因），这里只管成功那一侧。
+    if (await copyText(text)) toast.success('许可与第三方声明已复制');
   }, [info]);
 
   return (

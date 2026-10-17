@@ -24,6 +24,8 @@ import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
 import { inferToolLang } from './highlight';
 import { Icon } from '@/features/common/Icon';
+import { textOfContent } from '@/lib/messageText';
+import { copyText } from '@/lib/clipboard';
 import { ImageLightbox } from '@/features/common/ImageLightbox';
 import { DisclosureRow } from '@/features/common/DisclosureRow';
 import { Markdown, StreamingMarkdown } from './markdown';
@@ -430,7 +432,8 @@ function MessageActions({ text, message }: { text: string; message: AgentMessage
         className="pg-action-btn"
         title={copied ? '已复制' : '复制全文'}
         onClick={() => {
-          void navigator.clipboard.writeText(text).then(() => {
+          void copyText(text).then((ok) => {
+            if (!ok) return;
             setCopied(true);
             window.setTimeout(() => setCopied(false), 1200);
           });
@@ -566,12 +569,6 @@ function ImageBlock({ block }: { block: object }) {
 }
 
 function textOf(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((b) => ((b as { type?: string })?.type === 'text' ? (b as { text?: string }).text ?? '' : ''))
-      .join('');
-  }
-  return '';
+  return textOfContent(content);
 }
 

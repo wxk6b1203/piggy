@@ -253,7 +253,7 @@ pub fn set_enabled_at(
             };
             let base = dirs.base_dir(scope);
             let abs = raw.to_string_lossy().replace('\\', "/");
-            let rel = relative_posix(&base, &raw);
+            let rel = inventory::rel_posix(&base, &raw);
             let mut list = extension_array(&settings)?;
             // 先把这条路径的既有规则全摘掉，避免 `-x` 与 `+x` 同时存在时
             // 出现"点了启用却没生效"（pi 的判定顺序是 `-` 最后赢）。
@@ -404,24 +404,6 @@ fn set_or_clear(settings: &mut Value, key: &str, list: Vec<String>) {
     }
 }
 
-fn relative_posix(base: &std::path::Path, path: &std::path::Path) -> String {
-    // 与 inventory 里的同名逻辑一致；这里单独放一份是为了不改 inventory 的可见性。
-    let b: Vec<_> = base.components().collect();
-    let p: Vec<_> = path.components().collect();
-    let common = b.iter().zip(p.iter()).take_while(|(x, y)| x == y).count();
-    if common == 0 {
-        return path.to_string_lossy().replace('\\', "/");
-    }
-    let mut out: Vec<String> = Vec::new();
-    for _ in common..b.len() {
-        out.push("..".into());
-    }
-    for c in &p[common..] {
-        out.push(c.as_os_str().to_string_lossy().into_owned());
-    }
-    out.join("/")
-}
-
 /* ============================ 登记本地扩展路径 ============================ */
 
 /// 把一个本地路径登记为扩展（写 `extensions[]`）。
@@ -505,7 +487,7 @@ fn remove_path_at(
         // 一条指向"已经不在列表里"的死规则，下次登记同一个路径时它会立刻把它排除掉。
         let resolved = inventory::resolve_local(entry, &dirs.base_dir(scope));
         let abs = resolved.to_string_lossy().replace('\\', "/");
-        let rel = relative_posix(&dirs.base_dir(scope), &resolved);
+        let rel = inventory::rel_posix(&dirs.base_dir(scope), &resolved);
         let before = list.len();
         let next: Vec<String> = strip_rule(&list, &rel, &abs)
             .into_iter()

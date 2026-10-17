@@ -5,6 +5,7 @@
  * 事件走同一通道名，前端零改动。
  */
 import type { UnlistenFn } from '@tauri-apps/api/event';
+import { textOfContent } from '@/lib/messageText';
 
 type Handler = (payload: unknown) => void;
 const bus = new Map<string, Set<Handler>>();
@@ -1172,14 +1173,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   session_todo: () => mockTodoProjection(),
   session_outline: () => {
     const turns: Array<{ turn: number; start: number; end: number; prompt: string; response: string }> = [];
-    const text = (m: unknown): string => {
-      const c = (m as { content?: unknown })?.content;
-      if (typeof c === 'string') return c;
-      if (!Array.isArray(c)) return '';
-      return c
-        .map((b) => ((b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : ''))
-        .join('\n');
-    };
+    const text = (m: unknown): string =>
+      textOfContent((m as { content?: unknown })?.content, '\n');
     mockTranscript.forEach((row, i) => {
       const msg = row.message as { role?: string; content?: unknown };
       if (row.role === 'user') {

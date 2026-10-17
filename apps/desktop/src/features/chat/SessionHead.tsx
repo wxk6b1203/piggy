@@ -11,6 +11,7 @@ import { baseName } from '@/lib/paths';
 import { useTabs } from '@/stores/tabs';
 import { useTabMsg } from '@/stores/messages';
 import { Icon } from '@/features/common/Icon';
+import { textOfContent } from '@/lib/messageText';
 import { OpenInApp } from './OpenInApp';
 
 export function SessionHead({ tabId }: { tabId: string }) {
@@ -57,12 +58,5 @@ export function SessionHead({ tabId }: { tabId: string }) {
 }
 
 function flatten(m: { content?: unknown }): string {
-  const c = m?.content;
-  if (typeof c === 'string') return c;
-  if (Array.isArray(c)) {
-    return c
-      .map((b) => ((b as { type?: string })?.type === 'text' ? (b as { text?: string }).text ?? '' : ''))
-      .join('');
-  }
-  return '';
+  return textOfContent(m?.content);
 }

@@ -161,6 +161,25 @@ export function formatCacheHitPercent(
   return '99.999999';
 }
 
+/**
+ * 缓存命中率（从 `get_session_stats` 的 `tokens` 直接算）。
+ *
+ * **分母是"提示词总量" = 输入 + 缓存读**，这条口径只在这里写一次 ——
+ * 之前状态行与右栏各自拼了一遍 `(input ?? 0) + (cacheRead ?? 0)`，
+ * 两处只要有一处改了分母，界面上两个"缓存命中"就会开始互相打脸。
+ *
+ * @param tokens - `SessionStats.tokens`（字段可能缺）
+ * @returns 百分数串（不含 `%`）；没有提示词输入时 `null`
+ */
+export function cacheHitPercentOf(tokens?: {
+  input?: number | null;
+  cacheRead?: number | null;
+}): string | null {
+  const read = tokens?.cacheRead ?? 0;
+  const input = tokens?.input ?? 0;
+  return formatCacheHitPercent(read, input + read);
+}
+
 /** 按 `decimals` 位四舍五入后的"百分比 × 10^decimals"（整数，half-up）。 */
 function percentUnits(read: number, prompt: number, decimals: number): number {
   const scale = 100 * 10 ** decimals;

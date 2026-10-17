@@ -11,7 +11,6 @@ export const DEFAULT_KEYS: Record<string, string> = {
   'palette.open': 'cmd+k',
   'settings.open': 'cmd+,',
   'session.new': 'cmd+n',
-  'session.sleep': 'cmd+shift+s',
   'tab.close': 'cmd+w',
   'sidebar.toggle': 'cmd+b',
   'rightpanel.toggle': 'cmd+\\',

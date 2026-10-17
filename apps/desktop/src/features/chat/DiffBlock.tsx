@@ -16,10 +16,11 @@
  */
 import { useMemo, useState } from 'react';
 import { Icon } from '@/features/common/Icon';
+import { copyText } from '@/lib/clipboard';
 import { CHAT_DIFF_MAX_LINES, diffBlockRows, type ParsedPatch } from '@/lib/diff';
 
 /** 复制按钮：整份 diff 的纯文本（折叠掉的行也在，`- `/`+ `/两个空格的行首）。 */
-function copyText(rows: ReturnType<typeof diffBlockRows>): string {
+function plainOf(rows: ReturnType<typeof diffBlockRows>): string {
   return rows
     .map((row) => {
       switch (row.kind) {
@@ -59,13 +60,11 @@ export function DiffBlock({
   const tail = capped ? rows.slice(rows.length - tailLines) : [];
 
   const copy = () => {
-    void navigator.clipboard?.writeText(copyText(rows)).then(
-      () => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1000);
-      },
-      () => {},
-    );
+    void copyText(plainOf(rows)).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1000);
+    });
   };
 
   return (

@@ -14,6 +14,7 @@ import { t, tf } from '@/lib/i18n';
 import { watchSize } from '@/lib/resizeWatch';
 import { useRowFlag } from '@/lib/rowMemory';
 import { Icon } from '@/features/common/Icon';
+import { copyText } from '@/lib/clipboard';
 import {
   AUTO_COLLAPSE_LINES,
   MAX_RENDER_LINES,
@@ -280,7 +281,7 @@ export function CodeBlock({
             className="pg-codeblock-btn"
             title={t('code.copy')}
             aria-label={t('code.copy')}
-            onClick={() => void navigator.clipboard.writeText(code)}
+            onClick={() => void copyText(code)}
           >
             <Icon name="copy" size={14} />
           </button>

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { toast } from '@/lib/feedback';
+import { copyText } from '@/lib/clipboard';
 import { abbreviatePath } from '@/lib/paths';
 import { savePerfConfig } from '@/lib/perfConfig';
 import { Icon } from '@/features/common/Icon';
@@ -67,13 +68,9 @@ export function BundledPluginsRow({ onChanged }: { onChanged: () => void }) {
    */
   const copyDir = useCallback(async (p: BundledPlugin): Promise<void> => {
     if (p.dir === null) return;
-    try {
-      await navigator.clipboard.writeText(p.dir);
-      setCopied(p.name);
-      window.setTimeout(() => setCopied((cur) => (cur === p.name ? null : cur)), 1000);
-    } catch (e) {
-      toast.error(`复制失败：${String(e)}`);
-    }
+    if (!(await copyText(p.dir))) return;
+    setCopied(p.name);
+    window.setTimeout(() => setCopied((cur) => (cur === p.name ? null : cur)), 1000);
   }, []);
 
   const toggle = async (p: BundledPlugin, on: boolean): Promise<void> => {

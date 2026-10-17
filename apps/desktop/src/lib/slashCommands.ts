@@ -26,7 +26,9 @@
  *    `/name args`，pi 自己认）。Piggy 不重复实现一遍。
  */
 import { cmd } from '@/lib/ipc';
+import { textOfContent } from '@/lib/messageText';
 import { toast } from '@/lib/feedback';
+import { copyText } from '@/lib/clipboard';
 import { windowEvents } from '@/lib/windowEvents';
 import { newSessionTab } from '@/lib/appCommands';
 import { openSettingsTab } from '@/features/workspace/EditorArea';
@@ -79,13 +81,7 @@ function lastAssistantText(tabId: string): string {
   for (let i = tab.ids.length - 1; i >= 0; i -= 1) {
     const row = tab.byId[tab.ids[i]!] as MessageView | undefined;
     if (!row || row.role !== 'assistant') continue;
-    const c = (row.message as { content?: unknown }).content;
-    if (typeof c === 'string') return c;
-    if (Array.isArray(c)) {
-      return c
-        .map((b) => ((b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : ''))
-        .join('');
-    }
+    return textOfContent((row.message as { content?: unknown }).content);
   }
   return '';
 }
@@ -219,12 +215,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly BuiltinCommand[] = [
         toast.info('当前会话还没有可复制的回答');
         return;
       }
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success('已复制最后一条回答');
-      } catch (e) {
-        toast.error(`复制失败：${e}`);
-      }
+      if (await copyText(text)) toast.success('已复制最后一条回答');
     },
   },
   {

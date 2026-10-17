@@ -1315,12 +1315,6 @@ fn fleet_emit(app: &AppHandle, state: &State<'_, AppState>) {
     let _ = app.emit("fleet:changed", state.fleet.snapshot());
 }
 
-/// 提取最后一条 assistant 消息文本（06 §3.3 结果收集）。
-/// 实现已移到 `fleet::last_assistant_text`：那里有单测，也能被契约测试复用。
-fn last_assistant_text(messages: &Value) -> Option<String> {
-    crate::fleet::last_assistant_text(messages)
-}
-
 /// 调度：把就绪 lane 拉起来；**资源上限导致的排队在这里自愈**（06 §3.4）。
 ///
 /// 为什么要有这个循环：`schedule_run` 的再次触发点是「某条 lane settle」。如果所有就绪
@@ -1472,7 +1466,7 @@ fn watch_lane(app: AppHandle, run_id: String, tab_id: String, worker: crate::pi:
                         .get_messages()
                         .await
                         .ok()
-                        .and_then(|m| last_assistant_text(&m))
+                        .and_then(|m| crate::fleet::last_assistant_text(&m))
                         .unwrap_or_default();
                     state.fleet.settle_lane(&tab_id, &text);
                     let finished = state.fleet.maybe_finish(&run_id);

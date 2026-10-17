@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MonacoHost } from '@/features/common/MonacoHost';
 import { Icon } from '@/features/common/Icon';
+import { copyText } from '@/lib/clipboard';
 import { OpenPathAction } from './OpenPathAction';
 import { langForPath } from '@/features/common/monaco-langs';
 import { toast } from '@/lib/feedback';
@@ -112,7 +113,9 @@ export function FilePreview({
           disabled={!data}
           onClick={() => {
             if (!data) return;
-            void navigator.clipboard.writeText(data.content).then(() => toast.success('已复制'));
+            void copyText(data.content).then((ok) => {
+              if (ok) toast.success('已复制');
+            });
           }}
         >
           <Icon name="copy" size={15} />

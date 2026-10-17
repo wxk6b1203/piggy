@@ -26,6 +26,7 @@
  * ② 每帧的订阅面只有那一行（选择器返回自己那一行的切片，其余行引用不变 → 不重渲染）。
  */
 import { create } from 'zustand';
+import { textOfContent } from '@/lib/messageText';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
 import type { AgentMessage, Frame } from '@piggy/pi-protocol';
@@ -330,14 +331,7 @@ function tsKey(m: AgentMessage): string {
 }
 
 export function contentText(m: AgentMessage): string {
-  const c = (m as { content?: unknown }).content;
-  if (typeof c === 'string') return c;
-  if (Array.isArray(c)) {
-    return c
-      .map((b) => ((b as { type?: string })?.type === 'text' ? (b as { text?: string }).text ?? '' : ''))
-      .join('');
-  }
-  return '';
+  return textOfContent((m as { content?: unknown }).content);
 }
 
 /**
@@ -899,16 +893,6 @@ const EMPTY = emptyTab();
 Object.freeze(EMPTY);
 export function useTabMsg<T>(tabId: string | null, sel: (t: TabMessages) => T): T {
   return useStore(useMessages, (s) => sel((tabId ? s.tabs[tabId] : null) ?? EMPTY));
-}
-
-/**
- * 一行的切片订阅（转录里每个行组件用它）。
- *
- * 选择器**只返回这一行自己的对象**：immer 让没改到的行保持引用不变，于是流式那 60Hz
- * 的写入只让那一行重渲染（DSH 的 seat 订阅自己的 node，同构）。
- */
-export function useRowMsg(tabId: string | null, rowId: string): MessageView | undefined {
-  return useStore(useMessages, (s) => (tabId ? s.tabs[tabId]?.byId[rowId] : undefined));
 }
 
 /**

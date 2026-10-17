@@ -130,8 +130,19 @@ pub fn agent_dir() -> PathBuf {
 /// **空 `home` 必须直接拒绝**：`Path::starts_with("")` 恒为 `true`
 /// （实测 `Path::new("/etc/passwd").starts_with("") == true`），
 /// 老代码在 Windows 上因此对任意文件都放行。
+///
+/// **相对路径与 `..` 也必须拒绝**（2026-10-17 补）：`starts_with` 只按**分量前缀**比较，
+/// 而 `..` 只是个普通分量 —— `/h/u/../etc/passwd` 能通过这条判据，随后
+/// `std::fs::read_to_string` 会真的把 `..` 解析掉，沙箱等于不存在。
+/// `fs_guard::ensure_within` 早就是严格版（绝对路径 + 无 `..`），这条是把它对齐。
 pub fn is_under(home: &Path, path: &Path) -> bool {
-    !home.as_os_str().is_empty() && path.starts_with(home)
+    if home.as_os_str().is_empty() || !path.is_absolute() {
+        return false;
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return false;
+    }
+    path.starts_with(home)
 }
 
 #[cfg(test)]
@@ -267,6 +278,11 @@ mod tests {
         assert!(is_under(&home, &home));
         assert!(!is_under(&home, &PathBuf::from("/h/other/a.txt")));
         assert!(!is_under(&home, &PathBuf::from("/etc/passwd")));
+        // `..` 是普通分量：`starts_with` 会放行，必须单独拒绝（否则预览沙箱可逃逸）
+        assert!(!is_under(&home, &PathBuf::from("/h/u/../etc/passwd")));
+        assert!(!is_under(&home, &PathBuf::from("/h/u/../../etc/passwd")));
+        // 相对路径一律拒绝（无法判断它相对谁解析）
+        assert!(!is_under(&home, &PathBuf::from("u/a.txt")));
     }
 
     /* ---------------- 真机证据（跑得到就打印实际解析结果） ---------------- */

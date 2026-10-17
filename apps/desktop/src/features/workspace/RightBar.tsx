@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { cmd } from '@/lib/ipc';
 import { baseName } from '@/lib/paths';
-import { clampPercent, formatCacheHitPercent, formatPercent, formatTokens } from '@/lib/tokenFormat';
+import { cacheHitPercentOf, clampPercent, formatPercent, formatTokens } from '@/lib/tokenFormat';
 import { windowEvents } from '@/lib/windowEvents';
 import { Icon } from '@/features/common/Icon';
 import { FileIcon } from '@/features/common/FileIcon';
@@ -161,10 +161,7 @@ function StatsView({ tabId }: { tabId: string | null }) {
   const pct = ctx?.percent;
   const used = clampPercent(pct);
   // 命中率、上下文长度、上下文占用的口径都在 lib/tokenFormat（3 位小数，与状态行同一份实现）
-  const hit = formatCacheHitPercent(
-    stats?.tokens?.cacheRead ?? 0,
-    (stats?.tokens?.input ?? 0) + (stats?.tokens?.cacheRead ?? 0),
-  );
+  const hit = cacheHitPercentOf(stats?.tokens);
   return (
     <div className="pg-stats">
       <Row label="总 tokens" value={total?.toLocaleString() ?? '—'} />

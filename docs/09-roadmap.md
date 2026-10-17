@@ -105,7 +105,7 @@ M1 修正记录（实现期发现）：
 |---|---|---|
 | 空闲回收（05 §4.1） | `registry.rs`：Tab.last_activity（worker_of 触碰）+ `reap_idle`；lib.rs 60s tick（全应用唯一周期任务，05 §3.1）；idleTimeoutMin 可配（0=永不），默认 10min | ✅ |
 | maxWorkers（05 §4.2） | `tab_create` 超限报 `MAX_WORKERS`；前端 `createTabGuarded` 弹窗"一键回收最闲"（`tab_sleep_idlest`）后重试；默认 8 | ✅ |
-| 休眠标签（05 §4.3） | `tab_sleep` 回收 worker 保留游标（唤醒不计入崩溃重启上限）；前端 sleepTab 丢弃 messages/trajectory/bash 内存，激活/发送时透明唤醒 + get_messages 重建；Cmd+Shift+S / 命令面板 | ✅ |
+| 休眠标签（05 §4.3） | `tab_sleep` 回收 worker 保留游标（唤醒不计入崩溃重启上限）；前端在 `pi:state='sleeping'` 时标记、发送前透明唤醒 + 分页重建 | 🔧 **回收侧 ✅（Rust 空闲回收是活的）/ 手动入口 ❌**（2026-10-17 核对：`sleepTab` 与 `isSleeping` 全仓零调用，`DEFAULT_KEYS` 里的 `session.sleep: cmd+shift+s` **没有对应 `registerCommand`**，按下去静默无反应；原表写的「Cmd+Shift+S / 命令面板 ✅」是假的 —— 死绑定与 `sleepTab()` 已删，见 docs/15 规矩 154。要恢复手动休眠，先给 `tab_sleep` 加"这一轮在跑就拒绝"的守卫，再登记命令与键位） |
 | 性能配置 | `~/.piggy/config.json`（PerfConfig：maxWorkers/idleTimeoutMin，clamp + 原子写）；设置 → Piggy 性能 | ✅ |
 | 渲染落位（05 §5.2） | 转录行/轨迹行 `content-visibility: auto + contain-intrinsic-size` | ✅ |
 | Shiki 按需（04 §5.2） | `CodeBlock.tsx`：shiki core + oniguruma 引擎 + 语言包全部动态 import；语言 LRU ≤16（超出重建 highlighter）；IntersectionObserver 进视口才高亮；github-light/dark 双主题 CSS 变量 | ✅ |

@@ -6,6 +6,7 @@
  * 后台 tab 一样收（内容不丢，切回来不会缺一段）。
  */
 import { on, cmd } from '@/lib/ipc';
+import { textOfContent } from '@/lib/messageText';
 import { markSleeping } from '@/lib/sleep';
 import { useMessages } from '@/stores/messages';
 import { dropQueueTab, useQueue } from '@/stores/queue';
@@ -204,14 +205,5 @@ type TabModel = { id?: string; provider?: string } | null;
  */
 function userMessageText(ev: unknown): string {
   const m = (ev as { message?: { role?: string; content?: unknown } }).message;
-  if (m?.role !== 'user') return '';
-  if (typeof m.content === 'string') return m.content;
-  if (!Array.isArray(m.content)) return '';
-  return m.content
-    .map((b) =>
-      b && typeof b === 'object' && (b as { type?: string }).type === 'text'
-        ? String((b as { text?: string }).text ?? '')
-        : '',
-    )
-    .join('');
+  return m?.role === 'user' ? textOfContent(m.content) : '';
 }

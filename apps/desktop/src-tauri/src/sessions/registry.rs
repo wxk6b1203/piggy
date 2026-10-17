@@ -291,13 +291,6 @@ impl Registry {
             .count()
     }
 
-    /// 触碰活跃时间（05 §4.1 空闲判定基准）
-    pub fn touch(&mut self, tab_id: &str) {
-        if let Some(t) = self.tabs.get_mut(tab_id) {
-            t.last_activity = Instant::now();
-        }
-    }
-
     /// 休眠标签（05 §4.3）：主动回收 worker，保留 tab/游标/会话指针。
     /// 再交互时按需复活（`revive_unlocked`）+ 游标补齐。
     pub async fn sleep_tab(&mut self, sink: &Arc<dyn EventSink>, tab_id: &str) -> Result<(), String> {

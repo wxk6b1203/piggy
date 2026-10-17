@@ -47,25 +47,29 @@ fn auth_entry(auth: &Value, provider: &str) -> Option<(String, Option<String>)> 
     Some((kind, secret.map(pi_files::mask_secret)))
 }
 
+/// 一条模型 → 界面那一行的形状。
+///
+/// ⚠️ **两个数据源必须同形**：同一张"模型列表"既能来自 `models.json`（用户自己声明），
+/// 也能来自 `models-store.json`（pi 的本地目录缓存）。两份各自拼一遍 `json!` 时，
+/// 以后加一个字段（例如 `cost`）只改一处，界面就会在"目录命中"和"本地声明"两条路上
+/// 静默显示不一致 —— 所以这里只有一份映射。
+fn model_row(m: &Value) -> Option<Value> {
+    let id = m.get("id").and_then(|x| x.as_str())?;
+    Some(json!({
+        "id": id,
+        "name": m.get("name").and_then(|x| x.as_str()).unwrap_or(id),
+        "reasoning": m.get("reasoning").and_then(|x| x.as_bool()).unwrap_or(false),
+        "contextWindow": m.get("contextWindow").cloned().unwrap_or(Value::Null),
+        "maxTokens": m.get("maxTokens").cloned().unwrap_or(Value::Null),
+        "input": m.get("input").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 /// models.json 里声明的模型（只取界面要显示/校验的字段，其余原样留在文件里）。
 fn models_of(cfg: &Value) -> Vec<Value> {
     cfg.get("models")
         .and_then(|m| m.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    let id = m.get("id").and_then(|x| x.as_str())?;
-                    Some(json!({
-                        "id": id,
-                        "name": m.get("name").and_then(|x| x.as_str()).unwrap_or(id),
-                        "reasoning": m.get("reasoning").and_then(|x| x.as_bool()).unwrap_or(false),
-                        "contextWindow": m.get("contextWindow").cloned().unwrap_or(Value::Null),
-                        "maxTokens": m.get("maxTokens").cloned().unwrap_or(Value::Null),
-                        "input": m.get("input").cloned().unwrap_or(Value::Null),
-                    }))
-                })
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(model_row).collect())
         .unwrap_or_default()
 }
 
@@ -85,19 +89,7 @@ pub fn cached_catalog(agent: &Path, provider: &str) -> Vec<Value> {
     let Some(rows) = entry.get("models").and_then(|m| m.as_array()) else {
         return Vec::new();
     };
-    rows.iter()
-        .filter_map(|m| {
-            let id = m.get("id").and_then(|x| x.as_str())?;
-            Some(json!({
-                "id": id,
-                "name": m.get("name").and_then(|x| x.as_str()).unwrap_or(id),
-                "reasoning": m.get("reasoning").and_then(|x| x.as_bool()).unwrap_or(false),
-                "contextWindow": m.get("contextWindow").cloned().unwrap_or(Value::Null),
-                "maxTokens": m.get("maxTokens").cloned().unwrap_or(Value::Null),
-                "input": m.get("input").cloned().unwrap_or(Value::Null),
-            }))
-        })
-        .collect()
+    rows.iter().filter_map(model_row).collect()
 }
 
 /// 环境变量的读取方式。注入是为了可测：进程环境是全局状态，测试里改它会串味
