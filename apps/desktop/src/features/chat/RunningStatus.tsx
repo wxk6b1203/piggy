@@ -30,9 +30,11 @@
  *
  * ## 与 DSH 的差别（如实记着）
  *
- * · 图标是**动图优先**：DSH 那张 `running-whale@2x.png`（APNG）当 alpha mask 播尾鳍
- *   摆动，不支持 mask / 用户要求减少动效时退回静态 SVG（同一段 `REST_PATH`，DSH 的
- *   降级路线一样）。资源放在 `src/assets/`（21 KB，MIT 上游，已登记 THIRD_PARTY_NOTICES）。
+ * · 图标是**猪头线稿**，不是 DSH 的鲸尾：DSH 那张动图是别人的品牌符号，Piggy 该用
+ *   自己的（2026-10-16 用户："这个图能不能改成个猪头"）。它和界面别处的 🐷（侧栏品牌标、
+ *   空编辑区、欢迎页）是同一个形象，只是这里画成线稿：emoji 上不了 `currentColor`，
+ *   而这一行整句要用 deep-diving 蓝。没有动图 —— 14px 上的"活"由文字扫光负责
+ *   （`TextShimmer`），图标保持静态、深浅两套主题共用一份几何。
  * · 分隔线在 DSH 是一条关系选择器（"最后一行是输入就不画"）。这里的输入是转录
  *   **消息**，所以判据由 `Transcript` 传进来（最后一行是用户气泡或者是空助手行 → 不画）。
  */
@@ -45,14 +47,15 @@ const CLOCK_INTERVAL_MS = 1000;
 /** 这一行说的是什么（用户定的口径：「运行中」，不用 DSH 的品牌说法「深度求索中」）。 */
 const RUNNING_LABEL = '运行中';
 
-/**
- * 鲸尾（DSH `RunningWhaleTail.tsx` 的 `REST_PATH`，原样照抄；viewBox 0 0 16 16）。
- *
- * 只在**动图不可用**时出现（mask 不受支持 / `prefers-reduced-motion: reduce` /
- * forced-colors）。动图那份的几何在 `styles.css` 的 `.pg-running-whale`。
- */
-const WHALE_TAIL_PATH =
-  'M8.844 13.742C8.967 12.328 8.45 10.4 8.45 9.65C8.45 8.94 8.88 8.43 9.6 8.43C11.285 8.43 12.106 8.281 12.685 8.104C13.71 7.791 14.585 6.768 15.055 5.945C15.137 5.803 14.99 5.641 14.829 5.671C13.829 5.86 12.828 5.376 11.827 4.978C10.659 4.514 9.491 4.707 8.935 4.876C8.805 4.915 8.658 4.819 8.636 4.686C8.468 3.643 7.405 2.615 5.498 2.238C4.54 2.048 3.748 1.574 3.347 1.202C3.252 1.113 3.088 1.125 3.03 1.242C2.628 2.059 2.168 3.82 5.248 6.115C5.82 6.494 6.31 6.785 6.574 7.637C6.72 8.104 6.157 9.168 6.061 9.368C5.157 11.27 5.089 12.19 4.926 13.742';
+/** 猪头线稿的几何（16×16；描边 1px、颜色走 `currentColor`）。 */
+const PIG_HEAD_PATHS = {
+  /** 脸 */
+  head: 'M8 3.2c2.2 0 3.8.7 4.7 1.9 1 1.3 1.3 3 1 4.7-.5 2.2-2.7 3.9-5.7 3.9s-5.2-1.7-5.7-3.9c-.3-1.7 0-3.4 1-4.7C3.2 3.9 4.8 3.2 8 3.2Z',
+  /** 左耳（朝左上支起的三角） */
+  earLeft: 'M3.5 4.7 2.4 1.9l3.1 1.3',
+  /** 右耳 */
+  earRight: 'M12.5 4.7l1.1-2.8-3.1 1.3',
+} as const;
 
 /**
  * 用时文本（DSH `message-chrome.ts` 的 `formatRunDuration`，单位取自中文词条）。
@@ -121,10 +124,26 @@ export const RunningStatus = memo(function RunningStatus({
       {divider ? <span className="pg-running-divider" aria-hidden="true" /> : null}
       <span className="pg-running-content">
         <span className="pg-running-icon" aria-hidden="true">
-          {/* 动图（APNG 当 mask，颜色跟着 currentColor 走）；不支持时下面那份静态 SVG 顶上 */}
-          <span className="pg-running-whale" />
-          <svg className="pg-running-still" viewBox="0 0 16 16" width="100%" height="100%" fill="none">
-            <path d={WHALE_TAIL_PATH} stroke="currentColor" strokeWidth={1} />
+          <svg
+            viewBox="0 0 16 16"
+            width="100%"
+            height="100%"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d={PIG_HEAD_PATHS.head} />
+            <path d={PIG_HEAD_PATHS.earLeft} />
+            <path d={PIG_HEAD_PATHS.earRight} />
+            {/* 鼻吻 + 两个鼻孔：整张脸靠它读成"猪"，不能省 */}
+            <ellipse cx="8" cy="9.7" rx="2.4" ry="1.8" />
+            <circle cx="7.15" cy="9.7" r=".42" fill="currentColor" stroke="none" />
+            <circle cx="8.85" cy="9.7" r=".42" fill="currentColor" stroke="none" />
+            {/* 眼睛 */}
+            <circle cx="5.9" cy="7" r=".5" fill="currentColor" stroke="none" />
+            <circle cx="10.1" cy="7" r=".5" fill="currentColor" stroke="none" />
           </svg>
         </span>
         <TextShimmer active className="pg-running-text">

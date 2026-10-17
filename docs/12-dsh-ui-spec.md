@@ -1178,12 +1178,15 @@ section.root[data-turn-trigger]
 （`locale.ts:89-90`）。
 
 > **Piggy 落地（2026-10-16，04 §2.1.9）**：`features/chat/RunningStatus.tsx`，
-> `data-chat-running` / `.pg-running*`。三处**有意差异**：
+> `data-chat-running` / `.pg-running*`。四处**有意差异**：
 > ① 文案写「运行中」（用户明确要求，不用 DSH 的品牌说法「深度求索中」）；
 > ② 分隔线由 `Transcript` 传 `divider` 进来（Piggy 的转录是虚拟列表，拿不到 DSH 那条
 >    关系选择器；判据是"最后一行有输出"，空的助手行也算没输出）；
 > ③ 时钟住在组件里、用递归 `setTimeout`（本仓 eslint 禁 `setInterval`），
->    起点是 `TabMessages.turnStartedAt`（`agent_start` 记，`agent_settled`/`interruptTurn` 清）。
+>    起点是 `TabMessages.turnStartedAt`（`agent_start` 记，`agent_settled`/`interruptTurn` 清）；
+> ④ **图标不搬**：DSH 的鲸尾（APNG mask + 静态 SVG 兜底）是 DeepSeek 的品牌符号，
+>    Piggy 用自己画的猪头线稿（内联 SVG、`currentColor`）。上面那段 `.runningWhale*`
+>    与 APNG 资产在 Piggy 里**没有对应物**，别照抄。
 
 **读到哪记到哪 = 行锚点，不是裸像素**（Piggy 2026-09-23 对齐）：DSH 的阅读位置是
 `ChatScrollPosition = { anchorKey, anchorTop, scrollTop }` —— 视口顶端那一行的

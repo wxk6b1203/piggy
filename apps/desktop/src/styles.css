@@ -96,24 +96,8 @@ body {
   position: relative; display: inline-flex; flex: none;
   width: 14px; height: 14px; contain: strict; overflow: hidden;
 }
-/* 鲸尾动图（DSH `RunningWhaleTail`）：APNG 当 alpha mask，颜色跟 currentColor 走。
-   默认**不显示** —— 由下面的 @supports/@media 打开，静态 SVG 才是兜底。 */
-.pg-running-whale { display: none; position: absolute; inset: 0; }
-.pg-running-still { display: initial; }
-@supports (mask-mode: alpha) {
-  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-    .pg-running-whale {
-      display: block;
-      background: currentColor;
-      mask-image: url('./assets/running-whale@2x.png');
-      mask-position: center; mask-size: 100% 100%; mask-repeat: no-repeat;
-      mask-mode: alpha;
-      /* 动画重绘锁在这块图标大小的合成层里 */
-      will-change: transform;
-    }
-    .pg-running-still { display: none; }
-  }
-}
+/* 图标是猪头线稿（`RunningStatus.tsx` 里的内联 SVG）：颜色走 currentColor，
+   所以深浅两套主题**共用一份**几何，不需要第二份资产。 */
 /* 只给读屏的文字（DSH `accessibility.module.css` 的 `.visuallyHidden`）：运行指示每秒
    变化的数字不进无障碍树，播报的只有"深度求索中"这一句状态。 */
 .pg-sr-only {

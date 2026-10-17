@@ -137,15 +137,18 @@ describe('运行指示（组件）', () => {
     expect(domContainer().querySelector('.pg-sr-only')).not.toBeNull();
   });
 
-  it('图标两种形态都在 DOM 里（动图优先，静态 SVG 是兜底）', () => {
+  it('图标是猪头线稿（一个内联 SVG，颜色随 currentColor）', () => {
     mountDom(<RunningStatus startedAt={Date.now()} />);
-    expect(domContainer().querySelector('.pg-running-whale'), '动图那份（APNG 当 mask）').not.toBeNull();
-    expect(domContainer().querySelector('.pg-running-still path'), '静态鲸尾兜底').not.toBeNull();
-    // 动图与静态二选一由 CSS 决定（@supports / prefers-reduced-motion），JS 不参与
-    expect(
-      domContainer().querySelector('.pg-running-icon')?.getAttribute('aria-hidden'),
-      '图标是装饰，读屏不该念它',
-    ).toBe('true');
+    const icon = domContainer().querySelector('.pg-running-icon');
+    expect(icon, '图标容器').not.toBeNull();
+    const svg = icon?.querySelector('svg');
+    expect(svg, '猪头是内联 SVG —— 不依赖任何位图资产').not.toBeNull();
+    // 脸 + 左右耳（3 条 path）+ 鼻吻 + 两眼两鼻孔：少一样就读不成"猪"
+    expect(svg!.querySelectorAll('path')).toHaveLength(3);
+    expect(svg!.querySelectorAll('ellipse')).toHaveLength(1);
+    expect(svg!.querySelectorAll('circle')).toHaveLength(4);
+    expect(svg!.getAttribute('stroke'), '颜色跟文字走，深浅主题共用一份几何').toBe('currentColor');
+    expect(icon?.getAttribute('aria-hidden'), '图标是装饰，读屏不该念它').toBe('true');
   });
 
   it('分隔线按调用方的判断画（最后一行有没有输出）', () => {
