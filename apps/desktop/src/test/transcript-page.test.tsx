@@ -289,6 +289,36 @@ describe('打开会话贴在结尾', () => {
   });
 });
 
+describe('运行中那一行出现时保持贴底（2026-10-17 用户报的"第一次思考时小错位"）', () => {
+  it('尾部那块不在虚拟化器里的内容长高 → 跟着底部走', async () => {
+    /* 真机顺序（pi `agent-session.ts`）：用户消息先落 → `agent_start` → 模型开吐之前那段等待。
+       「运行中，用时 N 秒」那一行挂在虚拟列表**之外**：它一出现，`scrollHeight` 多 34px，
+       而 `rowCount` / `totalSize` / `layoutHeight` 一个都不变 —— 修复前 `reconcile()` 不会跑，
+       读者被留在离底 34px 的地方，直到助手 message_start 落地才被拽回去（实测：浏览器里
+       0.9 秒的间隙，54 帧）。现在 `runningStatus` 是 reconcile 的输入之一。 */
+    seed(12);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    await setGeometry(el);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    expect(el.scrollTop).toBe(1600);
+
+    // jsdom 没有布局：把"运行中那一行"的高度直接加到容器上（真浏览器里是它自己撑的）。
+    // 只改 scrollHeight —— 再调 `fakeGeometry` 会把 scrollTop 重置成 0，那就不是"贴底"了。
+    Object.defineProperty(el, 'scrollHeight', { value: 2034, configurable: true });
+    // 直接走 store（这个文件其它用例也这么干）：要验的是 Transcript 的对账触发，不是事件接线
+    await act(async () => {
+      useMessages.getState().applyCommit(TAB, { type: 'agent_start' });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(el.scrollTop, '运行中那一行出现后应当仍贴着底').toBe(1634);
+  });
+});
+
 describe('发送后贴底（windowEvents: transcript-follow-tail）', () => {
   it('读者滚上去看历史时，收到请求也回到最底下', async () => {
     seed(12);

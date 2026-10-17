@@ -114,6 +114,9 @@ export function Transcript({ tabId }: { tabId: string }) {
      `Transcript` 才知道会话文件（`useTabs`）与"偏移 → 行 id"的映射，所以端口在这里造。
      ⚠️ 端口对象要稳定（`useMemo` 依赖只放会话文件与 tabId）：它挂在阅读层的输入上，
      每次渲染换引用会让"记位置"这条路径反复重建。 */
+  /* 这一轮在不在跑（滚动输入要用它：末尾那行「运行中」不在虚拟化器里，
+     它出现/消失本身是高度变化 —— 见 `TranscriptScrollInput.runningStatus`）。 */
+  const streaming = useTabMsg(tabId, (t) => t.streaming);
   const sessionFile = useTabs((s) => s.tabs[tabId]?.sessionFile ?? null);
   const positions = useMemo<ReadingPositionPort>(
     () => ({
@@ -149,6 +152,7 @@ export function Transcript({ tabId }: { tabId: string }) {
     hasNewer,
     loadingNewer,
     positions,
+    runningStatus: streaming,
   });
 
   /* 刻度梯：整段会话的轮次轮廓（文件扫出来的）+ 已载入的行（真实行覆盖轮廓）。
@@ -203,7 +207,6 @@ export function Transcript({ tabId }: { tabId: string }) {
      为什么用"查表 + 高度归零"而不是"生成一份新的行数组"：行的**下标**必须与 `ids` 一致 ——
      刻度梯的 `rowIndex`、虚拟化器的测量、阅读锚点全都按下标对齐。折起来的行仍然占一个下标，
      只是高度为 0，这三套机制一个都不用改。 */
-  const streaming = useTabMsg(tabId, (t) => t.streaming);
   /** 这一轮的时钟起点（`agent_start` 记下的），给末尾那行「运行中，用时 N 秒」用（04 §2.1.9） */
   const turnStartedAt = useTabMsg(tabId, (t) => t.turnStartedAt);
   /**

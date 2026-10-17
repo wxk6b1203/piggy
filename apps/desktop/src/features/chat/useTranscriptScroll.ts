@@ -119,6 +119,16 @@ export interface TranscriptScrollInput {
   loadingNewer: boolean;
   /** 跨重启的阅读位置（缺省 = 不记不还） */
   positions?: ReadingPositionPort | undefined;
+  /**
+   * 转录**尾部那块不在虚拟化器里的内容**在不在（当前就是「运行中，用时 N 秒」那一行）。
+   *
+   * 为什么它是"内容信号"：那一行挂在虚拟列表之外，它出现/消失会直接改 `scrollHeight`
+   * —— 但 `rowCount` / `totalSize` / `layoutHeight` **一个都不变**，于是 `reconcile()`
+   * 不会跑，跟着底部的读者会被留在**离底 34px**的地方，直到下一条消息落地才被拽回去
+   * （2026-10-17 用户："发送消息后，第一次思考时……滚动出现了小错位"；真机顺序是
+   * 用户消息 → `agent_start`（这一行出现）→ 模型开吐之前那段等待，正好卡在这个窗口）。
+   */
+  runningStatus: boolean;
 }
 
 export class TranscriptReading {
@@ -551,9 +561,18 @@ export function useTranscriptScroll(
   useLayoutEffect(() => viewport.connect(core.events), [viewport, core]);
 
   // 内容提交 / 布局恢复 → 对账（DSH 的两个 layout effect）
+  // `runningStatus` 也算内容信号：它那块不在虚拟化器里，挂了就是 34px 的高度变化（见字段注释）
   useLayoutEffect(() => {
     core.reading.reconcile();
-  }, [core, input.ready, input.rowCount, input.totalSize, input.layoutHeight, input.hasNewer]);
+  }, [
+    core,
+    input.ready,
+    input.rowCount,
+    input.totalSize,
+    input.layoutHeight,
+    input.hasNewer,
+    input.runningStatus,
+  ]);
   // 只在"重新有布局"那一刻收尾；其余内容变化走上面那条 effect
   useLayoutEffect(() => {
     core.reading.settleAfterLayout();

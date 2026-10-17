@@ -789,6 +789,7 @@ worker 崩溃、空闲回收休眠、pi 自己收尾却没发最终消息，这�
 | 维度 | 口径 |
 |---|---|
 | 何时挂 | `streaming` 为真（`agent_start` → `agent_settled`），不只是"正在出字"；**工具在跑、模型没出字时同样在** |
+| 与滚动的关系 | 它挂在**虚拟列表之外**：出现/消失本身就是一次高度变化（34px），所以 `runningStatus` 是 `useTranscriptScroll` 对账的输入之一。漏了这条，跟着底部的读者会在"用户消息落地 → 模型开吐"这段等待里被留在离底 34px 的地方（2026-10-17 用户报的"第一次思考时小错位"，实测 0.9 秒） |
 | 时钟起点 | `TabMessages.turnStartedAt` = `agent_start` 到达时的本机时间（`agent_settled` / `interruptTurn` 清掉）。**不能**拿最后一条用户消息的时间戳倒推 —— 流式中用户还能继续入队（`⏎`/`⌘⏎`），那条不是本轮起点 |
 | 跳动 | 每秒一次（DSH `LIVE_RUN_CLOCK_INTERVAL_MS = 1000`），**时钟只住在这一行里**（其余转录不跟着重渲染）；本仓禁 `setInterval`，用可 cleanup 的递归 `setTimeout` |
 | 格式 | `1秒` / `1分5秒` / `1小时2分5秒`（DSH `formatRunDuration`：秒必显、满分钟才出"分"、不补前导零）。与折叠行的 `12s`/`1m 05s` **故意两套**：那一行是紧凑标签，这一行是句子里的"用时" |
