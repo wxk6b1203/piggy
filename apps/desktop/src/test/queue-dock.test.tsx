@@ -30,6 +30,7 @@ import { toast } from '@/lib/feedback';
 import { useMessages } from '@/stores/messages';
 import { useQueue, reconcileRows, type QueueRow } from '@/stores/queue';
 import { applyCommitEvent } from '@/lib/tabEvents';
+import { windowEvents } from '@/lib/windowEvents';
 import { domContainer, mountDom, unmountDom } from './dom-render';
 
 const TAB = 't-queue';
@@ -219,6 +220,69 @@ beforeEach(() => {
 
 afterEach(async () => {
   await unmountDom();
+});
+
+/* ────────────────── 发送后的滚动请求 ────────────────── */
+
+describe('发送之后要不要跳到底（2026-10-17 用户）', () => {
+  it('空闲 + 队列空 → 这一条会起一轮，发完请求转录贴底', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    const hits: string[] = [];
+    const off = windowEvents.on('transcript-follow-tail', (id) => hits.push(String(id)));
+    await enqueueVia('新的一轮');
+    off();
+
+    expect(hits, '起新一轮时应当请求贴底（新消息就在末尾）').toEqual([TAB]);
+  });
+
+  it('流式中（这条只是入队）→ 不请求贴底，别把正在读历史的读者拽走', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    setStreaming(true);
+    const hits: string[] = [];
+    const off = windowEvents.on('transcript-follow-tail', (id) => hits.push(String(id)));
+    await enqueueVia('先排着');
+    off();
+
+    expect(rowTexts()).toEqual(['先排着']); // 前置条件：真的进了队列
+    expect(hits, '入队不改变转录内容，不该回滚').toEqual([]);
+  });
+
+  it('空闲但队列里已经有行 → 也不请求（用户："队列里有，就不用回滚"）', async () => {
+    mountDom(<SessionWorkspaceComposer tabId={TAB} />);
+    /* 直接摆状态：影子队列里有一条、但这一轮没在跑（空闲）。
+       为什么不走 `enqueueVia` 造这个场景：mock 的"忙"判据是"队列非空 = 还在跑"
+       （见文件头注释），它会拒掉这次不带 `streamingBehavior` 的发送 —— 那样这条用例
+       就变成在验 mock 的报错，而不是验 Composer 的判据。 */
+    await act(async () => {
+      useQueue.setState({
+        tabs: {
+          [TAB]: {
+            rows: [
+              { id: 'q-seed', text: '排着的', images: [], target: 'followUp', ownership: 'local', sending: false },
+            ],
+            paused: [],
+            consumed: [],
+            busy: false,
+            taking: false,
+            turnEnded: false,
+            editingId: null,
+            collapsed: true,
+          },
+        },
+      });
+      await Promise.resolve();
+    });
+    const hits: string[] = [];
+    const off = windowEvents.on('transcript-follow-tail', (id) => hits.push(String(id)));
+    await type('又一条');
+    await press('Enter');
+    off();
+
+    // 前置条件：这一条**真的发出去了**（否则"没请求"可能是因为根本没发）
+    expect(lastPrompt().args.message).toBe('又一条');
+    expect(lastPrompt().args.streamingBehavior, '空闲发送不该带投递语义').toBeUndefined();
+    expect(hits, '队列里已经有东西了，不要把读者拽到底部').toEqual([]);
+  });
 });
 
 /* ────────────────── 纯函数：对账 ────────────────── */

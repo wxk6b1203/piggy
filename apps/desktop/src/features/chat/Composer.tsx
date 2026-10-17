@@ -14,6 +14,7 @@ import { toast } from '@/lib/feedback';
 import { cmd } from '@/lib/ipc';
 import { fileToPendingImage, type PendingImage } from '@/lib/pendingImage';
 import { wakeIfNeeded } from '@/lib/sleep';
+import { windowEvents } from '@/lib/windowEvents';
 import { useMessages, useTabMsg } from '@/stores/messages';
 import { useQueue } from '@/stores/queue';
 import { useSessionStats } from '@/stores/stats';
@@ -104,6 +105,14 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
        语义是**按手势**决定的，不该被一次 IPC 的往返时间左右。 */
     const live = useMessages.getState().tabs[tabId]?.streaming ?? streaming;
     const behavior = live ? (opts?.behavior ?? 'followUp') : undefined;
+    /* 「这一条发出去之后，转录该不该跳到底」也**必须在 await 之前**定下来
+       （2026-10-17 用户）：队列为空 + 此刻空闲 = 这条会**起一轮**，新消息马上出现在转录末尾，
+       读者就算滚上去看历史，也该被带回底部看它；反之（流式中/还有排队的）这条只是入队，
+       转录内容没变，就别把读者拽走。 */
+    const queuePending =
+      (useQueue.getState().tabs[tabId]?.rows.length ?? 0) +
+      (useQueue.getState().tabs[tabId]?.paused.length ?? 0);
+    const jumpToTail = !live && queuePending === 0;
     try {
       await wakeIfNeeded(tabId); // 休眠标签：发送即透明唤醒（05 §4.3）
       await useQueue.getState().enqueue(tabId, {
@@ -111,6 +120,7 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
         images,
         behavior,
       });
+      if (jumpToTail) windowEvents.emit('transcript-follow-tail', tabId);
       setText('');
       setImages([]);
       setSlash(null);

@@ -104,6 +104,7 @@ import { ensureTabListeners } from '@/lib/tabEvents';
 import { useAppConfig } from '@/stores/appConfig';
 import { useMessages } from '@/stores/messages';
 import { useTabs } from '@/stores/tabs';
+import { windowEvents } from '@/lib/windowEvents';
 import { mountDom, unmountDom, domContainer } from './dom-render';
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
@@ -285,6 +286,47 @@ describe('打开会话贴在结尾', () => {
     });
     // 真浏览器会把 scrollTop 钳到可滚高度（= scrollHeight - clientHeight）
     expect(el.scrollTop).toBe(1600);
+  });
+});
+
+describe('发送后贴底（windowEvents: transcript-follow-tail）', () => {
+  it('读者滚上去看历史时，收到请求也回到最底下', async () => {
+    seed(12);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    await setGeometry(el);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    // 读者滚上去（离开跟随）
+    await scrollTo(el, 300);
+    expect(el.scrollTop).toBe(300);
+
+    // Composer 在"这条会起一轮"时发这个事件
+    await act(async () => {
+      windowEvents.emit('transcript-follow-tail', TAB);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(el.scrollTop, '发送之后应当回到最底下').toBe(1600);
+  });
+
+  it('别的标签页的请求不理会', async () => {
+    seed(12);
+    mountDom(<Transcript tabId={TAB} />);
+    const el = scroller();
+    await setGeometry(el);
+    await flush();
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+    await scrollTo(el, 300);
+
+    await act(async () => {
+      windowEvents.emit('transcript-follow-tail', 'other-tab');
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(el.scrollTop, '不是这个 tab 的请求，不该动它').toBe(300);
   });
 });
 

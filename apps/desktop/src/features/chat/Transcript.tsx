@@ -30,7 +30,7 @@
  * （`hasNewer`）右下角并排「继续往下」与「回到最新」。
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { useAppConfig, type TranscriptDetail } from '@/stores/appConfig';
 import { defaultOpen, useTurnFold } from '@/stores/turnFold';
@@ -55,6 +55,7 @@ import { RunningStatus } from './RunningStatus';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
 import { railRowsFor, useTranscriptScroll, type ReadingPositionPort } from './useTranscriptScroll';
 import { loadReadingPosition, saveReadingPosition } from '@/lib/readingPosition';
+import { windowEvents } from '@/lib/windowEvents';
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -326,6 +327,24 @@ export function Transcript({ tabId }: { tabId: string }) {
   const activeTurn = useMemo(
     () => activeTurnOf(railItems, scroll.readingRow ?? 0, scroll.following),
     [railItems, scroll.readingRow, scroll.following],
+  );
+
+  /**
+   * 「发送之后回到最底下」（2026-10-17 用户）：`Composer` 只在"这一条会起一轮"时发这个事件
+   * （队列为空 + 空闲）——那时新消息就在转录末尾，读者滚上去看历史也该被带回来。
+   * 流式中/还有排队的不发：那条只是入队，转录内容没变，别把读者拽走。
+   *
+   * 用 ref 拿最新的 `returnToBottom`：`useTranscriptScroll` 每次渲染都返回新对象，
+   * 直接进依赖会让订阅每帧重挂。
+   */
+  const followTailRef = useRef(scroll.returnToBottom);
+  followTailRef.current = scroll.returnToBottom;
+  useEffect(
+    () =>
+      windowEvents.on('transcript-follow-tail', (id) => {
+        if (id === tabId) followTailRef.current();
+      }),
+    [tabId],
   );
 
   const total = virtualizer.getTotalSize();
