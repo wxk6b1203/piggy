@@ -69,6 +69,57 @@ body {
 .pg-transcript-older button:hover:not(:disabled) { background: var(--pg-active); }
 .pg-transcript-older button:disabled { cursor: default; opacity: 0.7; }
 .pg-transcript-hint { color: var(--pg-fg-dim); font-size: var(--pg-fs-13); padding: var(--pg-sp-2) 0; }
+/* 运行中指示（DSH `RunningStatus` + `ChatView.module.css` 的 `.running` 一族，docs/04 §2.1.8）。
+   挂在转录**内容流的最末尾**（跟着内容滚，不是浮在输入框上）：
+     0.5px 分隔线（最后一行是用户气泡时不画）+ 鲸尾图标 + 一句带实时用时的扫光文字。
+   字号 12px / 行高 22px 是 DSH 的原值（`calc(14px - 2px)` / `calc(22px + delta)`）——
+   不是本仓 12px 字号通常配的 18px 台阶，别"顺手统一"。 */
+.pg-running {
+  display: flex; flex-direction: column; align-items: flex-start;
+  margin-top: 12px; /* DSH 的 flow gap：与上一行之间 12px */
+  color: var(--pg-deep-diving);
+  font-size: var(--pg-fs-12);
+  line-height: 22px;
+}
+.pg-running-divider {
+  width: 100%; height: 0.5px; margin: 8px 0 10px;
+  background: color-mix(in srgb, var(--pg-border-l1) 75%, var(--pg-border-l2));
+  pointer-events: none;
+}
+.pg-running-content { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+/* 秒数在变：比例数字会让整句左右抖，必须等宽 */
+.pg-running-text { min-width: 0; font-variant-numeric: tabular-nums; }
+/* 扫光取 deep-diving 的 shimmer 档（`TextShimmer` 默认拿 --pg-fg，那一档在这行太亮） */
+.pg-running .pg-shimmer-sweep { color: var(--pg-deep-diving-shimmer); }
+/* 14×14 固定 footprint（DSH `.runningIcon`）：图标不许撑破这一行的布局 */
+.pg-running-icon {
+  position: relative; display: inline-flex; flex: none;
+  width: 14px; height: 14px; contain: strict; overflow: hidden;
+}
+/* 鲸尾动图（DSH `RunningWhaleTail`）：APNG 当 alpha mask，颜色跟 currentColor 走。
+   默认**不显示** —— 由下面的 @supports/@media 打开，静态 SVG 才是兜底。 */
+.pg-running-whale { display: none; position: absolute; inset: 0; }
+.pg-running-still { display: initial; }
+@supports (mask-mode: alpha) {
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    .pg-running-whale {
+      display: block;
+      background: currentColor;
+      mask-image: url('./assets/running-whale@2x.png');
+      mask-position: center; mask-size: 100% 100%; mask-repeat: no-repeat;
+      mask-mode: alpha;
+      /* 动画重绘锁在这块图标大小的合成层里 */
+      will-change: transform;
+    }
+    .pg-running-still { display: none; }
+  }
+}
+/* 只给读屏的文字（DSH `accessibility.module.css` 的 `.visuallyHidden`）：运行指示每秒
+   变化的数字不进无障碍树，播报的只有"深度求索中"这一句状态。 */
+.pg-sr-only {
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
 /* 「回到底部」（DSH `chat.toBottom`：34×34 圆形浮起按钮，滚离底部才出现）。
    不跟内容滚：挂在滚动容器的兄弟层（否则会被一起滚走）。
    位置照 DSH `.toBottomSlot` 的口径（docs/12 §3.11）——**对齐正文列右边缘**（max 里两项：

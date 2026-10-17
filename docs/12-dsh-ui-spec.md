@@ -1134,6 +1134,57 @@ section.root[data-turn-trigger]
 
 **轮次分组靠数据属性，不靠包裹元素**：每个座位输出 `data-chat-flow-key`、`data-chat-anchor-key`、`data-chat-flow-kind={kind}`、`data-chat-turn={turn}`、`data-chat-group-part`（`ChatNodeSeat.tsx:146-160`），轮次轨道/视口靠读 `data-chat-turn` 定位（`chat/use-chat-viewport.ts:233,262`）。
 
+**运行中指示（`RunningStatus.tsx`，`ChatView.tsx:280` 的 `{running && <RunningStatus …/>}`）**——
+挂在对话框**内容流的最末尾**（`.column` 里最后一个子元素），不是浮层：
+
+```
+<div.running[data-chat-running]>
+  ├ span.visuallyHidden[role=status][aria-live=polite][aria-atomic=true]   // 只念状态
+  ├ span.runningDivider      // 0.5px；由关系选择器决定画不画
+  └ span.runningContent      // inline-flex / gap 6px
+      ├ (RunningWhaleTail)   // 14×14 APNG mask（静态 SVG 兜底）
+      └ TextShimmer active > span.runningText   // 「深度求索中，用时 {duration} ···」
+```
+
+```css
+/* ChatView.module.css:116-195 */
+.running { display:flex; flex-direction:column; align-items:flex-start;
+           --dsh-chat-flow-gap: 12px;
+           --dsw-alias-label-shimmer: var(--dsw-alias-label-deep-diving-shimmer);
+           color: var(--dsw-alias-label-deep-diving);
+           font-size: calc(var(--dsh-content-font-size,14px) - 2px);
+           line-height: calc(22px + var(--dsh-content-font-delta,0px)) }
+/* 最后一行**有输出**（不是用户/steering/turn-trigger、也不是空座位）时才有分隔线 */
+.column > :nth-last-child(2 of :not([hidden]):not(.flowItem:is(:empty, …))):is(…) ~ .running > .runningDivider { display:block }
+.runningDivider { display:none; width:100%; height:0.5px; margin:8px 0 10px;
+                  background: color-mix(in srgb, var(--dsw-alias-border-l1) 75%, var(--dsw-alias-border-l2)) }
+.runningContent { display:inline-flex; align-items:center; min-width:0; gap:6px }
+.runningText { min-width:0; font-variant-numeric: tabular-nums }
+.runningIcon { position:relative; display:inline-flex; flex:none;
+               width: calc(14px + var(--dsh-content-font-delta,0px));
+               height: calc(14px + var(--dsh-content-font-delta,0px));
+               contain: strict; overflow: hidden }
+/* 动图只在支持 mask-mode 且没要求减少动效时上场 */
+@supports (mask-mode: alpha) { @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .runningWhaleAnimated { display:block; background: currentColor;
+    mask: url('./running-whale@2x.png') center / 100% 100% no-repeat; mask-mode: alpha }
+  .runningWhaleStill { display:none } } }
+```
+
+时钟口径：起点 = 当前**未关闭**那一轮的 `turn.start.time`（`ChatView.tsx:116-121`），
+每秒跳一次（`message-chrome.ts` 的 `LIVE_RUN_CLOCK_INTERVAL_MS = 1000`），
+`formatRunDuration` 产出 `秒/分/小时` 片段（秒必显、满 60 秒才出"分"、不补前导零）。
+文案：`chat.deepDiving` = `深度求索中`、`chat.deepDivingFor` = `深度求索中，用时 {duration} ···`
+（`locale.ts:89-90`）。
+
+> **Piggy 落地（2026-10-16，04 §2.1.9）**：`features/chat/RunningStatus.tsx`，
+> `data-chat-running` / `.pg-running*`。三处**有意差异**：
+> ① 文案写「运行中」（用户明确要求，不用 DSH 的品牌说法「深度求索中」）；
+> ② 分隔线由 `Transcript` 传 `divider` 进来（Piggy 的转录是虚拟列表，拿不到 DSH 那条
+>    关系选择器；判据是"最后一行有输出"，空的助手行也算没输出）；
+> ③ 时钟住在组件里、用递归 `setTimeout`（本仓 eslint 禁 `setInterval`），
+>    起点是 `TabMessages.turnStartedAt`（`agent_start` 记，`agent_settled`/`interruptTurn` 清）。
+
 **读到哪记到哪 = 行锚点，不是裸像素**（Piggy 2026-09-23 对齐）：DSH 的阅读位置是
 `ChatScrollPosition = { anchorKey, anchorTop, scrollTop }` —— 视口顶端那一行的
 `data-chat-anchor-key` + 它到视口顶的距离，裸 `scrollTop` 只作兜底

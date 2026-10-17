@@ -78,7 +78,7 @@ pub const THIRD_PARTY: &[ThirdParty] = &[
         name: "DeepSeek Harness",
         license: "MIT",
         holder: "Copyright (c) 2026 DeepSeek",
-        usage: "设计 token 数值（tokens.css 由脚本提取）与交互规格的参照",
+        usage: "设计 token 数值（tokens.css 由脚本提取）、交互规格的参照，以及运行指示的鲸尾动图",
     },
     ThirdParty {
         name: "@vscode/codicons",

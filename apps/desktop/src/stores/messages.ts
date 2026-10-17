@@ -182,6 +182,16 @@ export interface TabMessages {
   /** role:timestamp 去重键集合（O(1) 查询；05 §4.4 数据结构纪律——万条会话不可 O(n²)） */
   keys: Set<string>;
   streaming: boolean;
+  /**
+   * 这一轮开始跑的时刻（`agent_start` 到达时的本机时间；没在跑就是 `null`）。
+   *
+   * 为什么需要它：转录末尾那行「运行中，用时 N 秒 ···」（见 docs/04 §2.1.9，
+   * DSH `RunningStatus`）要一个**时钟起点**。从消息时间戳倒推是不行的 ——
+   * 流式中用户还能继续入队（`⌘⏎`/`⏎`），最后一条用户消息并不等于"本轮开始"。
+   * `agent_start` 是 pi 唯一能表达"一轮真的开始了"的事件，口径与 DSH 的
+   * `turn.start.time` 对齐；只在 `agent_settled` / `interruptTurn` 时清掉。
+   */
+  turnStartedAt: number | null;
   queue: { steering: string[]; followUp: string[] };
   toolRuns: Record<string, { toolName: string; running: boolean; isError?: boolean }>;
   /**
@@ -244,6 +254,7 @@ const emptyTab = (): TabMessages => ({
   ids: [],
   keys: new Set(),
   streaming: false,
+  turnStartedAt: null,
   queue: { steering: [], followUp: [] },
   toolRuns: {},
   toolCalls: {},
@@ -756,9 +767,12 @@ export const useMessages = create<MessagesState>()(
           }
           case 'agent_start':
             tab.streaming = true;
+            // 时钟起点（转录末尾「运行中，用时 N 秒 ···」用它，见 TabMessages.turnStartedAt）
+            tab.turnStartedAt = Date.now();
             break;
           case 'agent_settled': {
             tab.streaming = false;
+            tab.turnStartedAt = null;
             // 一轮落定：还在挂着的提示行（重试/压缩）一并撤掉 —— 它们的语义就是"正在…"。
             // pi 正常会给 end 事件；worker 崩/被毙时给不出，这里兜底，免得化石行留在转录里。
             dropNotice(tab, 'retry');
@@ -867,6 +881,7 @@ export const useMessages = create<MessagesState>()(
         const tab = s.tabs[tabId];
         if (!tab) return;
         tab.streaming = false;
+        tab.turnStartedAt = null;
         const id = tab.pendingId;
         if (!id) return; // 没有流式行 = 这一轮本来就没开始（或已经落地过）
         const row = tab.byId[id];

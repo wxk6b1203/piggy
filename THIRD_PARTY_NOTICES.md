@@ -84,12 +84,39 @@ pi 的许可全文以 `apps/desktop/src-tauri/resources/pi-LICENSE.txt` **随安
   2. **措辞/规格对齐**：会话标题生成的提示词逐句对齐 DSH
      `session-title-llm/src/index.ts` 的措辞（`sessions/title.rs::build_prompt` 里注明）；
      RPC 语义、几何常量、命令命名等接口事实散见 docs/11、12、14；
-  3. 界面结构（面板划分、选择器位置等）是**照着重画**，不是拷贝实现。
+  3. 界面结构（面板划分、选择器位置等）是**照着重画**，不是拷贝实现；
+  4. **一个二进制资产**（2026-10-16 起）：运行中指示的鲸尾动图
+     `apps/desktop/src/assets/running-whale@2x.png` —— 原样取自 DSH
+     `packages/client/ui-chat/src/client/chat/running-whale@2x.png`（APNG，21,631 字节），
+     在 `styles.css` 里当 alpha mask 用（`RunningStatus` 的文字扫光那颗图标）。
+     这是**直接搬运上游资产**，所以下面那句"若日后直接搬运"对它已经生效：
+     它的 MIT 许可与版权声明见本节末尾。
 - **许可**：MIT，`Copyright (c) 2026 DeepSeek`
 
 > 说明：DSH 的 `package.json` 带 `"private": true`（那是"不发布到 npm"的意思，与许可无关）。
 > 只要保留了版权与许可声明，MIT 允许这样复用；**若日后直接搬运 DSH 的源码文件**
 > （而不只是数值/措辞/接口事实），必须把该文件的 MIT 声明一并带过来。
+
+### 署名（MIT 履行，`running-whale@2x.png`）
+
+> MIT License — Copyright (c) 2026 DeepSeek
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+> and associated documentation files (the "Software"), to deal in the Software without
+> restriction, including without limitation the rights to use, copy, modify, merge, publish,
+> distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+> Software is furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all copies or
+> substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+> BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+> NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+> DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+>
+> 上游：`deepseek-harness` 仓库 `LICENSE`（全文同此，仓库根那一份即 MIT）。
 
 ---
 

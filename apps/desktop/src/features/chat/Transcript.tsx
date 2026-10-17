@@ -51,6 +51,7 @@ import { activeTurnOf, mergeRailItems, type RailSourceRow } from './turnRailItem
 import { TurnRail } from './TurnRail';
 import { ChangedFiles, type ChangedFile } from './ChangedFiles';
 import { TurnFoldRow } from './TurnFoldRow';
+import { RunningStatus } from './RunningStatus';
 import { TranscriptViewport, type RowGeometry } from './transcriptViewport';
 import { railRowsFor, useTranscriptScroll, type ReadingPositionPort } from './useTranscriptScroll';
 import { loadReadingPosition, saveReadingPosition } from '@/lib/readingPosition';
@@ -202,6 +203,26 @@ export function Transcript({ tabId }: { tabId: string }) {
      刻度梯的 `rowIndex`、虚拟化器的测量、阅读锚点全都按下标对齐。折起来的行仍然占一个下标，
      只是高度为 0，这三套机制一个都不用改。 */
   const streaming = useTabMsg(tabId, (t) => t.streaming);
+  /** 这一轮的时钟起点（`agent_start` 记下的），给末尾那行「运行中，用时 N 秒」用（04 §2.1.9） */
+  const turnStartedAt = useTabMsg(tabId, (t) => t.turnStartedAt);
+  /**
+   * 最后一行**有没有输出** —— 有才画运行指示上方那条 0.5px 分隔线。
+   *
+   * DSH 花了一条关系选择器判这件事（`ChatView.module.css` 里 `.runningDivider` 的
+   * `:nth-last-child(2 …)`）：用户气泡、隐藏的座位、**空的助手座位**都不算输出。
+   * 刚发出去那一瞬间最后一行就是用户气泡，状态行该直接贴在它下面，别再插一根线；
+   * lock 到"只看最后一行"，不看整段历史。
+   */
+  const tailHasOutput = useTabMsg(tabId, (t) => {
+    const id = t.ids[t.ids.length - 1];
+    const row = id ? t.byId[id] : undefined;
+    if (!row) return false;
+    if (row.role === 'user') return false;
+    if (row.role !== 'assistant') return true;
+    if ((row.live?.length ?? 0) > 0) return true;
+    const content = (row.message as { content?: unknown }).content;
+    return Array.isArray(content) ? content.length > 0 : Boolean(content);
+  });
   const detail = useAppConfig((s) => s.transcriptDetail);
   /** 手动开合记忆（键 = 会话文件偏移，见 `stores/turnFold.ts`）；变了要重算计划 */
   const foldMemory = useTurnFold((s) => s.open[tabId]);
@@ -384,6 +405,10 @@ export function Transcript({ tabId }: { tabId: string }) {
             );
           })}
         </div>
+        {/* 运行指示（DSH `RunningStatus`，见 features/chat/RunningStatus.tsx）：
+            挂在**内容流的最末尾**、在滚动容器里跟着内容走 —— 它说的是"这一轮的进展"，
+            不是输入框的状态。滚上去看历史时它跟着沉到底下，与 DSH 一致。 */}
+        {streaming ? <RunningStatus startedAt={turnStartedAt} divider={tailHasOutput} /> : null}
       </div>
       {hasNewer ? (
         // 换窗状态（在看几轮之前的历史）：**往下滚能继续读**，这里再给一条直达尾部的路。
