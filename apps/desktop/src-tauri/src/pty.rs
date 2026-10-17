@@ -32,6 +32,19 @@ pub fn build_login_shell() -> (String, Vec<String>) {
     }
 }
 
+/// 终端的起始目录（**纯函数**，便于单测）。
+///
+/// 规则：调用方给的 cwd **是目录就用它**（内嵌终端必须落在当前工作区，2026-10-17 用户
+/// 明确要求）；只有在拿不到 / 不是目录时才退主目录。早先这里写死 `home`（当时只服务
+/// OAuth 登录），于是"打开终端永远在 `~`"，跟当前项目完全对不上。
+fn start_dir(cwd: &str, home: Option<std::path::PathBuf>) -> String {
+    if std::path::Path::new(cwd).is_dir() {
+        return cwd.to_string();
+    }
+    home.map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_string())
+}
+
 /// 打开 PTY 并启动输出泵。返回句柄信息。
 pub fn open_pty(
     map: &SharedPtyMap,
@@ -51,16 +64,7 @@ pub fn open_pty(
         })
         .map_err(|e| format!("PTY 打开失败: {e}"))?;
 
-    // 起始目录 = 调用方给的 cwd（内嵌终端要落在**当前工作区**，2026-10-17 用户明确要求）。
-    // 只有在 cwd 拿不到/不是目录时才退主目录：早先这一行写死 `home`（当时只服务 OAuth
-    // 登录），于是打开终端永远在 `~`，跟"当前项目"完全对不上。
-    let start = if std::path::Path::new(cwd).is_dir() {
-        cwd.to_string()
-    } else {
-        crate::config::paths::home_dir()
-            .map(|h| h.to_string_lossy().into_owned())
-            .unwrap_or_else(|| cwd.to_string())
-    };
+    let start = start_dir(cwd, crate::config::paths::home_dir());
     let (prog, args) = build_login_shell();
     let mut cmd = CommandBuilder::new(prog);
     cmd.args(args);
@@ -149,6 +153,25 @@ pub fn close_pty(map: &SharedPtyMap, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 起始目录：cwd 是目录就用它；不是目录才退主目录；主目录也没有就原样返回。
+    #[test]
+    fn terminal_starts_in_the_callers_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let home = std::path::PathBuf::from("/nonexistent-home-probe");
+        assert_eq!(start_dir(&cwd, Some(home.clone())), cwd, "应当落在调用方的工作目录");
+
+        // 传了个不存在的目录 → 退主目录（不 panic、不落到相对路径）
+        let missing = tmp.path().join("nope").to_string_lossy().into_owned();
+        assert_eq!(
+            start_dir(&missing, Some(home.clone())),
+            "/nonexistent-home-probe",
+            "目录不存在时应当退主目录"
+        );
+        // 主目录也拿不到 → 原样返回（行为与老代码一致，至少不凭空造一个路径）
+        assert_eq!(start_dir(&missing, None), missing);
+    }
 
     #[test]
     fn login_shell_selection() {
