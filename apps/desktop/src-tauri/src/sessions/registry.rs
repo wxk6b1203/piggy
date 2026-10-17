@@ -377,12 +377,6 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn update_cursor(&mut self, tab_id: &str, cursor: Option<String>) {
-        if let Some(tab) = self.tabs.get_mut(tab_id) {
-            tab.last_cursor = cursor.or(tab.last_cursor.take());
-        }
-    }
-
     pub fn snapshot(&self, tab_id: &str) -> Option<TabSnapshot> {
         self.tabs.get(tab_id).map(|t| snapshot_of(t, &Value::Null))
     }

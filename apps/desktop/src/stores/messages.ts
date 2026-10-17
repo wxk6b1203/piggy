@@ -192,8 +192,6 @@ export interface TabMessages {
    * `turn.start.time` 对齐；只在 `agent_settled` / `interruptTurn` 时清掉。
    */
   turnStartedAt: number | null;
-  queue: { steering: string[]; followUp: string[] };
-  toolRuns: Record<string, { toolName: string; running: boolean; isError?: boolean }>;
   /**
    * 工具调用索引：`toolCallId → { name, args }`。
    *
@@ -255,8 +253,6 @@ const emptyTab = (): TabMessages => ({
   keys: new Set(),
   streaming: false,
   turnStartedAt: null,
-  queue: { steering: [], followUp: [] },
-  toolRuns: {},
   toolCalls: {},
   toolResults: {},
   pendingId: null,
@@ -777,25 +773,6 @@ export const useMessages = create<MessagesState>()(
             // pi 正常会给 end 事件；worker 崩/被毙时给不出，这里兜底，免得化石行留在转录里。
             dropNotice(tab, 'retry');
             dropNotice(tab, 'compaction');
-            break;
-          }
-          case 'queue_update': {
-            const q = e as unknown as { steering: string[]; followUp: string[] };
-            tab.queue = { steering: [...q.steering], followUp: [...q.followUp] };
-            break;
-          }
-          case 'tool_execution_start': {
-            const t = e as unknown as { toolCallId: string; toolName: string };
-            tab.toolRuns[t.toolCallId] = { toolName: t.toolName, running: true };
-            break;
-          }
-          case 'tool_execution_end': {
-            const t = e as unknown as { toolCallId: string; isError?: boolean };
-            const run = tab.toolRuns[t.toolCallId];
-            if (run) {
-              run.running = false;
-              run.isError = t.isError ?? false;
-            }
             break;
           }
           /* 压缩与重试：pi 的事件说的都是**进程内的状态**，界面把它落成**会话里的一行**

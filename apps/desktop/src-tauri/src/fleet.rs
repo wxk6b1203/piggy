@@ -330,13 +330,6 @@ impl FleetManager {
         }
     }
 
-    pub fn run_ids(&self) -> Vec<String> {
-        self.runs
-            .lock()
-            .map(|r| r.keys().cloned().collect())
-            .unwrap_or_default()
-    }
-
     pub fn get(&self, id: &str) -> Option<FleetRun> {
         self.runs.lock().ok().and_then(|r| r.get(id).cloned())
     }

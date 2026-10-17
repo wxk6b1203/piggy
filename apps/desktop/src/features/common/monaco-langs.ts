@@ -198,7 +198,3 @@ export function langForPath(path: string): string {
   return EXT_LANG[base.slice(dot + 1)] ?? PLAINTEXT;
 }
 
-/** 该语言是否需要现加载定义（`plaintext`/`json` 不用）。 */
-export function needsLoad(langId: string): boolean {
-  return !BUILTIN_LANGS.has(langId) && langId in LANG_LOADERS;
-}

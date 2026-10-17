@@ -89,13 +89,11 @@ describe('messagesStore v2（per-tab，docs/03 §3.2 / 04 §3）', () => {
     expect(useMessages.getState().tabs[TAB]!.ids.length).toBe(1);
   });
 
-  it('agent_start/settled 驱动 per-tab streaming；queue_update 驱动队列', () => {
+  it('agent_start/settled 驱动 per-tab streaming', () => {
     const s = useMessages.getState();
     s.ensure(TAB);
     s.applyCommit(TAB, { type: 'agent_start' });
     expect(useMessages.getState().tabs[TAB]!.streaming).toBe(true);
-    s.applyCommit(TAB, { type: 'queue_update', steering: ['focus'], followUp: ['then'] });
-    expect(useMessages.getState().tabs[TAB]!.queue.steering).toEqual(['focus']);
     s.applyCommit(TAB, { type: 'agent_settled' });
     expect(useMessages.getState().tabs[TAB]!.streaming).toBe(false);
   });

@@ -119,7 +119,7 @@ M1 修正记录（实现期发现）：
 | 结构化提问 + 计划模式（2026-09-25） | 捆绑插件 `resources/pi-plugins/pi-ask`（`ask_user_question` / `exit_plan_mode` / `/plan`）+ 转录里的提问卡 + 设置里的内置插件开关（04 §2.1.8、17 §2.2b） | ✅ |
 | 插件打包与收录（2026-09-25） | `pi/plugins.rs`（发现/去重/开关）+ `--extension <dir>` 注入 + 白名单合并；`scripts/vendor-plugin.mjs` 收录第三方（首个：`pi-todo` MIT）+ `--check` 漂移检测；`scripts/pi-plugin-probe.mjs` 真机探针（进 CI contract 作业）（17 §2.2b/2.2c） | ✅ |
 | 独立发布（08 §7.1） | `scripts/fetch-pi-standalone.mjs`（GitHub Releases 下载 + SHA256 强校验 + tar 解包 → `src-tauri/resources/pi/`）；`tauri.full.conf.json`（full SKU bundle.resources）；发现链插入内置档（显式 > PI_BIN > 内置 > PATH，02 §2.1）；lite=默认 conf 不捆绑 | ✅（脚本+接线；release 资产直链需发布时按实际资产名核对 URL 模板） |
-| M1 顺延：Monaco schema 校验 | `monaco-setup.registerPiggySchemas`（pi settings/models 双 schema）+ MonacoHost 显式模型 URI | ✅ |
+| M1 顺延：Monaco schema 校验 | `monaco-setup.registerPiggySchemas`（pi settings/models 双 schema）+ MonacoHost 显式模型 URI | ❌ **没接**（2026-10-17 核对：`registerPiggySchemas` 全仓**零调用点**，那段 schema 常量从没被注册过；`MonacoHost` 也没有显式模型 URI。原表格写的 ✅ 是假的 —— 已把死代码删掉，见 docs/15 规矩 154。要做就按 10 §3.3 重新排：先给 `packages/pi-protocol` 落 `settings.schema.json`，再在 `MonacoHost` 的 `createModel` 路径上注册） |
 
 perf-lite 本机实测（2026-09-23，M 系列）：S1 流式 60fps / 0 longtask（8s 灌帧）；S3 10k hydrate 24.7ms / 滚动 3 longtask（≤3）。
 
@@ -201,7 +201,7 @@ dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自�
 | 崩溃安全 | `lib.rs install_panic_hook`：panic 转储 `~/.piggy/logs/panic-*.log` 后交回默认 hook | ✅ |
 | 托盘 | `tray-icon` feature + TrayIconBuilder（显示/隐藏 + 退出） | ✅ |
 | 全局唤起 | `tauri-plugin-global-shortcut`：Cmd/Ctrl+Shift+P 显示并聚焦主窗（Rust 侧注册，无 webview 权限面） | ✅ |
-| 登录内嵌终端 | `src-tauri/src/pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `LoginTerminalModal`（@xterm/xterm + fit；关闭即 close 回收）；设置 → 认证页入口 | ✅（真机 OAuth 流程待用户实测） |
+| 登录内嵌终端 | `src-tauri/src/pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `LoginTerminalModal`（@xterm/xterm + fit；关闭即 close 回收）**都在，但入口没接**：`LoginTerminalModal` 全仓**零渲染点**（`grep -rn LoginTerminalModal apps/desktop/src` 只有它自己的定义），设置页里没有任何"登录/认证"入口，`@xterm/xterm` 也**只被这一个组件 import**（2026-10-17 核对）。所以 `pty_*` 四条命令 + 设置里的入口 + 两个 npm 依赖，目前是**一条只有后端、没有前端出口的路** | ❌ 未完成（原标 ✅ 是错的；真机 OAuth 从来没走过） |
 | 资源浏览器 | `fs_list_dir`（项目根子树、守卫校验、目录优先排序）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
 | 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）**都在，但前端从未接线**：`fs_write_edit` 全仓 0 调用、`FilePreview` 里没有任何编辑 UI（`git log -S fs_write_edit -- apps/desktop/src` 为空，说明不是后来删掉的，是从来没做） | ❌ 未完成（原标 ✅ 是错的） |
 | i18n | `lib/i18n.ts`：zh-CN/en-US 词典 + t() 回退链 + setLang 持久化/事件；已接 palette/welcome 文案；语言切换 UI 与全量文案迁移 = 持续项 | ✅ 骨架 |
