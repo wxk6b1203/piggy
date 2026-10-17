@@ -119,21 +119,15 @@ export interface TranscriptScrollInput {
   loadingNewer: boolean;
   /** 跨重启的阅读位置（缺省 = 不记不还） */
   positions?: ReadingPositionPort | undefined;
-  /**
-   * 转录**尾部那块不在虚拟化器里的内容**在不在（当前就是「运行中，用时 N 秒」那一行）。
-   *
-   * 为什么它是"内容信号"：那一行挂在虚拟列表之外，它出现/消失会直接改 `scrollHeight`
-   * —— 但 `rowCount` / `totalSize` / `layoutHeight` **一个都不变**，于是 `reconcile()`
-   * 不会跑，跟着底部的读者会被留在**离底 34px**的地方，直到下一条消息落地才被拽回去
-   * （2026-10-17 用户："发送消息后，第一次思考时……滚动出现了小错位"；真机顺序是
-   * 用户消息 → `agent_start`（这一行出现）→ 模型开吐之前那段等待，正好卡在这个窗口）。
-   */
-  runningStatus: boolean;
 }
 
 export class TranscriptReading {
   private sampleTimer: number | null = null;
   private probeFrame: number | null = null;
+  /** 贴底之后的**一帧补偿**（见 `scheduleSettle`） */
+  private settleFrame: number | null = null;
+  /** 上一轮补偿时的剩余差（防"怎么补都补不上"时每帧空转） */
+  private settleGap = Number.POSITIVE_INFINITY;
   /** 读者接管之后"读到哪了"（面板被摘出 DOM 再回来时还给他）。 */
   private anchor: ReaderAnchor | null = null;
   /** 往上翻页时的高度差兜底（锚点行找不到时才用）。 */
@@ -162,6 +156,10 @@ export class TranscriptReading {
 
   dispose(): void {
     this.cancelPending();
+    if (this.settleFrame !== null) {
+      cancelAnimationFrame(this.settleFrame);
+      this.settleFrame = null;
+    }
     this.onBusyTurn(null);
   }
 
@@ -180,6 +178,38 @@ export class TranscriptReading {
        `initialized` 正是"落点已定"的标志（`restoreSavedPosition`/`followTail` 都会置它）。 */
     if (this.state.initialized) this.input.positions?.save(null);
     this.publish({ initialized: true, following: true });
+    this.scheduleSettle();
+  }
+
+  /**
+   * 贴底之后**下一帧**再量一次：还差就把最后那点补上。
+   *
+   * 为什么需要它：`scrollHeight` / `scrollTop` 是**整数**（内容高度可能是 0.5px 的倍数，
+   * 比如分隔线 `height: 0.5px`），而不同引擎的钳制/取整不一样（Tauri 在 macOS 上是
+   * WebKit）。同一帧里"内容刚长高、位置刚写下去"之后再被人重排一次，也会留 1~2px。
+   * 这里只在**跟随态 + 采样窗口之外**补一次，最多补到没有差为止（差 ≤0.5px 就不再写）。
+   */
+  private scheduleSettle(): void {
+    if (this.settleFrame !== null) return;
+    this.settleFrame = requestAnimationFrame(() => {
+      this.settleFrame = null;
+      if (!this.state.following || this.sampleTimer !== null) return;
+      const scroll = this.viewport.readScroll();
+      if (!scroll) return;
+      const gap = scroll.metrics.floor - scroll.metrics.top;
+      if (gap <= 0.5) {
+        this.settleGap = Number.POSITIVE_INFINITY;
+        return;
+      }
+      /* 上一帧补过、这一帧的差没变小 → 说明"再滚也到不了底"（布局/钳制的问题）。
+         这时停手：否则每帧写一次 scrollTop、每帧再来一次，白烧 CPU 还查不出原因。 */
+      if (gap >= this.settleGap) {
+        this.settleGap = Number.POSITIVE_INFINITY;
+        return;
+      }
+      this.settleGap = gap;
+      this.followTail();
+    });
   }
 
   /** 交还控制权（读者上滚 / 导航开始 / 换窗）。 */
@@ -244,6 +274,11 @@ export class TranscriptReading {
 
   /** 内容 / 布局变了（DSH `onResize`）：读者采样优先。 */
   readonly onResize = (): void => {
+    /* 落点还没定（打开会话的头几帧）时一个字都不改：`ResizeObserver` 会在 observe 那一刻
+       先报一次初始尺寸，那一路走到 `followTail()` 会把 `initialized` 置真，
+       于是"还上次读到的位置"（`restoreSavedPosition`）永远不会被执行 —— 症状是
+       "重载之后永远贴底"。落点由 `reconcile()` 负责。 */
+    if (!this.state.initialized) return;
     if (this.sampleTimer !== null) return;
     if (this.state.following) this.followTail();
     else this.refreshReading();
@@ -560,19 +595,12 @@ export function useTranscriptScroll(
   // 业务回调挂到滚动容器上（`Transcript` 先 `attach` 元素，这里再接线）
   useLayoutEffect(() => viewport.connect(core.events), [viewport, core]);
 
-  // 内容提交 / 布局恢复 → 对账（DSH 的两个 layout effect）
-  // `runningStatus` 也算内容信号：它那块不在虚拟化器里，挂了就是 34px 的高度变化（见字段注释）
+  /* 内容提交 / 布局恢复 → 对账（DSH 的两个 layout effect）。
+     ⚠️ 这里只放**结构性**信号（有没有页、行数、布局）——"内容长高了"不在这张表里：
+     它由内容层的 `ResizeObserver` 统一上报（见 `TranscriptViewport.attachContent`）。 */
   useLayoutEffect(() => {
     core.reading.reconcile();
-  }, [
-    core,
-    input.ready,
-    input.rowCount,
-    input.totalSize,
-    input.layoutHeight,
-    input.hasNewer,
-    input.runningStatus,
-  ]);
+  }, [core, input.ready, input.rowCount, input.totalSize, input.layoutHeight, input.hasNewer]);
   // 只在"重新有布局"那一刻收尾；其余内容变化走上面那条 effect
   useLayoutEffect(() => {
     core.reading.settleAfterLayout();

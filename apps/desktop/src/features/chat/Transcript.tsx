@@ -59,6 +59,8 @@ import { windowEvents } from '@/lib/windowEvents';
 
 export function Transcript({ tabId }: { tabId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 内容层（`ResizeObserver` 的观察对象：任何内容长高都从它这里上报） */
+  const contentRef = useRef<HTMLDivElement>(null);
   const ids = useTabMsg(tabId, (t) => t.ids);
   const hydrated = useTabMsg(tabId, (t) => t.hydrated);
   const hasMore = useTabMsg(tabId, (t) => t.hasMore);
@@ -110,12 +112,18 @@ export function Transcript({ tabId }: { tabId: string }) {
     return () => viewport.detach();
   }, [viewport, geometry]);
 
+  /* 内容层的高度观察（`ResizeObserver`）：**任何**长高都从这里上报，不再逐个列信号。
+     行的测量、状态行的出现、分隔线的出现、图片加载、markdown 重排 —— 都算"内容长高"，
+     而它们各自触发的 React 提交并不一致（有的根本没有提交）。见 docs/15 规矩 155。 */
+  useLayoutEffect(() => {
+    viewport.attachContent(contentRef.current);
+    return () => viewport.attachContent(null);
+  }, [viewport]);
+
   /* 跨重启记住阅读位置（docs/04 §2.1.7）：身份是**会话文件 + 行的字节偏移**。
      `Transcript` 才知道会话文件（`useTabs`）与"偏移 → 行 id"的映射，所以端口在这里造。
      ⚠️ 端口对象要稳定（`useMemo` 依赖只放会话文件与 tabId）：它挂在阅读层的输入上，
      每次渲染换引用会让"记位置"这条路径反复重建。 */
-  /* 这一轮在不在跑（滚动输入要用它：末尾那行「运行中」不在虚拟化器里，
-     它出现/消失本身是高度变化 —— 见 `TranscriptScrollInput.runningStatus`）。 */
   const streaming = useTabMsg(tabId, (t) => t.streaming);
   const sessionFile = useTabs((s) => s.tabs[tabId]?.sessionFile ?? null);
   const positions = useMemo<ReadingPositionPort>(
@@ -152,7 +160,6 @@ export function Transcript({ tabId }: { tabId: string }) {
     hasNewer,
     loadingNewer,
     positions,
-    runningStatus: streaming,
   });
 
   /* 刻度梯：整段会话的轮次轮廓（文件扫出来的）+ 已载入的行（真实行覆盖轮廓）。
@@ -354,6 +361,11 @@ export function Transcript({ tabId }: { tabId: string }) {
   return (
     <div className="pg-transcript-wrap" data-rail-side={railPlacement} data-tab-id={tabId}>
       <div ref={scrollRef} className="pg-transcript" data-transcript-scroll>
+        {/* 内容层：只给**内容高度**当观察对象（`ResizeObserver` 挂在它上面）。
+            滚动容器自己的高度变化是另一件事（面板开合），两者都由 `resize` 事件上报。
+            包这一层是为了让"任何内容长高"（行、状态行、分隔线、图片加载、markdown 重排）
+            都变成同一个信号 —— 见 docs/15 规矩 155。 */}
+        <div ref={contentRef} className="pg-transcript-content" data-transcript-content>
         {hasMore && (
           <div className="pg-transcript-older">
             <button type="button" disabled={loadingOlder} onClick={scroll.loadEarlier} data-load-older>
@@ -431,6 +443,7 @@ export function Transcript({ tabId }: { tabId: string }) {
             挂在**内容流的最末尾**、在滚动容器里跟着内容走 —— 它说的是"这一轮的进展"，
             不是输入框的状态。滚上去看历史时它跟着沉到底下，与 DSH 一致。 */}
         {streaming ? <RunningStatus startedAt={turnStartedAt} divider={tailHasOutput} /> : null}
+        </div>
       </div>
       {hasNewer ? (
         // 换窗状态（在看几轮之前的历史）：**往下滚能继续读**，这里再给一条直达尾部的路。

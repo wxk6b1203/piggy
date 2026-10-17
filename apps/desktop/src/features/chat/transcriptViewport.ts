@@ -72,6 +72,8 @@ interface PagingAnchor {
 export class TranscriptViewport {
   private scroller: HTMLElement | null = null;
   private geometry: RowGeometry | null = null;
+  /** 内容层的尺寸观察器（任何内容长高都从它上报，见 {@link attachContent}） */
+  private contentObserver: ResizeObserver | null = null;
   private events: ViewportEvents | null = null;
   /** 上一次**我们认可的**位置：`movedByReader` 的归因基线（DSH `observation`）。 */
   private observation: { top: number; landing: ViewportLanding | null } = { top: 0, landing: null };
@@ -90,6 +92,30 @@ export class TranscriptViewport {
   }
 
   /**
+   * 观察**内容层**的高度（`null` = 摘掉）。
+   *
+   * 为什么要有它：滚动容器自己不会因为"内容长高"而 size 变化，而转录里"谁让内容变高"
+   * 与"谁决定贴不贴底"一旦不是同一份信号，就会漏 —— 长高的来源包括：行被测量、
+   * 虚拟列表之外的「运行中」那一行、它上面的分隔线、图片加载、markdown 重排……
+   * 逐个列信号是列不完的（docs/15 规矩 155）。
+   *
+   * 因此这里只做一件事：**高度变了就报 `resize`**，由阅读层按跟随意图决定贴不贴底。
+   * `ResizeObserver` 在布局之后、绘制之前回调，贴底与这次长高发生在同一帧。
+   */
+  attachContent(el: HTMLElement | null): void {
+    this.contentObserver?.disconnect();
+    this.contentObserver = null;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    this.contentObserver = new ResizeObserver(() => {
+      // 没有滚动元素 / 没有布局（面板被摘出 DOM）时不报：那些路径有自己的信号
+      if (this.scroller === null) return;
+      if (this.scroller.clientHeight <= 0) return;
+      this.events?.resize();
+    });
+    this.contentObserver.observe(el);
+  }
+
+  /**
    * 解绑（卸载 / 换元素）。
    *
    * ⚠️ **只摘监听器，不动业务回调**：`attach`/`detach` 是元素的生命周期（换元素、重挂），
@@ -98,6 +124,7 @@ export class TranscriptViewport {
    */
   detach(): void {
     this.removeListeners();
+    this.attachContent(null);
   }
 
   /**
