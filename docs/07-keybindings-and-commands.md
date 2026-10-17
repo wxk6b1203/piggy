@@ -52,7 +52,7 @@ flowchart LR
 | `Shift+Enter` | `composer.newline` | 换行 |
 | `Cmd/Ctrl+Enter` | `chat.queueAsSteer` | 流式中：立刻插话（steer）；**空草稿时 = 把队列全部插话**（04 §7.3） |
 | `Cmd/Ctrl+Shift+Enter` | `chat.queueAsFollowUp` | 作为 follow-up 排队（等这一轮结束） |
-| `Esc` | `chat.abort` | 只中断这一轮（`abort`）；**队列留在 dock 里**，不清也不取回（02 §7.3） |
+| `Esc` | `chat.abort` | 只中断这一轮（`abort`）；**队列留在 dock 里**，不清也不取回（02 §7.3）。同一动作的**鼠标入口**是输入卡那粒主键：运行中且草稿为空时它变成停止键（`data-send-mode="stop"`，04 §7.3） |
 | `Cmd/Ctrl+.` | `chat.abort` | 直接中断（同上，队列不动） |
 | `Cmd/Ctrl+L` | `model.pick` | 模型选择器（对齐 pi TUI Ctrl+L 习惯） |
 | `Cmd/Ctrl+P` | `model.cycle` | 循环切换（对齐 pi） |

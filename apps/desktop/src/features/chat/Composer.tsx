@@ -71,6 +71,22 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
   const pausedRows = useQueue((s) => s.tabs[tabId]?.paused.length ?? 0);
 
   /**
+   * 这粒圆形主键此刻是什么（DSH `InputBar` 的 `primaryStops`，`InputBar.tsx:303`）：
+   * **运行中 + 草稿为空 → 停止**；有草稿 → 照旧按投递语义发送（入队 / 插话）。
+   *
+   * 为什么必须显式分出来（2026-10-16 用户："发送出去之后，不是停止键而是置灰的发送键"）：
+   * 上一版删「转向 / 追加」两粒按钮时，把**中断那粒圆钮一起删了**（只剩 Esc）。于是流式中
+   * 草稿一空，主键就落进 `disabled={draftEmpty}` 那一支 —— `data-send-mode` 写着 `'stop'`、
+   * `onClick` 调的却是空草稿直接 return 的 `submit()`：一个**按下去什么都不发生的假停止键**。
+   * 停止是这一屏唯一"能让这一轮停下来"的可见入口，不能只活在快捷键里。
+   *
+   * `streaming` 是**这一轮还在跑**（`agent_start` → `agent_settled`），不只是"正在出字"，
+   * 所以工具执行期间它同样是 true —— 长命令跑到一半正是最想按停止的时候。
+   */
+  const draftEmpty = text.trim() === '' && images.length === 0;
+  const primaryStops = streaming && draftEmpty;
+
+  /**
    * 发送。三个投递语义（docs/02 §7.2 / docs/04 §7.3）：
    *  - 空闲：普通 `prompt`（不带 `streamingBehavior`）；
    *  - 流式中 `steer`：进 pi 的 steering 队列，下一个步进边界插进**当前**回合；
@@ -473,22 +489,28 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
                 按钮是不要的"）。理由：投递语义已经由手势表唯一决定（↵ 入队 / ⌘↵ 插话 /
                 ⌘⇧↵ 追加），再摆两粒按钮等于把同一件事说三遍，而且它们在流式中突然出现、
                 结束时突然消失，正是用户截图里"编辑完突然冒出两个按钮"的那一下。
-                单个发送键仍在，标签随状态说明"按下去会发生什么"。 */}
+                单个主键仍在，标签随状态说明"按下去会发生什么"。 */}
             <ModelPicker tabId={tabId} />
+            {/* 主键三态（DSH `InputBar` 的 primary）：**停止**（运行中 + 草稿空）/
+                入队（运行中 + 有草稿）/ 发送（空闲）。
+                停止态下按钮**必须可用**：正在跑就一定有东西可停。 */}
             <button
               className="pg-send-btn"
-              data-send-mode={streaming ? (text.trim() ? 'queue' : 'stop') : 'send'}
-              disabled={!text.trim() && images.length === 0}
-              onClick={() => void submit()}
+              data-send-mode={primaryStops ? 'stop' : streaming ? 'queue' : 'send'}
+              disabled={draftEmpty && !primaryStops}
+              /* 读屏听到的动作必须与"按下去真的会发生什么"一致（DSH 的 `primaryLabel`
+                 同样分三档：`input.stop` / `input.send.queue` / `input.send`）。 */
+              aria-label={primaryStops ? '停止' : streaming ? '排队发送' : '发送'}
+              onClick={() => (primaryStops ? void abortTurn() : void submit())}
               title={
-                !streaming
-                  ? '发送（↵）'
-                  : text.trim()
-                    ? '排队发送：等这一轮结束再发（↵）；插话发送用 ⌘↵'
-                    : '把队列里的消息全部插话发送（⌘↵）'
+                primaryStops
+                  ? '停止这一轮（Esc）—— 队列留在下面，不会被清掉；空草稿按 ⌘↵ 可把队列全部插话'
+                  : !streaming
+                    ? '发送（↵）'
+                    : '排队发送：等这一轮结束再发（↵）；插话发送用 ⌘↵'
               }
             >
-              <Icon name="arrow-up" size={16} />
+              {primaryStops ? <StopGlyph /> : <Icon name="arrow-up" size={16} />}
             </button>
           </div>
         </div>
@@ -500,6 +522,21 @@ export function SessionWorkspaceComposer({ tabId }: { tabId: string }) {
         <ContextMeter tabId={tabId} />
       </div>
     </div>
+  );
+}
+
+/**
+ * 停止键的字形（DSH `InputBar.tsx:485` 那一支，几何逐点照抄）：
+ * 16 格 viewBox 里一枚 10×10、圆角 3 的**实心**方块。
+ *
+ * 为什么不用 codicon：`debug-stop` / `primitive-square` 都是**描边**方块
+ * （字号 16 时只剩 1px 线），压在强调色圆底上几乎看不见 —— 两版都截图对比过。
+ */
+function StopGlyph() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
+    </svg>
   );
 }
 

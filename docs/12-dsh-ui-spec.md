@@ -953,6 +953,14 @@ div.root[.hero]
 
 **发送 / 停止图标**（内联 SVG，`InputBar.tsx:484-492`）——发送是 16×16 的向上箭头 path，停止是 `<rect x=3 y=3 width=10 height=10 rx=3 fill="currentColor"/>`。可直接复制这两段 path。
 
+> **Piggy 落地（2026-10-16）**：主键就是 `.pg-send-btn`，三态与 DSH 的 `primaryStops`
+> （`InputBar.tsx:303`）同一口径 —— 运行中 + 草稿空 = 停止（实心圆角方块，就是上面那个 `<rect>` 的内联 SVG），
+> 运行中 + 有草稿 = 入队，空闲 = 发送。状态挂在 `data-send-mode="stop|queue|send"` 上，
+> 细节见 04 §7.3。**`(interruptible)` 那第二粒 `button.primary` 没有移植** —— 它只在
+> "可继续的子会话"（`interruptible = running && continuable`）时出现，Piggy 的输入卡没有
+> 子会话概念。⚠️ 这两个图标都别换成 codicon：`debug-stop` / `primitive-square` 是**描边**
+> 方块，压在强调色圆底上只剩 1px 线（截图对比过）。
+
 **Placeholder 文案**（`#12-packages/client/ui-conversation/src/client/locales.ts`）：
 
 | 场景 | 中文 | key |

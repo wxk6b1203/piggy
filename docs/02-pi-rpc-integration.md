@@ -316,6 +316,10 @@ pi `AgentSession` 的原文：
 （可编辑/取回/插话），中断就只是中断。pi 的 `abort` 本来也不清队列，二者绑死会让
 "我只是想让它停下来"变成"我的排队消息没了"（老实现就这么干的，04 §7.3 记了原因）。
 
+两个入口是**同一个动作**：`Esc` / `⌘.` 与输入卡那粒主键（运行中 + 草稿为空时它是停止键，
+`data-send-mode="stop"`，见 04 §7.3）。`abort` 之后 pi 会推 `agent_settled{aborted:true}`，
+`streaming` 随之归假、主键回到灰色发送键 —— 不要在前端自己提前改状态。
+
 ### 7.4 新会话/切换/分叉可被扩展取消
 
 `new_session` / `switch_session` / `fork` / `clone` 响应带 `data.cancelled`：为 true 时 UI 回滚 tab 状态（扩展 `session_before_switch`/`session_before_fork` 处理器否决了操作）。
