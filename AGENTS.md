@@ -17,7 +17,7 @@ before non-trivial changes skim `docs/15-handoff.md` §3, a 140+ item list of "l
 
 - Node ≥ 20 (dev + CI use 24), pnpm 11.24.0 (`packageManager`), Rust stable with the Tauri 2 toolchain.
 - `pnpm install` — pnpm workspace covering `apps/*` and `packages/*`.
-- `pi` is an external runtime anchored at **1.2.0**; six anchors are reconciled by
+- `pi` is an external runtime anchored at **1.4.0**; six anchors are reconciled by
   `node apps/desktop/scripts/check-pi-pin.mjs`. Discovery order: explicit path in settings → `PI_BIN`
   → bundled standalone (full SKU) → `PATH`.
 - Optional: system Chrome for the browser gates; `pnpm exec playwright install chromium` for perf runs.
@@ -48,7 +48,7 @@ Verified locally on macOS 2026-10-14: `pnpm build`, `pnpm test`, `pnpm test:rust
 | CI static gates | `node apps/desktop/scripts/check-pi-pin.mjs`, `node apps/desktop/scripts/vendor-plugin.mjs --check` |
 | Browser gates (need `pnpm dev` running + Chrome) | `pnpm --filter @piggy/desktop ui:startup`, `pnpm --filter @piggy/desktop ui:debug -- --strict` |
 | Perf smoke (S1/S3, budget-asserting) | `pnpm --filter @piggy/desktop perf:lite` (`perf` = full S1–S6) |
-| Contract tests against real pi (C1–C16, burns tokens) | `pnpm test:contract` — needs pi on `PATH` and a configured provider |
+| Contract tests against real pi (C1–C15, burns tokens) | `pnpm test:contract` — needs pi on `PATH` and a configured provider |
 
 ## Architecture
 

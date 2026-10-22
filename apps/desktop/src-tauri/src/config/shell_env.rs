@@ -454,7 +454,7 @@ mod tests {
             std::os::unix::fs::symlink("/bin/sh", dir.join("sh")).unwrap();
         }
         let script = dir.join("cli.js");
-        std::fs::write(&script, "console.log('1.2.0')\n").unwrap();
+        std::fs::write(&script, "console.log('1.4.0')\n").unwrap();
         let shim = dir.join("pi");
         std::fs::write(
             &shim,
@@ -521,7 +521,7 @@ mod tests {
             String::from_utf8_lossy(&after.stderr),
             enriched.path
         );
-        assert_eq!(String::from_utf8_lossy(&after.stdout).trim(), "1.2.0");
+        assert_eq!(String::from_utf8_lossy(&after.stdout).trim(), "1.4.0");
         assert!(
             enriched.path.contains("/bin"),
             "原 PATH 的目录不该丢: {}",

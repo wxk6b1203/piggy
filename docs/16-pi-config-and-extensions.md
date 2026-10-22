@@ -1,6 +1,6 @@
 # pi 配置与扩展参考（源码级）
 
-> **来源与可信度**：本文由子代理对 `/Users/wxk/Documents/Project/pi`（v0.87.1；⚠️ 该版本号是写作时的事实快照，本机 pi 现已升到 1.1.0，配置/扩展两节请以 docs/17 与实测为准）逐文件阅读生成，
+> **来源与可信度**：本文由子代理对 `/Users/wxk/Documents/Project/pi`（v0.87.1；⚠️ 该版本号是写作时的事实快照，本机 pi 现已升到 1.4.0；本文未整体重写，配置/扩展两节请以 docs/17 与实测为准）逐文件阅读生成，
 > 每条结论都带 `file:line`。其中对 Piggy 影响最大的几条（`auth.json` 字段名、release 资产命名、
 > `--tools` 的过滤范围、扩展 `tool_call` 钩子能否阻止执行）已由我独立复核源码确认，
 > 并在 `docs/17-pi-permissions-and-packaging.md` §3 记录了由此修掉的缺陷。

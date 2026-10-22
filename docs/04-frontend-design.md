@@ -125,7 +125,7 @@
 | **终端**（默认） | **你自己**敲命令，真 shell（`pty.rs` + xterm.js） | **当前会话的工作目录** | `TerminalPane` |
 | **bash** | 交给 pi 的 `bash` 工具跑（输出随下一条消息注入上下文，02 §3.3） | pi 侧的会话 cwd | `BashPanel` |
 
-四条口径（都是这次踩实的）：
+五条口径（都是这次踩实的）：
 
 1. **快捷键 `Ctrl+``**（VS Code 同键，`panel.terminal`）：已开在终端上 = 收起；已开在 bash 上 = 切回终端。
    `⌘J`（`bash.toggle`）留在 bash pane 上。另有一颗**图标按钮**在会话头部（`.`pg-icon-btn`，`data-open-terminal`）——
@@ -136,8 +136,15 @@
 3. **生命周期**：面板打开 → 起 PTY + 挂 xterm；**关面板 = 结束这个终端**（卸载即 `pty_close`）。
    这是有意的：重新打开时按当前 cwd 起一个新的，否则"换了项目点终端还停在旧目录"更让人困惑。
    切 pane（终端 ↔ bash）**不卸载**组件，所以现场与运行的进程都还在；右下角「重启」按当前 cwd 重开。
+   **shell 自己退出（`exit` / Ctrl-D，退出码 0）也是同一条**：收掉 PTY 并关闭面板，不再显示
+   「终端进程已退出 + 重启」的墓碑（2026-10-22 用户要求；再要终端就重新 `Ctrl+``）。
 4. **输入归属**：面板打开时焦点给终端；`Ctrl+`` 在终端里也生效（`xterm` 的 textarea 只 preventDefault、
    不 stopPropagation，全局 keymap 用的是带修饰键白名单，见 `keymap.ts`）。
+5. **跟随底部由 xterm 自己负责**：视口在底部时它自动跟随输出。**不要**在外面再写
+   `scrollToBottom` 逻辑（2026-10-22 实测多余）。当时"输出一长就得手滚一点 + 两条滚动条"
+   的真正原因是 `.pg-terminal-host` 带了 padding，而 FitAddon 只减 xterm 元素自己的 padding、
+   不减父元素（host）的 padding —— 于是多算一行，xterm 底部溢出，外层多一条滚动条。
+   修法是把内边距挪到 `.pg-terminal`（见 `styles.css`）。
 
 - **输出**：通道级日志（`pi:frame`/`pi:commit` 采样）、`app:stats` 资源仪表（05 §6.1）、扩展 `notify` 历史归档。
 

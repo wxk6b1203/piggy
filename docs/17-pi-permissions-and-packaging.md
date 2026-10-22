@@ -160,7 +160,7 @@ pi 自己 `bash` 工具起的子进程仍然拿不到 `git`/`python`/用户自�
 `PIGGY_SHELL=/path/to/shell` 换一个 shell 来问。
 门禁是 `login_shell_path_makes_a_node_shim_runnable`：**造一个真的 `exec node` 垫片**，
 先用 Finder 那套 `PATH` 断言它报 `node: not found`（复现），再用补齐后的 `PATH`
-断言 `pi --version` 真的跑出 `1.2.0`（修好了）。把 `-ilc` 改回 `-lc` 它必须变红 ——
+断言 `pi --version` 真的跑出 `1.4.0`（修好了）。把 `-ilc` 改回 `-lc` 它必须变红 ——
 已验证（红时报的就是用户那句 `exec: node: not found`）。
 
 ⚠️ 因此 `PI_BIN` 这条**仍然**只适合开发/QA：GUI 启动时它本来就传不进来

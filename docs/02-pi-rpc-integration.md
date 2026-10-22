@@ -38,7 +38,7 @@ Piggy 实现约定：
 启动时执行 `pi --version` 并**显示**它（设置页「运行」页签的"当前生效"那一行），
 但**没有**"低于锚点就阻止建会话"这道门禁 —— 2026-10-09 复查：全仓没有任何 semver 比较，
 `--version` 只被存进 `PiBinary.version` 供显示。这是刻意保留的状态：
-0.87.1 → 1.1.0 → 1.2.0 的 RPC/事件/会话条目面实测无破坏（1.2.0 的 `modes/rpc/` 与 1.1.0 **零 diff**；docs/15 规矩 132），
+0.87.1 → 1.1.0 → 1.2.0 → 1.4.0 的 RPC/事件/会话条目面实测无破坏（1.2.0 的 `modes/rpc/` 与 1.1.0 **零 diff**；1.4.0 的 `modes/rpc/` 与扩展 `types.ts` 相对 1.2.0 同样**零 diff**；docs/15 规矩 132/156），
 而版本门禁会在"用户自己装了更新的 pi"时挡住一个其实能用的组合。
 未找到二进制时进入引导页（含 `curl -fsSL https://pi.dev/install.sh | sh` 与
 `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` 两种安装指引）。
@@ -361,7 +361,7 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 
 另注意协议列出 RPC 模式下退化/不支持的 UI 方法（`custom()` 恒 undefined 等）——piggy-bridge 扩展（06 §4）设计时必须遵守：`ctx.mode === "rpc"`、`ctx.hasUI === true`，仅使用上表能力。
 
-## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1；**C1–C15 于 2026-10-13 在 pi 1.2.0 上重跑全绿 16/16**（C16 预热 worker 复用已随该功能一起删除，见 docs/05 §5.7）】
+## 9. 契约测试清单【M0 已实测 ✅ 2026-09-22，pi 0.86.1 / macOS；C12–C14 于 2026-09-23 补测，pi 0.87.1 + pi-subagents 0.70.1；**2026-10-22 在 pi 1.4.0 上重跑全绿 16/16**（与 1.2.0 时代的 16 条相同；C11 未实现，C16 预热 worker 复用已随该功能一起删除，见 docs/05 §5.7）】
 
 实现：`src-tauri/tests/contract.rs`（`pnpm test:contract`）。结论已回填下表；C11 留待 M1。
 

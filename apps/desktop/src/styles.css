@@ -2216,9 +2216,12 @@ body {
 .pg-panel-close:hover { background: var(--pg-hover); color: var(--pg-fg); }
 .pg-panel-body { flex: 1; min-height: 0; display: flex; }
 .pg-panel-body[hidden] { display: none; }
-/* 终端：xterm 的宿主必须有确定宽高，`fit()` 才量得出行列数（0 宽高会抛） */
-.pg-terminal { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
-.pg-terminal-host { flex: 1; min-width: 0; min-height: 0; padding: 6px 0 2px 8px; }
+/* 终端：xterm 的宿主必须有确定宽高，`fit()` 才量得出行列数（0 宽高会抛）。
+   ⚠️ 内边距放在 `.pg-terminal` 而不是 host：FitAddon 量的是**父元素**（host）的高度、
+   只减 xterm 元素自己的 padding，不减 host 的 padding。host 带 padding 时算出的行数
+   会比可视区多一行左右，xterm 底部溢出 → 外层多一条滚动条，最后一行还被切掉。 */
+.pg-terminal { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; padding: 6px 0 2px 8px; }
+.pg-terminal-host { flex: 1; min-width: 0; min-height: 0; }
 .pg-terminal-note {
   position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 80px);
   display: flex; align-items: center; gap: var(--pg-sp-3);

@@ -15,7 +15,12 @@
  *   `pty_close`，shell 进程回收）。这是有意的：面板重新打开时按"当前会话 cwd"重新起一个，
  *   否则"换了个项目点终端，还停在旧目录里"会更让人困惑。要保留会话内进程现状，
  *   就先把面板切成 bash、别关面板（切 pane 不卸载组件）。
+ * - **shell 自己 `exit` / Ctrl-D 也是同一件事**：2026-10-22 起收掉 PTY 并关面板，
+ *   不再显示「已停止 + 重启」的墓碑（用户："相当于已经退出了 PTY，就关掉 PTY 就行"）。
  * - 用户点「重启」→ 先关旧的、再按**当前** cwd 起一个新的。
+ * - 输出跟随底部由 xterm 自己负责（视口在底部时它自动跟）。**不要**在外面再写
+ *   `scrollToBottom` 逻辑：2026-10-22 实测那层跟随是多余的，真正的问题是 host 的
+ *   padding 让 `fit()` 多算一行（见 styles.css 的注释）。
  * - cwd 只在一开始定一次：切换会话标签**不会**把正在用的终端搬走（VS Code 同义）。
  *
  * ## 为什么用 `import()` 拿 xterm
@@ -118,6 +123,9 @@ export function TerminalPane({ tabId, active }: { tabId: string | null; active: 
       term.open(host);
       termRef.current = term;
       fitRef.current = fit;
+      /* xterm 自己在"视口在底部"时跟随输出，**不要**在外面再写 scrollToBottom 逻辑。
+         2026-10-22 实测：真正的问题是 host 的 padding 让 FitAddon 多算了一行
+         （见 styles.css 的注释），最后一个滚动条与"光标行不在最底下"都是它造成的。 */
       const doFit = (): void => {
         try {
           fit.fit();
@@ -151,8 +159,18 @@ export function TerminalPane({ tabId, active }: { tabId: string | null; active: 
       unlisten = await on(`pty:out:${ptyId}`, (payload) => {
         const p = payload as PtyEvent;
         if (p.exited === true) {
+          /* shell 自己退出（`exit`、Ctrl-D）不是错误：把 PTY 收掉、面板关掉，
+             不要再留一个「已停止 + 重启」的墓碑 —— 用户要终端就重新 Ctrl+`。
+             如果退出发生在 bash pane 后面（active=false），先记状态；
+             切回终端时下面的 active effect 会关闭面板。 */
+          const id = ptyId;
+          ptyId = null;
+          ptyRef.current = null;
+          if (id) void cmd('pty_close', { id }).catch(() => {});
           setPhase('exited');
-          term?.write('\r\n\x1b[2m[进程已退出，点「重启」重新开一个终端]\x1b[0m\r\n');
+          const ui = useUi.getState();
+          // 只有终端 pane 在前台时才关面板；藏在 bash 后面时由 active effect 关闭。
+          if (ui.panelOpen && ui.panelPane === 'terminal') ui.setPanelOpen(false);
           return;
         }
         if (typeof p.data === 'string') term?.write(p.data);
@@ -189,6 +207,12 @@ export function TerminalPane({ tabId, active }: { tabId: string | null; active: 
   /* 切到终端 pane：把焦点给回终端（否则输入还在 bash 的 textarea 里） */
   useEffect(() => {
     if (!active) return;
+    /* shell 已退出：不要显示墓碑，直接把面板关掉（2026-10-22 用户要求）。
+       `exit` 发生在 bash pane 后面时也会走到这里 —— 切回终端即关闭。 */
+    if (phase === 'exited') {
+      useUi.getState().setPanelOpen(false);
+      return;
+    }
     const term = termRef.current;
     if (!term) return;
     // 面板刚从隐藏变可见时尺寸是刚回来的，先重新 fit 再聚焦
@@ -198,18 +222,16 @@ export function TerminalPane({ tabId, active }: { tabId: string | null; active: 
       /* 见 doFit */
     }
     term.focus();
-  }, [active]);
+  }, [active, phase]);
 
   const restart = (): void => setGeneration((n) => n + 1);
 
   return (
     <div className="pg-terminal" data-terminal>
       <div ref={hostRef} className="pg-terminal-host" data-terminal-host />
-      {phase !== 'ready' && phase !== 'starting' ? (
+      {phase === 'error' ? (
         <div className="pg-terminal-note" role="status">
-          {phase === 'error'
-            ? `终端启动失败：${error ?? '未知错误'}`
-            : '终端进程已退出'}
+          终端启动失败：{error ?? '未知错误'}
           <button className="pg-terminal-restart" onClick={restart}>
             重启
           </button>

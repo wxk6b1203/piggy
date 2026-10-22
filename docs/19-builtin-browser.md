@@ -74,7 +74,7 @@ attachedToTarget 事件: 2 个
 **⚠️ 代价与新的注意点**：v1 里"最多是打不开网页"，v2 里我们**主动拉起了一个浏览器**，
 于是安全责任转移到"这个浏览器怎么起、起成什么样" —— 见 §D1（传输）、§D3（profile）、§12（汇总）。
 
-### 1.4 pi 侧：扩展能做到什么（已核实，pi 1.2.0 / db6497c3d）
+### 1.4 pi 侧：扩展能做到什么（已核实，pi 1.2.0 / db6497c3d；2026-10-22 在 1.4.0 / 4a080252f 上复核扩展 API 无变化）
 
 * **工具返回值能带图片，而且 pi 的注释点名了扩展与截图工具**：
   `AgentToolResult.content: (TextContent | ImageContent)[]`（`packages/agent/src/types.ts:424-426`），

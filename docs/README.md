@@ -26,6 +26,7 @@ Piggy 是一个以 [pi](https://github.com/earendil-works/pi) 为引擎、**Taur
 | 17 | [pi-permissions-and-packaging.md](17-pi-permissions-and-packaging.md) | 权限档位落地、守卫扩展、自定义 pi 打包 | 后端 |
 | 18 | [18-pi-subagents-pnpm-realpath.md](18-pi-subagents-pnpm-realpath.md) | 上游问题：pi-subagents async runner 与 pnpm 软链布局不兼容（根因/A-B 复现/一行补丁/issue 正文） | 后端/环境排查 |
 | 19 | [19-builtin-browser.md](19-builtin-browser.md) | **内置浏览器方案**（⚠️ **未实现**，方案 v2 待拍板）：**CDP over pipe 驱动独立 Chrome**（无端口暴露）+ 一会话一标签 + 右栏控制台；含实测数字、能力矩阵、安全边界、门禁与分期 | 后端 + 前端，动手前先读 |
+| 20 | [20-pi-durable-evaluation.md](20-pi-durable-evaluation.md) | **pi-durable 评估**（2026-10-22）：它不是 pi 的持久化插件，而是另一套 agent harness；当前**不采用**，只保留观察与重评触发条件 | 架构/产品决策，排期前先读 |
 
 推荐阅读路径：
 

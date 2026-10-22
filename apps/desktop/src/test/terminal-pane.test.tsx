@@ -181,7 +181,7 @@ describe('内嵌终端', () => {
     expect(callsOf('pty_close').map((c) => c.args.id)).toEqual(['pty-1']);
   });
 
-  it('进程退出 → 显示提示与「重启」；重启按当前目录起新 PTY', async () => {
+  it('shell 退出 → 收掉 PTY 并关闭面板，不留「已停止 + 重启」墓碑', async () => {
     mountDom(<TerminalPane tabId={TAB} active />);
     await settle();
 
@@ -189,9 +189,16 @@ describe('内嵌终端', () => {
       bus.get('pty:out:pty-1')!({ payload: { exited: true } });
       await Promise.resolve();
     });
-    expect(domContainer().textContent).toContain('终端进程已退出');
 
-    // 重启按钮（面板右下角那颗，aria-label 固定）
+    expect(useUi.getState().panelOpen, 'shell 退出后面板还开着（会看到已停止/重启）').toBe(false);
+    expect(domContainer().textContent).not.toContain('终端进程已退出');
+    expect(callsOf('pty_close').map((c) => c.args.id)).toContain('pty-1');
+  });
+
+  it('手动重启：按当前目录起新 PTY', async () => {
+    mountDom(<TerminalPane tabId={TAB} active />);
+    await settle();
+
     const btn = domContainer().querySelector('[aria-label="重启终端"]') as HTMLButtonElement | null;
     expect(btn, '找不到重启按钮').toBeTruthy();
     await act(async () => {

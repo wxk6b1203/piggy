@@ -74,7 +74,7 @@ Piggy 用 RPC mode（JSONL over stdio）驱动真实的 pi 进程，因此**与 
 |----|------|----------|
 | 桌面框架 | Tauri | 2.x |
 | 核心语言 | Rust（主进程）/ TypeScript（前端） | Rust ≥ 1.80，TS ≥ 5.6 |
-| 引擎集成 | `pi --mode rpc` 子进程 + JSONL stdio | pi ≥ 0.86（契约测试锚定，见 02 §9） |
+| 引擎集成 | `pi --mode rpc` 子进程 + JSONL stdio | pi 1.4.0（契约测试锚定，见 02 §9；更高版本不阻断） |
 | 前端 | Vite 6 + React 19 + React Compiler | react-compiler 稳定版 |
 | UI 库 | antd 6（≥6.6；React 19 原生支持、默认 CSS 变量模式；`@ant-design/icons` v6 配套） | 6.x |
 | 状态 | zustand（+ immer 中间件） | 5.x |

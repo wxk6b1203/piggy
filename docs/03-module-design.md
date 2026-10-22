@@ -258,7 +258,7 @@ URL 走 `cmd /c start "" <url>`（退出码 0 可信，`""` 是窗口标题占�
 
 | 文件 | 职责 |
 |---|---|
-| `catalog_generated.rs` | **生成物**：pi v1.2.0 的提供商目录（42 条：id / 展示名 / 默认 baseUrl / 默认协议 / 协议全集 / 密钥环境变量；2026-10-13 重生成，1.1.0 → 1.2.0 内容无变化）。由 `apps/desktop/scripts/gen-provider-catalog.mjs` 从 pi 源码生成（`types.ts` 的 `KnownProvider`、`providers/all.ts` 的顺序、`providers/*.ts` 的 `createProvider({...})`、`env-api-keys.ts` 的 envMap），`--check` 可复核 |
+| `catalog_generated.rs` | **生成物**：pi v1.4.0 的提供商目录（42 条：id / 展示名 / 默认 baseUrl / 默认协议 / 协议全集 / 密钥环境变量；2026-10-22 重生成，1.2.0 → 1.4.0 的 `kimi-coding` 改为 Chat Completions + `/coding/v1`，`opencode-go` 增 `google-generative-ai`）。由 `apps/desktop/scripts/gen-provider-catalog.mjs` 从 pi 源码生成（`types.ts` 的 `KnownProvider`、`providers/all.ts` 的顺序、`providers/*.ts` 的 `createProvider({...})`、`env-api-keys.ts` 的 envMap），`--check` 可复核 |
 | `catalog.rs` | 目录查询 + 列举端点规则（Anthropic 系 `{root}/v1/models`，其余 `{base}/models`，抄 DSH `discovery.ts::listingUrl`）+ 结构性测试 |
 | `overview.rs` | **总览合成**：`内置目录 ∪ auth.json ∪ models.json ∪ 环境变量` → 一行一个提供商，且每个值都带"从哪来"。密钥来源顺序 = pi 的解析顺序（`provider-composer.ts:347-375`：凭据 > models.json 的 apiKey > 环境变量） |
 | `edit.rs` | 写 `models.json` 的 `providers.<id>`：只动界面拥有的字段（name/baseUrl/api/apiKey/models），**未知字段原样保留**；模型行按 id 字段级合并；空串 = 删键（pi 的 schema 对这些键有 `minLength: 1`） |

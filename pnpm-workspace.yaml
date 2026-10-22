@@ -9,17 +9,16 @@ allowBuilds:
   esbuild: true
   protobufjs: false
 
-# 这几个包是 pi 的发布单元，跟着 pi 的锚定版本走（2026-10-13：1.1.0 → 1.2.0，
+# 这几个包是 pi 的发布单元，跟着 pi 的锚定版本走（2026-10-22：1.2.0 → 1.4.0，
 # 与 fetch-pi-standalone.mjs / ci.yml 的锚点保持一致，由 scripts/check-pi-pin.mjs 对账）。
 # 一条只留一个版本：pi 这些包是**同一版一起发**的，留着 `|| 旧版本` 只会掩盖漏改
-# （pnpm 升级时会自动写成并集，要手工收一下）。1.2.0 新增了 codemode / mcp 两个发布单元，
-# 所以它们没有 1.1.0 那一行。
+# （pnpm 升级时会自动写成并集，要手工收一下）。chord 自 1.2.0 起不再是 coding-agent 的依赖，
+# 这里不再列它。
 minimumReleaseAgeExclude:
-  - '@earendil-works/chord@1.1.0'
-  - '@earendil-works/pi-agent-core@1.2.0'
-  - '@earendil-works/pi-ai@1.2.0'
-  - '@earendil-works/pi-coding-agent@1.2.0'
-  - '@earendil-works/pi-telemetry@1.2.0'
-  - '@earendil-works/pi-tui@1.2.0'
-  - '@earendil-works/pi-codemode@1.2.0'
-  - '@earendil-works/pi-mcp@1.2.0'
+  - '@earendil-works/pi-agent-core@1.4.0'
+  - '@earendil-works/pi-ai@1.4.0'
+  - '@earendil-works/pi-coding-agent@1.4.0'
+  - '@earendil-works/pi-telemetry@1.4.0'
+  - '@earendil-works/pi-tui@1.4.0'
+  - '@earendil-works/pi-codemode@1.4.0'
+  - '@earendil-works/pi-mcp@1.4.0'
