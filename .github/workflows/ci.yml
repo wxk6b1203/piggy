@@ -8,8 +8,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 不传 version：让 action 读 package.json 的 packageManager（pnpm@11.24.0）。
+      # 显式写 version: 11 会因与 packageManager 不完全一致而报
+      # "Multiple versions of pnpm specified"（@v4 浮动标签收紧校验后）。
       - uses: pnpm/action-setup@v4
-        with: { version: 11 }
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
@@ -47,8 +49,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      # 同 frontend job：不传 version，从 packageManager 取（见上）
       - uses: pnpm/action-setup@v4
-        with: { version: 11 }
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
       - uses: actions/cache@v4
