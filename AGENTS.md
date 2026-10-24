@@ -25,10 +25,11 @@ before non-trivial changes skim `docs/15-handoff.md` §3, a 150+ item list of "l
 
 ## Commands
 
-Verified locally on macOS — 2026-10-24: `pnpm test`, `pnpm typecheck`, `pnpm lint`, single Rust test;
+Verified locally on macOS — 2026-10-24: `pnpm test`, `pnpm typecheck`, `pnpm lint`, single Rust test,
+`node apps/desktop/scripts/perf-run.mjs --lite`;
 2026-10-14: `pnpm build`, `pnpm test:rust`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 both CI static gates, single-test commands.
-**Not executed here**: `pnpm install`, `pnpm dev`, `tauri dev`/`build` (both SKUs), `ui:startup`, `ui:debug`, `perf:lite`, `test:contract`.
+**Not executed here**: `pnpm install`, `pnpm dev`, `tauri dev`/`build` (both SKUs), `ui:startup`, `ui:debug`, `test:contract`.
 
 | Purpose | Command |
 |---|---|
@@ -122,10 +123,11 @@ Boundaries that matter:
 10. **UI gates are local-only**: `ui:startup` / `ui:debug --strict` need Chrome plus a running `pnpm dev`
     on :5195, and are not in CI. CI runs: frontend (typecheck, lint, vendor + pi-pin checks, tests, build),
     rust (`fmt --check`, `clippy --all-targets -- -D warnings`, `cargo test --lib --tests`), contract, perf-lite.
-11. **Known flake**: `pnpm test` can exit 1 while the summary says all passed (e.g. `Test Files 76 passed /
-    Tests 766 passed`), because a React 19 scheduler `setImmediate` callback runs after jsdom teardown
-    ("window is not defined"). Judge by the pass counts and rerun the reported file before suspecting a
-    regression (docs/15 §4.3). Re-ran clean at 76/766 on 2026-10-24 — the flake is intermittent.
+11. **Test teardown guard (2026-10-24)**: React 19's scheduler `setImmediate` could run after jsdom teardown
+    ("window is not defined") and make `pnpm test` exit 1 while all tests passed. `src/test/setup.ts` now
+    wraps `setImmediate` in jsdom: callbacks that fire after the environment is gone are dropped; while jsdom
+    is alive they run normally. Five consecutive full runs exited 0. If the error reappears, check whether it
+    is a non-`setImmediate` unhandled error before calling it the old flake (docs/15 §4.3).
 12. **Upgrading pi** means six anchors + regenerated snapshots + contract tests: `check-pi-pin.mjs` reconciles
     the anchors, `gen-*.mjs --check` verifies the generated Rust snapshots against pi sources, and
     `pnpm --filter piggy-bridge typecheck` is the one seam that fails silently if the pinned types drift.

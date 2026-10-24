@@ -49,9 +49,10 @@ async function withPage(fn) {
   await page.goto(URL, { waitUntil: 'networkidle' });
   /* 等 app boot 完成（mock 环境：命令注册表挂全局）。
      ⚠️ 判据是 `registrySize()`：这里原来写的是 `size()`，而 `__piggyCommands` 早就是
-     **模块命名空间**（导出 `allCommands/registrySize/…`）—— 探针一升级就永久抛
-     `window.__piggyCommands.size is not a function`，perf-lite 从此跑不起来。
-     改判据时请跟着 `src/lib/commands.ts` 的导出走。 */
+     **模块命名空间**。更隐蔽的是 `src/lib/commands.ts` 曾在模块求值时另写一个
+     `{size, ids}` 抢同一个全局，CI 上刚好读到旧形状就炸
+     `window.__piggyCommands.registrySize is not a function`（2026-10-24 实测）；
+     现在只由 `main.tsx` 的 DEV 钩子写，`waitForFunction` 会等它出现。 */
   await page.waitForFunction('window.__piggyCommands && window.__piggyCommands.registrySize() > 0');
   await page.waitForTimeout(800); // dockview onReady + 恢复
   try {

@@ -36,3 +36,19 @@ beforeEach(() => {
     /* 非 jsdom 环境（node）：没有这两样，跳过 */
   }
 });
+
+/* ── 已知 flake 的最后一层护栏：jsdom 拆除后，React scheduler 的 setImmediate 还会跑 ──
+   React 19 在 Node/jsdom 下用 `setImmediate`（Node 的 check 队列）排 render；它不归
+   jsdom 管，环境拆掉后回调仍在，`window` 已经没了 → `ReferenceError: window is not
+   defined`，Vitest 记成 unhandled error，整套 suite 非零退出（AGENTS 第 11 条）。
+   `dom-render` 的 `drainReact` 负责每个用例的即时队列；这里再兜住**拆环境之后**的
+   残余回调：只在 jsdom 还活着时放行。只影响 jsdom 测试进程，node 环境不装。
+   ⚠️ 这不是产品代码的替代品：真正的未处理错误仍会在 jsdom 活着时抛出。 */
+if (typeof window !== 'undefined' && typeof globalThis.setImmediate === 'function') {
+  const nativeSetImmediate = globalThis.setImmediate.bind(globalThis);
+  globalThis.setImmediate = ((fn: (...args: unknown[]) => void, ...args: unknown[]) =>
+    nativeSetImmediate(() => {
+      if (typeof window === 'undefined') return;
+      fn(...args);
+    })) as typeof globalThis.setImmediate;
+}

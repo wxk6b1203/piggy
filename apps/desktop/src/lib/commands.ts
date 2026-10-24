@@ -1,6 +1,7 @@
 /**
  * CommandRegistry（docs/07 §1）：一切可执行动作的唯一 id 来源；键位/面板共用。
  */
+import { isMock } from '@/lib/mockBackend';
 
 export interface CommandContext {
   activeTabId: string | null;
@@ -38,11 +39,8 @@ export function registrySize(): number {
   return registry.size;
 }
 
-// mock 环境：调试钩子
-import { isMock } from '@/lib/mockBackend';
-if (typeof window !== 'undefined' && isMock) {
-  (window as unknown as Record<string, unknown>).__piggyCommands = {
-    size: () => registry.size,
-    ids: () => [...registry.keys()],
-  };
-}
+/* ⚠️ 不要再在这里写 `window.__piggyCommands`：`main.tsx` 的 DEV 钩子会赋**应用自己那份
+   模块命名空间**（`registrySize`/`allCommands`/…）。这里曾另写一个 `{size, ids}`，与
+   `main.tsx` 抢同一个全局；perf-lite 在 CI 上读到旧形状，报
+   `window.__piggyCommands.registrySize is not a function`（2026-10-24 实测）。
+   只保留 `main.tsx` 一个写者。 */
