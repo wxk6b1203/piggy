@@ -11,7 +11,7 @@ Sessions and config are therefore interchangeable with the pi CLI — same `~/.p
 started in the GUI can be resumed with `pi -c` and vice versa.
 
 `docs/` is the design single source of truth (written in Chinese). Start with `docs/00` → `docs/01`;
-before non-trivial changes skim `docs/15-handoff.md` §3, a 140+ item list of "learned the hard way" rules.
+before non-trivial changes skim `docs/15-handoff.md` §3, a 150+ item list of "learned the hard way" rules.
 
 ## Setup
 
@@ -24,8 +24,9 @@ before non-trivial changes skim `docs/15-handoff.md` §3, a 140+ item list of "l
 
 ## Commands
 
-Verified locally on macOS 2026-10-14: `pnpm build`, `pnpm test`, `pnpm test:rust`, `pnpm typecheck`, `pnpm lint`,
-`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, both CI static gates, single-test commands.
+Verified locally on macOS — 2026-10-24: `pnpm test`, `pnpm typecheck`, `pnpm lint`, single Rust test;
+2026-10-14: `pnpm build`, `pnpm test:rust`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+both CI static gates, single-test commands.
 **Not executed here**: `pnpm install`, `pnpm dev`, `tauri dev`/`build` (both SKUs), `ui:startup`, `ui:debug`, `perf:lite`, `test:contract`.
 
 | Purpose | Command |
@@ -61,7 +62,7 @@ apps/desktop/src/            React frontend (React 19 + Vite 7 + zustand/immer +
   lib/                       ipc.ts (+ mockBackend for browser mode), paging, keymap, layoutLifecycle, coalesce glue
   test/                      most unit/component tests (co-located `*.test.ts(x)` next to sources also runs)
 apps/desktop/src-tauri/      Rust host
-  src/commands.rs            ~76 IPC commands; all registered in `lib.rs` `generate_handler!`
+  src/commands.rs            ~74 IPC commands; all registered in `lib.rs` `generate_handler!`
   src/pi/                    discovery, codec, process state machine, protocol passthrough, coalesce (≤60 Hz framing), permission
   src/sessions/              registry (tab ↔ worker, recycling/sleep), list, transcript (paged reads), title
   src/config/                paths, pi_files (auth/models/settings), app config
@@ -70,7 +71,7 @@ apps/desktop/src-tauri/      Rust host
   tests/                     ipc_contract, fixtures_parse, path_separators, menu_smoke, contract (feature `contract`)
 packages/pi-protocol/        TS types + zod schemas for the pi RPC protocol, mirrored by Rust-side fixtures
 packages/piggy-bridge/       pi extension bridging pi-subagents into the GUI; built into src-tauri/resources/piggy-bridge.js
-docs/                        design SSOT (00–18, Chinese) + screenshots
+docs/                        design SSOT (00–20, Chinese) + screenshots
 ```
 
 Data flow for one streaming turn: UI `invoke` → Rust command → worker stdin → stdout JSONL →
@@ -120,12 +121,14 @@ Boundaries that matter:
 10. **UI gates are local-only**: `ui:startup` / `ui:debug --strict` need Chrome plus a running `pnpm dev`
     on :5195, and are not in CI. CI runs: frontend (typecheck, lint, vendor + pi-pin checks, tests, build),
     rust (`fmt --check`, `clippy --all-targets -- -D warnings`, `cargo test --lib --tests`), contract, perf-lite.
-11. **Known flake**: `pnpm test` can exit 1 while the summary says `Test Files 70 passed / Tests 684 passed`,
-    because a React 19 scheduler `setImmediate` callback runs after jsdom teardown ("window is not defined").
-    Judge by the pass counts and rerun the reported file before suspecting a regression (docs/15 §4.3).
+11. **Known flake**: `pnpm test` can exit 1 while the summary says all passed (e.g. `Test Files 76 passed /
+    Tests 766 passed`), because a React 19 scheduler `setImmediate` callback runs after jsdom teardown
+    ("window is not defined"). Judge by the pass counts and rerun the reported file before suspecting a
+    regression (docs/15 §4.3). Re-ran clean at 76/766 on 2026-10-24 — the flake is intermittent.
 12. **Upgrading pi** means six anchors + regenerated snapshots + contract tests: `check-pi-pin.mjs` reconciles
     the anchors, `gen-*.mjs --check` verifies the generated Rust snapshots against pi sources, and
     `pnpm --filter piggy-bridge typecheck` is the one seam that fails silently if the pinned types drift.
-13. **Verified failing on macOS at commit a8e8398** (2026-10-14): `cargo test --lib` fails
+13. **Known pre-existing failure**: `cargo test --lib` fails
     `pi::process::tests::extension_args_never_carry_the_verbatim_prefix` — a Windows-shaped assertion without a
-    platform guard (`\\?\…` is never `is_dir()` on Unix). Pre-existing, not caused by your change.
+    platform guard (`\\?\…` is never `is_dir()` on Unix). Verified still failing on macOS at 317b36a
+    (2026-10-24; first seen a8e8398, 2026-10-14). Pre-existing, not caused by your change.
