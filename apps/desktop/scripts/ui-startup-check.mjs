@@ -4627,7 +4627,9 @@ for (const r of rightRoundTrips) {
   if (r.collapsed.railLabel !== '折叠的右栏') {
     bad.push(`${at}：折叠态图标轨的 aria-label 是 ${r.collapsed.railLabel} ★`);
   }
-  if (JSON.stringify(r.collapsed.railButtons) !== JSON.stringify(['展开右栏', '文件', '统计'])) {
+  // 通知按钮的可访问名会带未读数（"通知（N 条未读）"）；门禁只核对入口存在，不锁未读数
+  const railName = (label) => (typeof label === 'string' && label.startsWith('通知') ? '通知' : label);
+  if (JSON.stringify(r.collapsed.railButtons.map(railName)) !== JSON.stringify(['展开右栏', '文件', '统计', '通知'])) {
     bad.push(`${at}：折叠态图标轨按钮是 ${JSON.stringify(r.collapsed.railButtons)}（都要有可访问名）★`);
   }
   if (r.collapsed.toggleExpanded !== 'false') {

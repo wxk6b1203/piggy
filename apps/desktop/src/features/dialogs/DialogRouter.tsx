@@ -1,8 +1,9 @@
-/** Extension UI 弹窗路由（docs/02 §8）：dialog 串行队列 + notify 即时通知 */
+/** Extension UI 弹窗路由（docs/02 §8）：dialog 串行队列 + notify 进右栏通知中心 */
 import { useState } from 'react';
-import { Input, Modal, notification } from 'antd';
+import { Input, Modal } from 'antd';
 import { cmd } from '@/lib/ipc';
 import { useDialogs, type UiRequest } from '@/stores/dialogs';
+import { useNotifications, type NotificationLevel } from '@/stores/notifications';
 import { useTabs } from '@/stores/tabs';
 import { useFleet } from '@/stores/fleet';
 
@@ -112,15 +113,25 @@ export function DialogRouter() {
   }
 }
 
-/** notify → antd notification；set_editor_text 带 PIGGY:1 前缀 → fleet 数据通道（06 §4.2）；
+/** notify → 右栏通知中心（未读点；打开视图即全部已读）；
+ * set_editor_text 带 PIGGY:1 前缀 → fleet 数据通道（06 §4.2）；
  * 其余 fire-and-forget M0 记 console（docs/02 §8 M1 全量视觉化） */
 export function handleFireAndForget(req: UiRequest, tabId?: string) {
   if (req.method === 'notify') {
     const r = req as { message?: string; notifyType?: string };
-    notification[r.notifyType === 'error' ? 'error' : r.notifyType === 'warning' ? 'warning' : 'info']({
-      message: '扩展通知',
-      description: r.message ?? '',
-      placement: 'bottomRight',
+    const level: NotificationLevel =
+      r.notifyType === 'error'
+        ? 'error'
+        : r.notifyType === 'warning'
+          ? 'warning'
+          : r.notifyType === 'success'
+            ? 'success'
+            : 'info';
+    useNotifications.getState().push({
+      id: `${tabId ?? 'global'}:${req.id}`,
+      tabId: tabId ?? '',
+      level,
+      message: r.message ?? '',
     });
     return;
   }

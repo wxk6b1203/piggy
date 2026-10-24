@@ -966,6 +966,7 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 | `uiStore` | 弹窗队列、工作区布局（视图开合/尺寸/活动视图，04 §1.8）、视图注册表、键位注册表 | 本地 + Extension UI |
 | `turnFoldStore` | 回合折叠的**手动开合记忆**（键 = 会话文件偏移，跨载入稳定） | 用户点击（04 §2.1.6） |
 | `questionsStore` | 提问卡的**待答请求**（键 = 工具调用 id；请求来自 `pi:ui-req`） | pi 的 `ui.select` 信封（04 §2.1.8、17 §2.2b） |
+| `notificationsStore` | 扩展 `notify` 的历史（新的在前、上限 100 条、未读数派生；打开通知视图即全部已读） | `pi:ui-req` 的 `notify`（02 §8） |
 
 原则：**store 存结构态、索引与"还没落定的内容"**（04 §3.2/§4）。
 
@@ -1005,7 +1006,7 @@ Provider 管理（API Key 表单 → `auth.rs`；自定义 provider 表单 → `
 
 ### 3.6 `features/dialogs/` — Extension UI 路由
 
-`pi:ui-req` → 按 method 映射 antd 弹窗（02 §8 表）；**同一 tab 串行队列**；`editor` 用全屏 Drawer + 等宽编辑器。
+`pi:ui-req` → dialog 方法按 method 映射 antd 弹窗（02 §8 表）；`notify` 进 `stores/notifications`（右栏通知视图）；**同一 tab 串行队列**；`editor` 用全屏 Drawer + 等宽编辑器。
 
 ### 3.7 `features/fleet/` — 舰队面板（06）
 

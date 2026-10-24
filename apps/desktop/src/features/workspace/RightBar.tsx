@@ -1,5 +1,5 @@
 /**
- * 右侧栏（文件 + 统计）。
+ * 右侧栏（文件 + 统计 + 通知）。
  *
  * 会话树视图 2026-09-24 **移除**（用户："会话树这个功能好像没什么用，去掉吧"）——
  * 它只是把 pi 的 `get_tree` 原样铺成一棵 antd Tree，既不能切分支也没有别的动作，
@@ -26,10 +26,11 @@ import { FileIcon } from '@/features/common/FileIcon';
 import { toast } from '@/lib/feedback';
 import { useTabs } from '@/stores/tabs';
 import { useUi } from '@/stores/ui';
+import { unreadCount, useNotifications, type AppNotification } from '@/stores/notifications';
 import { openPreviewTab } from './EditorArea';
 import { FleetView } from './FleetView';
 
-type RightView = 'files' | 'stats' | 'fleet';
+type RightView = 'files' | 'stats' | 'fleet' | 'notifications';
 
 /**
  * Fleet（子代理）入口开关。
@@ -46,10 +47,13 @@ export function RightBar({ tabId }: { tabId: string | null }) {
   // 真正的几何由 AppFrame 那个可折叠 Panel 执行，这里只决定"画不画内容"。
   const open = useUi((s) => s.rightpanelOpen);
   const setOpen = useUi((s) => s.setRightpanelOpen);
+  const unread = useNotifications((s) => unreadCount(s.items));
 
   /** 切视图 = 顺带展开。折叠态下点图标却什么都不出来，用户会以为按钮坏了。 */
   const show = useCallback(
     (v: RightView) => {
+      // 通知视图一打开就全部已读（用户 2026-10-24 的口径；不在每条通知里再点一次）
+      if (v === 'notifications') useNotifications.getState().markAllRead();
       setView(v);
       setOpen(true);
     },
@@ -62,10 +66,15 @@ export function RightBar({ tabId }: { tabId: string | null }) {
   useEffect(
     () =>
       windowEvents.on('rightbar-view', (v) => {
-        if (v === 'files' || v === 'stats' || v === 'fleet') show(v);
+        if (v === 'files' || v === 'stats' || v === 'fleet' || v === 'notifications') show(v);
       }),
     [show],
   );
+
+  // 通知视图开着时新到的通知也直接算已读（用户正看着它，不该再亮一个未读点）
+  useEffect(() => {
+    if (open && view === 'notifications' && unread > 0) useNotifications.getState().markAllRead();
+  }, [open, view, unread]);
 
   return (
     <div className="pg-rightbar">
@@ -75,6 +84,7 @@ export function RightBar({ tabId }: { tabId: string | null }) {
         <div className="pg-rightbar-body">
           {view === 'files' && <FilesView tabId={tabId} />}
           {view === 'stats' && <StatsView tabId={tabId} />}
+          {view === 'notifications' && <NotificationsView />}
           {view === 'fleet' && <FleetView tabId={tabId} />}
         </div>
       )}
@@ -115,6 +125,18 @@ export function RightBar({ tabId }: { tabId: string | null }) {
           onClick={() => show('stats')}
         >
           <Icon name="dashboard" size={15} />
+        </button>
+        <button
+          type="button"
+          className={`pg-rail-btn${view === 'notifications' && open ? ' pg-rail-active' : ''}`}
+          title={unread > 0 ? `通知（${unread} 条未读）` : '通知'}
+          aria-label={unread > 0 ? `通知（${unread} 条未读）` : '通知'}
+          aria-pressed={view === 'notifications' && open}
+          data-notifications-entry
+          onClick={() => show('notifications')}
+        >
+          <Icon name="bell" size={15} />
+          {unread > 0 ? <span className="pg-rail-unread-dot" aria-hidden /> : null}
         </button>
         {SHOW_FLEET_ENTRY ? (
           <button
@@ -200,6 +222,60 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="pg-stat-row">
       <span className="pg-stat-label">{label}</span>
       <span className="pg-stat-value">{value}</span>
+    </div>
+  );
+}
+
+/* ---------------- 通知视图：扩展 notify 的历史（打开即全部已读） ---------------- */
+
+function clockOf(ts: number): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function NotificationsView() {
+  const items = useNotifications((s) => s.items);
+  const tabs = useTabs((s) => s.tabs);
+
+  if (items.length === 0) {
+    return (
+      <div className="pg-notif-empty pg-rightbar-pad" data-notifications-empty>
+        暂无通知
+      </div>
+    );
+  }
+
+  return (
+    <div className="pg-notif" data-notifications>
+      <div className="pg-notif-head">
+        <span>通知</span>
+        <span className="pg-notif-count">{items.length}</span>
+      </div>
+      <div className="pg-notif-list">
+        {items.map((n: AppNotification) => {
+          const tab = n.tabId ? tabs[n.tabId] : undefined;
+          const source =
+            tab?.sessionName?.trim() || (tab?.cwd ? baseName(tab.cwd) : n.tabId ? '已关闭的会话' : 'Piggy');
+          return (
+            <div
+              key={n.id}
+              className="pg-notif-item"
+              data-notification-item
+              data-level={n.level}
+              data-read={n.read ? 'true' : 'false'}
+            >
+              <div className="pg-notif-meta">
+                <span className="pg-notif-source">{source}</span>
+                <time className="pg-notif-time" dateTime={new Date(n.ts).toISOString()}>
+                  {clockOf(n.ts)}
+                </time>
+              </div>
+              <div className="pg-notif-message">{n.message}</div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

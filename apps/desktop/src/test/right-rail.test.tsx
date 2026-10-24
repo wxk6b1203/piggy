@@ -34,6 +34,7 @@ import { getCommand } from '@/lib/commands';
 import { keysFor } from '@/lib/keymap';
 import { useTabs } from '@/stores/tabs';
 import { useMessages } from '@/stores/messages';
+import { useNotifications } from '@/stores/notifications';
 import { useUi } from '@/stores/ui';
 import { mountDom, unmountDom, domContainer } from './dom-render';
 
@@ -69,6 +70,7 @@ describe('右栏折叠：折叠态留下图标轨，三条入口写同一个 sto
     listenMock.mockResolvedValue(() => {});
     useTabs.setState({ tabs: {}, order: [], activeTabId: null, unread: {}, banner: null });
     useMessages.setState({ tabs: {} });
+    useNotifications.setState({ items: [] });
     useUi.setState({ rightpanelOpen: true });
     invokeMock.mockImplementation(async (name: string) => {
       if (name === 'tab_create') {
@@ -100,7 +102,7 @@ describe('右栏折叠：折叠态留下图标轨，三条入口写同一个 sto
     expect(rail).not.toBeNull();
     expect(rail!.getAttribute('aria-label')).toBe('右侧栏视图');
     // 图标按钮没有可访问名 = 读屏与 Playwright 都点不到
-    expect(railLabels()).toEqual(['收起右栏', '文件', '统计']);
+    expect(railLabels()).toEqual(['收起右栏', '文件', '统计', '通知']);
     expect(railBtn('收起右栏')!.getAttribute('aria-expanded')).toBe('true');
   });
 
@@ -113,7 +115,7 @@ describe('右栏折叠：折叠态留下图标轨，三条入口写同一个 sto
     const rail = domContainer().querySelector(RAIL);
     expect(rail).not.toBeNull();
     expect(rail!.getAttribute('aria-label')).toBe('折叠的右栏');
-    expect(railLabels()).toEqual(['展开右栏', '文件', '统计']);
+    expect(railLabels()).toEqual(['展开右栏', '文件', '统计', '通知']);
     expect(railBtn('展开右栏')!.getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -171,5 +173,30 @@ describe('右栏折叠：折叠态留下图标轨，三条入口写同一个 sto
     });
     expect(useUi.getState().rightpanelOpen).toBe(true);
     expect(domContainer().querySelector('.pg-stats')).not.toBeNull();
+  });
+
+  it('通知：未读点亮着，点开一次就全部已读，历史留在右栏', async () => {
+    await mountApp();
+    await act(async () => {
+      useNotifications.getState().push({
+        id: 'n1',
+        tabId: 't-1',
+        level: 'warning',
+        message: '/init started — prompt: bundled',
+      });
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const unreadBtn = railBtn('通知（1 条未读）');
+    expect(unreadBtn, '有未读通知但图标轨没有可点的通知入口').not.toBeNull();
+    expect(unreadBtn!.querySelector('.pg-rail-unread-dot')).not.toBeNull();
+
+    await click(unreadBtn!);
+    expect(useUi.getState().rightpanelOpen).toBe(true);
+    expect(useNotifications.getState().items[0]?.read).toBe(true);
+    expect(domContainer().querySelector('[data-notifications]')).not.toBeNull();
+    expect(domContainer().querySelector('.pg-notif-message')?.textContent).toContain('/init started');
+    expect(railBtn('通知'), '打开后未读点应消失').not.toBeNull();
+    expect(domContainer().querySelector('.pg-rail-unread-dot')).toBeNull();
   });
 });

@@ -351,7 +351,7 @@ Rust 把 `extension_ui_request` 原样转发前端；前端 `features/dialogs` �
 | `confirm` | antd Modal.confirm | `confirmed` / `cancelled:true` |
 | `input` | Modal + Input | `value` / `cancelled` |
 | `editor` | Modal + 多行编辑器 | `value` / `cancelled` |
-| `notify` | antd notification（info/warning/error） | 无 |
+| `notify` | 右栏「通知」视图（历史 + 未读点；打开视图即全部已读） | 无 |
 | `setStatus` | 状态栏 key→text 槽位 | 无 |
 | `setWidget` | composer 上/下小部件面板（`aboveEditor`/`belowEditor`，字符串行） | 无 |
 | `setTitle` | 窗口标题 | 无 |

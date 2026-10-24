@@ -1214,8 +1214,13 @@ body {
 .pg-rightbar-body { flex: 1; overflow-y: auto; min-width: 0; border-left: 1px solid var(--pg-border-l2); }
 /* `flex: none`：折叠到 40px 时容器里只剩这条轨，不许被 flex 压窄（压了与 collapsedSize 对不上） */
 .pg-rightrail { flex: none; width: 40px; border-left: 1px solid var(--pg-border-l2); display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 4px; }
-.pg-rail-btn { width: 30px; height: 30px; background: none; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--pg-fg-dim); }
+.pg-rail-btn { width: 30px; height: 30px; background: none; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--pg-fg-dim); position: relative; }
 .pg-rail-btn:hover { background: var(--pg-bg-app); }
+/* 通知未读点：用主题 accent，外圈用侧栏底色隔开图标；亮/暗主题都跟着 token 走 */
+.pg-rail-unread-dot {
+  position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pg-accent); box-shadow: 0 0 0 2px var(--pg-bg-sidebar); pointer-events: none;
+}
 /* 开合开关与视图按钮隔开一点：上面那颗管"面板开合"，下面几颗管"看哪个视图"，不是一类 */
 .pg-rail-toggle-right { margin-bottom: 4px; }
 .pg-rail-active { background: var(--pg-bg-app) !important; color: var(--pg-accent) !important; }
@@ -1224,6 +1229,33 @@ body {
 .pg-stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
 .pg-stat-label { color: var(--pg-fg-dim); }
 .pg-stat-value { font-family: var(--pg-mono); }
+/* 通知视图（扩展 notify 的历史）。左侧色条按级别取 token，暗/亮主题同一套。 */
+.pg-notif { padding: 10px 12px 16px; font-size: var(--pg-fs-12); }
+.pg-notif-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; color: var(--pg-fg-secondary); font-weight: 600;
+}
+.pg-notif-count { color: var(--pg-fg-caption); font-family: var(--pg-mono); font-size: var(--pg-fs-11); }
+.pg-notif-list { display: flex; flex-direction: column; gap: 8px; }
+.pg-notif-item {
+  padding: 7px 9px; border-left: 3px solid var(--pg-border-l2); border-radius: var(--pg-r-md);
+  background: var(--pg-bg-app);
+}
+.pg-notif-item[data-level='info'] { border-left-color: var(--pg-accent); }
+.pg-notif-item[data-level='warning'] { border-left-color: var(--pg-warn); }
+.pg-notif-item[data-level='error'] { border-left-color: var(--pg-error); }
+.pg-notif-item[data-level='success'] { border-left-color: var(--pg-ok); }
+.pg-notif-meta {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--pg-fg-caption); font-size: var(--pg-fs-11);
+}
+.pg-notif-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-notif-time { flex: none; margin-left: auto; font-family: var(--pg-mono); }
+.pg-notif-message {
+  margin-top: 3px; color: var(--pg-fg-secondary); line-height: var(--pg-lh-12);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pg-notif-empty { color: var(--pg-fg-dim); }
 /* 右栏统计里的用量条。
    注意类名：这里曾和 Composer dock 的上下文环同名（都叫 `.pg-ctx-meter` / `.pg-ctx-fill`），
    于是环按钮被这条 `height:6px; overflow:hidden` 压成一条 6px 色块、内容全被裁掉。
@@ -1435,7 +1467,13 @@ body {
    统一视图：旧行号 / 新行号 / 符号 / 原文 四列；并排视图：一行两格。
    行号列宽固定 + `tabular-nums`，否则行号位数一变整块就左右抖。 */
 .pg-diffview-body { overflow: auto; }
-.pg-fd { display: flex; flex-direction: column; padding: 6px 0 12px; font-family: var(--pg-mono); font-size: var(--pg-fs-12); }
+/* 行背景画在 `.pg-fd-line` / `.pg-fd-cell` 上：`.pg-fd` 必须长到**最宽那一行**，
+   否则横向滚到长行尾部时背景只到视口宽就断了（用户 2026-10-24 报的"拉到行尾颜色就没了"）。
+   `min-width: 100%` 保证短 diff 仍然铺满面板。 */
+.pg-fd {
+  display: flex; flex-direction: column; width: max-content; min-width: 100%;
+  padding: 6px 0 12px; font-family: var(--pg-mono); font-size: var(--pg-fs-12);
+}
 .pg-fd-note { margin: 6px 12px; color: var(--pg-fg-dim); font-family: var(--pg-font); font-size: var(--pg-fs-12); }
 .pg-fd-hunk { display: flex; flex-direction: column; }
 .pg-fd-hunkhead {
