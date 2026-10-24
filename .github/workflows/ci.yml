@@ -86,7 +86,49 @@ jobs:
       # 真机插件探针（docs/17 §2.2b）：核对外面那三条只有真 pi 才能验的事
       # （能加载 / `--tools` 会过滤插件工具 / 两份同名插件会让 pi 不进会话）。
       - run: node apps/desktop/scripts/pi-plugin-probe.mjs
-      - name: 契约测试（C9/e2e 消耗最小 token；provider 缺失时允许跳过）
-        run: cd apps/desktop/src-tauri && cargo test --features contract --test contract -- --test-threads=2
+      # provider 注入（2026-10-24）：契约测试依赖已配置的 provider（docs/02 §9）。
+      # 此前这里的注释声称"provider 缺失时允许跳过"，但 contract.rs 从 M0 起就没有任何
+      # 跳过逻辑，CI_CONTRACT 也从未被任何代码读过 —— 这个 job 在 runner 上从未绿过。
+      # 现在用仓库 Secret 在 runner 上配出 ~/.pi/agent（形态复刻本机已验证的
+      # models.json + settings.json）；key 只经 Secret 与环境变量，不进仓库、不进日志。
+      - name: 注入 provider（Secret DEEPSEEK_API_KEY → ~/.pi/agent）
         env:
-          CI_CONTRACT: "1"
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+          if not key:
+              print("::error::仓库 Secret DEEPSEEK_API_KEY 未配置 —— "
+                    "Settings → Secrets and variables → Actions → Repository secrets 添加后重跑")
+              sys.exit(1)
+          home = os.path.expanduser("~/.pi/agent")
+          os.makedirs(home, exist_ok=True)
+          models = {
+              "providers": {
+                  "piggy-ci-deepseek": {
+                      "name": "DeepSeek (Piggy CI)",
+                      "baseUrl": "https://api.deepseek.com",
+                      "api": "openai-completions",
+                      "apiKey": key,
+                      "models": [
+                          {
+                              "id": "deepseek-flash",
+                              "name": "DeepSeek V4.1 Flash",
+                              "reasoning": True,
+                              "input": ["text", "image"],
+                              "contextWindow": 1000000,
+                              "maxTokens": 384000,
+                              "thinkingLevelMap": {"low": "low", "high": "high", "max": "max"},
+                          }
+                      ],
+                  }
+              }
+          }
+          settings = {"defaultProvider": "piggy-ci-deepseek", "defaultModel": "deepseek-flash"}
+          json.dump(models, open(os.path.join(home, "models.json"), "w"), ensure_ascii=False, indent=2)
+          json.dump(settings, open(os.path.join(home, "settings.json"), "w"), ensure_ascii=False, indent=2)
+          print("provider 已写入 ~/.pi/agent（models.json + settings.json）")
+          PY
+      - name: 契约测试（真 provider，消耗极少量 token）
+        run: cd apps/desktop/src-tauri && cargo test --features contract --test contract -- --test-threads=2
