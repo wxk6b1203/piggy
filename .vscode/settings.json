@@ -1,0 +1,7 @@
+{
+  /* rust-analyzer 的自动发现在这个布局下失效（FetchWorkspaceError: failed to find
+     any projects）：Cargo workspace 嵌在 JS monorepo 三层深处，根目录没有 Cargo.toml，
+     发现器从仓根扫不到。显式声明绕过发现——路径相对本文件所在的工作区根。
+     （2026-10-24：cargo metadata 在 src-tauri 内正常，仅"从根自动发现"失败。） */
+  "rust-analyzer.linkedProjects": ["apps/desktop/src-tauri/Cargo.toml"]
+}
