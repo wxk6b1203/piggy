@@ -643,6 +643,12 @@ mod tests {
     /// 然后 `process.exit(1)` —— 表现为建会话失败（`pi worker exited`）。
     /// 我们的 argv 对象是 `OsString`，**不是** String，所以任何 `String` 侧的
     /// contains/replace 都碰不到它：这条闸门直接钉字节前缀。
+    ///
+    /// ⚠️ 仅 Windows 编译（AGENTS.md 第 13 条，2026-10-24 加护栏）：fixture 造的
+    /// verbatim 路径必须能过 `cli_args` 的 `is_dir()` 过滤才会被注入，而
+    /// `\\?\…` 在 Unix 上永远不是目录 —— 夹具在 macOS/Linux 上按定义到不了
+    /// 断言那一行。剥离行为本身由下面那条**全平台**纯函数测试钉住。
+    #[cfg(windows)]
     #[test]
     fn extension_args_never_carry_the_verbatim_prefix() {
         let tmp = tempfile::tempdir().unwrap();
@@ -673,6 +679,33 @@ mod tests {
         assert!(
             raw.iter().any(|s| s.to_string_lossy().ends_with("pi-ask")),
             "插件目录没被注入，这条测试等于没验：{raw:?}"
+        );
+    }
+
+    /// `plain_path` 的剥离行为在**所有平台**都要对。argv 级的那条闸门（上一条）
+    /// 只在 Windows 上能真正跑到注入断言（Unix 上 `\\?\…` 永远过不了
+    /// `cli_args` 的 `is_dir()` 过滤），所以这里把纯函数单独钉住 —— 剥离是
+    /// 字符串操作，跨平台语义一致，没理由只在 Windows 上验证。
+    #[test]
+    fn plain_path_strips_verbatim_prefixes_on_every_platform() {
+        assert_eq!(
+            crate::plain_path(std::path::Path::new(r"\\?\C:\Users\wxk\piggy\pi-ask")),
+            std::path::PathBuf::from(r"C:\Users\wxk\piggy\pi-ask")
+        );
+        // UNC 形态剥成普通 UNC（`\\?\UNC\srv\share` → `\\srv\share`）
+        assert_eq!(
+            crate::plain_path(std::path::Path::new(r"\\?\UNC\srv\share\piggy")),
+            std::path::PathBuf::from(r"\\srv\share\piggy")
+        );
+        // 普通路径原样返回：macOS/Linux 的日常形态不做任何"聪明"改写
+        assert_eq!(
+            crate::plain_path(std::path::Path::new("/var/folders/xx/pi-ask")),
+            std::path::PathBuf::from("/var/folders/xx/pi-ask")
+        );
+        // 已经不带前缀的 Windows 形态也不动（幂等）
+        assert_eq!(
+            crate::plain_path(std::path::Path::new(r"C:\plain\path")),
+            std::path::PathBuf::from(r"C:\plain\path")
         );
     }
 

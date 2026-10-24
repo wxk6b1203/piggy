@@ -58,7 +58,9 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install chromium
+      # playwright 只声明在 @piggy/desktop 里：从根 `pnpm exec` 找不到二进制
+      # （2026-10-24 实测，这个 job 因此从未跑到过预算断言），必须 --filter 进包。
+      - run: pnpm --filter @piggy/desktop exec playwright install chromium
       - name: S1/S3 缩短版 + 预算断言
         run: node apps/desktop/scripts/perf-run.mjs --lite
       - uses: actions/upload-artifact@v4

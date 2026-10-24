@@ -1219,7 +1219,17 @@ mod tests {
                 );
             }
         }
-        assert!(installed >= 1, "本机一个金标应用都没装？这条核对会退化成空转");
+        if installed == 0 {
+            // CI runner（macos-14）上一个金标应用都没有 —— 反向核对在那里按定义空转
+            // （2026-10-24 实测：直接 panic 会让 rust job 永远红）。dev 机器上依旧要求
+            // >= 1："装了却解析不出"的闸门只在有应用的机器上有意义，空转只许发生在 CI。
+            assert!(
+                std::env::var_os("CI").is_some(),
+                "本机一个金标应用都没装？这条核对会退化成空转"
+            );
+            eprintln!("CI 环境：本机无金标应用，反向核对空转，按设计跳过");
+            return;
+        }
         eprintln!("反向核对：本机装了 {installed} 个金标应用，全部解析到了");
     }
 

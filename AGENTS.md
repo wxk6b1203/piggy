@@ -20,7 +20,8 @@ before non-trivial changes skim `docs/15-handoff.md` §3, a 150+ item list of "l
 - `pi` is an external runtime anchored at **1.4.0**; six anchors are reconciled by
   `node apps/desktop/scripts/check-pi-pin.mjs`. Discovery order: explicit path in settings → `PI_BIN`
   → bundled standalone (full SKU) → `PATH`.
-- Optional: system Chrome for the browser gates; `pnpm exec playwright install chromium` for perf runs.
+- Optional: system Chrome for the browser gates; `pnpm --filter @piggy/desktop exec playwright install chromium`
+  for perf runs (playwright is declared only in `apps/desktop` — a bare `pnpm exec` from the root cannot find it).
 
 ## Commands
 
@@ -128,7 +129,9 @@ Boundaries that matter:
 12. **Upgrading pi** means six anchors + regenerated snapshots + contract tests: `check-pi-pin.mjs` reconciles
     the anchors, `gen-*.mjs --check` verifies the generated Rust snapshots against pi sources, and
     `pnpm --filter piggy-bridge typecheck` is the one seam that fails silently if the pinned types drift.
-13. **Known pre-existing failure**: `cargo test --lib` fails
-    `pi::process::tests::extension_args_never_carry_the_verbatim_prefix` — a Windows-shaped assertion without a
-    platform guard (`\\?\…` is never `is_dir()` on Unix). Verified still failing on macOS at 317b36a
-    (2026-10-24; first seen a8e8398, 2026-10-14). Pre-existing, not caused by your change.
+13. **Fixed 2026-10-24**: `cargo test --lib` used to fail on macOS/CI with two environment-shaped tests —
+    `pi::process::tests::extension_args_never_carry_the_verbatim_prefix` (Windows-shaped assertion; now
+    `#[cfg(windows)]`, with the stripping behavior pinned cross-platform by the `plain_path_strips_verbatim_prefixes_on_every_platform`
+    unit test) and `open_in_app::resolver::tests::every_installed_catalog_bundle_resolves` (CI runners install
+    none of the gold apps; the reverse check now skips when the `CI` env var is set, dev machines still require ≥ 1).
+    Both fixes verified locally: lib 388 passed / 0 failed + integration suites green.
