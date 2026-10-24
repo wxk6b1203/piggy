@@ -3,6 +3,9 @@
 > **状态：方案 v2，未实现。** 本文只描述**将要**怎么做与为什么，不含任何"已经能跑"的断言。
 > v1（内嵌 Tauri 子 webview）已被否决，理由见 §1.6；v1 的取舍记录保留在那儿。
 >
+> **2026-10-24 修订**：控制面从"前端中继"改为"Rust 直接处理信封"（§D4）；D7 补三档清单
+> （`readOnlyTools` / `fullOnlyTools`）；上传补 canonicalize 与 symlink 说明；§14.2 换成红检矩阵。
+>
 > 需求原文（2026-10-14，用户）：
 > "内置浏览器。pi 可以通过访问内置浏览器，类似 playwright 或者之类的类似操作，实际地看到对应某个页面，
 > 打开某个页面，读取内容，各种高级操作。……在右侧栏里。如果是内置浏览器的 tab，要允许右侧面板被拖拽得更大。"
@@ -14,8 +17,10 @@
 
 **由 Piggy（Rust）用 `--remote-debugging-pipe` 拉起一个 Chrome/Chromium 子进程**，
 通过 fd 3/4 上的 CDP 直接驱动它（不经过任何 TCP 端口）；**一个 Piggy 会话 tab = 一个 Chrome 标签页**；
-pi 侧一个**自研内置插件** `pi-browser` 注册工具，通过已有的**信封 `ui.select` + `ui_reply`** 通道
-把动作转给 GUI 并拿回结果。右侧栏变成**浏览器控制台**（URL / 标签 / 动作日志 / console / 网络 / 截图）。
+pi 侧一个**自研内置插件** `pi-browser` 注册工具，通过已有的**`ui.select` 信封 +
+`extension_ui_response`** 通道把动作交给宿主；**宿主（Rust）在 `extension_ui_request`
+转发前端之前直接截获并回包**，CDP 不经过 webview。右侧栏变成**浏览器监视台**
+（URL / 标签 / 动作日志 / console / 网络 / 截图），只消费状态事件，不进控制面。
 
 ---
 
@@ -91,7 +96,8 @@ attachedToTarget 事件: 2 个
   **不能拿 stdout 当旁路通道**。
 * `pi.events` 是**进程内** EventEmitter（`core/event-bus.ts`）→ **不出进程**。
 * 协议里**没有**通用的"扩展 → 宿主"自定义消息通道：`modes/rpc/rpc-types.ts` 全文只有 9 个
-  `extension_ui_request` method。**所以 §D4 那条信封通道是唯一的合规双向通道。**
+  `extension_ui_request` method。**所以 §D4 那条信封通道是唯一的合规双向通道**；
+  但"宿主"是 Rust，不必再经过 webview（§D4 修订）。
 * pi **完全没有**浏览器 / 截图能力（全仓 grep 零真实命中，只有测试夹具）。
   → **一行都没得复用，全要自己写。**
 * pi 只有 **8 个内置工具** —— 浏览器必须是**扩展工具**，不该去改上游。
@@ -185,20 +191,53 @@ Playwright 默认也是 pipe。
 `--disable-features=IsolateOrigins,site-per-process`、`--ignore-certificate-errors`。
 **加一条静态闸门**：这个 flag 表写在一个常量里，测试断言它不含上述任何一项（§14.2）。
 
-### D4 插件 ↔ GUI 通道：复用"信封 `ui.select`"（与 v1 相同）
+### D4 插件 ↔ 宿主通道：Rust 控制面，前端只监视
+
+浏览器动作是**纯程序化**的，没有必须由人参与的一步；因此信封**不经过 webview**，
+由 Rust 在 `extension_ui_request` 转发前端之前直接截获、驱动 CDP、回写 stdin。
 
 ```
 插件:  await ctx.ui.select('piggy:browser:v1:<toolCallId>', [JSON.stringify(request)], { signal, timeout })
-GUI:   认出前缀 → 不弹对话框 → 交给 Rust 的 CDP 层 → invoke('ui_reply', {...})
+pi:    extension_ui_request
+Rust:  pi/process.rs::handle_line 把 ExtensionUiRequest 交给注入的 UiRequestRouter
+       → 认出前缀 → 校验版本/op → 按 tab 串行入队 → spawn CDP 任务
+       → worker.ui_response({ type:'extension_ui_response', id, value }) → pi stdin
+       → 另发浏览器状态事件（右栏监视用）
 插件:  value = JSON.stringify(response) → 组装成工具结果（必要时含 ImageContent）
 ```
 
-已核实的性质：**可以完全程序化回包**（`ui_reply` 是普通 Tauri 命令）；**默认不超时**
-（`rpc-mode.ts:115-120` 只在 `opts?.timeout` 存在时才起定时器）；**支持 `signal`**（`:109-113`）；
-**回包只能是字符串**（`rpc-types.ts:294-297` 的 `value: string`）→ 载荷一律 JSON。
+`UiRequestRouter` 由 `process.rs` 以 trait/callback 持有，避免 `pi` 模块硬依赖 `browser` 的具体类型。
 
-**两条硬性纪律**：① 插件**必须传 `timeout`**（GUI 漏回一次模型就死在那里）；
-② **GUI 必须保证"任何请求必回"**（右栏没开、tab 切走、worker 被回收，一律回 `no_pane`/`busy`）。
+**为什么不在前端**：`ui_reply` 只把 JSON 写进 pi 的 stdin（`commands.rs:703`），它**不驱动 CDP**；
+如果前端在环里，就还需要另一个 browser 命令来驱动 CDP，等于多一层状态和一个"必须回包"的 UI 依赖。
+Rust 侧（实现后）持有 worker/tab/cwd 和 CDP 连接，是唯一需要知道这次请求属于哪个会话的地方。
+前端只订阅浏览器状态事件（§11.1），不解析信封、不参与回包。状态事件名用
+`pi:browser:{tab}`（与 `pi:frame:{tab}` 同族），前端按 tab 订阅。
+
+**实现约束（比"搬到 Rust"更重要）**：
+
+* **`handle_line` 只做解析和投递，不能 inline await CDP**：`run_reader` 是单任务顺序处理的
+  （`pi/process.rs:367`），一个 `browser_wait_for` 会把流式事件、`tool_execution_*`、合帧器 tick
+  全部卡住。CDP 任务必须 `tokio::spawn`，并按 tab 串行（同一标签同时只跑一个浏览器请求；
+  多余请求排队或回 `busy`）。
+* **用发起请求的那个 `Worker` 句柄回包**，不要回包时再按 `tab_id` 查注册表：如果走 `ui_reply`，
+  它的 `ready_worker` 只保证"有活 worker"，不保证还是同一个进程；把 `Worker` 克隆进任务最稳。
+* **Rust 侧 deadline 必须短于插件 timeout**，保证插件先收到结构化错误（`timeout`/`internal`），
+  而不是自己超时。任何路径——解析失败、版本不认识、找不到浏览器、CDP 挂起、任务 panic——都必须
+  回包；spawn 的 `JoinHandle` 要有人接，panic 转成 `internal`。
+* **取消**：插件侧 `signal` 中止时，Rust 任务的结果要丢弃；长动作应支持取消 token，至少不能把
+  过期结果写回一个已经换了 worker 的 tab。
+
+已核实的性质：**可以完全程序化回包**；**默认不超时**（`rpc-mode.ts:115-120` 只在
+`opts?.timeout` 存在时才起定时器）；**支持 `signal`**（`:109-113`）；**回包只能是字符串**
+（`rpc-types.ts:294-297` 的 `value: string`）→ 载荷一律 JSON。
+
+**两条硬性纪律**：① 插件**必须传 `timeout`**（宿主漏回一次模型就死在那里）；
+② **宿主必须保证"任何请求必回"**（`bad_request`/`unsupported_version`/`no_browser`/`busy`/
+`timeout`/`internal`），但这条责任现在在 Rust，不在 webview。
+
+**人类对话框不走这条路**：`pi-ask`、`select`/`confirm`/`input`/`editor` 仍然由前端
+`pi:ui-req` → `ui_reply` 处理（要人答题）。两条通道按"是否需要人"分流，不要混。
 
 **借协议的风险**：与 Piggy 早已在用的 `PIGGY:1:` 数据面同族，**继承 docs/09 的风险条目 R6**；
 约定版本前缀 + 双端同仓常量 + 契约测试钉死 + 降级路径必须存在。
@@ -227,8 +266,11 @@ Piggy 切会话时 `Target.activateTarget` 把对应标签页带到前台；会�
 | | 内容 | 成本 | 裁决 |
 |---|---|---|---|
 | (a) 什么都不做 | 浏览器就是那个窗口 | 0 | 可接受的下限 |
-| **(b) 控制台/监视器** | 当前 URL + 标题、**标签页列表**（点一下前台、关掉）、**动作日志**（每一步 CDP 命令 + 耗时）、**console**、**网络请求**、最近一张截图缩略图、"把窗口提到前台" | 小（数据都在 Rust 手里，CDP 事件本来就是流） | ✅ **首期做这个** |
+| **(b) 监视台 + 轻控制** | 当前 URL + 标题、**标签页列表**（点一下前台、关掉）、**动作日志**（每一步 CDP 命令 + 耗时）、**console**、**网络请求**、最近一张截图缩略图、"把窗口提到前台" | 小（数据都在 Rust 手里，CDP 事件本来就是流） | ✅ **首期做这个** |
 | (c) 实时画面（`Page.startScreencast`）+ 点击穿透 | 右栏里看到页面、能点 | 中大（帧流 + 坐标映射 + 键盘/IME） | 排到 M-B5，见 §Q2 |
+
+**首期 (b) 不进模型控制面**：它消费 Rust 的浏览器状态事件，不参与 §D4 的信封回包；
+(c) 的点击穿透是用户输入，另走 UI → Rust 命令，不碰模型信封。
 
 **关于"右侧面板拖拽上限"**（用户的原始要求）：在 (b) 下其实用不满 —— 一张日志列表 34% 绰绰有余。
 建议**把放开 `maxSize` 与 (c) 绑定**：做 (c) 时一起做（那时才真需要宽），(b) 阶段不动几何。
@@ -239,22 +281,49 @@ Piggy 切会话时 `Target.activateTarget` 把对应标签页带到前台；会�
 而且两个渲染器会**状态分叉**（cookie、JS 状态、滚动位置各不相同），是 bug 温床。
 (c) 是**同一份渲染的投影**（screencast 帧），不是第二个渲染器 —— 这个区别是它可行的原因。
 
-### D7 权限档位：浏览器工具要分"只读观测"与"有副作用"
+### D7 权限档位：三档清单，不用 annotations 推导
 
 | 档位 | 给哪些浏览器工具 |
 |---|---|
 | 仅可查看 | **只给观测类**：`browser_open` / `browser_snapshot` / `browser_read` / `browser_find` / `browser_wait_for` / `browser_history` / `browser_console` / `browser_network` |
-| 工作区内修改 | 上面 + 动作类：`browser_click` / `browser_type` / `browser_press` / `browser_scroll` / `browser_select` |
-| 完全权限 | 全部（含 `browser_screenshot`、`browser_eval`、`browser_upload`） |
+| 工作区内修改 | 上面 + 动作/控制类：`browser_click` / `browser_type` / `browser_press` / `browser_scroll` / `browser_select` / `browser_dialog` / `browser_tabs` |
+| 完全权限 | 全部；**full-only** 是 `browser_screenshot` / `browser_eval` / `browser_upload` |
 
-给 `piggy-plugin.json` 加 `"readOnlyTools": [...]`（`tools` 的子集），`pi/plugins.rs::plugin_tools_for`
-按档位取子集。契约测试加一条"`readOnlyTools` 必须是 `tools` 的子集，否则红"
-（与既有的"申报了内置工具名必须 `allowlist:false`"同族）。
+`browser_tabs` 的 `list` 是观测，但 `activate`/`close` 是控制，按最严动作归工作区档；
+`browser_dialog` 是对页面的动作，也归工作区档。两者不再靠"完全权限 = 全部"兜底。
+`browser_tabs` 只接受**当前会话自己的 target**；跨会话标签页不 list、不 close
+（否则会话 A 能读/关会话 B 的页面）。
+只读档遇到原生对话框时，观测类工具默认 `Page.handleJavaScriptDialog{accept:false}` 自动关掉并注明；
+`browser_dialog` 仍归工作区档（只读不能点"确定"），否则一个 `alert` 就能把只读档卡死。
+
+`piggy-plugin.json` 加两个可选数组：
+
+```jsonc
+{
+  "tools":         ["browser_open", "...", "browser_upload"],  // 全部
+  "readOnlyTools": ["browser_open", "..."],                    // 仅可查看档
+  "fullOnlyTools": ["browser_screenshot", "browser_eval", "browser_upload"]
+}
+```
+
+* `readOnlyTools ⊆ tools`、`fullOnlyTools ⊆ tools`、`readOnlyTools ∩ fullOnlyTools = ∅`；
+* **工作区档 = `tools - fullOnlyTools`**；**完全权限档 = `tools`**；
+* 旧清单缺字段时保持原行为：`fullOnlyTools` 缺省 = `[]`，`readOnlyTools` 缺省 =
+  `tools - fullOnlyTools`（旧清单没有 fullOnly，所以等价于 `tools`，`pi-ask` 等不受影响；
+  新清单即使漏写 readOnly，也不会把 full-only 漏进只读档）；浏览器插件必须显式写全，
+  契约测试钉死；
+* `pi/plugins.rs::plugin_tools_for(mode, dirs)` 按上表取子集；**不要从 `annotations` 推导档位**。
+
+契约测试至少要有：`readOnlyTools ⊆ tools`、`fullOnlyTools ⊆ tools`、两者不相交、
+`browser_screenshot`/`browser_upload`/`browser_eval` 不在前两档，`browser_click` 不在只读档，
+`browser_dialog`/`browser_tabs` 在工作区档，`browser_open` 在只读档。再加一条**反向**用例：
+把 `browser_upload` 写进 `readOnlyTools`（或让它出现在工作区档）时，测试必须红——证明这个闸门真的在拦。
 
 ### D8 安全策略（汇总在 §12）
 
-一句话：**进程隔离帮我们挡掉了"网页打宿主"这一整类问题，剩下的责任是"我们怎么起这个浏览器"** ——
-传输不带端口（§D1）、profile 独立（§D3）、flag 白名单（§D3）、下载/权限/上传默认收紧（§12）。
+一句话：**进程隔离帮我们挡掉了"网页打宿主"这一整类问题，剩下的责任是"我们怎么起这个浏览器、
+怎么把工具请求送进去"** —— 传输不带端口（§D1）、profile 独立（§D3）、flag 白名单（§D3）、
+控制面在 Rust 且前端只监视（§D4）、下载/权限/上传默认收紧（§12）。
 
 ---
 
@@ -270,7 +339,7 @@ Piggy 切会话时 `Target.activateTarget` 把对应标签页带到前台；会�
 | 遮挡检测 | ✅ `getNodeForLocation` | ✅ 同一个 API | 打平 |
 | **跨域 iframe** | ❌ 留在 P2 | ✅ **实测成立**（§1.2） | **反超** |
 | 对话框 / console / 网络面板 | ✅ | ✅ | 打平 |
-| 文件上传 | ❌ 自认未做（缺"可信 workdir"） | ✅ 可做，**且有现成的边界设施** | **反超**（用本仓 `fs_guard.rs` 限制在会话 cwd 内） |
+| 文件上传 | ❌ 自认未做（缺"可信 workdir"） | ✅ 可做，**且有现成的边界设施** | **反超**（`fs_guard` 子树检查 + canonicalize，限制在会话 cwd 内） |
 | 结构化快照 | ❌ 只有缩进文本行 | ✅ JSON + 文本两视图 | **反超** |
 | 稳定元素定位 | ❌ 两套寻址没打通 | ✅ 候选链 + epoch 语义 | **反超** |
 | 一等公民等待原语 | ❌ 只有 `wait_for(text\|ref)` | ✅ 选择器/加载态/网络空闲三件套 | **反超**（且 RTT 0.09 ms，可以用 Promise 一次调用等完） |
@@ -286,6 +355,7 @@ Piggy 切会话时 `Target.activateTarget` 把对应标签页带到前台；会�
 | 文件 | 职责 |
 |---|---|
 | `mod.rs` | 对外 Tauri 命令面 + 注册进 `lib.rs` 的 `generate_handler!` |
+| `ui.rs` | 从 `extension_ui_request` 截获浏览器信封：前缀/版本/op 校验、按 tab 串行队列、deadline、用原 `Worker` 回包（§D4） |
 | `discovery.rs` | 浏览器发现（§D2 的五级顺序）+ 版本探测；形态照抄 `pi/discovery.rs` |
 | `launch.rs` | 拉进程、建 fd 3/4、**禁止 flag 的常量表**、优雅退出与孤儿回收 |
 | `cdp/mod.rs` | 连接：NUL 分隔 JSON 的编解码、命令/响应 id 关联、事件订阅、**跨读边界的半包** |
@@ -313,7 +383,8 @@ v1 需要一整套注入 agent（快照/定位/动作/等待全在自己写）�
 `lib.js` 放与宿主**共享的常量与纯函数**（信封前缀、操作名表、错误码），供契约测试钉死。
 
 **纪律**：工厂体里**只注册**，不起进程/定时器；长驻资源挂 `session_start`、
-清理挂**幂等**的 `session_shutdown`；插件需要宿主参数走**环境变量**（`PIGGY_HOST` 已有先例）。
+清理挂**幂等**的 `session_shutdown`；插件需要宿主参数走**环境变量**（`PIGGY_HOST` 已有先例；
+`PIGGY_PERMISSION=full` 用于 `browser_eval` 的注册门，见 §6.3）。
 
 ---
 
@@ -327,13 +398,14 @@ title:   'piggy:browser:v1:<toolCallId>'
 options: [ '{"op":"click","args":{"ref":"e12"},"v":1}' ]   ← 请求自包含
 ```
 
-回包 `ui_reply`：`{ "type":"extension_ui_response", "id":"<请求 id>", "value":"{\"ok\":true,…}" }`
+回包（`extension_ui_response`，Rust 侧直接写 stdin）：`{ "type":"extension_ui_response", "id":"<请求 id>", "value":"{\"ok\":true,…}" }`
 
 **为什么自包含**：pi-ask 靠"工具调用的参数"拿问题（卡片要画完整对象），那多一条时序依赖；
 浏览器的请求本身就是唯一真相，放 `options[0]` 最省事。
 
 **为什么用 `select` 而不是 `input`**：两者能力等价（`value` 是任意字符串，pi 侧**不校验**），
-选 `select` 是为了与 pi-ask 走**同一条已验证的路径**（`DialogRouter` / `stores/questions` 的分支已存在且被测试钉住）。
+选 `select` 是为了与 pi-ask 走**同一条已验证的 RPC 信封路径**（`extension_ui_request` /
+`extension_ui_response`）；不是复用前端 `DialogRouter`——浏览器的回包由 Rust 直接处理。
 
 ### 5.2 错误码（文案要教模型下一步怎么做）
 
@@ -345,9 +417,11 @@ options: [ '{"op":"click","args":{"ref":"e12"},"v":1}' ]   ← 请求自包含
 | `navigation` | 动作触发了导航 | "页面已跳转，快照已刷新。" |
 | `timeout` | 等待超时 | "等超时；先用 `browser_snapshot` 看当前状态。" |
 | `policy` | URL/上传路径被策略拒 | "这个地址（或路径）不允许（原因）。" |
-| `no_pane` | 宿主没有浏览器 | "当前宿主没有浏览器；改用 `read`/`bash` 或说明拿不到。" |
+| `bad_request` | 信封 JSON / 参数 / op 不合法 | "请求格式不对；这是宿主/插件契约问题，不要原样重试。" |
+| `unsupported_version` | 宿主不认识信封版本 | "宿主不支持这个浏览器协议版本；升级 Piggy 或插件。" |
 | `no_browser` | 本机找不到浏览器 | "没找到 Chrome/Chromium。装一个或在设置里指定路径。" |
 | `busy` | 同一标签有动作在跑 | "上一个浏览器动作还没结束，等它。" |
+| `internal` | 宿主内部错误（CDP/任务失败） | "宿主内部错误；重试一次，仍失败就报告。" |
 | `dialog_open` | 页面弹了原生对话框 | "页面有 alert/confirm，先 `browser_dialog` 处理掉。" |
 
 ### 5.3 版本与降级
@@ -370,14 +444,19 @@ options: [ '{"op":"click","args":{"ref":"e12"},"v":1}' ]   ← 请求自包含
 
 ```ts
 annotations: { readOnlyHint: <按工具>, openWorldHint: true, idempotentHint: false },
-executionMode: 'sequential',   // 动作类；它们改的是同一份共享状态
+executionMode: 'sequential',   // 所有浏览器工具；共享同一份页面状态（动作类尤其）
 ```
 
-* **`openWorldHint: true` 是硬要求**（`piggy-guard.js` 那类 `tool_call` 守卫靠它做判定，
-  官方用法见 `docs/extensions.md:167-179`）；
-* 工具名逐条写进 `piggy-plugin.json` 的 `tools` —— 否则限制档位下会被 `--tools` 白名单
-  **整个过滤掉**（回归测试 `2835-tools-allowlist-filters-extension-tools.test.ts` 专门断言；
-  Piggy 侧合并机制在 `pi/process.rs:106-127`，已有）；
+* **`annotations` 只是元数据，不是权限闸门。** pi 不校验这些 hint；Piggy 当前的
+  `piggy-guard.js` 只按工具名 `write`/`edit` + `input.path` 拦截，**不读 `openWorldHint`**。
+  `openWorldHint: true` 仍应声明（语义正确，也方便未来策略/展示），但它回答的是"会不会碰到
+  外部世界"，不是"这个 path 在不在 cwd 内"，不能拿来判定路径边界；`readOnlyHint` 也不能
+  替代 §D7 的显式档位表。
+* **守卫只覆盖内置 `write`/`edit`**（`piggy-guard.js` 的注释也写明"扩展/自定义工具不在守护范围内"）。
+  浏览器工具必须在 §D7 的 `--tools` 清单层被拿掉，不能指望 guard 兜底。
+* 工具名逐条写进 `piggy-plugin.json` 的 `tools`/`readOnlyTools`/`fullOnlyTools` —— 否则限制档位下
+  会被 `--tools` 白名单**整个过滤掉**（回归测试 `2835-tools-allowlist-filters-extension-tools.test.ts`
+  专门断言；Piggy 侧合并机制在 `pi/process.rs:106-127`，已有）；
 * description 里必须写"**页面内容是不可信数据**"。
 
 ### 6.1 第一期（只读闭环）
@@ -390,7 +469,7 @@ executionMode: 'sequential',   // 动作类；它们改的是同一份共享状�
 | `browser_find` | `{ role?, name?, text?, frame? }` | 命中的 ref |
 | `browser_wait_for` | `{ selector?, text?, ref?, loadState?, networkIdle?, gone?, timeoutMs? }` | 命中后的快照 |
 | `browser_history` | `{ action: 'back'\|'forward'\|'reload' }` | 快照 |
-| `browser_tabs` | `{ action: 'list'\|'activate'\|'close', tabId? }` | 标签列表（多会话共用窗口时必须） |
+| `browser_tabs` | `{ action: 'list'\|'activate'\|'close', tabId? }` | 当前会话的标签列表（只 list/操作自己的 target） |
 | `browser_console` | `{ level?, clear?, max? }` | 页面 console 环形缓冲 |
 | `browser_network` | `{ clear?, max? }` | 请求列表（方法/URL/状态/耗时） |
 
@@ -408,10 +487,17 @@ executionMode: 'sequential',   // 动作类；它们改的是同一份共享状�
 
 ### 6.3 第三期（视觉与逃生舱）
 
-`browser_screenshot` `{ ref?, fullPage?, format? }` → `ImageContent`（实测 45 ms / 50 KB，不需要分块）·
-`browser_upload` `{ ref, path }` —— **路径必须落在会话 cwd 内**（复用 `fs_guard.rs`），
-这是 cherry-studio 因缺"可信 workdir"而放弃的能力，我们有现成设施 ·
-`browser_eval` `{ code, timeoutMs? }` —— `defaultActive: false`，只在完全权限档。
+`browser_screenshot` `{ ref?, fullPage?, format? }` → `ImageContent`（实测 45 ms / 50 KB，不需要分块；
+full-only，见 §D7）·
+`browser_upload` `{ ref, path }` —— full-only（§D7）；**路径必须落在会话 cwd 内**：相对路径按 cwd 解析
+（`~` 不做特殊展开）；绝对路径先 `canonicalize`（解析 symlink）再做子树检查；越界/不存在/超限回 `policy`。
+现有 `fs_guard::ensure_within` 只做词法检查（拒 `..` + `starts_with`），上传路径要额外补
+canonicalize，否则 workspace 内的 symlink 可以指向外部；并设单文件大小上限。
+⚠️ **完全权限档不注入 `piggy-guard`**，这里只有 Rust 侧这一层；而且 full 档本身有 bash，
+`fs_guard` 是 guardrail，不是安全边界 ·
+`browser_eval` `{ code, timeoutMs? }` —— 只在完全权限档**注册/激活**。不要只写
+`defaultActive: false`：full 档不传 `--tools`，pi 不会自动激活它；由插件按
+`PIGGY_PERMISSION=full` 条件注册（注册即激活），或注册后在 full 档显式 `setActiveTools`。
 
 ---
 
@@ -504,24 +590,29 @@ WebView2 / WebKitGTK）全部不需要了** —— 这是 v2 最省的一处。
 ### 10.3 大二进制走临时文件，不走信封
 
 Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFileSync` + base64 → 组装 `ImageContent`。
-否则几 MB 的 base64 要走 `Rust → 前端 IPC → ui_reply → pi stdin` 三趟。
+否则几 MB 的 base64 要塞进一条 `extension_ui_response` → pi stdin，信封会被撑爆；
+而插件在 Node 侧读文件 + base64 只走一次本地读。
 **顺便解决"Rust 侧要不要引入 base64 crate"** —— 编码在插件（Node）那侧做。
 
 ---
 
 ## 11. 前端 UI
 
-### 11.1 右栏 = 浏览器控制台（§D6 的 (b)）
+### 11.1 右栏 = 浏览器监视台（§D6 的 (b)）
 
 * 右栏图标轨加第四颗按钮"浏览器"；`RightView` 扩成 `'files'|'stats'|'fleet'|'browser'`；
-* 内容：**标签页列表**（当前/切换/关闭）· URL + 标题 · **动作日志**（CDP 方法 + 耗时 + 结果）·
-  console · 网络请求 · 最近一张截图缩略图 · "把窗口提到前台"按钮；
+* 内容：**标签页列表**（右栏可看全部；模型侧 `browser_tabs` 只到当前会话）· URL + 标题 ·
+  **动作日志**（CDP 方法 + 耗时 + 结果）· console · 网络请求 · 最近一张截图缩略图 ·
+  "把窗口提到前台"按钮；
+* **不进模型控制面**：只订阅 Rust 的浏览器状态事件，不解析 `ui.select` 信封、不参与回包（§D4）；
+  面板上的切标签/提前台是用户命令，另走 Tauri 命令；
 * 折叠时照旧卸载内容（与现有行为一致）。
 
 ### 11.2 帧流（仅当做 (c) 时）
 
-`Page.startScreencast` 的帧走 **Tauri 事件通道**（不走信封、不走 `pi:frame` 那条已经压到 60 Hz 的
-实时通道 —— 别去抢它的预算）；前端 `<canvas>`/`<img>` 渲染；点击按"归一化坐标 → `Input.dispatchMouseEvent`"回传。
+`Page.startScreencast` 的帧走 **Tauri 事件通道** `pi:browser:screencast:{tab}`
+（不走信封、不走 `pi:frame` 那条已经压到 60 Hz 的实时通道 —— 别去抢它的预算）；
+前端 `<canvas>`/`<img>` 渲染；点击按"归一化坐标 → `Input.dispatchMouseEvent`"回传。
 **注意**：这条要单独过一遍性能预算（docs/05），帧率与码率都要有上限。
 
 ---
@@ -532,12 +623,14 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 2. **profile 独立**，绝不用用户真实 Chrome profile（§D3）；
 3. **禁止 flag 常量表 + 静态闸门**（`--no-sandbox` / `--disable-web-security` / 关站点隔离 / 忽略证书…）；
 4. **CDP 方法白名单**（抄 cherry-studio 的 `cdpAllowList` 思路）：只有我们在 `cdp/allowlist.rs`
-   里列出的方法能发出去，白名单外一律拒绝。**这是防止"某天有人顺手加一句 `Browser.*` 把浏览器接管了"的闸门**；
+   里列出的方法能发出去，白名单外一律拒绝。信封里的 `op` 必须映射到**固定**的 CDP 调用，
+   不能把模型给的字符串直接当 CDP method。**这是防止"某天有人顺手加一句 `Browser.*` 把浏览器接管了"的闸门**；
 5. **导航 scheme 白名单**：http/https（含 `http://localhost:*`，agent 看用户的 dev server 是刚需）；
 6. **下载默认拒绝**（`Browser.setDownloadBehavior`）；允许时落到 Piggy 管理的目录；
 7. **权限提示默认拒绝**（geolocation/camera/mic/通知）：`Browser.setPermission`；
-8. **上传限制在会话 cwd 内**（复用 `fs_guard.rs`）；
-9. **`browser_eval` 默认不激活**、只在完全权限档；
+8. **上传限制在会话 cwd 内**：相对路径按 cwd 解析，canonicalize 后做子树检查（防 symlink 逃逸），
+   并设单文件大小上限；full 档没有 guard，只有这一层（§6.3）；
+9. **`browser_eval` 只在完全权限档注册/激活**（不是只写 `defaultActive:false`，见 §6.3）；
 10. **快照与工具 description 都带不可信数据声明**；
 11. **孤儿回收**：Piggy 退出/崩溃时不能让 Chrome 变孤儿（本仓已有整树杀与孤儿回收的经验）；
 12. **进程隔离本身**：网页 JS 与 Piggy 之间没有 IPC 通路（§1.3）—— 这条是白送的，但别自己破坏它
@@ -551,10 +644,10 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 |---|---|---|
 | **M-B0 风险验证** | ① Rust 侧用 `pre_exec` 建 fd 3/4 拉起 Chrome，拿到 `Browser.getVersion`；② 确认**没有任何 TCP 端口**；③ 开 target + flatten，导航 + 截图 + AX 树；④ `Target.setAutoAttach` 读跨域 iframe；⑤ 发现顺序在本机命中系统 Chrome；⑥ **Windows 上明确验证或明确标"未验证"** | 六条全部有实测记录（本文 §1 已用 Python 探针跑通 1–5，**Rust 侧尚未写**）。任何一条不过就停下重做方案 |
 | **M-B1 会话与标签** | 进程模型（§D5）、target ↔ 会话 tab 映射、标签上限、孤儿回收、`browser_tabs` | 真机：两个会话各开一个标签、互不串页；关会话关标签；杀 Piggy 后 Chrome 不残留 |
-| **M-B2 只读闭环** | 插件骨架 + 信封 + `browser_open`/`snapshot`/`read`/`find`/`wait_for` + 快照引擎 + 三件套等待 | 真机：pi 调 `browser_open` 打开本地测试页 → 拿快照 → 二次走 diff；`wait_for` 三种原语各有用例 |
+| **M-B2 只读闭环** | 插件骨架 + Rust 信封路由（§D4） + `browser_open`/`snapshot`/`read`/`find`/`wait_for` + 快照引擎 + 三件套等待 | 真机：pi 调 `browser_open` 打开本地测试页 → 拿快照 → 二次走 diff；`wait_for` 三种原语各有用例 |
 | **M-B3 动作** | click/type/press/scroll/select/dialog + 候选链 + epoch/stale + 遮挡回报 | 真机：表单"填 → 提交 → 等结果"全链条；stale 与遮挡场景各有专门用例 |
-| **M-B4 视觉与右栏** | 截图 + 临时文件通道 + `ImageContent`；右栏控制台（§11.1） | 真机：截图能被模型看到（用"图里写了什么字"自证）；右栏四项面板数据都对 |
-| **M-B5 打磨** | console/network 工具、上传、`browser_eval`、iframe 的 ref 前缀、设置项、（可选）screencast | docs 更新、AGENTS.md 的 4 处 + `TAB_SCOPED`、两个 SKU 的资源登记 |
+| **M-B4 视觉与右栏** | 截图 + 临时文件通道 + `ImageContent`；右栏监视台（§11.1） | 真机：截图能被模型看到（用"图里写了什么字"自证）；右栏四项面板数据都对 |
+| **M-B5 打磨** | console/network 工具、上传（cwd + canonicalize）、`browser_eval`（full 激活）、iframe 的 ref 前缀、设置项、（可选）screencast | docs 更新、AGENTS.md 的 4 处 + `TAB_SCOPED`、两个 SKU 的资源登记 |
 
 **M-B0 必须最先做**，而且**要在 Rust 里重做一遍**（Python 探针只证明了协议成立，
 没证明 Rust 的 `pre_exec` + `tokio::process` 这套能跑）—— 这是唯一的"可能推翻结论"的假设。
@@ -567,18 +660,23 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 
 | 层 | 跑在哪 | 能证明什么 |
 |---|---|---|
-| Rust 单测 | `cargo test` | 发现顺序（注入假的文件系统形状）、禁止 flag 表、CDP 编解码（半包/粘包）、白名单、ref 候选链、预算截断 |
+| Rust 单测 | `cargo test` | 发现顺序（注入假的文件系统形状）、禁止 flag 表、CDP 编解码（半包/粘包）、白名单、ref 候选链、预算截断、插件三档矩阵、上传 canonicalize、`browser_tabs` 会话隔离 |
 | **CDP 契约测试** | `cargo test --features contract`（已有真机契约测试的先例） | **真 Chrome**：pipe 通、无端口、导航/截图/AX/输入/iframe 各一条 |
-| `plugin-contract.test.ts` | vitest（node） | 信封前缀两边一致、清单↔代码、`readOnlyTools ⊆ tools`、无 npm 依赖 |
+| `plugin-contract.test.ts` | vitest（node） | 信封前缀两边一致（Rust 常量 ↔ 插件 `lib.js`）、清单↔代码、三档矩阵、无 npm 依赖 |
 | `ui:startup` 新段 | 浏览器 + mock | 第四颗按钮、右栏面板渲染、**（若做宽度放开）拖 sash 后右栏真超 34%** |
-| `pi-plugin-probe.mjs` 扩展 | 真 pi | 浏览器工具在 `getAllTools()` 里；`--tools read` 之下观测类在、动作类不在 |
+| `pi-plugin-probe.mjs` 扩展 | 真 pi | 浏览器工具在 `getAllTools()` 里；`--tools read` 之下观测类在，动作类/upload/eval 不在；workspace 档 upload/eval 不在 |
 
 ### 14.2 红检（本仓规矩：新门禁必须证明它会红）
 
 * 把 `--remote-debugging-pipe` 换成 `--remote-debugging-port=0` → **"无端口"那条断言必红**；
 * 往禁止 flag 表里塞一个 `--no-sandbox` → 静态闸门必红；
 * 把白名单里删掉 `Page.captureScreenshot` → 截图用例必红（证明白名单真在拦）；
-* 把 `readOnlyTools` 从清单删掉 → 契约测试必红；
+* 把 `browser_upload` 写进 `readOnlyTools`，或让它出现在工作区档 → 契约测试 /
+  `plugin_tools_for` 单测必红；
+* 把 `browser_eval` 从 `fullOnlyTools` 拿掉，或去掉 full 档的激活条件 → probe / 契约必红；
+* 用 workspace 内的 symlink 指向 cwd 外做 upload → Rust 单测 / 契约必红（证明 canonicalize 真在拦）；
+* 让 `browser_tabs` 接受另一个会话的 `tabId` → Rust 单测必红（证明会话隔离真在拦）；
+* 破坏 `readOnlyTools ⊆ tools` 或 `readOnlyTools ∩ fullOnlyTools = ∅` → 契约测试必红；
 * （若做宽度放开）把 `maxSize="34%"` 加回去 → `ui:startup` 新段必红。
 
 ### 14.3 一条**必须**有的安全测试
@@ -598,15 +696,16 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 |---|---|
 | `src-tauri/src/browser/*`（新） | §4.1 的模块 |
 | `src-tauri/src/lib.rs` | setup 里装 browser registry；`generate_handler!` 加新命令（注意 AGENTS.md 第 9 条：setup 只许一个闭包） |
-| `src-tauri/src/commands.rs` | 新命令实现 |
-| `src-tauri/src/pi/plugins.rs` | `plugin_tools_for` 支持按档位取 `readOnlyTools` 子集 |
-| `src-tauri/src/pi/permission.rs` | 三档与浏览器工具集的对应 |
+| `src-tauri/src/commands.rs` | 右栏命令（提前台/切标签/清空日志）；浏览器信封**不**新增 Tauri 命令 |
+| `src-tauri/src/pi/process.rs` | `spawn_envs` 注入 `PIGGY_PERMISSION`；`cli_args` 调 `plugin_tools_for(mode, ...)`；`handle_line` 持有 `UiRequestRouter`（§D4） |
+| `src-tauri/src/pi/plugins.rs` | `plugin_tools_for(mode, dirs)` 支持 `readOnlyTools` / `fullOnlyTools` 三档 |
+| `src-tauri/src/pi/permission.rs` | 三档枚举不变；浏览器档位映射在 `plugins.rs` 落地 |
 | `src-tauri/tauri.conf.json` + `tauri.full.conf.json` | 两个 SKU 的 `bundle.resources` 都要含插件目录（已有闸门） |
 | `src/features/workspace/RightBar.tsx` | 第四颗按钮 + `browser` 视图 + 四个面板 |
-| `src/lib/browserChannel.ts`（新） | 信封常量与解析（与 `questionChannel.ts` 同族） |
+| `src/lib/browserChannel.ts` | **取消**：信封由 Rust 处理；前端只消费状态事件 |
 | `src/stores/browser.ts`（新） | 标签列表、当前 URL、动作日志、console/network 缓冲 |
-| `src/lib/ipc.ts` + `mockBackend` | 新命令的 mock（**mock 不许比真机宽松**） |
-| `src/test/plugin-contract.test.ts` | 扩浏览器插件那几条 |
+| `src/lib/ipc.ts` + `mockBackend` | 右栏命令的 mock（**mock 不许比真机宽松**） |
+| `src/test/plugin-contract.test.ts` | 扩浏览器插件那几条（含三档矩阵） |
 | `docs/04 §1.6`、`docs/README.md` 索引、`docs/05` 性能预算 | 更新 |
 
 **⚠️ 不需要动的**（v1 要动、v2 不用）：`tauri` 的 `unstable` feature、`capabilities/*.json`、
@@ -648,7 +747,7 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 2. **稳定元素定位的候选链** + 明确的 epoch/过期语义（它的两套寻址至今没打通）；
 3. **一等公民的等待三件套**（选择器 / 加载态 / 网络空闲），且用事件驱动而非全量轮询；
 4. **跨域 iframe 从第一天就支持**（它留在 P2；我们**已实测可行**，§1.2）；
-5. **文件上传**用现成的 `fs_guard` 边界做出来（它因缺"可信 workdir"放弃）；
+5. **文件上传**用现成的 `fs_guard` 子树检查 + canonicalize 做出来（它因缺"可信 workdir"放弃）；
 6. **细粒度权限**（按档位 + 按工具；它文档里写了三级确认策略，实现却是一个全局开关）；
 7. **可观测与回放**：把每步的 before/after 快照 + 截图挂进**已有的轨迹视图**（我们的差异化）。
 
@@ -664,7 +763,7 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 | 用户正开着 Chrome，profile 冲突 | 起不来 | **我们用自己的 profile 目录**（§D3），不碰用户的 |
 | 独立窗口抢焦点 / 被用户关掉 | 体验 | 默认**不开新窗口就抢焦点**（`Target.createTarget` 的后台标志）；窗口被关 → 下次工具调用时报 `no_browser` 并可重开 |
 | Chrome 版本漂移导致 CDP 行为差异 | 静默退化 | 锚定**协议版本 1.3**（实测），启动时记版本；契约测试跑真机（与 pi 的 `check-pi-pin` 同思路） |
-| 多会话共用一个浏览器 → 互相干扰 | 串页 | 一会话一 target + **工具调用带 `tabId`**；`browser_tabs` 让模型自己看得到 |
+| 多会话共用一个浏览器 → 互相干扰 | 串页/越权 | 一会话一 target；`browser_tabs` 只列/操作**当前会话自己的** target，跨会话不暴露 |
 | 浏览器进程残留 | 资源泄漏 | 幂等回收 + `session_shutdown`；**M-B1 专门验"杀 Piggy 后 Chrome 不残留"** |
 | 内存（一个 Chrome ~150 MB 起） | 预算 | 惰性启动（第一次工具调用才起）+ 空闲回收；数字进 docs/05 |
 
@@ -672,9 +771,10 @@ Rust 把 PNG 写到临时文件 → 信封里只回**路径** → 插件 `readFi
 
 ## 18. 开放问题（需要你拍板）
 
-* **Q1 右栏做到哪一档**（§D6）：(a) 不做 / **(b) 控制台监视器（建议）** / (c) 实时画面 + 点击穿透？
+* **Q1 右栏做到哪一档**（§D6）：(a) 不做 / **(b) 监视台 + 轻控制（建议）** / (c) 实时画面 + 点击穿透？
 * **Q2 宽度放开**：跟 (c) 一起做（建议），还是现在就把 `maxSize` 放开、中栏 `minSize` 降到 20%？
-* **Q3 权限档位**：「仅可查看」档给不给**观测类**浏览器工具（能上网读页面，但不能点）？
+* **Q3 只读档的 URL 策略**：观测类已按 §D7 给（能读页面，不能点）；是否进一步限制
+  `localhost`/私网/元数据地址？还是允许任意 http(s)？
 * **Q4 窗口形态**：同一窗口多标签（默认建议）还是每个会话独立窗口？
 * **Q5 捆绑 Chromium**：lite 只认系统浏览器（建议）；full 要不要捆一份（~150 MB）？
 * **Q6 `browser_eval`**：要不要做？（最强逃生舱，也是最大风险面）
