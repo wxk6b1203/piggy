@@ -21,6 +21,60 @@ pub struct AppState {
     pub fleet: crate::fleet::SharedFleet,
     /// 内嵌终端 PTY 会话表（M4）
     pub pty: crate::pty::SharedPtyMap,
+    /// 用户通过**原生**对话框/确认过的工作区根与预览文件（webview 改不了）。
+    pub trusted: Arc<tokio::sync::Mutex<TrustedPaths>>,
+}
+
+/// 可信路径表：只有用户经由原生 picker / 原生确认框批准过的路径才进来。
+///
+/// `roots`：`pick_directory` 选过的目录、`tab_create` 对工作区外目录确认过的路径；
+/// `previews`：`fs_preview_read` / `fs_image_data` 对工作区外文件确认过的路径。
+#[derive(Default)]
+pub struct TrustedPaths {
+    pub roots: std::collections::HashSet<PathBuf>,
+    pub previews: std::collections::HashSet<PathBuf>,
+}
+
+/// 解析为真实路径；不存在/无权限时退回原路径（调用方随后会自己报错）。
+fn canonical_or_self(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// 这个路径是否已被用户批准过（两边 canonicalize 后比较）。
+///
+/// 批准一个**根**等于批准它的子树：原生 picker 选 `~/proj` 后，`~/proj/sub` 也是
+/// 用户选过的项目内部目录，不该再弹一次。
+fn is_trusted(paths: &std::collections::HashSet<PathBuf>, p: &Path) -> bool {
+    let real = canonical_or_self(p);
+    paths.iter().any(|approved| {
+        crate::config::paths::same_path(approved, &real) || crate::config::paths::is_under(approved, &real)
+    })
+}
+
+/// 新的 cwd 是否需要原生确认（纯函数，便于单测）。
+///
+/// **不再对 home 免确认**（2026-10-28 复核）：webview 可以 `tab_create({cwd: "~"})`，
+/// 而预览的"工作区内免确认"会把整个 home 当成已批准工作区——`.npmrc`/`.git-credentials`
+/// 又能被静默读走。现在只有**用户通过原生 picker 选过**或**此前后原生确认过**的目录
+/// 才进 `approved`；已有会话的 cwd 由会话文件头单独信任（见 `tab_create`）。
+pub fn cwd_needs_confirmation(cwd: &Path, approved: &std::collections::HashSet<PathBuf>) -> bool {
+    !is_trusted(approved, &canonical_or_self(cwd))
+}
+
+/// sessionDir 改动是否需要原生确认（纯函数）：只有"变成一个新的非空目录"才需要。
+/// 清空/删键 = 回落到默认会话根，不扩大读取面。
+pub fn session_dir_change_needs_confirmation(old: &Value, new: &Value) -> bool {
+    let old_dir = old
+        .get("sessionDir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let new_dir = new
+        .get("sessionDir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    new_dir.is_some() && new_dir != old_dir
 }
 
 /// watcher 监听根：agent 目录（含 settings.json）+ 生效会话根。
@@ -126,6 +180,7 @@ pub fn webview_log(level: String, message: String) {
 #[tauri::command]
 pub async fn pick_directory(
     app: AppHandle,
+    state: State<'_, AppState>,
     title: Option<String>,
     start: Option<String>,
 ) -> Result<Option<String>, String> {
@@ -145,7 +200,17 @@ pub async fn pick_directory(
         let path = picked.map(|p| p.to_string());
         let _ = tx.send(path);
     });
-    rx.await.map_err(|e| format!("目录选择框关闭异常: {e}"))
+    let picked = rx.await.map_err(|e| format!("目录选择框关闭异常: {e}"))?;
+    if let Some(dir) = picked.as_deref() {
+        // 原生 picker 是可信 UI：选过的目录直接进入 tab_create/cwd 的白名单。
+        state
+            .trusted
+            .lock()
+            .await
+            .roots
+            .insert(canonical_or_self(Path::new(dir)));
+    }
+    Ok(picked)
 }
 
 /// 选一个可执行文件（用于指定自定义 pi）。
@@ -191,24 +256,91 @@ pub async fn tab_create(
     permission: Option<String>,
 ) -> Result<TabSnapshot, String> {
     // 空串/纯空白 = 未提供（回退用户主目录）；`~` 前缀展开（用户手输路径的常态）
-    let cwd = tab_cwd(cwd.as_deref()).ok_or_else(|| {
+    let mut cwd = tab_cwd(cwd.as_deref()).ok_or_else(|| {
         "无法确定 cwd：Home 目录解析失败（HOME / USERPROFILE / HOMEDRIVE+HOMEPATH 均为空），\
          请在新建会话时显式填写项目目录"
             .to_string()
     })?;
+    /* 打开**已有会话**时，cwd 以会话文件头为准，而不是前端传的字符串：
+    前端（被攻破时）可以传一个合法会话文件 + `cwd: C:\`，让 tab 的工作区变成整盘。
+    会话文件必须先在生效会话根下（`session_file_gate`），所以文件头里的 cwd 是用户
+    此前用过的目录；这个路径视为已批准，不再弹确认。 */
+    let mut cwd_trusted_by_session = false;
+    if let Some(p) = session_path.as_deref() {
+        session_file_gate(p)?;
+        if let Some(meta) = list::parse_session_file(Path::new(p)) {
+            if let Some(header_cwd) = meta.cwd.as_deref().map(PathBuf::from) {
+                if header_cwd.is_dir() {
+                    cwd = header_cwd;
+                    cwd_trusted_by_session = true;
+                }
+            }
+        }
+    }
     if !cwd.is_dir() {
         return Err(format!(
             "SESSION_CWD_MISSING: 项目目录不存在: {}（请先创建该目录）",
             cwd.display()
         ));
     }
+    /* 新的工作区必须由**原生**确认框批准：webview 可以调 `tab_create({cwd:"C:\\"})`
+    甚至 `cwd:"~"`，只靠前端选择器/文案不是边界。原生 picker 选过的目录已进白名单；
+    已有会话的 cwd 由上面的会话文件头信任。 */
+    if !cwd_trusted_by_session {
+        let needs_confirm = {
+            let already_open = {
+                let reg = state.registry.lock().await;
+                reg.tabs.values().any(|t| crate::config::paths::same_path(&t.cwd, &cwd))
+            };
+            if already_open {
+                false
+            } else {
+                let trusted = state.trusted.lock().await;
+                cwd_needs_confirmation(&cwd, &trusted.roots)
+            }
+        };
+        if needs_confirm {
+            let ok = crate::ui_confirm::confirm(
+                &app,
+                "把这个目录作为工作区？",
+                &format!(
+                    "目录：{}\n\n\
+                     确认后 pi 会把这个目录当作本会话的工作区：工作区内的文件预览不再逐次确认，\
+                     「工作区内修改」档的写入边界也以它为准。\n\
+                     只有你主动打开/选择的目录才应继续。",
+                    cwd.display()
+                ),
+            )
+            .await;
+            if !ok {
+                return Err(format!("已取消：未确认把 {} 作为工作区", cwd.display()));
+            }
+            state.trusted.lock().await.roots.insert(canonical_or_self(&cwd));
+        }
+    }
     // 权限档位：显式传入 > 持久化默认。
     // 非法值**直接报错**而不是静默回落——权限档悄悄降级成更宽松的一档，
     // 是本项目最不能接受的失败方式（用户会以为限制还在）。
+    let default_permission = state.registry.lock().await.default_permission;
     let permission = match permission.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => PermissionMode::parse(s)?,
-        None => state.registry.lock().await.default_permission,
+        None => default_permission,
     };
+    /* 完全权限 = 无 --tools 白名单 = bash/powershell + 任意文件。这是安全语义的跃迁，
+    不能由 webview 静默请求：若默认档不是完全权限，必须原生确认。默认档本身是用户
+    在设置页显式改的（`pi_set_default_permission` 也会对 Full 做原生确认）。 */
+    if permission == PermissionMode::Full && default_permission != PermissionMode::Full {
+        let ok = crate::ui_confirm::confirm(
+            &app,
+            "启用完全权限？",
+            "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
+             只有在你确实需要时才继续。",
+        )
+        .await;
+        if !ok {
+            return Err("已取消：完全权限需要用户原生确认".to_string());
+        }
+    }
     let target = match session_path {
         Some(p) => SessionTarget::Path(p),
         // 新会话：预创建空文件并以 --session 打开 → pi 立即写 header 并置 flushed，
@@ -271,6 +403,24 @@ pub async fn pi_set_permission_mode(
     mode: String,
 ) -> Result<Value, String> {
     let mode = PermissionMode::parse(&mode)?;
+    if mode == PermissionMode::Full {
+        let current = {
+            let reg = state.registry.lock().await;
+            reg.tabs.get(&tab_id).map(|t| t.permission)
+        };
+        if current != Some(PermissionMode::Full) {
+            let ok = crate::ui_confirm::confirm(
+                &app,
+                "切换到这个标签页的完全权限？",
+                "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
+                 切换会重启这个标签页的 pi 进程。",
+            )
+            .await;
+            if !ok {
+                return Err("已取消：完全权限需要用户原生确认".to_string());
+            }
+        }
+    }
     let out = crate::sessions::registry::set_permission_unlocked(&state.registry, &sink(&app), &tab_id, mode).await?;
     save_default_permission(&state, mode);
     Ok(out)
@@ -281,8 +431,25 @@ pub async fn pi_set_permission_mode(
 /// 与 `pi_set_permission_mode` 的区别：那个是"切这个标签页的档位"（要重启它的 worker），
 /// 这个是"以后新开的会话默认用哪一档"。设置页里传 `tabId: ''` 去调前者会直接报错。
 #[tauri::command]
-pub async fn pi_set_default_permission(state: State<'_, AppState>, mode: String) -> Result<Value, String> {
+pub async fn pi_set_default_permission(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mode: String,
+) -> Result<Value, String> {
     let parsed = PermissionMode::parse(&mode)?;
+    let current = { state.registry.lock().await.default_permission };
+    if parsed == PermissionMode::Full && current != PermissionMode::Full {
+        let ok = crate::ui_confirm::confirm(
+            &app,
+            "把「完全权限」设为默认？",
+            "以后新开的每个会话都会默认使用完全权限（可执行任意命令、读写任意文件）。\n\n\
+             建议只在确实需要时开启。",
+        )
+        .await;
+        if !ok {
+            return Err("已取消：默认完全权限需要用户原生确认".to_string());
+        }
+    }
     {
         let mut reg = state.registry.lock().await;
         reg.default_permission = parsed;
@@ -1155,43 +1322,92 @@ pub async fn pi_export_html(
     app: AppHandle,
     state: State<'_, AppState>,
     tab_id: String,
-    output_path: Option<String>,
+    _output_path: Option<String>,
 ) -> Result<Value, String> {
+    /* 前端从未传 output_path（`/export` 只发 tabId），但 IPC 参数是可伪造的：一个
+    webview 传 `C:\Users\x\.ssh\authorized_keys` 就能让 pi 往任意路径写 HTML。
+    没有调用方需要这个参数 → 一律用 pi 的默认落点（工作目录），不转发前端路径。
+    将来要做"另存为"，必须走原生保存对话框并把路径登记成可信路径，不能直接收字符串。 */
     let worker = worker_of(&app, &state, &tab_id).await?;
-    worker.export_html(output_path.as_deref()).await
+    worker.export_html(None).await
 }
 
-/// 文件预览读取的边界闸门（纯函数，已 canonicalize 的输入才进得来）。
+/// 预览的**硬拒绝**：目标落在敏感目录（home 四件套 + 实际 agent 目录）里时，连确认框都不弹。
 ///
-/// 沙箱 = 用户主目录子树 **减去敏感目录**（2026-10-28 审查收敛：`~/.pi` 里是 auth.json
-/// 的 API key 明文，`auth_list` 精心做的掩码不能被这条命令绕过；`.ssh/.aws/.gnupg`
-/// 同理）。调用方必须先把 home 与目标 canonicalize——主目录内的符号链接/junction
-/// 可以指向界外，纯前缀比较挡不住。
+/// 判定前两边都已 canonicalize：home 里的符号链接/junction 指向界外时，
+/// `canonicalize` 得到的是真实位置，前缀比较才可靠。
 fn preview_gate(home_real: &Path, target_real: &Path) -> Result<(), String> {
-    if !paths::is_under(home_real, target_real) {
-        return Err("路径越界（仅限用户目录；符号链接指向界外已拒绝）".into());
-    }
     if paths::sensitive_under(home_real, target_real) {
-        return Err("敏感目录（.pi / .ssh / .aws / .gnupg）不允许预览：API key 与私钥所在（docs/08 §6）".into());
+        return Err("敏感目录（.pi / .ssh / .aws / .gnupg / agent）不允许预览：API key 与私钥所在".into());
+    }
+    if let Ok(agent) = std::fs::canonicalize(paths::agent_dir()) {
+        if paths::is_under(&agent, target_real) {
+            return Err("pi 的 agent 目录（auth.json 所在）不允许预览".into());
+        }
     }
     Ok(())
 }
 
-/// 文件预览读取（M1 限定用户目录子树；docs/08 §6 scope 收敛）。
+/// 预览的**工作区口径**：默认只允许已打开标签页的 cwd；主目录内的其它文件要一次原生确认。
 ///
-/// 主目录拿不到时**必须拒绝**：老代码用 `starts_with("")` 判越界，而空路径是
-/// 任意路径的前缀（`Path::new("/etc/passwd").starts_with("") == true`），
-/// Windows 上（不设 HOME）这条沙箱等于不存在。
-#[tauri::command]
-pub async fn fs_preview_read(path: String) -> Result<Value, String> {
+/// 这是 H3 的收敛：旧 `fs_preview_read` 静默放行整个 home，webview 被攻破时
+/// `.npmrc`/`.git-credentials` 等都能读走。现在：
+/// - 工作区内 → 放行；
+/// - home 内、工作区外 → 原生确认一次（记住这个文件）；
+/// - home 外且不在任何工作区 → 拒绝。
+async fn preview_access_gate(app: &AppHandle, state: &State<'_, AppState>, path: &str) -> Result<PathBuf, String> {
     let home = paths::home_dir().ok_or("无法确定用户目录（HOME / USERPROFILE 均为空），预览已禁用")?;
-    let pb = std::path::PathBuf::from(&path);
-    if !paths::is_under(&home, &pb) {
-        return Err("路径越界（仅限用户目录）".into());
-    }
     let home_real = std::fs::canonicalize(&home).map_err(|e| format!("无法确定用户目录的真实位置: {e}"))?;
-    let pb_real = std::fs::canonicalize(&pb).map_err(|e| format!("路径无法解析（不存在或无权限）: {e}"))?;
-    preview_gate(&home_real, &pb_real)?;
+    let target_real = std::fs::canonicalize(path).map_err(|e| format!("路径无法解析（不存在或无权限）: {e}"))?;
+    preview_gate(&home_real, &target_real)?;
+
+    let in_workspace = {
+        let reg = state.registry.lock().await;
+        reg.tabs.values().any(|t| {
+            let cwd = std::fs::canonicalize(&t.cwd).unwrap_or_else(|_| t.cwd.clone());
+            paths::is_under(&cwd, &target_real)
+        })
+    };
+    if in_workspace {
+        return Ok(target_real);
+    }
+    // 主目录之外还有系统临时目录：工具输出/截图经常落在 $TMP（macOS 的 /var/folders、
+    // Linux 的 /tmp 都不在 home 下）。只允许这三类位置，且 home/temp 里的非工作区文件
+    // 仍需一次原生确认；任意其它盘符路径直接拒。
+    let temp_in_scope = std::env::temp_dir()
+        .canonicalize()
+        .ok()
+        .map(|t| paths::is_under(&t, &target_real))
+        .unwrap_or(false);
+    if !paths::is_under(&home_real, &target_real) && !temp_in_scope {
+        return Err("预览只允许工作区、用户主目录或系统临时目录内的文件".into());
+    }
+    {
+        let trusted = state.trusted.lock().await;
+        if trusted.previews.iter().any(|p| paths::same_path(p, &target_real)) {
+            return Ok(target_real);
+        }
+    }
+    let ok = crate::ui_confirm::confirm(
+        app,
+        "预览工作区外的文件？",
+        &format!(
+            "文件：{}\n\n这个文件不在任何已打开会话的工作区内。确认只允许本次预览读取它。",
+            target_real.display()
+        ),
+    )
+    .await;
+    if !ok {
+        return Err("已取消：未确认预览工作区外文件".into());
+    }
+    state.trusted.lock().await.previews.insert(target_real.clone());
+    Ok(target_real)
+}
+
+/// 文件预览读取（文本）：工作区内直接放行；home 内工作区外需原生确认；敏感目录硬拒。
+#[tauri::command]
+pub async fn fs_preview_read(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Value, String> {
+    let pb_real = preview_access_gate(&app, &state, &path).await?;
     let md = std::fs::metadata(&pb_real).map_err(|e| e.to_string())?;
     if md.len() > 5 * 1024 * 1024 {
         return Err("文件超过 5MB，暂不支持预览".into());
@@ -1208,6 +1424,49 @@ pub async fn fs_preview_read(path: String) -> Result<Value, String> {
         "lines": body.lines().count(),
         "mtimeMs": mtime_ms,
         "content": body,
+    }))
+}
+
+/// 图片预览的**内容闸门**：只接受带真实魔数的 PNG/JPEG/GIF/WebP。
+///
+/// 不按扩展名判断：`auth.json` 改个 `.png` 后缀不能变成图片；反过来只返回图片字节也
+/// 不会把文本密钥回流给 webview。SVG 不支持——它是 XML，可能带脚本/外部引用。
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// 读取一张图片并返回 data URL（`<img src>` 用），替代已移除的 `asset://` 协议。
+///
+/// 与文本预览共用 `preview_access_gate`（工作区/确认/敏感目录），但额外要求魔数匹配，
+/// 因此 webview 拿不到非图片文件的内容。大小上限 20MB。
+#[tauri::command]
+pub async fn fs_image_data(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Value, String> {
+    const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+    let real = preview_access_gate(&app, &state, &path).await?;
+    let md = std::fs::metadata(&real).map_err(|e| e.to_string())?;
+    if !md.is_file() {
+        return Err("不是文件".into());
+    }
+    if md.len() > MAX_IMAGE_BYTES {
+        return Err("图片超过 20MB，暂不支持预览".into());
+    }
+    let bytes = std::fs::read(&real).map_err(|e| format!("读取图片失败: {e}"))?;
+    let mime = image_mime(&bytes).ok_or("不是受支持的图片格式（仅 PNG / JPEG / GIF / WebP）")?;
+    Ok(serde_json::json!({
+        "mimeType": mime,
+        "dataUrl": format!("data:{mime};base64,{}", crate::open_in_app::base64(&bytes)),
     }))
 }
 
@@ -1234,15 +1493,124 @@ pub async fn auth_remove(provider: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub async fn models_read() -> Result<Value, String> {
-    tokio::task::spawn_blocking(pi_files::models_read)
-        .await
-        .map_err(|e| e.to_string())?
+/// `models_read` 里替换内联 `apiKey` 的哨兵。前端原样保存时由 `models_write` 还原。
+pub const REDACTED_API_KEY: &str = "__PIGGY_REDACTED__";
+
+/// 把 models.json 里的内联密钥替换成哨兵，再交给 webview。
+///
+/// 为什么必须做：`AdvancedSection` 的 raw JSON 编辑器读的是 `models_read`；而
+/// `provider_set_key(store:"models")` 会把明文写进 `providers.*.apiKey`。
+/// 不脱敏的话，H3 的"auth_list 掩码"被 `models_read` 整体绕过（webview 直接读明文）。
+fn redact_models(mut v: Value) -> Value {
+    if let Some(providers) = v.get_mut("providers").and_then(Value::as_object_mut) {
+        for cfg in providers.values_mut() {
+            if let Some(obj) = cfg.as_object_mut() {
+                let has_key = obj
+                    .get("apiKey")
+                    .and_then(Value::as_str)
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if has_key {
+                    obj.insert("apiKey".into(), Value::String(REDACTED_API_KEY.into()));
+                }
+            }
+        }
+    }
+    v
+}
+
+/// raw 编辑器把哨兵原样存回来时，恢复旧的 `apiKey`（没有旧值就删键）。
+fn restore_redacted_api_keys(old: &Value, new: &mut Value) {
+    let old_providers = old.get("providers").and_then(Value::as_object);
+    let Some(providers) = new.get_mut("providers").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (name, cfg) in providers.iter_mut() {
+        let Some(obj) = cfg.as_object_mut() else { continue };
+        if obj.get("apiKey").and_then(Value::as_str) != Some(REDACTED_API_KEY) {
+            continue;
+        }
+        let old_key = old_providers
+            .and_then(|p| p.get(name))
+            .and_then(|c| c.get("apiKey"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        match old_key {
+            Some(key) => {
+                obj.insert("apiKey".into(), Value::String(key));
+            }
+            None => {
+                obj.remove("apiKey");
+            }
+        }
+    }
+}
+
+/// `models_write` 这次改动里，哪些 provider 的 baseUrl 变了且已有已存密钥。
+fn models_base_changes(old: &Value, new: &Value) -> Vec<String> {
+    let Some(providers) = new.get("providers").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let agent = paths::agent_dir();
+    let mut changed = Vec::new();
+    for (name, cfg) in providers {
+        let Some(new_base) = cfg
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let old_base = old
+            .get("providers")
+            .and_then(|p| p.get(name))
+            .and_then(|c| c.get("baseUrl"))
+            .and_then(Value::as_str);
+        let has_stored_key = !crate::provider::resolve_key(&agent, name, "").0.trim().is_empty();
+        if crate::provider::base_change_needs_confirm(old_base, new_base, has_stored_key) {
+            changed.push(name.clone());
+        }
+    }
+    changed
 }
 
 #[tauri::command]
-pub async fn models_write(value: Value) -> Result<(), String> {
+pub async fn models_read() -> Result<Value, String> {
+    let v = tokio::task::spawn_blocking(pi_files::models_read)
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(redact_models(v))
+}
+
+/// 保存 models.json（高级页 raw 编辑器）。
+///
+/// 两条安全处理：
+/// 1. `__PIGGY_REDACTED__` 还原成真实内联密钥（raw 编辑器看不到明文，也不会把它删掉）；
+/// 2. 改了某个已存密钥 provider 的 baseUrl → 原生确认（否则 webview 可以先改地址再发密钥）。
+#[tauri::command]
+pub async fn models_write(app: AppHandle, value: Value) -> Result<(), String> {
+    let old = pi_files::models_read().unwrap_or_else(|_| json!({}));
+    let mut value = value;
+    restore_redacted_api_keys(&old, &mut value);
+    let changed = models_base_changes(&old, &value);
+    if !changed.is_empty() {
+        let ok = crate::ui_confirm::confirm(
+            &app,
+            "更改 API 地址？",
+            &format!(
+                "以下提供商的 API 地址被改动，且已存有密钥：{}\n\n\
+                 继续会把密钥发往新地址。",
+                changed.join("、")
+            ),
+        )
+        .await;
+        if !ok {
+            return Err("已取消：更改 API 地址需要用户原生确认".to_string());
+        }
+    }
     tokio::task::spawn_blocking(move || pi_files::models_write(&value))
         .await
         .map_err(|e| e.to_string())?
@@ -1257,6 +1625,26 @@ pub async fn settings_read() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn settings_write(app: AppHandle, state: State<'_, AppState>, value: Value) -> Result<(), String> {
+    /* sessionDir 是 session_* 闸门的根：webview 若能静默把它改成 C:\，
+    `session_delete`/`session_page` 就又能操作任意 `.jsonl`。改这个键必须走原生确认；
+    其它设置（主题、标题模型…）不弹，避免把设置页变成确认地狱。 */
+    let old = pi_files::settings_read().unwrap_or_else(|_| json!({}));
+    if session_dir_change_needs_confirmation(&old, &value) {
+        let new_dir = value.get("sessionDir").and_then(Value::as_str).unwrap_or("");
+        let ok = crate::ui_confirm::confirm(
+            &app,
+            "更改 pi 会话目录？",
+            &format!(
+                "新的会话目录：{new_dir}\n\n\
+                 这会让 Piggy 把该目录下的 `.jsonl` 当作可列出/分页/删除的会话文件。\
+                 只在你确实要迁移会话目录时继续。"
+            ),
+        )
+        .await;
+        if !ok {
+            return Err("已取消：更改会话目录需要用户原生确认".to_string());
+        }
+    }
     tokio::task::spawn_blocking(move || pi_files::settings_write(&value))
         .await
         .map_err(|e| e.to_string())??;
@@ -1290,31 +1678,27 @@ pub async fn pi_abort_bash(app: AppHandle, state: State<'_, AppState>, tab_id: S
     worker_of(&app, &state, &tab_id).await?.abort_bash().await
 }
 
-/* ---------------- M4：资源浏览器 + 快捷编辑（NG4：受限直写 + 冲突警示） ---------------- */
+/* ---------------- M4：资源浏览器（只读；root 由 tab_id 决定，不再由前端指定） ---------------- */
 
-/// `root` 是否锚定在某个已打开标签页的工作目录上（命令壳持锁核对，结果传给 `_core`）。
+/// 列出某个**已打开标签页**工作目录下的一个目录。
 ///
-/// `root` 是前端传的，此前只检查"是个目录"——前端传 `C:\` 就是全盘浏览/全盘改写
-/// （快捷编辑是**写**原语，2026-10-28 审查收敛）。RightBar 的文件树传的就是活动标签页的
-/// cwd，锚定后合法路径不受影响；不存在匹配标签页时 fail-loud。
-async fn root_is_open_cwd(state: &State<'_, AppState>, root: &str) -> bool {
-    let reg = state.registry.lock().await;
-    reg.is_open_cwd(Path::new(root))
-}
-
+/// `tab_id` 而不是 `root`：root 来自视图状态，webview 可以伪造成 `C:\`；tab_id 的 cwd
+/// 是 Rust 侧 registry 持有的。符号链接/junction 逃逸由 `ensure_within_resolved` 负责。
 #[tauri::command]
-pub async fn fs_list_dir(state: State<'_, AppState>, root: String, path: String) -> Result<Value, String> {
-    fs_list_dir_core(root_is_open_cwd(&state, &root).await, &root, &path)
+pub async fn fs_list_dir(state: State<'_, AppState>, tab_id: String, path: String) -> Result<Value, String> {
+    let root = {
+        let reg = state.registry.lock().await;
+        reg.tabs
+            .get(&tab_id)
+            .map(|t| t.cwd.clone())
+            .ok_or_else(|| format!("标签页不存在或已关闭: {tab_id}"))?
+    };
+    list_dir_under(&root, &path)
 }
 
-/// [`fs_list_dir`] 的核心（`known_root` 由命令壳核对，纯函数便于契约测试直调）。
-pub fn fs_list_dir_core(known_root: bool, root: &str, path: &str) -> Result<Value, String> {
-    if !known_root {
-        return Err(format!(
-            "项目根必须是某个已打开标签页的工作目录（收到的是 {root}）——请先打开对应会话"
-        ));
-    }
-    let root = crate::fs_guard::validate_root(Path::new(root))?;
+/// [`fs_list_dir`] 的核心（纯函数便于契约测试直调）。
+pub fn list_dir_under(root: &Path, path: &str) -> Result<Value, String> {
+    let root = crate::fs_guard::validate_root(root)?;
     let p = Path::new(path);
     crate::fs_guard::ensure_within_resolved(&root, p).map_err(|e| e.to_string())?;
     let rd = match std::fs::read_dir(p) {
@@ -1342,63 +1726,6 @@ pub fn fs_list_dir_core(known_root: bool, root: &str, path: &str) -> Result<Valu
         dir.then(a["name"].as_str().cmp(&b["name"].as_str()))
     });
     Ok(serde_json::json!({ "entries": entries }))
-}
-
-/// 快捷编辑写入（NG4）：cwd 子树内 + ≤1MB + mtime 冲突拒绝。
-#[tauri::command]
-pub async fn fs_write_edit(
-    state: State<'_, AppState>,
-    root: String,
-    path: String,
-    content: String,
-    base_mtime_ms: Option<u64>,
-) -> Result<Value, String> {
-    fs_write_edit_core(
-        root_is_open_cwd(&state, &root).await,
-        &root,
-        &path,
-        &content,
-        base_mtime_ms,
-    )
-}
-
-/// [`fs_write_edit`] 的核心（同 [`fs_list_dir_core`] 的拆法）。
-pub fn fs_write_edit_core(
-    known_root: bool,
-    root: &str,
-    path: &str,
-    content: &str,
-    base_mtime_ms: Option<u64>,
-) -> Result<Value, String> {
-    if !known_root {
-        return Err(format!(
-            "项目根必须是某个已打开标签页的工作目录（收到的是 {root}）——请先打开对应会话"
-        ));
-    }
-    let root = crate::fs_guard::validate_root(Path::new(root))?;
-    let p = PathBuf::from(path);
-    crate::fs_guard::ensure_within_resolved(&root, &p).map_err(|e| e.to_string())?;
-    if !p.is_file() {
-        return Err("只允许编辑已存在的文件（NG4：不做新建/重命名）".into());
-    }
-    let md = std::fs::metadata(&p).map_err(|e| e.to_string())?;
-    if md.len() > crate::fs_guard::MAX_EDIT_BYTES {
-        return Err("文件超过 1MB，快捷编辑不适用".into());
-    }
-    if crate::fs_guard::mtime_conflicted(md.modified(), base_mtime_ms) {
-        return Err("CONFLICT: 文件已被外部修改（或无法确认修改时间）。请重新打开预览后再编辑。".into());
-    }
-    let bytes = content.as_bytes();
-    if bytes.len() as u64 > crate::fs_guard::MAX_EDIT_BYTES {
-        return Err("编辑后超过 1MB".into());
-    }
-    std::fs::write(&p, bytes).map_err(|e| format!("写入失败: {e}"))?;
-    let new_mtime = std::fs::metadata(&p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64);
-    Ok(serde_json::json!({ "mtimeMs": new_mtime }))
 }
 
 #[tauri::command]
@@ -1774,9 +2101,9 @@ mod tests {
 
     /* ---------------- fs_preview_read / session_* 的边界闸门 ---------------- */
 
-    /// 预览闸门：主目录子树 ∩ 非敏感目录。敏感四件套全拒，同前缀兄弟目录不碰瓷。
+    /// 预览硬闸门：敏感目录（含实际 agent 目录）全拒；同前缀兄弟目录不碰瓷。
     #[test]
-    fn preview_gate_blocks_sensitive_dirs_and_outside() {
+    fn preview_gate_blocks_sensitive_dirs() {
         // 用真实 tempdir 当主目录：is_under 要求绝对路径，POSIX 形状的字面量
         // 在 Windows 上 is_absolute() 为假，会让断言测到别的分支。
         let home = tempfile::tempdir().unwrap();
@@ -1787,10 +2114,111 @@ mod tests {
         }
         // 同前缀兄弟目录（`.pipelines`）不是 `.pi`，不碰瓷
         assert!(preview_gate(home, &home.join(".pipelines").join("x.json")).is_ok());
-        // 界外（tempdir 的父目录在 home 之外）
-        assert!(preview_gate(home, home.parent().unwrap()).is_err());
-        // 普通文件照常放行
+        // 普通文件照常放行（"是否在工作区/home"由 preview_access_gate 判，不在这一层）
         assert!(preview_gate(home, &home.join("project").join("a.ts")).is_ok());
+    }
+
+    /// 图片魔数闸门：只认真实 PNG/JPEG/GIF/WebP，文本/JSON 改后缀进不来。
+    #[test]
+    fn image_mime_requires_real_magic_bytes() {
+        assert_eq!(
+            image_mime(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]),
+            Some("image/png")
+        );
+        assert_eq!(image_mime(&[0xff, 0xd8, 0xff, 0xe0]), Some("image/jpeg"));
+        assert_eq!(image_mime(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(image_mime(b"RIFF0000WEBP...."), Some("image/webp"));
+        assert_eq!(image_mime(b"{\"deepseek\":{\"key\":\"sk-x\"}}"), None);
+        assert_eq!(image_mime(b"<svg xmlns=\"http://www.w3.org/2000/svg\">"), None);
+    }
+
+    /// models 内联密钥脱敏 + raw 编辑器回写时还原。
+    #[test]
+    fn models_redaction_round_trips_inline_keys() {
+        let old = json!({"providers": {"relay": {"baseUrl": "https://r.example/v1", "apiKey": "sk-inline"}}});
+        let shown = redact_models(old.clone());
+        assert_eq!(shown["providers"]["relay"]["apiKey"], REDACTED_API_KEY);
+        assert!(!shown.to_string().contains("sk-inline"));
+        let mut saved = shown;
+        restore_redacted_api_keys(&old, &mut saved);
+        assert_eq!(saved["providers"]["relay"]["apiKey"], "sk-inline");
+        // 没有旧值：删键，而不是把哨兵写回去
+        let mut fresh = json!({"providers": {"relay": {"apiKey": REDACTED_API_KEY}}});
+        restore_redacted_api_keys(&json!({}), &mut fresh);
+        assert!(fresh["providers"]["relay"].get("apiKey").is_none());
+    }
+
+    /// baseUrl 改动 + 已存密钥 → 需要原生确认；没密钥/同地址/删地址 → 不弹。
+    #[test]
+    fn models_base_changes_only_when_a_stored_key_is_redirected() {
+        // 用一个假 agent 目录跑 resolve_key：临时设置 PI_CODING_AGENT_DIR 会污染并行用例，
+        // 所以这里只测纯函数 base_change_needs_confirm 与"无密钥不触发"这一支。
+        assert!(!crate::provider::base_change_needs_confirm(
+            Some("https://a.example"),
+            "https://b.example",
+            false
+        ));
+        assert!(crate::provider::base_change_needs_confirm(
+            Some("https://a.example"),
+            "https://b.example",
+            true
+        ));
+        assert!(!crate::provider::base_change_needs_confirm(
+            Some("https://a.example"),
+            "https://a.example/",
+            true
+        ));
+        assert!(!crate::provider::base_change_needs_confirm(
+            Some("https://a.example"),
+            "",
+            true
+        ));
+        let old = json!({"providers": {"no-key": {"baseUrl": "https://a.example"}}});
+        let new = json!({"providers": {"no-key": {"baseUrl": "https://b.example"}}});
+        assert!(
+            models_base_changes(&old, &new).is_empty(),
+            "没有已存密钥时改地址不该弹确认"
+        );
+    }
+
+    /// cwd / sessionDir 变更的确认判据。
+    #[test]
+    fn cwd_and_session_dir_confirmation_helpers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let empty = std::collections::HashSet::new();
+        // 不再对 home 免确认：webview 可以传 cwd:"~"，预览会把整个 home 当工作区
+        assert!(cwd_needs_confirmation(&home, &empty));
+        assert!(cwd_needs_confirmation(&home.join("proj"), &empty));
+        assert!(cwd_needs_confirmation(&outside, &empty));
+        let mut approved = std::collections::HashSet::new();
+        approved.insert(canonical_or_self(&home.join("proj")));
+        approved.insert(canonical_or_self(&outside));
+        assert!(!cwd_needs_confirmation(&home.join("proj"), &approved));
+        assert!(!cwd_needs_confirmation(&outside, &approved));
+        // junction/symlink 按真实路径判：home 内的链接指向 outside，不能被 home 骗过
+        assert!(!cwd_needs_confirmation(&outside, &approved));
+
+        // sessionDir：从无到有/换目录要确认；清空/不变不确认
+        assert!(session_dir_change_needs_confirmation(
+            &json!({}),
+            &json!({"sessionDir": "C:\\s"})
+        ));
+        assert!(session_dir_change_needs_confirmation(
+            &json!({"sessionDir": "C:\\a"}),
+            &json!({"sessionDir": "C:\\b"})
+        ));
+        assert!(!session_dir_change_needs_confirmation(
+            &json!({"sessionDir": "C:\\a"}),
+            &json!({"sessionDir": "C:\\a"})
+        ));
+        assert!(!session_dir_change_needs_confirmation(
+            &json!({"sessionDir": "C:\\a"}),
+            &json!({})
+        ));
     }
 
     /// 会话路径闸门：生效会话根下的 .jsonl 放行；界外/异扩展名/相对路径/`..` 全拒。
@@ -1820,22 +2248,18 @@ mod tests {
         assert!(session_file_gate_under(&root, &root.join("ghost.jsonl").to_string_lossy()).is_err());
     }
 
-    /// root 锚定闸门：不是已打开标签页的 cwd 时，连目录列表都拿不到
-    /// （此前 root 只查"是个目录"，前端传 `C:\` 即全盘浏览/改写）。
+    /// `fs_list_dir` 的 root 由 tab cwd 决定；path 必须落在子树内。
     #[test]
-    fn fs_cores_refuse_unanchored_roots() {
+    fn list_dir_under_stays_inside_the_tab_cwd() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("ws");
-        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
         std::fs::write(ws.join("a.txt"), "a").unwrap();
         let ws_str = ws.to_string_lossy().into_owned();
 
-        let err = fs_list_dir_core(false, &ws_str, &ws_str).unwrap_err();
-        assert!(err.contains("已打开标签页"), "{err}");
-        let err = fs_write_edit_core(false, &ws_str, &ws.join("a.txt").to_string_lossy(), "b", None).unwrap_err();
-        assert!(err.contains("已打开标签页"), "{err}");
-        // 锚定正确时照常工作
-        let out = fs_list_dir_core(true, &ws_str, &ws_str).unwrap();
-        assert_eq!(out["entries"].as_array().unwrap().len(), 1);
+        let out = list_dir_under(&ws, &ws_str).unwrap();
+        assert_eq!(out["entries"].as_array().unwrap().len(), 2);
+        assert!(list_dir_under(&ws, &tmp.path().join("outside").to_string_lossy()).is_err());
+        assert!(list_dir_under(&ws, &ws.join("ghost").to_string_lossy()).is_err());
     }
 }

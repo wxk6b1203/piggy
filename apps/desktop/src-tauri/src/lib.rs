@@ -10,6 +10,7 @@ pub mod plugin;
 pub mod provider;
 pub mod pty;
 pub mod sessions;
+pub mod ui_confirm;
 
 use crate::commands::AppState;
 use crate::events::TauriSink;
@@ -433,6 +434,7 @@ pub fn run() {
             perf: Arc::new(std::sync::RwLock::new(config::app::perf_config_load())),
             fleet: Arc::new(fleet::FleetManager::new()),
             pty: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            trusted: Arc::new(tokio::sync::Mutex::new(crate::commands::TrustedPaths::default())),
         })
         .invoke_handler(tauri::generate_handler![
             commands::boot_reset,
@@ -493,7 +495,7 @@ pub fn run() {
             open_in_app::open_path_open,
             open_in_app::open_external_url,
             commands::fs_list_dir,
-            commands::fs_write_edit,
+            commands::fs_image_data,
             commands::pi_export_html,
             provider::provider_overview,
             provider::provider_save,

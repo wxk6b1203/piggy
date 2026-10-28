@@ -334,14 +334,12 @@ pub fn validate_external_url(url: &str) -> Result<String, String> {
     if raw.chars().any(|c| c.is_control()) {
         return Err("URL 里有控制字符".to_string());
     }
-    // 引号与脱字符是 cmd.exe 的元字符（Windows 经 `cmd /c start "" <url>` 打开）：
-    // Rust 组装命令行时把参数里的 `"` 写成 `\"`，但 **cmd 不认反斜杠转义**——`\"` 里的
-    // 引号会翻转 cmd 的引号状态，其后的 `&` / `|` / `>` 就成了命令分隔符（真机实测
-    // `cmd /c echo "a\"&echo x` 会执行第二条）。`^` 则是 cmd 的转义符，同样拒。
-    // 合法 URL 里这两个字符本就该百分号编码（%22 / %5E），裸字符一律拒——
-    // 链接来自**模型输出**，这一条是把它交给 shell 前的最后闸门。
+    // 引号与脱字符是 URL 里不该出现的裸字符：引号会破坏 Windows 关联层的参数形状，
+    // `^` 在历史实现（cmd.exe）里是转义符。**现在真正的注入防线是 `ShellExecuteW`**
+    // （见 host::launch_url，不经过任何 shell），这里保留拒绝只是"畸形 URL 不打开"的
+    // 前置校验——不要再把"拒绝这两个字符"当成 cmd 注入的修复。
     if raw.contains('"') || raw.contains('^') {
-        return Err("URL 里有引号或 ^（shell 元字符），已拒绝打开；如确需访问请编码为 %22 / %5E".to_string());
+        return Err("URL 里有引号或 ^（非法 URL 字符），已拒绝打开；如确需访问请编码为 %22 / %5E".to_string());
     }
     Ok(raw.to_string())
 }
@@ -357,10 +355,10 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     /* 交给系统默认程序。**判据来自 `host::shell_launcher`，而且这里传的是 `is_url = true`**
     （2026-10-14 修，两轮）：第一轮的错误是 `if linux { "xdg-open" } else { "open" }` ——
     Windows 落进 else 去起 macOS 的 `open`（命令不存在），于是所有外链点了没反应。
-    第二轮的错误是我把 URL 与目录合并成"Windows 一律 explorer.exe" —— 但
-    **`explorer.exe` 的位置参数只认文件系统路径，不认 URL**（真机实测：同样的 URL，
-    explorer 退出码 1 且浏览器进程增量为 0；`cmd /c start` 退出码 0 且 +1）。
-    所以 URL 在 Windows 上走 `cmd /c start ""`，见 `host::launch_url`。 */
+    第二轮的错误是把 URL 与目录合并成"Windows 一律 explorer.exe" ——
+    **`explorer.exe` 的位置参数只认文件系统路径，不认 URL**。
+    2026-10-28 第三轮：URL 在 Windows 上**不再经 `cmd /c start`**（URL 里的 `&` 会被 cmd
+    当命令分隔符，模型输出可直接注入），改走 `ShellExecuteW`，见 `host::launch_url`。 */
     let outcome = match host::shell_launcher(true) {
         host::ShellLauncher::Open => {
             host::spawn_watched("open", &[url], Duration::from_millis(1500), &HashMap::new(), &[])
@@ -368,7 +366,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
         host::ShellLauncher::XdgOpen => {
             host::spawn_watched("xdg-open", &[url], Duration::from_millis(1500), &HashMap::new(), &[])
         }
-        host::ShellLauncher::CmdStartForUrl => host::launch_url(&url, Duration::from_millis(1500), &HashMap::new()),
+        host::ShellLauncher::ShellExecuteForUrl => host::launch_url(&url),
         // 不会发生（is_url = true）；真发生了也别静默什么都不做
         host::ShellLauncher::ExplorerForDirectory => host::launch_via_explorer(&url, &HashMap::new()),
     };

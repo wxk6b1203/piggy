@@ -161,6 +161,16 @@ impl WorkerInner {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let mut state_rx = self.state_rx.clone();
+        /* `changed()` 只报**订阅之后**的变化：如果 worker 在 `ready_worker` 返回之后、
+        订阅之前已经变成 Crashed/Stopped，这里会永远等不到下一次变化（bash 要白等 600s）。
+        所以订阅后立刻看一次当前值——终态是"现在就是"，不是"等它变"。 */
+        if matches!(*state_rx.borrow(), WorkerState::Crashed | WorkerState::Stopped) {
+            let s = *state_rx.borrow();
+            self.pending.lock().await.remove(&id);
+            return Err(format!(
+                "pi worker exited before responding to {command}（state={s:?}）"
+            ));
+        }
         let wait = async {
             match rx.await {
                 Ok(v) => Ok(v),
@@ -641,5 +651,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(out["data"]["ok"], 1);
+    }
+
+    /// 终态**已经**在订阅之前：`changed()` 只报后续变化，若不先看当前值，
+    /// 这条请求会永久挂住（H4 修的窗口只是变窄，没有消失）。
+    #[tokio::test]
+    async fn already_terminal_state_settles_a_new_request() {
+        for state in [WorkerState::Crashed, WorkerState::Stopped] {
+            let (w, _stdin_rx) = fake_worker(state);
+            let t = tokio::spawn({
+                let w = w.clone();
+                async move { w.raw_request("bash", json!({}), None).await }
+            });
+            let err = tokio::time::timeout(Duration::from_secs(1), t)
+                .await
+                .expect("已经是终态时必须立刻了结，不能等 600s 兜底")
+                .unwrap()
+                .unwrap_err();
+            assert!(err.contains("exited before responding"), "{state:?}: {err}");
+            assert!(w.pending.lock().await.is_empty(), "{state:?}: pending 槽必须收掉");
+        }
     }
 }

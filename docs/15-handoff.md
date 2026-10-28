@@ -1492,6 +1492,9 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      修法：Windows 上目录走 `explorer.exe`（不看退出码），URL 走 `cmd /c start "" <url>`
      （退出码 0 可信；`""` 是 `start` 的窗口标题占位，不传它 URL 会被当标题吞掉 ——
      那是同一类"静默什么都没发生"）。
+     **2026-10-28 后记**：URL 那条已改为 `ShellExecuteW`，不再经 cmd。原因不是退出码，
+     而是 URL 来自模型输出，`&` 在 cmd 里是命令分隔符（`https://x/&ver` 会执行 `ver`）；
+     `SystemRoot` 那段历史坑随 cmd 一起消失。当前实现见 docs/03 §2.11。
 
 144. **被环境清洗洗掉的那个变量，会让命令"报成功、什么都没发生"。**（2026-10-14，同一天的第三次）
      143 那条修完，外链**还是**打不开。原因是 `spawn_watched` 会 `env_clear()` 再放
@@ -1844,7 +1847,7 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
 | **todo 的安全边界靠约定，不靠机制** | "只显示已启用插件"这条判断读的是 pi 的同一套规则（复用 `plugin/inventory.rs`），但**任何**扩展都能自称提供 `todo` 能力（声明 `pi.piggy.capabilities` 即可）。内容探测（找 `todo_write`）也只是字符串匹配，不做代码审计。界面上不显示"这个插件是谁装的"之外的信任信息 —— 与 pi 本身"扩展=用户权限运行"的立场一致（见上面"插件没有权限模型"那条） |
 | todo 的**复杂度闸门是启发式** | 打分规则可复现、可解释，但会低估"措辞简短、实际多步"的请求 —— 因此**默认关闭**（2026-09-29 用户裁定；要拦得用配置文件 `enforceComplexity:true` / `PI_TODO_ENFORCE_COMPLEXITY=1` / `pi --todo-enforce`）。真模型上只跑了两跑（该激活/该拒绝各一，且那两跑是在"闸门打开"的状态下做的），**没有**统计过误判率 |
 
-| **A 期审计里"没做"的几条**（2026-09-25，明确留档，不是遗忘） | ① `pi_fork`/`pi_clone_session`/`pi_get_tree` 与 `fs_write_edit`：**Rust 与测试就绪、前端没有入口**（docs/09 的 ✅ 已改正）；接前端要产品决策（分支入口形态、快捷编辑的边界警示）。② `auth_list`/`auth_set_key`/`auth_remove` 三条 IPC 命令**当前没有渲染点**（真正的密钥路径是 `provider_set_key`；`AdvancedSection` 的注释已改成实话）——留着是因为它们对应的 pi_files 形状有单测锁着，删了会连测试一起删。③ `session_page`/`session_outline`/`fs_list_dir` 还**没有跨语言形状金标**（现有 3 组：providers / plugins / session-title；`fs_list_dir` 的 `OsString` 全窗黑屏就是形状漂移造成的）。④ **没有覆盖率配置**（`vite.config.ts` 无 coverage 段、devDeps 无 `@vitest/coverage-*`），"哪些文件没被测到"只能靠猜。⑤ `ui:startup`（26 段）**仍不在 CI**：需要 runner 上有 Chrome（脚本写死 `channel:'chrome'`）与 :5195 的 dev server。⑥ 没有任何**发布工作流**（tag → 三平台构建/签名/上传）。⑦ 两份 `*_generated.rs` 快照（provider 目录 / pi 内置扩展）随 pi 版本**静默漂移**：本机 pi 源码是 v1.0.4、快照是 v0.87.1，`--check` 因此对不上（与代码无关，但提醒：升级 pi 时要重跑生成器）。 |
+| **A 期审计里"没做"的几条**（2026-09-25，明确留档，不是遗忘） | ① `pi_fork`/`pi_clone_session`/`pi_get_tree` 与 `fs_write_edit`：**Rust 与测试就绪、前端没有入口**（docs/09 的 ✅ 已改正）；接前端要产品决策（分支入口形态、快捷编辑的边界警示）。**2026-10-28 后记**：`fs_write_edit` 已作为"未接线的任意文件写原语"整体删除，不再是待办。② `auth_list`/`auth_set_key`/`auth_remove` 三条 IPC 命令**当前没有渲染点**（真正的密钥路径是 `provider_set_key`；`AdvancedSection` 的注释已改成实话）——留着是因为它们对应的 pi_files 形状有单测锁着，删了会连测试一起删。③ `session_page`/`session_outline`/`fs_list_dir` 还**没有跨语言形状金标**（现有 3 组：providers / plugins / session-title；`fs_list_dir` 的 `OsString` 全窗黑屏就是形状漂移造成的）。④ **没有覆盖率配置**（`vite.config.ts` 无 coverage 段、devDeps 无 `@vitest/coverage-*`），"哪些文件没被测到"只能靠猜。⑤ `ui:startup`（26 段）**仍不在 CI**：需要 runner 上有 Chrome（脚本写死 `channel:'chrome'`）与 :5195 的 dev server。⑥ 没有任何**发布工作流**（tag → 三平台构建/签名/上传）。⑦ 两份 `*_generated.rs` 快照（provider 目录 / pi 内置扩展）随 pi 版本**静默漂移**：本机 pi 源码是 v1.0.4、快照是 v0.87.1，`--check` 因此对不上（与代码无关，但提醒：升级 pi 时要重跑生成器）。 |
 
 ## 4.1 Windows 这两个问题是怎么查的（2026-10-09）
 

@@ -301,19 +301,24 @@ function FilesView({ tabId }: { tabId: string | null }) {
     setError(null);
   }, [cwd]);
 
-  const loadDir = async (dir: string, root: string) => {
-    try {
-      const r = await cmd<{ entries: FsEntry[] }>('fs_list_dir', { root, path: dir });
-      setChildren((prev) => ({ ...prev, [dir]: r.entries ?? [] }));
-    } catch (e) {
-      toast.error(String(e));
-    }
-  };
+  const loadDir = useCallback(
+    async (dir: string) => {
+      if (!tabId) return;
+      try {
+        // root 由 Rust 侧按 tabId 从 registry 取（不再由前端传路径）
+        const r = await cmd<{ entries: FsEntry[] }>('fs_list_dir', { tabId, path: dir });
+        setChildren((prev) => ({ ...prev, [dir]: r.entries ?? [] }));
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [tabId],
+  );
 
   // 首屏加载根目录（懒加载只针对子目录）
   useEffect(() => {
-    if (cwd) void loadDir(cwd, cwd);
-  }, [cwd]);
+    if (cwd && tabId) void loadDir(cwd);
+  }, [cwd, tabId, loadDir]);
 
   const toggle = (dir: string) => {
     setExpanded((prev) => {
@@ -321,7 +326,7 @@ function FilesView({ tabId }: { tabId: string | null }) {
       if (next.has(dir)) next.delete(dir);
       else {
         next.add(dir);
-        if (!children[dir] && cwd) void loadDir(dir, cwd);
+        if (!children[dir] && cwd) void loadDir(dir);
       }
       return next;
     });

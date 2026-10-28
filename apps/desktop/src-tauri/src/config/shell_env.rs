@@ -53,6 +53,10 @@ pub const ENV_SHELL: &str = "PIGGY_SHELL";
 /// 从 shell 输出里认出「环境从这里开始」的哨兵。
 ///
 /// 用 `\x1f`（US，单元分隔符）而不是普通字符串：避免 rc 文件的横幅**恰好**含这几个字。
+///
+/// Windows 上生产路径不经过 bash/zsh（`shell_env_windows` 走 PowerShell），
+/// 这个哨兵与两个解析函数只被单测引用；`allow(dead_code)` 让本机 clippy 与 CI 同绿。
+#[cfg_attr(windows, allow(dead_code))]
 const SENTINEL: &str = "@piggy-shell-env@\u{1f}";
 
 /// 真的把登录 shell 的环境并回进程 `PATH` 之后的结果。
@@ -276,6 +280,7 @@ fn run_with_timeout(
 
 /// 解析 `<哨兵>` 之后的环境输出。**纯函数**，单独成函数是为了把
 /// "rc 有横幅" / "值里带 `=`" / "CRLF" 这些形状钉在单测里。
+#[cfg_attr(windows, allow(dead_code))]
 fn parse_env_output(out: &str) -> Result<std::collections::HashMap<String, String>, String> {
     // 取**最后**一个哨兵：rc 里若有人重放 `env`，最后一段才是完整的
     let tail = match out.rfind(SENTINEL) {
@@ -298,6 +303,7 @@ fn parse_env_output(out: &str) -> Result<std::collections::HashMap<String, Strin
 /// `KEY=VALUE` → `("KEY", "VALUE")`；非环境行（横幅残留、空行）→ `None`。
 ///
 /// 按**第一个** `=` 切：值里带 `=` 是常态（`FOO=a=b`、base64、`LS_COLORS`）。
+#[cfg_attr(windows, allow(dead_code))]
 fn split_env_line(line: &str) -> Option<(&str, &str)> {
     let (k, v) = line.split_once('=')?;
     if k.is_empty() {

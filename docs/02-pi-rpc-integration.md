@@ -80,10 +80,10 @@ spawn 后依次：`get_state` →（若返回 `sessionFile`）绑定 tab↔sessi
   | 兜底 `BASH_FALLBACK_TIMEOUT` / `COMPACT_FALLBACK_TIMEOUT` | **600s / 300s** | `bash`、`compact` | 真的可能跑几分钟（用户命令 / LLM 压缩），2026-10-28 前是 `None`＝永不超时；超时只表示"不再等最终回执"，进程侧可 `abort`/`abort_bash` 中止。兜底数值不是期望等待 |
 - **等待期同时盯住 worker 终态**（2026-10-28 H4）：`fail_all_pending` 是 pending 的唯一批量清理点、
   只在 run_reader 退出时跑一次——落在它之后插入的请求，进程死透也无人收槽，调用方（Tauri 命令）
-  会**永久挂死**。现在 `request` 的等待 select 里多一支 `state_rx.changed()`：状态变
-  Crashed/Stopped 的那一刻，该 worker 上所有等待中的请求立即以 `pi worker exited before
-  responding…` 了结；`run_reader` 也改为**先定终态、再收 pending、最后收尸**，让
-  `ready_worker` 尽早停止发放死 worker。
+  会**永久挂死**。现在 `request` 在订阅终态通道后**先看一次当前值**，再 select `state_rx.changed()`：
+  状态已经是 Crashed/Stopped（例如 `ready_worker` 返回后、订阅前刚好死掉）时立即以
+  `pi worker exited before responding…` 了结，而不是白等 600s 兜底；`run_reader` 也改为
+  **先定终态、再收 pending、最后收尸**，让 `ready_worker` 尽早停止发放死 worker。
 - **握手不持 registry 锁**（2026-10-09）：`create_tab` 拆成「锁内 spawn → **锁外握手** → 锁内记账」
   （`sessions/registry.rs::create_tab_unlocked`），复活同理（`revive_unlocked`，带"正在复活"占位）。
   此前握手在锁里，一次慢启动会让所有标签页的命令一起等（契约用例 C15 量这条：最久一次抢锁 < 300ms，红检 480ms）；
@@ -113,7 +113,7 @@ Piggy 前端能力到 RPC 命令的完整映射（实现闭环校验：G2 的每
 | 直执行 bash | `bash(command)` + `id` | 流式 `bash_execution_update` 按 id 关联；结果可能 `truncated:true` + `fullOutputPath`（GUI 提供"打开完整日志"） |
 | 取消 bash | `abort_bash` | |
 | 统计 | `get_session_stats` | tokens/cost/contextUsage（上下水位条） |
-| 导出 HTML | `export_html(outputPath?)` | |
+| 导出 HTML | `export_html(outputPath?)` | Piggy 的 IPC **忽略前端传的 outputPath**（前端 `/export` 只发 tabId）；否则被攻破的 webview 能让 pi 往任意路径写 HTML。要"另存为"必须走原生保存对话框 + 可信路径 |
 | 命令面板数据 | `get_commands` | 扩展命令/技能/提示模板 → `/name` 经 `prompt` 调用；注意协议注明：TUI 内建命令（/settings 等）不在此列、经 prompt 发送不会执行，GUI 需过滤或映射为本地功能 |
 
 ### 3.3 bash 语义（易错点）

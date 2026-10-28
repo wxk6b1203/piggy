@@ -84,7 +84,7 @@ Boundaries that matter:
 
 - All LLM calls, tool execution and session persistence happen inside pi. Piggy only supervises, relays, renders, configures.
 - One worker per tab; at most one worker per session file (registry enforces this — session files are append-only JSONL trees).
-- Zero telemetry; API keys live only in `~/.pi/agent/auth.json` and are never read in cleartext by the frontend.
+- Zero telemetry; API keys live in `~/.pi/agent/auth.json` (models.json inline keys are redacted on read) and are never returned to the frontend in cleartext.
 - Permission modes (仅可查看 / 工作区内修改 / 完全权限) = pi `--tools` whitelist + a `tool_call` guard extension
   (`resources/piggy-guard.js`); switching mode restarts the worker on the same session file.
 

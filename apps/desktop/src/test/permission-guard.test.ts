@@ -9,10 +9,12 @@
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   PIGGY_GUARDED_READ_TOOLS,
   PIGGY_GUARDED_TOOLS,
+  PIGGY_RECURSIVE_READ_TOOLS,
   SENSITIVE_HOME_DIRS,
   boundaryFor,
   canonicalize,
@@ -21,7 +23,10 @@ import {
   guardRoots,
   isInside,
   isInsideFoldCase,
+  normalizeWindowsShellPath,
+  resolvePiPath,
   sensitiveRootsOf,
+  stripWindowsVerbatim,
   sessionCwdOf,
   default as piggyGuard,
   type PiggyGuardHookCtx,
@@ -421,7 +426,92 @@ describe('checkRead —— 敏感目录拦截', () => {
 
   it('读清单 = 四个只读工具，与 --tools 白名单的读集合一致', () => {
     expect(PIGGY_GUARDED_READ_TOOLS).toEqual(['read', 'grep', 'find', 'ls']);
+    expect(PIGGY_RECURSIVE_READ_TOOLS).toEqual(['grep', 'find']);
     expect(SENSITIVE_HOME_DIRS).toEqual(['.pi', '.ssh', '.aws', '.gnupg']);
+  });
+
+  it('`@` / `file://` / Windows `/c/` 前缀都能解析到同一个敏感文件（2026-10-28 审查的绕过形状）', () => {
+    const auth = join(home, '.pi', 'agent', 'auth.json');
+    const variants = [`@${auth}`, `@~/${join('.pi', 'agent', 'auth.json')}`, pathToFileURL(auth).href];
+    if (process.platform === 'win32') {
+      // C:\Users\... → /c/Users/...（Git Bash / MSYS / WSL 形状）
+      variants.push(`/c/${auth.slice(3).replaceAll('\\', '/')}`);
+      // verbatim 前缀：Node realpath 会保留它，不归一就骗过前缀比较
+      variants.push(`\\\\?\\${auth}`);
+    }
+    for (const p of variants) {
+      const blocked = check({ toolName: 'read', input: { path: p } });
+      expect(blocked?.block, `${p} 必须被拦`).toBe(true);
+    }
+    if (process.platform === 'win32') {
+      expect(stripWindowsVerbatim(`\\\\?\\${auth}`)).toBe(auth);
+      expect(stripWindowsVerbatim(`\\\\?\\UNC\\server\\share\\x`)).toBe('\\\\server\\share\\x');
+    }
+  });
+
+  it('grep/find 的搜索根是敏感目录祖先时也拦（否则 path:"~" 会递归读进 .pi）', () => {
+    const grepHome = check({ toolName: 'grep', input: { pattern: 'sk-', path: '~' } });
+    expect(grepHome?.block, 'grep(path:"~") 必须被拦').toBe(true);
+    const findHome = check({ toolName: 'find', input: { pattern: 'auth.json', path: '~' } });
+    expect(findHome?.block, 'find(path:"~") 必须被拦').toBe(true);
+    // 未提供 path 时按会话 cwd：新会话默认 cwd 就是 home，同样要拦
+    const grepDefaultHome = checkRead(
+      { toolName: 'grep', input: { pattern: 'sk-' } },
+      {
+        sensitiveRoots: sensitiveRootsOf(home),
+        baseCwd: home,
+        home,
+        caseInsensitive: process.platform === 'win32',
+      },
+    );
+    expect(grepDefaultHome?.block, 'cwd=home 时 grep 不传 path 必须被拦').toBe(true);
+    // 工作区子目录（不是 .pi 的祖先）照常放行
+    expect(check({ toolName: 'grep', input: { pattern: 'x', path: project } })).toBeUndefined();
+    // ls 只列名字不读内容：home 放行，但 .pi 自身仍然拦
+    expect(check({ toolName: 'ls', input: { path: home } })).toBeUndefined();
+    expect(check({ toolName: 'ls', input: { path: join(home, '.pi') } })?.block).toBe(true);
+  });
+
+  it('写侧：`@` / `file://` 不能把目标带出工作区', () => {
+    const roots = guardRoots({ PIGGY_GUARD_ROOTS: project });
+    const opts = { home, sensitiveRoots: sensitiveRootsOf(home), caseInsensitive: process.platform === 'win32' };
+    const outsideFile = join(outside, 'x.ts');
+    for (const p of [`@${outsideFile}`, pathToFileURL(outsideFile).href]) {
+      const v = checkWrite({ toolName: 'write', input: { path: p } }, roots, project, opts);
+      expect(v?.block, `${p} 必须被拦`).toBe(true);
+    }
+    // 工作区内的 @ 相对路径照常放行（pi 会去掉 @）
+    expect(checkWrite({ toolName: 'write', input: { path: '@a.txt' } }, roots, project, opts)).toBeUndefined();
+  });
+
+  it('写侧：即使工作区就是 home，也不能写敏感目录（.ssh/.pi）', () => {
+    const roots = guardRoots({ PIGGY_GUARD_ROOTS: home });
+    const opts = { home, sensitiveRoots: sensitiveRootsOf(home), caseInsensitive: process.platform === 'win32' };
+    for (const p of [join(home, '.ssh', 'authorized_keys'), join(home, '.pi', 'agent', 'auth.json')]) {
+      const v = checkWrite({ toolName: 'write', input: { path: p } }, roots, home, opts);
+      expect(v?.block, `${p} 必须被拦`).toBe(true);
+    }
+    // 工作区里的普通文件照常放行
+    expect(checkWrite({ toolName: 'write', input: { path: join(project, 'a.ts') } }, roots, home, opts)).toBeUndefined();
+  });
+
+  it('敏感根包含 PI_CODING_AGENT_DIR（自定义 agent 目录）', () => {
+    const custom = join(home, 'custom-agent');
+    mkdirSync(custom, { recursive: true });
+    const roots = sensitiveRootsOf(home, { PI_CODING_AGENT_DIR: custom });
+    expect(roots).toContain(canonicalize(custom));
+    rmSync(custom, { recursive: true, force: true });
+  });
+
+  it('resolvePiPath 与 normalizeWindowsShellPath：解析形状与 pi 对齐', () => {
+    expect(resolvePiPath('@~/a.txt', project, home)).toBe(join(home, 'a.txt'));
+    expect(resolvePiPath(pathToFileURL(join(home, 'a.txt')).href, project, home)).toBe(join(home, 'a.txt'));
+    expect(resolvePiPath('rel/a.txt', project, home)).toBe(join(project, 'rel', 'a.txt'));
+    expect(normalizeWindowsShellPath('/c/Users/x/a.txt')).toBe('C:\\Users\\x\\a.txt');
+    expect(normalizeWindowsShellPath('/mnt/c/Users/x/a.txt')).toBe('C:\\Users\\x\\a.txt');
+    expect(normalizeWindowsShellPath('/cygdrive/d/work/a.txt')).toBe('D:\\work\\a.txt');
+    // 畸形 file:// 必须 fail-closed
+    expect(resolvePiPath('file://', project, home)).toBeNull();
   });
 
   it('isInsideFoldCase：Windows（大小写不敏感）下不同 casing 也命中；POSIX 下不命中', () => {

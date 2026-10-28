@@ -388,15 +388,6 @@ impl Registry {
     pub fn snapshot(&self, tab_id: &str) -> Option<TabSnapshot> {
         self.tabs.get(tab_id).map(|t| snapshot_of(t, &Value::Null))
     }
-
-    /// `root` 是否是**某个已打开标签页**的工作目录（canonicalize 比较，穿透符号链接与
-    /// Windows 大小写差异）。资源浏览器/快捷编辑的 `root` 参数是前端传的，只有锚定在
-    /// 真实标签页的 cwd 上，"只能访问显式项目根子树"这条边界才不是前端自报的。
-    pub fn is_open_cwd(&self, root: &std::path::Path) -> bool {
-        self.tabs
-            .values()
-            .any(|t| crate::config::paths::same_path(&t.cwd, root))
-    }
 }
 
 /// 会话名的两个来源，按优先级取（用户 2026-09-23 报："点击重新生成标题之后，
@@ -872,17 +863,30 @@ async fn watcher_target(shared: &SharedRegistry, tab_id: &str) -> WatchTarget {
     }
 }
 
+/// watcher 的退避：`1s << attempt`，封顶 8s（attempt 只该是 0..=3）。
+fn watcher_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1u64 << attempt.min(3))
+}
+
+/// `revive_unlocked` 的"预算用尽"错误（`claim_revive` 的文案）。只有这种错误该 `gaveUp`。
+fn is_revive_budget_error(err: &str) -> bool {
+    err.contains("重启次数超限")
+}
+
 /// 崩溃 watcher（docs/01 §2.3）：状态变 Crashed 且非主动关闭 → 退避后自动复活（≤3 次/集）。
 ///
 /// **随 tab 存活，不随 worker**（2026-10-28 审查 H5 修正）：旧实现订阅 tab_create 时
 /// 那个 worker 的通道，看到 Stopped 或通道关闭就退出——而休眠唤醒、切权限档、崩溃复活
-/// 全都会换一个新的 `WorkerInner`（新通道），于是"自动复活"每个 tab 终身最多发生一次，
-/// 之后 pi 崩溃只剩一条事件、要等用户交互才懒复活。现在通道关闭时 watcher **重订当前
-/// worker**；休眠中的 tab（无 worker）以 250ms 轮询等它装回来；只有 tab 本身被关掉才退场。
+/// 全都会换一个新的 `WorkerInner`（新通道），于是"自动复活"每个 tab 终身最多发生一次。
+/// 现在通道关闭时 watcher **重订当前 worker**；休眠中的 tab（无 worker）以 250ms 轮询等它
+/// 装回来；只有 tab 本身被关掉才退场。
 ///
-/// 连环崩溃的节流由 [`Registry::claim_revive`] 的预算负责（一集内 ≤3 次，稳定期后重置）；
-/// 复活失败时本 watcher 会回到循环里对**仍装着的旧 worker** 的 Crashed 再走一轮退避——
-/// 这才真正兑现"≤3 次，指数退避"（旧实现的通道在一次 Crashed 后不再变化，重试从未发生）。
+/// **预算交给 `claim_revive`，watcher 不自己预检**（2026-10-28 复核修正）：旧实现先读
+/// `tab.restarts >= 3` 就 `gaveUp` + `return`，抢在 `claim_revive` 的稳定期重置之前——
+/// 长寿命 tab 崩满 3 次、第 3 个 worker 稳定 >10 分钟后第 4 次崩溃，本应重置预算，
+/// 却在 watcher 里直接永久退场。现在 watcher 只负责退避与调用；`claim_revive` 说
+/// "超限"才 `gaveUp`，且**不 return**——继续盯着这个死 worker，等用户手动复活/关 tab
+/// 把通道换掉后重新订阅，下一次崩溃仍会自动复活。
 pub fn spawn_tab_watcher(shared: SharedRegistry, sink: Arc<dyn EventSink>, tab_id: String) {
     tokio::spawn(async move {
         'watch: loop {
@@ -908,21 +912,37 @@ pub fn spawn_tab_watcher(shared: SharedRegistry, sink: Arc<dyn EventSink>, tab_i
                             let reg = shared.lock().await;
                             reg.tabs.get(&tab_id).map(|t| t.restarts).unwrap_or(0)
                         };
-                        if attempt >= 3 {
-                            sink.emit_json(
-                                &format!("pi:state:{tab_id}"),
-                                json!({"state": WorkerState::Crashed, "gaveUp": true}),
-                            );
-                            return;
+                        tokio::time::sleep(watcher_backoff(attempt)).await;
+                        /* 退避期间可能被休眠/换档/关闭：**睡醒后重新判 deliberate**。
+                        旧实现只在睡前判一次，backoff 最长 8s，足够把刚休眠的 tab 又拉起来。 */
+                        let still_deliberate = {
+                            let reg = shared.lock().await;
+                            reg.tabs.get(&tab_id).map(|t| t.deliberate).unwrap_or(true)
+                        };
+                        if still_deliberate {
+                            if rx.changed().await.is_err() {
+                                continue 'watch;
+                            }
+                            continue;
                         }
-                        let backoff = std::time::Duration::from_secs(1u64 << attempt);
-                        tokio::time::sleep(backoff).await;
                         /* 复活**不在锁里**跑（`revive_unlocked` 自己在三段之间取锁）：
                         握手预算是 40s，握着全局锁等它会把所有标签页的命令一起卡住。 */
-                        let _ = revive_unlocked(&shared, &sink, &tab_id).await;
-                        // 复活成功 → tab.worker 已是新通道；失败 → 旧 worker 仍装着且是
-                        // Crashed。两种情况都回到外层重新定位，让下一轮判定接管。
-                        continue 'watch;
+                        match revive_unlocked(&shared, &sink, &tab_id).await {
+                            Ok(_) => continue 'watch, // 新 worker 已装上，重订它
+                            Err(e) if is_revive_budget_error(&e) => {
+                                sink.emit_json(
+                                    &format!("pi:state:{tab_id}"),
+                                    json!({"state": WorkerState::Crashed, "gaveUp": true}),
+                                );
+                                /* 不为同一个死 worker 再发 revive；但**不要 return**：
+                                等用户手动复活/关 tab 把 worker 换掉（通道关闭）后重订。
+                                这条 wait 也让"手动复活后下一次崩溃仍会自动复活"成立。 */
+                                while rx.changed().await.is_ok() {}
+                                continue 'watch;
+                            }
+                            // 握手失败/资源不足等：同一 watcher 继续按退避重试
+                            Err(_) => continue 'watch,
+                        }
                     }
                     // deliberate（休眠/换档/关闭途中的自然崩溃）：不复活，等通道关闭后跟新 worker
                 }
@@ -1075,6 +1095,18 @@ mod tests {
         );
     }
 
+    /// watcher 自己**不再**预检 restarts：预算只在 `claim_revive` 里判，稳定期重置因此生效。
+    /// 这里钉住两个纯判据（退避封顶、预算错误识别），watcher 的主循环依赖它们。
+    #[test]
+    fn watcher_helpers_do_not_hardcode_the_budget() {
+        assert_eq!(watcher_backoff(0), std::time::Duration::from_secs(1));
+        assert_eq!(watcher_backoff(2), std::time::Duration::from_secs(4));
+        assert_eq!(watcher_backoff(9), std::time::Duration::from_secs(8), "退避必须封顶");
+        assert!(is_revive_budget_error("tab t1 重启次数超限（连续 >3 次）"));
+        assert!(!is_revive_budget_error("握手超时"));
+        assert!(!is_revive_budget_error("spawn pi failed"));
+    }
+
     #[test]
     fn blank_names_are_treated_as_absent() {
         // 新会话：pi 还没给名字（`undefined` / 空串），别把空串当名字传给前端
@@ -1118,21 +1150,15 @@ mod tests {
         );
     }
 
-    /// root 锚定核对：资源浏览器/快捷编辑的"项目根"必须是某个已打开标签页的 cwd
-    /// （canonicalize 比较——同一路径的不同写法要算同一个）。
+    /// root 锚定核对：资源浏览器的 root 现在由 `tab_id` 从 registry 取，不再由前端传。
     #[test]
-    fn is_open_cwd_matches_tabs_by_canonical_path() {
+    fn tab_cwd_is_the_authoritative_root_for_the_file_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let mut reg = Registry::new(None);
         let mut tab = tab_with_name(None);
         tab.cwd = tmp.path().to_path_buf();
         reg.tabs.insert("t1".into(), tab);
-
-        // 已打开标签页的 cwd（含等价写法）命中
-        assert!(reg.is_open_cwd(tmp.path()));
-        assert!(reg.is_open_cwd(&tmp.path().join(".")));
-        // 界外路径、未注册目录不命中
-        assert!(!reg.is_open_cwd(&tmp.path().join("not-a-tab")));
-        assert!(!reg.is_open_cwd(&std::env::temp_dir()));
+        assert_eq!(reg.tabs.get("t1").unwrap().cwd, tmp.path());
+        assert!(!reg.tabs.contains_key("nope"));
     }
 }

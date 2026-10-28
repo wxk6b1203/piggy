@@ -182,7 +182,7 @@ apps/desktop/            Tauri 2 应用
     src/pi/              discovery、codec、process（状态机）、protocol（透传）、合帧器
     src/sessions/        registry（多 worker / 回收 / 休眠）、list、transcript（分页读）
     src/fleet.rs         子代理 A 层（DAG 调度、lane 状态机、worktree）
-    src/fs_guard.rs      快捷编辑的子树校验与 mtime 冲突语义
+    src/fs_guard.rs      资源浏览器的子树校验（快捷编辑已删除）
     resources/           守卫扩展、桥接扩展产物、捆绑的 pi
   scripts/               ui:startup / ui:debug / ui:shot / perf-run / 资源同步脚本
 packages/pi-protocol/    pi RPC 协议的 TS 类型 + Rust↔TS 对拍 fixtures
@@ -226,8 +226,9 @@ docs/                    设计文档（SSOT）+ screenshots/
 ## 隐私
 
 **Piggy 自身零遥测**——不引入任何分析 SDK，不上报任何东西（docs/08 §4）。
-API Key 只存在于 pi 自己的 `~/.pi/agent/auth.json`，Piggy 不存储、不读取明文密钥
-（设置页只显示"已配置"与密钥来源）。本机落盘只有：性能配置 `~/.piggy/config.json`、
+API Key 默认存于 pi 自己的 `~/.pi/agent/auth.json`；配置页只显示"已配置"与密钥来源，
+`models.json` 的内联密钥在 raw 编辑器里显示为 `__PIGGY_REDACTED__`（保存时还原），
+不把明文回传给前端。本机落盘只有：性能配置 `~/.piggy/config.json`、
 布局与偏好（localStorage）、以及崩溃时的 panic 转储 `~/.piggy/logs/`。
 
 > pi 自身有一个**安装遥测**开关（`PI_TELEMETRY` 或 `settings.json` 的 `telemetry`）——

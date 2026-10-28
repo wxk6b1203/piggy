@@ -17,8 +17,8 @@
  *  另加压缩行（`compaction`）：分页从会话文件读时，压缩条目是历史里真实存在的一行
  *  （docs/03 §2.19），DSH 的对话里同样有「上下文已压缩」。
  */
-import { useMemo, useState } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { useEffect, useMemo, useState } from 'react';
+import { cmd } from '@/lib/ipc';
 import { useTabMsg, type MessageView as MessageViewRow } from '@/stores/messages';
 import type { AgentMessage, ContentBlock } from '@piggy/pi-protocol';
 import { CodeBlock } from './CodeBlock';
@@ -533,14 +533,16 @@ function Block({
 }
 
 /** 图片渲染（04 §5.3、05 §6.4）：大 base64 载荷转 Blob URL（按对象记忆，不重复解码）；
- * 带本地 path 的块走 Tauri asset 协议直读文件。 */
+ * 带本地 path 的块走 `fs_image_data`（Rust 侧做工作区/敏感目录闸门 + 图片魔数校验），
+ * **不再走 Tauri asset 协议**——asset 的 `$HOME/**` scope 会让被攻破的 webview 直接读
+ * 任意文件，且 asset 响应不带 CSP，docs/08 的"只显示不回流"并不成立。 */
 const blobUrlCache = new WeakMap<object, string>();
 
 function ImageBlock({ block }: { block: object }) {
   const b = block as { data?: string; mimeType?: string; path?: string };
   const [zoom, setZoom] = useState<string | null>(null);
   const url = useMemo(() => {
-    if (b.path) return undefined; // path 分支在下方经 convertFileSrc 解析
+    if (b.path) return undefined; // path 分支在下方经 fs_image_data 解析
     if (!b.data) return undefined;
     const cached = blobUrlCache.get(block);
     if (cached) return cached;
@@ -555,18 +557,44 @@ function ImageBlock({ block }: { block: object }) {
       return undefined;
     }
   }, [block, b.data, b.mimeType, b.path]);
-  const assetUrl = useMemo(() => {
-    if (!b.path) return undefined;
-    // Tauri asset 协议（05 §6.4 反 data URI）：本地文件直读，scope 限 $HOME/$TMP
-    return convertFileSrc(b.path);
+  const [pathUrl, setPathUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!b.path) {
+      setPathUrl(null);
+      return;
+    }
+    let alive = true;
+    let objectUrl: string | null = null;
+    void cmd<{ dataUrl?: string; mimeType?: string }>('fs_image_data', { path: b.path })
+      .then((r) => {
+        if (!alive || !r?.dataUrl) return;
+        try {
+          // data URL → Blob URL：27MB 的 base64 字符串不进 React state，也不重复解码
+          const comma = r.dataUrl.indexOf(',');
+          const bin = atob(r.dataUrl.slice(comma + 1));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+          objectUrl = URL.createObjectURL(new Blob([bytes], { type: r.mimeType ?? 'image/png' }));
+          setPathUrl(objectUrl);
+        } catch {
+          setPathUrl(null);
+        }
+      })
+      .catch(() => {
+        if (alive) setPathUrl(null);
+      });
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [b.path]);
-  const src = url ?? assetUrl;
+  const src = url ?? pathUrl;
   if (!src) return null;
   return (
     <>
       {/* 点开看大图（2026-10-15 用户要求；同款交互也用在输入框的待发图片上）。
           老实现是 `window.open(src)` —— 在 Tauri 里那是"交给系统浏览器"，
-          而 blob/asset URL 出了这个进程就失效，用户看到的是一张打不开的图。 */}
+          而 blob/data URL 出了这个进程就失效，用户看到的是一张打不开的图。 */}
       <img className="pg-image" src={src} alt="" loading="lazy" onClick={() => setZoom(src)} />
       <ImageLightbox src={zoom} onClose={() => setZoom(null)} />
     </>

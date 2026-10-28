@@ -94,7 +94,7 @@ M1 修正记录（实现期发现）：
 
 - 空闲回收 + maxWorkers + 休眠标签；
 - 性能场景库 S1–S6 + nightly 工作流 + 预算断言；
-- Shiki 按需化、图片 asset 协议、content-visibility 全量落位（04 §5、05 §5）；
+- Shiki 按需化、图片改走 `fs_image_data`、content-visibility 全量落位（04 §5、05 §5）；
 - **独立发布**：捆绑 pi 官方 standalone（08 §7.1：下载 + SHA256 校验进 bundle.resources，发现顺序插入内置档，full/lite 双 SKU）。
 
 **验收**：05 §2 预算表逐条达标并留有 CI 证据链接；`perf-lite`（S1/S3 缩短版）进 PR 必跑。
@@ -109,7 +109,7 @@ M1 修正记录（实现期发现）：
 | 性能配置 | `~/.piggy/config.json`（PerfConfig：maxWorkers/idleTimeoutMin，clamp + 原子写）；设置 → Piggy 性能 | ✅ |
 | 渲染落位（05 §5.2） | 转录行/轨迹行 `content-visibility: auto + contain-intrinsic-size` | ✅ |
 | Shiki 按需（04 §5.2） | `CodeBlock.tsx`：shiki core + oniguruma 引擎 + 语言包全部动态 import；语言 LRU ≤16（超出重建 highlighter）；IntersectionObserver 进视口才高亮；github-light/dark 双主题 CSS 变量 | ✅ |
-| 图片 asset 协议（04 §5.3） | tauri `assetProtocol`（scope $HOME/$TMP/$APPDATA）+ `convertFileSrc`；协议内联 base64 图按对象缓存转 Blob URL（不重复解码、不入 React 状态大字符串） | ✅ |
+| 图片预览（04 §5.3） | **`fs_image_data`**（Rust：工作区/原生确认/敏感目录闸门 + PNG/JPEG/GIF/WebP 魔数校验）返回 data URL；协议内联 base64 图按对象缓存转 Blob URL（不重复解码、不入 React 状态大字符串）。2026-10-28 起 `assetProtocol`/`convertFileSrc` 已删除（`$HOME/**` scope + asset 响应无 CSP 会绕过闸门） | ✅ |
 | 万条消息打开（05 §2 预算 <1.5s） | messagesStore 去重 O(n²)→Set（05 §4.4 纪律）：10k hydrate 8960ms → **24.7ms**（perf S3 实测） | ✅ |
 | 场景库 S1–S6（05 §6.2） | `apps/desktop/scripts/perf-run.mjs`：S1 流式帧率/长任务、S2 8tab、S3 万条打开、S4 100 工具并发、S5 崩溃 resync、S6 空载 heap 漂移；预算断言不过 exit 1，结果写 perf-results/*.json | ✅ |
 | CI（05 §6.3） | `ci.yml` 增 perf-lite（S1/S3 缩短版，PR 必跑）；`perf-nightly.yml` 全场景 + 产物留存 30 天 | ✅ |
@@ -187,7 +187,7 @@ dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自�
 **范围**：
 
 - OAuth 登录内嵌终端（xterm.js + portable-pty，跑 `pi /login`，02 §2.10 路线）；
-- 文件视图”快捷编辑”（受限直写 + 外部变更警示，00 NG4）、资源浏览器（04 §1.5）；
+- 文件视图”快捷编辑”（受限直写 + 外部变更警示，00 NG4；2026-10-28 已删除，见下表）、资源浏览器（04 §1.5）；
 - i18n（zh-CN/en-US）、托盘、全局唤起默认开启项评审、自动更新（stable/beta）；
 - 打包签名（macOS notarization / Windows signing）、崩溃安全（Rust panic hook → 本地日志）；
 - 文档终审：README 快速上手 + docs 与实现逐节对齐审计。
@@ -203,14 +203,14 @@ dockview lane 分列监控（随"提升为标签"手工拖拽即可，独立自�
 | 全局唤起 | `tauri-plugin-global-shortcut`：Cmd/Ctrl+Shift+P 显示并聚焦主窗（Rust 侧注册，无 webview 权限面） | ✅ |
 | 内嵌终端 | `pty.rs`（portable-pty：登录 shell、TERM=xterm-256color、输出泵→`pty:out:<id>`、resize/close 幂等）+ `TerminalPane`（xterm.js + fit，浏览器 mock 也回显）+ `BottomPanel` 两个 pane；入口：`Ctrl+``（`panel.terminal`）与会话头部图标按钮；**起始目录 = 当前会话 cwd**（04 §1.7） | ✅（2026-10-17；真机 shell 交互待你那边点一下） |
 | OAuth 登录**引导** | 原来的 `LoginTerminalModal`（设置 → 认证页入口）从未接线，已随内嵌终端落地**删除**（2026-10-17）。现在要登录就在终端里手动跑 `pi` 再 `/login`；要做成"点一下自动打开终端并跑 pi /login"，得先定认证页的入口位置 | ❌ 未做（不是回归：这个入口从来没存在过） |
-| 资源浏览器 | `fs_list_dir`（项目根子树、守卫校验、目录优先排序）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
-| 快捷编辑（NG4） | `fs_guard.rs`（子树校验/`..` 拒绝/mtime 冲突语义，≤1MB）+ `fs_write_edit`（CONFLICT 拒绝 + 返回新 mtime）**都在，但前端从未接线**：`fs_write_edit` 全仓 0 调用、`FilePreview` 里没有任何编辑 UI（`git log -S fs_write_edit -- apps/desktop/src` 为空，说明不是后来删掉的，是从来没做） | ❌ 未完成（原标 ✅ 是错的） |
+| 资源浏览器 | `fs_list_dir`（参数是 `tab_id`，root 由 Rust 从 registry 取；`ensure_within_resolved` 挡 junction）+ 右栏 📁 懒加载树 → 点击打开只读预览 | ✅ |
+| 快捷编辑（NG4） | **已删除**（2026-10-28 安全复核）：`fs_write_edit` 前端从未接线（全仓 0 调用），却是一条可被 IPC 调用的任意文件写原语（root 只靠前端 tab cwd / 工作区外 cwd 确认来兜底）。`fs_guard.rs` 的子树校验保留给只读的 `fs_list_dir`；`mtime`/≤1MB 那套随命令一起删。以后要做编辑，重新设计成"工作区内 + 原生确认 + 冲突基线"的入口再接线 | ❌ 已移除（不再是待办） |
 | i18n | `lib/i18n.ts`：zh-CN/en-US 词典 + t() 回退链 + setLang 持久化/事件；已接 palette/welcome 文案；语言切换 UI 与全量文案迁移 = 持续项 | ✅ 骨架 |
 | 自动更新 | `tauri-plugin-updater` 已接入构建（check 未被调用即零风险）；endpoints/签名密钥/双通道 = 发布基建（需苹果/微软证书与更新服务器），随打包签名一同落地 | 🔧 结构就绪 |
 | 打包签名 | macOS notarization / Windows signing 需要证书；`tauri.full.conf.json`（full SKU 捆绑 pi）+ `fetch-pi-standalone.mjs`（SHA256 强校验）已就绪，发布清单见 08 §7.1 | 🔧 脚本就绪 |
 | 文档终审 | 本节 + 05/09 各落地记录；README 快速上手与全量对齐审计留发布前一轮 | 🔧 部分 |
 
-M4 测试：fs_guard ×4（子树/`..`/相对路径/mtime 冲突语义）、pty ×3（shell 选择/echo 回读真实 PTY/会话表幂等）；前端 i18n ×4（键一致/命中回退/切换事件）。
+M4 测试：fs_guard ×3（子树/`..`/相对路径）、fs_list_dir 的 `tab_id` root 与子树边界、图片魔数闸门、pty ×3（shell 选择/echo 回读真实 PTY/会话表幂等）；前端 i18n ×4（键一致/命中回退/切换事件）。
 
 ## 7. 风险登记册
 

@@ -90,7 +90,7 @@ export function AdvancedSection() {
       </p>
       <RawJsonEditor
         title="models.json"
-        hint="自定义提供商与模型目录；密钥建议在「模型」页里写（会进 pi 凭据库）"
+        hint="自定义提供商与模型目录；内联密钥显示为 __PIGGY_REDACTED__（保存时原样保留，不会删掉）"
         readCmd="models_read"
         writeCmd="models_write"
         height="320px"

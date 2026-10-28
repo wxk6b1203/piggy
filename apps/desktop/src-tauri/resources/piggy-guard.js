@@ -1,5 +1,6 @@
 /**
- * Piggy 权限守卫扩展 —— 由 Piggy 以 `pi -e <本文件>` 注入，只在「工作区内修改」档启用。
+ * Piggy 权限守卫扩展 —— 由 Piggy 以 `pi -e <本文件>` 注入，两个限制档
+ *（仅可查看 / 工作区内修改）都启用。
  *
  * ## 为什么必须有它
  * pi 的 `write` / `edit` **不做工作区边界检查**：
@@ -24,12 +25,18 @@
  * ## 覆盖范围（说清楚，不含糊）
  * 拦两类：
  * 1. `write` / `edit`（写边界）：目标必须在会话工作区内（本档已用 `--tools` 白名单移除
- *    `bash` / `powershell`）。
- * 2. `read` / `grep` / `find` / `ls`（读敏感目录）：pi 的读工具同样接受绝对路径与 `~` 展开
- *    （`resolveToCwd()`），而 `~/.pi/agent/auth.json` 里存着**所有 API key 明文**——
- *    不拦的话，受限档里一次 prompt injection 就能把密钥读进模型上下文（2026-10-28 审查发现）。
+ *    `bash` / `powershell`），**并且**目标不能落在敏感目录里——即使工作区就是 home。
+ * 2. `read` / `grep` / `find` / `ls`（读敏感目录）：pi 的读工具同样接受绝对路径、
+ *    `@` 前缀、`file://`、Windows `/c/...` 与 `~` 展开（`resolveToCwd()`），而
+ *    `~/.pi/agent/auth.json` 里存着**所有 API key 明文**——不拦的话，受限档里一次 prompt
+ *    injection 就能把密钥读进模型上下文（2026-10-28 审查发现）。
  *    读侧不限制工作区（"仅可查看"承诺的是不改，不是不看系统文件），只对**敏感目录**
- *    （`.pi` / `.ssh` / `.aws` / `.gnupg`，凭据与私钥所在）fail-closed。
+ *    （`.pi` / `.ssh` / `.aws` / `.gnupg` + `PI_CODING_AGENT_DIR`，凭据与私钥所在）
+ *    fail-closed；`grep`/`find` 的搜索根若是敏感目录的祖先也拒（否则 `grep(path:"~")`
+ *    会递归读进去）。
+ *
+ * **路径解析必须逐字复刻 pi 的 `normalizePath`**（`resolvePiPath`）：少一个 `@`/`file://`/
+ * `/c/` 就是一条绕过。2026-10-28 审查实测过这几种形状都能读走 auth.json。
  *
  * **扩展/自定义工具不在守护范围内**——若某扩展自带写文件工具，它能绕过本守卫。
  * 敏感目录清单与 Rust 侧 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像，两边同步改。
@@ -38,17 +45,92 @@
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PATH_SEP = process.platform === 'win32' ? ';' : ':';
+
+/** pi `normalizePath` 会归一化的 Unicode 空格（NBSP / en-space / … / 全角空格）。 */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /** 本档拦截写操作的工具名。 */
 export const PIGGY_GUARDED_TOOLS = ['write', 'edit'];
 
-/** 本档做敏感目录检查的读工具名（未提供 path 参数时以会话 cwd 为基准，天然放行）。 */
+/** 本档做敏感目录检查的读工具名（未提供 path 参数时以会话 cwd 为基准）。 */
 export const PIGGY_GUARDED_READ_TOOLS = ['read', 'grep', 'find', 'ls'];
+
+/** 会**递归**读取内容的工具：搜索根是敏感目录的祖先时也必须拒绝。 */
+export const PIGGY_RECURSIVE_READ_TOOLS = ['grep', 'find'];
 
 /** 主目录下的敏感目录名（凭据/私钥所在）。与 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像。 */
 export const SENSITIVE_HOME_DIRS = ['.pi', '.ssh', '.aws', '.gnupg'];
+
+/**
+ * 复刻 pi `normalizeWindowsShellPath()`：把 Git Bash / MSYS / Cygwin / WSL 的
+ * `/c/Users/...`、`/mnt/c/...`、`/cygdrive/c/...` 转成 `C:\Users\...`。
+ *
+ * 守卫必须做这一步：pi 的 `resolveToCwd()` 会在 Windows 上先做它，再判断绝对/相对。
+ * 不做的话，`/c/Users/x/.pi/agent/auth.json` 在守卫眼里是 `C:\c\Users\...`（不敏感），
+ * 在 pi 眼里却是 `C:\Users\x\.pi\agent\auth.json`——一个字符的差别就能读走密钥。
+ * @param {string} filePath
+ * @returns {string}
+ */
+export function normalizeWindowsShellPath(filePath) {
+  if (!filePath.startsWith('/') || filePath.startsWith('//') || filePath.includes('\\')) return filePath;
+  const match = filePath.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+  if (!match) return filePath;
+  const suffix = match[2]?.replaceAll('/', '\\');
+  return `${match[1].toUpperCase()}:\\${suffix ?? ''}`;
+}
+
+/**
+ * 复刻 pi 的 `resolveToCwd()`（`packages/coding-agent/src/utils/paths.ts::normalizePath`
+ * + `resolvePath`）。**这是守卫和 pi 看到同一个文件的前提**，少一步就是一个绕过：
+ *
+ * - Unicode 空格归一（`normalizeUnicodeSpaces`）
+ * - 去掉 CLI 的 `@` 前缀（`stripAtPrefix`）——`@~/.pi/...` 在 pi 眼里就是 `~/.pi/...`
+ * - Windows 的 `/c/...` 盘符转换（`normalizeWindowsShellPath`）
+ * - `~` / `~/` / `~\` 展开
+ * - `file://` → 本地路径
+ * - 相对路径以**会话 cwd** 为基准
+ *
+ * @param {string} filePath 模型给的工具参数
+ * @param {string} baseCwd 会话 cwd（相对路径基准）
+ * @param {string} [home] 主目录（`~` 展开基准；测试注入用）
+ * @param {NodeJS.Platform} [platform] 平台（测试注入用）
+ * @returns {string|null} 绝对路径；`file://` 不合法时返回 null（调用方 fail-closed）
+ */
+export function resolvePiPath(filePath, baseCwd, home = homedir(), platform = process.platform) {
+  let normalized = String(filePath).replace(UNICODE_SPACES, ' ');
+  if (normalized.startsWith('@')) normalized = normalized.slice(1);
+  if (platform === 'win32') normalized = normalizeWindowsShellPath(normalized);
+  if (normalized === '~') {
+    normalized = home;
+  } else if (normalized.startsWith('~/') || (platform === 'win32' && normalized.startsWith('~\\'))) {
+    normalized = join(home, normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) {
+    try {
+      normalized = fileURLToPath(normalized);
+    } catch {
+      return null; // 畸形 file URL：拒绝，不退回"当成普通相对路径"
+    }
+  }
+  return isAbsolute(normalized) ? normalized : resolve(baseCwd, normalized);
+}
+
+/**
+ * 去掉 Windows 的 verbatim 前缀（`\\?\C:\...` → `C:\...`，`\\?\UNC\s\share` → `\\s\share`）。
+ *
+ * Node 的 `realpathSync` 对 verbatim 输入会原样保留 `\\?\`，而 `homedir()` 给的敏感根
+ * 没有前缀；不归一的话 `read("\\\\?\\C:\\Users\\x\\.pi\\agent\\auth.json")` 在守卫眼里
+ * 不在敏感目录内，pi 的 `fs.readFile` 却照读。只在 Windows 生效。
+ * @param {string} p
+ * @returns {string}
+ */
+export function stripWindowsVerbatim(p) {
+  if (process.platform !== 'win32') return p;
+  return p.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/i, '');
+}
 
 /**
  * 把路径规整为绝对真实路径。
@@ -58,17 +140,17 @@ export const SENSITIVE_HOME_DIRS = ['.pi', '.ssh', '.aws', '.gnupg'];
  * @returns {string} 绝对路径（无法解析时退回字面绝对路径）
  */
 export function canonicalize(p) {
-  let cur = resolve(p);
+  let cur = resolve(stripWindowsVerbatim(p));
   /** @type {string[]} */
   const tail = [];
   for (;;) {
     try {
-      return resolve(realpathSync(cur), ...tail);
+      return resolve(stripWindowsVerbatim(realpathSync(cur)), ...tail);
     } catch {
       // 该级不存在：记下尾段继续向上
     }
     const parent = dirname(cur);
-    if (parent === cur) return resolve(p); // 已到根仍失败
+    if (parent === cur) return resolve(stripWindowsVerbatim(p)); // 已到根仍失败
     tail.unshift(cur.slice(parent.length + 1));
     cur = parent;
   }
@@ -142,17 +224,41 @@ export function isInside(target, root) {
 
 /**
  * 判定一次写调用是否放行。抽成纯函数以便脱离 pi 运行时直接测试。
+ *
+ * 两道闸：
+ * 1. **敏感目录一律拒**——即使工作区就是 home（新会话默认 cwd 就是 `~`），
+ *    也不能让 `write` 落到 `~/.ssh` / `~/.pi` / 自定义 agent 目录里；
+ * 2. 目标必须在工作区内（`PIGGY_GUARD_ROOTS` / 会话 cwd）。
+ *
  * @param {{toolName: string, input: unknown}} event 工具调用事件
  * @param {string[]|null} roots 白名单根目录
  * @param {string} baseCwd 相对路径基准（= 第一个根目录）
+ * @param {object} [opts]
+ * @param {string[]} [opts.sensitiveRoots] `sensitiveRootsOf()` 的结果
+ * @param {string} [opts.home] 主目录（`~` 展开基准）
+ * @param {boolean} [opts.caseInsensitive] Windows 为 true
  * @returns {{block: true, reason: string}|undefined} 返回 undefined 表示放行
  */
-export function checkWrite(event, roots, baseCwd) {
+export function checkWrite(event, roots, baseCwd, opts = {}) {
   if (!PIGGY_GUARDED_TOOLS.includes(event?.toolName)) return undefined;
 
   const raw = /** @type {{path?: unknown}} */ (event?.input)?.path;
   if (typeof raw !== 'string' || raw.trim() === '') {
     return { block: true, reason: 'Piggy 守卫：写工具未提供 path，已拒绝' };
+  }
+  const home = opts.home ?? homedir();
+  const caseInsensitive = opts.caseInsensitive ?? process.platform === 'win32';
+  const sensitive = opts.sensitiveRoots ?? sensitiveRootsOf(home);
+  const resolved = resolvePiPath(raw, baseCwd, home);
+  if (resolved === null) {
+    return { block: true, reason: 'Piggy 守卫：无法解析这个路径（畸形 file:// URL），已拒绝' };
+  }
+  const abs = canonicalize(resolved);
+  if (sensitive.some((root) => isInsideFoldCase(abs, root, caseInsensitive))) {
+    return {
+      block: true,
+      reason: `Piggy 守卫：${abs} 在敏感目录内（API key / 私钥所在），任何档位都不允许写入`,
+    };
   }
   if (roots === null) {
     return {
@@ -160,7 +266,6 @@ export function checkWrite(event, roots, baseCwd) {
       reason: 'Piggy 守卫：未收到工作区白名单（PIGGY_GUARD_ROOTS 缺失），已拒绝一切写入',
     };
   }
-  const abs = canonicalize(isAbsolute(raw) ? raw : resolve(baseCwd, raw));
   if (roots.some((root) => isInside(abs, root))) return undefined;
 
   return {
@@ -170,12 +275,24 @@ export function checkWrite(event, roots, baseCwd) {
 }
 
 /**
- * 主目录下的敏感根目录（规整后）。
+ * 主目录下的敏感根目录（规整后），外加**实际 agent 目录**。
+ *
+ * `~/.pi` 只是默认值：pi 支持 `PI_CODING_AGENT_DIR` 把 auth.json 搬到别处。
+ * 守卫跑在 pi 进程里，能读到同一个环境变量；不把它算进来，改过 agent 目录的机器上
+ * 读侧/写侧都保护不到 auth.json。
+ *
  * @param {string} [home] 主目录（默认 `os.homedir()`；测试注入用）
+ * @param {NodeJS.ProcessEnv} [env] 环境变量（测试注入用）
  * @returns {string[]} 规整后的敏感目录绝对路径
  */
-export function sensitiveRootsOf(home = homedir()) {
-  return SENSITIVE_HOME_DIRS.map((d) => canonicalize(join(home, d)));
+export function sensitiveRootsOf(home = homedir(), env = process.env) {
+  const roots = SENSITIVE_HOME_DIRS.map((d) => canonicalize(join(home, d)));
+  const custom = typeof env.PI_CODING_AGENT_DIR === 'string' ? env.PI_CODING_AGENT_DIR.trim() : '';
+  if (custom) {
+    const abs = resolvePiPath(custom, process.cwd(), home, process.platform);
+    if (abs) roots.push(canonicalize(abs));
+  }
+  return roots;
 }
 
 /**
@@ -193,11 +310,18 @@ export function isInsideFoldCase(target, root, caseInsensitive) {
 }
 
 /**
- * 判定一次读调用是否放行（敏感目录 fail-closed，其余放行）。
+ * 判定一次读调用是否放行（敏感目录 fail-closed）。
  * 抽成纯函数以便脱离 pi 运行时直接测试。
  *
- * 与写边界不同，这里**不依赖** PIGGY_GUARD_ROOTS：敏感目录的判定基准是主目录，
- * 与会话工作区无关（"仅可查看"档同样注入本守卫，且那档没有工作区写入语义）。
+ * ## 两条判据（缺一条都能读走密钥）
+ *
+ * 1. **目标在敏感目录内** → 拒。目标用 `resolvePiPath()` 解析，与 pi 的
+ *    `read`/`grep`/`find`/`ls` 看到的是同一个路径（`@` / `file://` / `/c/` / `~` 全算）。
+ * 2. **递归读工具（grep/find）的搜索根是敏感目录的祖先** → 拒。只查"搜索根本身是否敏感"
+ *    挡不住 `grep(path: "~")`：根是 home（不敏感），递归下去会读 `~/.pi/agent/auth.json`。
+ *    未提供 path 时搜索根就是会话 cwd；新会话默认 cwd 就是 home，所以这条同样适用。
+ *
+ * `ls` 只返回目录项名字、不返回文件内容，因此不按祖先拒；它自己的目标若在敏感目录内照旧拒。
  *
  * @param {{toolName: string, input: unknown}} event 工具调用事件
  * @param {object} opts
@@ -211,20 +335,31 @@ export function checkRead(event, opts) {
   if (!PIGGY_GUARDED_READ_TOOLS.includes(event?.toolName)) return undefined;
 
   const raw = /** @type {{path?: unknown}} */ (event?.input)?.path;
-  // 未提供 path（或空串）：pi 以会话 cwd 为基准，不可能是敏感目录，放行
-  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  // 未提供 path：pi 以会话 cwd 为基准；递归读工具必须拿这个 cwd 做祖先判定
+  const effective = typeof raw === 'string' && raw.trim() !== '' ? raw : opts.baseCwd;
+  const resolved = resolvePiPath(effective, opts.baseCwd, opts.home);
+  if (resolved === null) {
+    return { block: true, reason: 'Piggy 守卫：无法解析这个路径（畸形 file:// URL），已拒绝读取' };
+  }
+  const abs = canonicalize(resolved);
+  const caseInsensitive = opts.caseInsensitive ?? false;
+  const inside = (path, root) => isInsideFoldCase(path, root, caseInsensitive);
 
-  // 镜像 pi 的 resolveToCwd()：`~` / `~/x` 展开到主目录（不展开的话 `~/.pi` 会被当成
-  // 工作区里的相对目录名，敏感判定全部落空）
-  let p = raw.trim();
-  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) p = join(opts.home, p.slice(1));
-  const abs = canonicalize(isAbsolute(p) ? p : resolve(opts.baseCwd, p));
-  const hit = opts.sensitiveRoots.find((root) => isInsideFoldCase(abs, root, opts.caseInsensitive ?? false));
+  const hit = opts.sensitiveRoots.find((root) => inside(abs, root));
   if (hit) {
     return {
       block: true,
       reason: `Piggy 守卫：${abs} 在敏感目录内（API key / 私钥所在），本档位不允许读取`,
     };
+  }
+  if (PIGGY_RECURSIVE_READ_TOOLS.includes(event.toolName)) {
+    const ancestor = opts.sensitiveRoots.find((root) => inside(root, abs));
+    if (ancestor) {
+      return {
+        block: true,
+        reason: `Piggy 守卫：搜索根 ${abs} 包含敏感目录 ${ancestor}，递归读取会越过边界；请把 path 指到工作区子目录`,
+      };
+    }
   }
   return undefined;
 }
@@ -244,13 +379,16 @@ export default function piggyGuard(pi) {
   pi.on('tool_call', async (event, ctx) => {
     const roots = boundaryFor(ctx);
     const baseCwd = roots?.[0] ?? process.cwd();
-    const write = checkWrite(event, roots, baseCwd);
+    const home = homedir();
+    const sensitiveRoots = sensitiveRootsOf(home);
+    const caseInsensitive = process.platform === 'win32';
+    const write = checkWrite(event, roots, baseCwd, { home, sensitiveRoots, caseInsensitive });
     if (write) return write;
     return checkRead(event, {
-      sensitiveRoots: sensitiveRootsOf(),
+      sensitiveRoots,
       baseCwd,
-      home: homedir(),
-      caseInsensitive: process.platform === 'win32',
+      home,
+      caseInsensitive,
     });
   });
 }

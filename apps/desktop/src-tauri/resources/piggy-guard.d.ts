@@ -10,11 +10,31 @@
 /** 本档拦截写操作的工具名。 */
 export declare const PIGGY_GUARDED_TOOLS: string[];
 
-/** 本档做敏感目录检查的读工具名（未提供 path 时以会话 cwd 为基准，天然放行）。 */
+/** 本档做敏感目录检查的读工具名（未提供 path 时以会话 cwd 为基准）。 */
 export declare const PIGGY_GUARDED_READ_TOOLS: string[];
+
+/** 会递归读取内容的读工具：搜索根是敏感目录祖先时也必须拒绝。 */
+export declare const PIGGY_RECURSIVE_READ_TOOLS: string[];
 
 /** 主目录下的敏感目录名（凭据/私钥所在），与 Rust `paths::SENSITIVE_HOME_SUBDIRS` 镜像。 */
 export declare const SENSITIVE_HOME_DIRS: string[];
+
+/** 复刻 pi 的 `normalizeWindowsShellPath`（`/c/...` → `C:\...`）。 */
+export declare function normalizeWindowsShellPath(filePath: string): string;
+
+/** 去掉 Windows verbatim 前缀（`\\?\C:\...` / `\\?\UNC\...`）；非 Windows 原样返回。 */
+export declare function stripWindowsVerbatim(filePath: string): string;
+
+/**
+ * 复刻 pi 的 `resolveToCwd()`：Unicode 空格、`@` 前缀、Windows `/c/`、`~`、`file://`、
+ * 相对路径基准。返回绝对路径；畸形 `file://` 返回 `null`（调用方 fail-closed）。
+ */
+export declare function resolvePiPath(
+  filePath: string,
+  baseCwd: string,
+  home?: string,
+  platform?: NodeJS.Platform,
+): string | null;
 
 /** 规整为绝对真实路径（穿透符号链接；目标不存在时向上找第一个存在的祖先）。 */
 export declare function canonicalize(p: string): string;
@@ -44,15 +64,26 @@ export declare function boundaryFor(
 /** 目标是否落在某个根目录内（含根目录本身；不会把 `/work-other` 误判进 `/work`）。 */
 export declare function isInside(target: string, root: string): boolean;
 
+/** 写侧可注入的策略（测试用；生产由入口一次算好传入）。 */
+export interface CheckWriteOptions {
+  sensitiveRoots?: string[];
+  home?: string;
+  caseInsensitive?: boolean;
+}
+
 /** 单次写调用的判定；返回 `undefined` 表示放行。 */
 export declare function checkWrite(
   event: { toolName?: string; input?: unknown },
   roots: string[] | null,
   baseCwd: string,
+  opts?: CheckWriteOptions,
 ): { block: true; reason: string } | undefined;
 
-/** 主目录下的敏感根目录（规整后）。 */
-export declare function sensitiveRootsOf(home?: string): string[];
+/** 主目录下的敏感根目录（规整后），含 `PI_CODING_AGENT_DIR`。 */
+export declare function sensitiveRootsOf(
+  home?: string,
+  env?: Record<string, string | undefined>,
+): string[];
 
 /** 大小写不敏感的 `isInside`（Windows 文件系统不区分大小写）。 */
 export declare function isInsideFoldCase(target: string, root: string, caseInsensitive: boolean): boolean;

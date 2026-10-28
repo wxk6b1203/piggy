@@ -56,12 +56,20 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 ### 1.3 守卫扩展（`resources/piggy-guard.js`）
 
 - 挂 `tool_call` 钩子，拦两类：
-  - **写侧**（`write`/`edit`）：越界返回 `{ block: true, reason }`。
-  - **读侧**（`read`/`grep`/`find`/`ls`，2026-10-28 补）：目标落在主目录的敏感目录
-    （`.pi`/`.ssh`/`.aws`/`.gnupg`，与 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像）内即拦截。
-    读不限制工作区——"仅可查看"承诺的是不改，不是不看系统文件；只拦凭据/私钥所在。
+  - **写侧**（`write`/`edit`）：目标必须在工作区，**且**不能在敏感目录（即使工作区就是 home）。
+  - **读侧**（`read`/`grep`/`find`/`ls`）：目标落在敏感目录（`.pi`/`.ssh`/`.aws`/`.gnupg`
+    与 `PI_CODING_AGENT_DIR` 指向的实际 agent 目录）内即拦截。读不限制工作区——"仅可查看"
+    承诺的是不改，不是不看系统文件；只拦凭据/私钥所在。
+    `grep`/`find` 还会检查**搜索根是否为敏感目录的祖先**：只查"根自身是否敏感"挡不住
+    `grep(path:"~")` 递归扫进 `~/.pi/agent/auth.json`；未提供 path 时按会话 cwd 判，
+    而新会话默认 cwd 就是 home。`ls` 只返回目录项名字，不按祖先拒。
+- **路径解析逐字复刻 pi 的 `normalizePath`**（`resolvePiPath`）：Unicode 空格、`@` 前缀、
+  Windows `/c/`（Git Bash/MSYS/WSL）、`~` 展开、`file://`、相对路径基准。少一个就是绕过：
+  2026-10-28 复核实测 `@~/.pi/agent/auth.json`、`file:///.../auth.json`、
+  `/c/Users/.../auth.json` 都能让旧守卫放行、pi 却读到同一个密钥。**写侧同样走这个解析**，
+  否则 `write("@C:\outside")` 也能带出工作区。
 - 白名单根从环境变量 `PIGGY_GUARD_ROOTS` 读（Piggy 传会话 cwd），**变量缺失时拒绝一切写入**（fail-closed）；
-  读侧敏感目录判定不依赖这个变量（基准是主目录）。
+  读侧敏感目录判定不依赖这个变量（基准是主目录/agent 目录）。
 - 路径比较前先 `realpath`，**穿透符号链接** —— 否则 `workspace/link -> /etc` 能骗过前缀判断。
   目标不存在（新建文件）时向上找第一个存在的祖先再拼回尾段。
 - 边界比较按**路径段**而不是字符前缀，`/work-other` 不会被误判进 `/work`；

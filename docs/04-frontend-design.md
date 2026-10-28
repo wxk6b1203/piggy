@@ -101,7 +101,7 @@
 
 | 视图 | 内容 | 备注 |
 |---|---|---|
-| 文件 | 活动 tab 项目的**只读**目录树（懒加载展开）+ 文件类型图标（Seti 子集，10 §4）；点击开预览 tab；M4 可选"快捷编辑"（00 NG4 边界内） | fs scope 需用户授权项目目录（08 §6） |
+| 文件 | 活动 tab 项目的**只读**目录树（懒加载展开）+ 文件类型图标（Seti 子集，10 §4）；点击开预览 tab；`fs_list_dir` 的 root 由 Rust 按 `tabId` 取，前端不再传路径。快捷编辑已于 2026-10-28 删除（09 M4） | 预览默认限工作区；工作区外文件需原生确认（03 §2） |
 | 变更 | 活动会话的 `edit`/`write` 工具调用聚合为会话级 changeset：文件分组 + diff 列表 + 复制 patch；点击开 diff 预览 tab（Monaco DiffEditor，10 §2.1） | 数据源=转录流内已有 diff，零额外进程 |
 | 子代理 | 06 §5 统一 Fleet 视图（B 层快照 + A 层 lane 摘要）。⚠️ **2026-09-24 起入口按钮隐藏**（用户："Fleet 功能暂时也隐藏掉按钮"）：视图与 `fleet:*` 通道都在，`RightBar.tsx` 的 `SHOW_FLEET_ENTRY = false` 控制露不露；门禁第 4 段改从事件总线（`rightbar-view`）进入 | M3 |
 | ~~会话树~~ | **2026-09-24 移除**（用户："会话树这个功能好像没什么用"）：只读树 + 没有就地切分支的 RPC 入口，留着只是噪音。`get_tree` 通道仍在（Rust 侧 `sessions/tree.rs` 不动） | 原 §4.5 的分支树移入 |
@@ -1070,7 +1070,7 @@ pi:frame:{tabId}（≤60Hz）
 
 ### 4.4 工具执行增量
 
-`tool_execution_update.partialResult` 是**累积量**（协议语义，02 §4.1）：ToolCard 内维护一个小的"输出区"组件，同样走瞬态直写（整段替换文本节点内容，内容 ≤ 上限 200 行/8KB，超出折叠 + "查看完整输出"走 `fullOutputPath` 经 asset 协议打开）。
+`tool_execution_update.partialResult` 是**累积量**（协议语义，02 §4.1）：ToolCard 内维护一个小的"输出区"组件，同样走瞬态直写（整段替换文本节点内容，内容 ≤ 上限 200 行/8KB，超出折叠 + "查看完整输出"交给系统打开/只读预览，不经过已删除的 asset 协议）。
 
 ### 4.5 长会话与考古
 
@@ -1249,7 +1249,7 @@ DOM 里**、点开出现代码卡片、再点收起）。
 | 内容 | 渲染 |
 |---|---|
 | edit 工具 `details.diff` | 卡片内自绘轻量行级 diff（不实例化 Monaco）；点击展开 Monaco DiffEditor 预览 tab（10 §2.1） |
-| 图片（ImageContent/附件） | asset 协议 URL（非 data URI，05 §5）；点击灯箱 |
+| 图片（ImageContent/附件） | `fs_image_data` 返回图片字节（Rust 侧工作区/确认/敏感目录闸门 + 魔数校验），前端转 Blob URL；点击灯箱 |
 | 文件路径（工具输出中的路径模式） | 可点击 → 只读预览（调 Rust 读文件，限定 tab 项目 cwd 内） |
 | bash 输出 | 等宽 + ANSI 基础色（轻量转换，非完整终端仿真） |
 
@@ -1434,6 +1434,6 @@ QueueDock（输入卡正上方；特征钩子 data-queue-dock）
 2. 任何 `pi:frame` 处理路径无 React setState；
 3. 动画只允许 `transform`/`opacity`；禁止 layout 属性动画与大面积 `backdrop-filter`；
 4. Markdown 只在转正时解析一次；禁止对流式文本跑完整 parser；
-5. 图片一律 asset 协议；禁止 base64 data URI 进 DOM；
+5. 图片一律走 `fs_image_data`（Rust 闸门 + 魔数），前端只把结果转 Blob URL；禁止把 base64/data URI 直接塞进 DOM 或 React 状态；
 6. 新全局监听必须有卸载清理（lint 强制）；
 违反任一条 = PR 阻断（08 §4 质量门）。

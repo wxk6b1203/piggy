@@ -272,7 +272,7 @@ pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &Hash
             ShellLauncher::Open => spawn_watched("open", &[dir.to_string()], watch, env, &[]),
             ShellLauncher::XdgOpen => spawn_watched("xdg-open", &[dir.to_string()], watch, env, &[]),
             // 不会发生（is_url = false），但别让它静默变成"什么都不做"
-            ShellLauncher::CmdStartForUrl => launch_url(dir, watch, env),
+            ShellLauncher::ShellExecuteForUrl => launch_url(dir),
         },
         LaunchSpec::Argv {
             command,
@@ -303,7 +303,8 @@ pub fn launch_detached(spec: &LaunchSpec, dir: &str, watch: Duration, env: &Hash
 ///
 /// `explorer.exe` 的位置参数只认**文件系统路径**（目录/文件），URL 它不认。
 /// 所以 Windows 上：目录走 `explorer.exe`（它的成功退出码确实是 1，不能据它判失败），
-/// URL 走 `cmd /c start`（`start` 是 shell 的 URL 关联入口，退出码 0 可信）。
+/// URL 走 **`ShellExecuteW`**（不经过 shell；2026-10-28 从 `cmd /c start` 改过来，
+/// 因为 URL 里的 `&` 会变成 cmd 的命令分隔符，见 [`launch_url`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellLauncher {
     /// macOS：`open`。退出码可信。
@@ -313,8 +314,10 @@ pub enum ShellLauncher {
     /// Windows **目录**：`explorer.exe <dir>`。
     /// ⚠️ 它**成功时也返回 1**，所以这条路不能看退出码（只看"起没起来"）。
     ExplorerForDirectory,
-    /// Windows **URL**：`cmd /c start "" <url>`。退出码可信（`cmd` 会把 `start` 的失败带出来）。
-    CmdStartForUrl,
+    /// Windows **URL**：`ShellExecuteW("open", <url>)`。
+    /// **绝不经过 cmd.exe**：URL 来自模型输出，cmd 的元字符（`&`/`|`/`>`…）
+    /// 会在参数没有空格时原样进入命令行，`start "" <url>` 会把 `&` 当成命令分隔符。
+    ShellExecuteForUrl,
 }
 
 /// 本平台上"打开目录 / 打开 URL"该用哪个启动器？
@@ -324,7 +327,7 @@ pub enum ShellLauncher {
 pub fn shell_launcher(is_url: bool) -> ShellLauncher {
     if cfg!(windows) {
         if is_url {
-            ShellLauncher::CmdStartForUrl
+            ShellLauncher::ShellExecuteForUrl
         } else {
             ShellLauncher::ExplorerForDirectory
         }
@@ -341,60 +344,84 @@ pub fn opener_command(l: ShellLauncher) -> Option<&'static str> {
     match l {
         ShellLauncher::Open => Some("open"),
         ShellLauncher::XdgOpen => Some("xdg-open"),
-        ShellLauncher::ExplorerForDirectory | ShellLauncher::CmdStartForUrl => None,
+        ShellLauncher::ExplorerForDirectory | ShellLauncher::ShellExecuteForUrl => None,
     }
 }
 
-/// Windows 上打开一个 **URL**：`cmd /c start "" <url>`。
+/// Windows 上打开一个 **URL**：`ShellExecuteW("open", <url>)`。
 ///
-/// `""` 是 `start` 的**窗口标题**占位。不传它的话，`start` 会把第一个带引号的参数当标题 ——
-/// 而 URL 一旦被当标题吞掉，就变成"什么都没发生"（正是用户报的现象）。
+/// ## 为什么**不能**再用 `cmd /c start "" <url>`（2026-10-28 安全审查，已实际复现）
 ///
-/// ## ⚠️ 必须补回 `SystemRoot`（2026-10-14 第三次踩，真机矩阵量出来的）
+/// URL 来自模型输出（markdown 链接），把它交给 cmd.exe 就是把模型输出放进 shell 语法：
+/// Rust 的 `Command` 只在参数含空格/制表符/空串/引号时加引号，`https://x/&ver` 会**裸着**
+/// 进入 `cmd /c start "" https://x/&ver`，cmd 在 `&` 处切成两条命令，第二条被真的执行。
+/// 引号注入（`"` 翻转 cmd 引号状态）只是其中一种形状；堵引号不等于堵住注入。
 ///
-/// `spawn_watched` 会 `env_clear()` 再放 `scrubbed_env`。而 **`cmd /c start` 需要
-/// `SystemRoot` 才能解析 URL 关联**：空环境下它**静默什么都不做**（浏览器进程数不变），
-/// 有时还返回 0 —— 也就是"报成功、什么都没发生"。最小环境矩阵（同机，数浏览器进程增量）：
+/// `ShellExecuteW` 是 Win32 的 URL/文件关联入口，**不经过任何 shell**，URL 里的
+/// `&`/`|`/`>` 只是普通字符。这也是 `launch_url` 现在不接受 `env`/`watch` 的原因：
+/// 它不再起子进程，成功与否由 `ShellExecuteW` 的返回值（> 32）判断。
 ///
-/// | 环境 | 退出码 | 浏览器 |
-/// |---|---|---|
-/// | 空（≈ `env_clear()`） | 1 | **没开** |
-/// | **只加 `SystemRoot`** | 0 | **开了** |
-/// | 只加 `USERPROFILE` | 1 | 没开 |
-/// | 只加 `PATH` | 1 | 没开 |
-/// | `SystemRoot` + `USERPROFILE` | 0 | 开了 |
-///
-/// 所以这里把 `SystemRoot` 作为 `extra_env` 补回去（其它变量照旧洗掉 ——
-/// 凭据清洗的理由不变，只是这条命令**运行需要**它）。
-/// ⚠️ 这个坑**不可能靠退出码发现**：必须真的看"浏览器开了没有"。
-///
-/// 安全性：URL 已在 `mod.rs::validate_external_url` 过了一遍 scheme 白名单
-/// （只放行 http/https/mailto）、控制字符检查，**并拒绝裸 `"` 与 `^`**。最后一条是关键：
-/// URL 作为独立 argv 元素传进来时 Rust 会做 cmd 转义，但 cmd.exe 不认 `\"` 反斜杠转义——
-/// URL 里的引号会翻转 cmd 的引号状态，其后的 `&` 就成了命令分隔符。校验把引号拦在前面，
-/// 查询串里的 `&` 才真正"进不了提权面"（真机验证过带 `&b=2` 的查询串能正常打开）。
-pub fn launch_url(url: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
-    let (args, extra) = url_launch_spec(url, env);
-    spawn_watched("cmd.exe", &args, watch, env, &extra)
+/// 仍保留 `validate_external_url` 的 scheme/控制字符/引号检查作为前置闸门：
+/// 即使不再有 shell，也不该把 `javascript:`/`file:` 交给系统关联。
+pub fn launch_url(url: &str) -> LaunchOutcome {
+    #[cfg(windows)]
+    {
+        launch_url_shell_execute(url)
+    }
+    #[cfg(not(windows))]
+    {
+        // 非 Windows 的调用点不会走到这里（`shell_launcher(true)` 给 Open/XdgOpen），
+        // 但保留一个明确失败，避免未来误用。
+        let _ = url;
+        LaunchOutcome::Failed("ShellExecuteW 只在 Windows 上可用".into())
+    }
 }
 
-/// `launch_url` 的**纯**那一半：argv 形状 + 必须补回的环境变量（便于单测，不必真开浏览器）。
+/// `ShellExecuteW` 的返回码 → `LaunchOutcome`（纯函数，便于单测**不用真的开浏览器**）。
 ///
-/// @param url - 已过白名单校验的 URL
-/// @param env - 清洗后的宿主环境（用来取 `SystemRoot`）
-/// @returns `(argv, extra_env)`
-fn url_launch_spec(url: &str, env: &HashMap<String, String>) -> (Vec<String>, Vec<(String, String)>) {
-    let system_root = env
-        .get("SystemRoot")
-        .or_else(|| env.get("windir"))
-        .cloned()
-        .unwrap_or_else(|| r"C:\Windows".to_string());
-    (
-        vec!["/c".into(), "start".into(), String::new(), url.to_string()],
-        vec![("SystemRoot".to_string(), system_root)],
-    )
+/// Win32 约定：返回值 `> 32` 表示成功；0/≤32 是错误码。`SE_ERR_ACCESSDENIED` 是 5 等。
+#[cfg(windows)]
+pub fn shell_execute_outcome(return_value: isize) -> LaunchOutcome {
+    if return_value > 32 {
+        LaunchOutcome::Launched
+    } else {
+        LaunchOutcome::Failed(format!("ShellExecuteW 返回 {return_value}"))
+    }
 }
 
+#[cfg(windows)]
+fn launch_url_shell_execute(url: &str) -> LaunchOutcome {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> *mut std::ffi::c_void;
+    }
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    const SW_SHOWNORMAL: i32 = 1;
+    let operation = wide("open");
+    let file = wide(url);
+    // SAFETY: 两个指针都指向调用期内存活的 NUL 结尾 UTF-16 字符串；其余参数按 Win32
+    // 约定传 null。ShellExecuteW 不保留这些指针。
+    let ret = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    shell_execute_outcome(ret as isize)
+}
 /// Windows 上打开一个**文件系统路径**（目录）：`explorer.exe <dir>`。
 ///
 /// ## 为什么必须单独一条（2026-10-14 用户报障："用文件资源管理器打开目录失败了"）
@@ -428,7 +455,10 @@ pub fn launch_via_explorer(dir: &str, env: &HashMap<String, String>) -> LaunchOu
         ShellLauncher::ExplorerForDirectory => ("explorer.exe", false),
         ShellLauncher::Open => ("open", true),
         ShellLauncher::XdgOpen => ("xdg-open", true),
-        ShellLauncher::CmdStartForUrl => ("cmd.exe", true), // 不会发生（is_url = false）
+        // 不会发生（is_url = false）：URL 走 ShellExecuteW，不该进这条按退出码判定的路
+        ShellLauncher::ShellExecuteForUrl => {
+            return LaunchOutcome::Failed("launch_via_explorer 只接受目录，不打开 URL".into())
+        }
     };
     // 这条的**要点**就是"退出码不可信"：Windows 的 explorer 成功也返回 1。
     // 真到了别的平台（退出码可信），说明调用方用错了入口。
@@ -661,8 +691,8 @@ mod tests {
             );
             assert_eq!(
                 url_launcher,
-                ShellLauncher::CmdStartForUrl,
-                "Windows 打开 URL 不能走 explorer.exe（它只认文件系统路径，URL 它会静默什么都不做）"
+                ShellLauncher::ShellExecuteForUrl,
+                "Windows 打开 URL 必须走 ShellExecuteW（不能走 explorer，也不能再经 cmd）"
             );
             assert_eq!(opener_command(dir_launcher), None, "Windows 的两个变体各有专门启动函数");
             assert_eq!(opener_command(url_launcher), None);
@@ -683,74 +713,39 @@ mod tests {
         );
     }
 
-    /// **URL 那条必须补回 `SystemRoot`**（2026-10-14 第三次踩的回归闸门）。
+    /// `ShellExecuteW` 的返回码映射（纯函数）：>32 成功，其余失败。
     ///
-    /// 为什么单独立一条：`spawn_watched` 会 `env_clear()`，而 `cmd /c start` 缺 `SystemRoot`
-    /// 时**静默什么都不做**（浏览器进程数不变），有时还返回 0 ——
-    /// 真机那个"真 spawn"的用例**只看 `Launched`，所以它漏掉了这个**。
-    /// 这条纯函数级的断言不依赖"浏览器真的开了没有"，任何平台都能跑。
-    ///
-    /// 红检方式：把 `url_launch_spec` 的 extra 改成 `vec![]`（也就是把环境清洗原样交出去），
-    /// 这条立刻红。
+    /// 这条替代了旧的 `url_launch_spec_keeps_system_root_alive`：URL 不再起 cmd，
+    /// 也就不存在 `SystemRoot`/argv 形状的坑。**红检方式**：把 `> 32` 改成 `>= 0`
+    /// 或反过来，立刻红。
     #[test]
-    fn url_launch_spec_keeps_system_root_alive() {
-        // ① 宿主有 SystemRoot 时：原样带过去
-        let mut env = HashMap::new();
-        env.insert("SystemRoot".to_string(), r"D:\Windows".to_string());
-        let (args, extra) = url_launch_spec("https://example.com/x", &env);
-        assert_eq!(
-            args,
-            vec![
-                "/c".to_string(),
-                "start".to_string(),
-                String::new(),
-                "https://example.com/x".to_string()
-            ],
-            "argv 形状必须是 cmd /c start \"\" <url>（第三个元素是 start 的窗口标题占位）；\
-             少了它 start 会把 URL 当标题吞掉"
-        );
-        assert_eq!(
-            extra,
-            vec![("SystemRoot".to_string(), r"D:\Windows".to_string())],
-            "这条命令缺 SystemRoot 就静默什么都不做 —— 必须补回去"
-        );
-
-        // ② 宿主没有 SystemRoot（清洗掉了）：兜底到 C:\Windows，而不是留空
-        let (_, extra_fallback) = url_launch_spec("https://example.com/x", &HashMap::new());
-        assert_eq!(extra_fallback.len(), 1);
-        assert!(!extra_fallback[0].1.is_empty(), "兜底值不许是空串（空 env 值 = 没有）");
-
-        // ③ windir 是同一件事的另一个常见拼写，也该认
-        let mut windir_env = HashMap::new();
-        windir_env.insert("windir".to_string(), r"E:\Win".to_string());
-        let (_, extra_windir) = url_launch_spec("https://example.com/x", &windir_env);
-        assert_eq!(
-            extra_windir[0].1, r"E:\Win",
-            "windir 也该被认（Windows 上两种拼写都存在）"
-        );
+    #[cfg(windows)]
+    fn shell_execute_outcome_maps_win32_return_codes() {
+        assert_eq!(shell_execute_outcome(33), LaunchOutcome::Launched);
+        assert_eq!(shell_execute_outcome(42), LaunchOutcome::Launched);
+        match shell_execute_outcome(32) {
+            LaunchOutcome::Failed(msg) => assert!(msg.contains("32"), "{msg}"),
+            other => panic!("32 是错误码，不该成功: {other:?}"),
+        }
+        match shell_execute_outcome(0) {
+            LaunchOutcome::Failed(msg) => assert!(msg.contains('0'), "{msg}"),
+            other => panic!("0 是错误码，不该成功: {other:?}"),
+        }
     }
 
     /// **Windows 上打开一个 URL 必须真的起得来**（2026-10-14 第二处报障的回归闸门：
     /// "「关于」里的许可原文链接点了没反应"）。
     ///
-    /// ⚠️ 这条只断言"命令成功退出"，**证明不了浏览器真的开了**（真机实测存在
-    /// "退出码 0 但什么都没发生"的情形）—— 那件事由 `url_launch_spec_keeps_system_root_alive`
-    /// 在参数层面钉住，因为那是唯一能在无头/无人值守下断言的部分。
-    ///
-    /// 红检方式：把 `shell_launcher(true)` 的 Windows 格改成 `ExplorerForDirectory` ——
-    /// `explorer.exe <url>` 会启动成功但什么都不打开（退出码 1），于是这条会红在退出码上。
+    /// ⚠️ 这条只断言 `ShellExecuteW` 返回成功，**证明不了浏览器真的开了**；
+    /// 但"URL 不再进 cmd"这件事由代码结构保证（`launch_url` 里没有 `cmd.exe`），
+    /// 而 cmd 注入的回归测试在 JS/Rust 两侧都有更直接的形状用例。
     ///
     /// 副作用：在 Windows 上真的会用默认浏览器打开一个 `example.com` 链接。
     #[test]
     #[cfg(windows)]
-    fn windows_url_open_goes_through_cmd_start() {
-        let facts = Facts::detect();
-        assert_eq!(shell_launcher(true), ShellLauncher::CmdStartForUrl);
-        let outcome = launch_url(
-            "https://example.com/?piggy=url-open-test",
-            Duration::from_millis(3000),
-            &facts.env,
-        );
+    fn windows_url_open_uses_shell_execute() {
+        assert_eq!(shell_launcher(true), ShellLauncher::ShellExecuteForUrl);
+        let outcome = launch_url("https://example.com/?piggy=url-open-test");
         assert_eq!(
             outcome,
             LaunchOutcome::Launched,

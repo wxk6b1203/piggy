@@ -36,10 +36,46 @@ pub async fn provider_overview() -> Result<Value, String> {
         .map_err(|e| e.to_string())?
 }
 
+use tauri::AppHandle;
+
 /// 新建/更新一个提供商。`patch` 里出现的键才写，空串 = 删键（回落 pi 目录默认值）。
+///
+/// **改 baseUrl 且这个 provider 已有已存密钥时必须原生确认**：否则被攻破的 webview
+/// 先把地址改到攻击者，再让 pi/`provider_discover` 把真密钥发出去。原生确认框在 Rust
+/// 侧，webview 改不了它的文案与结果。
 #[tauri::command]
-pub async fn provider_save(provider: String, patch: Value) -> Result<Value, String> {
+pub async fn provider_save(app: AppHandle, provider: String, patch: Value) -> Result<Value, String> {
     let agent = paths::agent_dir();
+    if let Some(new_base) = patch
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let old_base = pi_files::read_json(&agent.join("models.json")).ok().and_then(|m| {
+            m.get("providers")
+                .and_then(|p| p.get(&provider))
+                .and_then(|c| c.get("baseUrl"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        let has_stored_key = !resolve_key(&agent, &provider, "").0.trim().is_empty();
+        if base_change_needs_confirm(old_base.as_deref(), new_base, has_stored_key) {
+            let ok = crate::ui_confirm::confirm(
+                &app,
+                "更改 API 地址？",
+                &format!(
+                    "提供商：{provider}\n\n旧地址：{}\n新地址：{new_base}\n\n\
+                     这个提供商已经存有 API 密钥；继续会把密钥发往新地址。",
+                    old_base.as_deref().unwrap_or("（未配置，当前用目录默认值）")
+                ),
+            )
+            .await;
+            if !ok {
+                return Err(format!("已取消：更改 {provider} 的 API 地址需要用户原生确认"));
+            }
+        }
+    }
     tokio::task::spawn_blocking(move || edit::save_at(&agent, &provider, &patch))
         .await
         .map_err(|e| e.to_string())?
@@ -149,6 +185,23 @@ fn stored_key_allowed(configured_base: Option<&str>, requested_base: &str) -> bo
     };
     cfg.trim_end_matches('/')
         .eq_ignore_ascii_case(requested_base.trim().trim_end_matches('/'))
+}
+
+/// 改 baseUrl 是否必须由**原生确认框**批准（纯函数，便于单测）。
+///
+/// 判据：新地址非空、与旧地址不是同一个（用 `stored_key_allowed` 的归一比较）、
+/// 且这个 provider **已经有一把已存密钥**（auth.json / models.json 内联 / 环境变量）。
+/// 有密钥时改地址等于"把密钥发往新地址"；没有密钥时改地址只是改配置，不弹。
+///
+/// 为什么需要：`provider_save` 由 webview 调用。没有这道确认，被攻破的 webview 可以
+/// 先 `provider_save(baseUrl=attacker)` 再 `provider_discover`/`pi_prompt`，把已存密钥
+/// 发出去——H3 的 `stored_key_allowed` 只挡住了"直接传陌生 base_url"，挡不住"先改配置"。
+pub fn base_change_needs_confirm(old_base: Option<&str>, new_base: &str, has_stored_key: bool) -> bool {
+    let new_base = new_base.trim();
+    if !has_stored_key || new_base.is_empty() {
+        return false;
+    }
+    !stored_key_allowed(old_base, new_base)
 }
 
 /// 「获取可用模型 / 检测」：本地模型目录优先（不联网），否则问端点。

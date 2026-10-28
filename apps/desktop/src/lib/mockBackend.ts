@@ -544,6 +544,7 @@ const TAB_SCOPED = new Set([
   'pi_bash',
   'pi_abort_bash',
   'tab_sleep',
+  'fs_list_dir', // root 由 Rust 按 tabId 取；mock 也要求 tab 存在
 ]);
 
 
@@ -959,6 +960,9 @@ export const MOCK_CONTEXT_PERCENT = (MOCK_CONTEXT_TOKENS / MOCK_CONTEXT_WINDOW) 
  */
 const REQUIRED_ARGS: Record<string, string[]> = {
   perf_config_save: ['maxWorkers', 'idleTimeoutMin'],
+  fs_list_dir: ['tabId', 'path'],
+  fs_preview_read: ['path'],
+  fs_image_data: ['path'],
 };
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
@@ -1458,7 +1462,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   }),
   pi_get_fork_messages: () => ({ messages: [{ entryId: 'm1', text: 'fork 点一' }] }),
   fs_list_dir: (a) => {
-    // mock 目录树：够验证懒加载/展开/打开预览，不追求像真实项目
+    // 真机 root 由 Rust 侧按 tabId 取；mock 也要求 tabId（宽松的 mock 会掩盖
+    // "前端忘了传 tabId" 这类回归）。目录树只够验证懒加载/展开/打开预览。
+    if (!a.tabId) throw new Error('fs_list_dir 缺少 tabId');
     const path = String(a.path);
     const base = path.split('/').filter(Boolean).at(-1) ?? 'proj';
     return {
@@ -1547,6 +1553,12 @@ pub fn main() {
       lines: content.split('\n').length,
       content,
     };
+  },
+  fs_image_data: (a) => {
+    // 真机只回图片字节（魔数校验）；mock 给一个合法 PNG data URL，敏感目录同样拒。
+    if (/[\\/]\.(pi|ssh|aws|gnupg)([\\/]|$)/.test(String(a.path)))
+      throw new Error('敏感目录不允许预览');
+    return { mimeType: 'image/png', dataUrl: MOCK_APP_ICON };
   },
   pi_stderr_tail: () => [],
   session_dir_effective: () => ({ dir: '/Users/mock/.pi/agent/sessions', isCustom: false, raw: null, source: 'default' }),
@@ -1828,7 +1840,8 @@ pub fn main() {
       'mock-ollama': {
         baseUrl: 'http://localhost:11434/v1',
         api: 'openai-completions',
-        apiKey: 'ollama',
+        // 与真机一致：内联密钥在 raw 编辑器里是哨兵，保存时由 models_write 还原
+        apiKey: '__PIGGY_REDACTED__',
         models: [{ id: 'qwen3:8b' }],
       },
     },

@@ -157,6 +157,12 @@ pub struct TabDescriptor {
   通道一关就退出，"自动复活"实际每个 tab 终身最多一次。现在通道关闭时 watcher 重订**当前**
   worker，休眠中的 tab（无 worker）以 250ms 轮询等它装回来，只有 tab 关闭才退场；
   复活失败时同一 watcher 会按退避继续重试（这真正兑现了"≤3 次，指数退避"）；
+- **预算只在 `claim_revive` 里判，watcher 不预检**（同日复核修正）：此前 watcher 先读
+  `restarts >= 3` 就 `gaveUp` + `return`，抢在稳定期重置之前——长寿命 tab 崩满 3 次、
+  第 3 个 worker 稳定 >10 分钟后再崩，本应重置预算，却在 watcher 里直接永久退场。
+  现在 watcher 只负责退避与调用；只有 `claim_revive` 报"超限"才 `gaveUp`，且**不 return**：
+  继续盯着死 worker，等手动复活/关 tab 换掉通道后重订，下一次崩溃仍会自动复活。
+  退避睡醒后会**重新判 `deliberate`**，避免把刚休眠/换档的 tab 又拉起来；
 - **崩溃预算按"集"计**（同日修正）：上一个 worker 存活 ≥10 分钟（`STABLE_WORKER`）后的
   崩溃视为新事件、预算重置，但一个集只重置一次（`worker_since` 消费制）——旧实现按
   tab 终身累计，崩满 3 次后连报错里说的"手动重试"也走同一条路，死锁；
@@ -248,15 +254,17 @@ Windows 落进 else，去起 macOS 的 `open`，而 Windows 上没有这个命�
 
 **`explorer.exe` 的位置参数只认文件系统路径，URL 它会静默什么都不做。** 所以 Windows 上：
 目录走 `explorer.exe`（**它的成功退出码确实是 1**，那条链不能看退出码，只看"起没起来"）；
-URL 走 `cmd /c start "" <url>`（退出码 0 可信，`""` 是窗口标题占位 —— 不传它 `start`
-会把 URL 当标题吞掉，又变成"什么都没发生"）。判据只此一份（`shell_launcher`），
+URL 走 **`ShellExecuteW("open", <url>)`**，判据只此一份（`shell_launcher`），
 **在任何平台上都能断言**。
 
-⚠️ **URL 那条还得把 `SystemRoot` 补回环境**（同一天第三次踩）：`spawn_watched` 会
-`env_clear()` 再放 `scrubbed_env`，而 `cmd /c start` 缺 `SystemRoot` 就解析不了 URL 关联 ——
-**静默什么都不做，有时还返回 0**（"报成功、什么都没发生"）。所以 `launch_url` 把
-`SystemRoot` 作为 `extra_env` 补回去（其它变量照旧洗掉）。
-**这条不可能靠退出码发现**，断言只能钉在参数层（`url_launch_spec_keeps_system_root_alive`）。
+⚠️ **2026-10-28 安全审查改了 URL 这一格**：此前 URL 走 `cmd /c start "" <url>`，而 URL
+来自模型输出。Rust 的 `Command` 只在参数含空格/制表符/空串/引号时加引号，
+`https://x/&ver` 会**裸着**进 cmd，`&` 就是命令分隔符（本机实测执行了 `ver`；换成
+`calc.exe` 即任意程序执行）。只拒绝 `"` 不够——最简单的 payload 根本没有引号。
+现在 `launch_url` 直接调 Win32 `ShellExecuteW`，不经过任何 shell；旧的
+`SystemRoot`/argv 形状坑随之消失（`url_launch_spec_keeps_system_root_alive` 已删除）。
+`validate_external_url` 仍拒绝控制字符/`"`/`^`，那是"畸形 URL 不打开"的前置校验，
+**不是** cmd 注入的防线。
 
 ### 2.12 `provider/` — 提供商与模型配置（配置页的宿主半边）
 
@@ -286,6 +294,12 @@ URL 走 `cmd /c start "" <url>`（退出码 0 可信，`""` 是窗口标题占�
 3. **TLS crypto provider 要自己装**：`reqwest` 用的是 rustls 的 no-provider 变体
    （tauri 与 updater 都这么配），不先 `install_default()` 的话 `Client::builder().build()`
    会**直接 panic**（不是返回错误）。`discover.rs` 里按 tauri 自己的做法先装一次。
+4. **改 baseUrl 是密钥外发语义**（2026-10-28 复核）：`provider_discover` 只把已存密钥发往
+   已配置地址，但 webview 可以先 `provider_save`/`models_write` 改配置。现在这两个命令在
+   "新地址非空、与旧地址不同、该 provider 有已存密钥"时弹**原生确认**（`ui_confirm`）；
+   `models_read` 把内联 `apiKey` 脱敏成 `__PIGGY_REDACTED__`，`models_write` 原样还原，
+   避免 raw JSON 编辑器成为明文密钥读取面。`provider_discover` 的
+   `stored_key_allowed` 继续作为第二道闸。
 
 ### 2.13 `fleet/` — 宿主侧舰队编排（详设见 06 §3）
 
@@ -554,21 +568,33 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 - **主目录未知 = 拒绝服务而不是降级**：`fs_preview_read` 直接报错（沙箱不能"看不见就当没限制"），
   `agent_dir` 给相对 `.pi/agent` 并打一行警告。
 
-**2026-10-28 审查收敛（webview 文件/密钥原语的边界）**，四条闸门都在 Rust 侧、前端不可绕过：
+**2026-10-28 审查收敛（webview 文件/密钥原语）**，闸门都在 Rust 侧；同日复核又补了一轮
+"检查所信任的状态本身可被 webview 改掉"的洞：
 
-- `fs_preview_read`：沙箱 = 主目录子树 **减敏感目录**（`.pi`/`.ssh`/`.aws`/`.gnupg`，清单在
-  `paths::SENSITIVE_HOME_SUBDIRS`，与守卫扩展镜像）；判定前把 home 与目标都 canonicalize
-  （主目录内的符号链接/junction 指向界外不再放行）。`~/.pi` 里是 auth.json 的 API key 明文，
-  `auth_list` 的掩码不能被这条命令绕过。
-- `fs_list_dir` / `fs_write_edit`：`root` 必须锚定在**某个已打开标签页的工作目录**上
-  （registry 持锁核对，canonicalize 比较）——此前只查"是个目录"，前端传 `C:\` 即全盘浏览/改写；
-  边界判定升级为 `ensure_within_resolved`（穿透符号链接/junction）。
+- `fs_preview_read`（文本）：**默认只读已打开标签页的工作区**；主目录或系统临时目录内、
+  工作区外的文件要一次**原生确认**（`ui_confirm`，记住该文件）；其它位置的路径直接拒。
+  `.pi`/`.ssh`/`.aws`/`.gnupg` 与实际 `PI_CODING_AGENT_DIR` 是**硬拒绝**，确认框也不给。
+  判定前把 home、temp 与目标都 canonicalize。
+- `fs_list_dir`：参数是 **`tab_id`**，root 由 Rust 从 registry 取（不再接受前端传的
+  `root`）；边界判定为 `ensure_within_resolved`（穿透符号链接/junction）。
+- `fs_image_data`：替代 `assetProtocol` 的图片读取——同一套工作区/确认/敏感目录闸门，
+  外加 PNG/JPEG/GIF/WebP **魔数**校验（文本/JSON 改后缀读不出来；SVG 不支持）。
+  `assetProtocol` 已从 `tauri.conf.json` 删除，CSP 的 `img-src` 不再含 `asset:`。
+- `fs_write_edit`：**删除**。它前端从未接线（docs/09 早已记录），却是一个可被 IPC 调用的
+  任意文件写原语；没有调用方就没有保留它的理由。
 - `session_delete` / `session_page` / `session_outline` / `session_todo` / `session_title_source` /
   `session_rename` / `session_title_generate`：路径必须是**生效会话根下的 `.jsonl` 文件**
-  （`session_file_gate`；`session_delete` 会把文件移进回收站，此前收到任意路径都执行）。
-- `provider_discover`：**已存**密钥（auth.json/models.json/环境变量）只发往该提供商
-  **已配置的** API 地址（models.json `baseUrl`，未配置用 catalog 默认值）；地址不配对时匿名探测、
-  `keySource` 如实报 `none`。用户在表单里成对输入的密钥不受影响。
+  （`session_file_gate`）。`settings_write` 改 `sessionDir` 要原生确认；`tab_create` 的
+  `session_path` 也必须过同一道闸门，已有会话的 cwd 以**会话文件头**为准。
+- `provider_discover`：**已存**密钥只发往该提供商已配置的地址；同日复核补上"先改配置"：
+  `provider_save` / `models_write` 改 `baseUrl` 且该 provider 有已存密钥时，必须原生确认。
+  `models_read` 把内联 `apiKey` 脱敏成 `__PIGGY_REDACTED__`，`models_write` 原样还原，
+  raw JSON 编辑器看不到明文也不会误删。
+- `tab_create`：**任何**新 cwd 都要原生确认，除非它由原生 picker 选过/此前确认过
+  （**home 不再免确认**——webview 可以传 `cwd:"~"`，预览会把整个 home 当已批准工作区）。
+  显式请求「完全权限」且默认档不是完全权限时要原生确认。`pi_set_permission_mode` /
+  `pi_set_default_permission` 升到 Full 同样确认。这些确认框都由 Rust 调
+  `tauri-plugin-dialog`，webview 改不了文案与结果。
 
 **会话根的优先级**（`pi_files::resolve_sessions_root`，逐条照 `main.ts:675-679`）：
 `--session-dir` 旗标（Piggy 不用，它总是显式 `--session <文件>`）→
@@ -959,9 +985,10 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 `lib/externalLink.ts` 是外链的唯一出口：前端 `isExternalUrlAllowed` 先挡一道，
 宿主 `open_external_url`（Rust `validate_external_url`）再挡一道 —— 两侧白名单
 由 `src/test/markdown.test.tsx` 的"读 Rust 源码核对"用例钉住（改一处就红）。
-宿主那道 2026-10-28 加了第二条：**裸 `"` 与 `^` 一律拒**（cmd.exe 元字符——Windows 经
-`cmd /c start "" <url>` 打开 URL，Rust 的 `\"` 转义 cmd 不认，引号会翻转 cmd 的引号
-状态让 `&` 变命令分隔符；合法 URL 里这两个字符本就该编码为 %22 / %5E）。
+宿主那道 2026-10-28 分两层：**真正的修复是 Windows 改用 `ShellExecuteW`**（不经 cmd，
+`&`/`|`/`>` 都只是普通 URL 字符）；`validate_external_url` 仍拒绝裸 `"` 与 `^`，那是
+"畸形 URL 不打开"的前置校验。**不要再把"拒绝这两个字符"当成 cmd 注入的修复**——最简单的
+payload（`https://x/&ver`）没有引号，旧实现照样执行第二条命令。
 「关于 Piggy 与许可」里的许可原文链接也改走这条路（原先 `<a target="_blank">`
 在 Tauri 里可能什么都不发生，或把应用界面导航走）。
 
