@@ -1,8 +1,9 @@
 /**
  * 权限守卫扩展的真实测试（测的就是 `tauri.conf.json` 会打进包的那个文件本身）。
  *
- * 为什么值得单独写：守卫是「工作区内修改」档**唯一**的边界执行点——
- * pi 的 write/edit 自身不做工作区检查，档位文案是否诚实全押在这个文件上。
+ * 为什么值得单独写：守卫是两个限制档**唯一**的边界执行点——
+ * 「工作区内修改」的写边界、「仅可查看」的读敏感目录都押在这个文件上
+ * （pi 的 write/edit/read 都不做边界检查，档位文案是否诚实全靠它）。
  * 因此这里不测 mock，直接 import 生产文件。
  */
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -10,12 +11,17 @@ import { tmpdir } from 'node:os';
 import { delimiter, join, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  PIGGY_GUARDED_READ_TOOLS,
   PIGGY_GUARDED_TOOLS,
+  SENSITIVE_HOME_DIRS,
   boundaryFor,
   canonicalize,
+  checkRead,
   checkWrite,
   guardRoots,
   isInside,
+  isInsideFoldCase,
+  sensitiveRootsOf,
   sessionCwdOf,
   default as piggyGuard,
   type PiggyGuardHookCtx,
@@ -351,5 +357,93 @@ describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
       delete process.env.PIGGY_GUARD_ROOTS;
       errSpy.mockRestore();
     }
+  });
+});
+
+/* ---------------- 读侧：敏感目录 fail-closed（2026-10-28 审查补） ---------------- */
+
+describe('checkRead —— 敏感目录拦截', () => {
+  let home: string;
+  let project: string;
+
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), 'piggy-guard-read-'));
+    project = join(home, 'project');
+    for (const d of SENSITIVE_HOME_DIRS) mkdirSync(join(home, d), { recursive: true });
+    mkdirSync(join(home, '.pi', 'agent'), { recursive: true });
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(home, '.pi', 'agent', 'auth.json'), '{"deepseek":{"key":"sk-x"}}');
+    writeFileSync(join(home, '.ssh', 'id_rsa'), 'PRIVATE');
+    writeFileSync(join(project, 'a.ts'), 'x');
+  });
+
+  afterAll(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const check = (event: { toolName: string; input: unknown }) =>
+    checkRead(event, {
+      sensitiveRoots: sensitiveRootsOf(home),
+      baseCwd: project,
+      home,
+      caseInsensitive: process.platform === 'win32',
+    });
+
+  it('拦截 ~/.pi（API key 明文所在）与 ~/.ssh（私钥所在）', () => {
+    for (const tool of PIGGY_GUARDED_READ_TOOLS) {
+      const blocked = check({ toolName: tool, input: { path: join(home, '.pi', 'agent', 'auth.json') } });
+      expect(blocked?.block, `${tool} 读 auth.json 必须被拦`).toBe(true);
+    }
+    const ssh = check({ toolName: 'read', input: { path: join(home, '.ssh', 'id_rsa') } });
+    expect(ssh?.block).toBe(true);
+  });
+
+  it('`~` 展开后的路径同样拦截（镜像 pi 的 resolveToCwd，不展开就会全部落空）', () => {
+    const blocked = check({ toolName: 'read', input: { path: '~/.pi/agent/auth.json' } });
+    expect(blocked?.block, '~/ 展开后必须命中敏感目录').toBe(true);
+  });
+
+  it('读不限制工作区：工作区外、非敏感的普通文件照常放行', () => {
+    // "仅可查看"承诺的是不改，不是不看系统文件——只拦凭据/私钥所在
+    expect(check({ toolName: 'read', input: { path: '/etc/hostname' } })).toBeUndefined();
+    expect(check({ toolName: 'grep', input: { pattern: 'x', path: join(project, 'a.ts') } })).toBeUndefined();
+  });
+
+  it('未提供 path（grep/find/ls 的默认基准是会话 cwd）放行', () => {
+    expect(check({ toolName: 'grep', input: { pattern: 'x' } })).toBeUndefined();
+    expect(check({ toolName: 'ls', input: {} })).toBeUndefined();
+  });
+
+  it('只拦读清单里的工具；write/bash 不走这条路（写有写侧边界）', () => {
+    expect(check({ toolName: 'write', input: { path: join(home, '.pi', 'x') } })).toBeUndefined();
+    expect(check({ toolName: 'bash', input: { command: 'cat ~/.pi/agent/auth.json' } })).toBeUndefined();
+  });
+
+  it('读清单 = 四个只读工具，与 --tools 白名单的读集合一致', () => {
+    expect(PIGGY_GUARDED_READ_TOOLS).toEqual(['read', 'grep', 'find', 'ls']);
+    expect(SENSITIVE_HOME_DIRS).toEqual(['.pi', '.ssh', '.aws', '.gnupg']);
+  });
+
+  it('isInsideFoldCase：Windows（大小写不敏感）下不同 casing 也命中；POSIX 下不命中', () => {
+    const target = `${sep}Users${sep}bob${sep}.SSH${sep}id_rsa`;
+    const rootDir = `${sep}Users${sep}bob${sep}.ssh`;
+    expect(isInsideFoldCase(target, rootDir, true)).toBe(true);
+    expect(isInsideFoldCase(target, rootDir, false)).toBe(false);
+  });
+
+  const posixRead = describe.skipIf(process.platform === 'win32');
+  posixRead('敏感目录经符号链接访问（POSIX）', () => {
+    it('链接到敏感目录内的文件被解析成真实位置后仍拦截', () => {
+      const link = join(project, 'cfg-link');
+      symlinkSync(join(home, '.pi', 'agent', 'auth.json'), link);
+      try {
+        // 直接以链接为基准的目录 + 文件名也要拦：canonicalize 会穿透链接
+        const blocked = check({ toolName: 'read', input: { path: link } });
+        expect(blocked?.block, '符号链接指向敏感文件必须被拦').toBe(true);
+        expect(canonicalize(link)).toBe(realpathSync(join(home, '.pi', 'agent', 'auth.json')));
+      } finally {
+        rmSync(link, { force: true });
+      }
+    });
   });
 });

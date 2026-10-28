@@ -137,6 +137,11 @@ piggy/
   当前 `capabilities/default.json` 仍然是 M0 那三行（`core:default` + `core:window:allow-set-title`），
   自建命令走 Tauri 的命令通道，不需要额外 capability；
 - CSP：`default-src 'self'`；`connect-src` 无需外网（LLM 请求都发生在 pi 进程）。
+- `assetProtocol` 保留 `$HOME/**`（2026-10-28 审查时的取舍，记录在这里免得反复）：聊天里的
+  图片块（`b.path`，来自工具结果/附件）可能落在主目录任意位置，工作区目录无法静态枚举；
+  而该通道在当前 CSP 下是**只显示不回流**的——`connect-src` 不含 `asset:`，webview 用
+  `fetch` 读不回文件字节，`<img>`+canvas 又受跨源污染限制。敏感目录的读取防护由
+  `fs_preview_read` 闸门与守卫读侧（03 §2 路径纪律 / 17 §1.3）承担。
 
 ## 7. 发布与版本
 

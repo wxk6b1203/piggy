@@ -7,8 +7,14 @@
  * 改守卫的导出时同步改这里——两者不一致时 `tsc` 会报错，这是有意的（防止测试与实现漂移）。
  */
 
-/** 本档拦截的工具名。 */
+/** 本档拦截写操作的工具名。 */
 export declare const PIGGY_GUARDED_TOOLS: string[];
+
+/** 本档做敏感目录检查的读工具名（未提供 path 时以会话 cwd 为基准，天然放行）。 */
+export declare const PIGGY_GUARDED_READ_TOOLS: string[];
+
+/** 主目录下的敏感目录名（凭据/私钥所在），与 Rust `paths::SENSITIVE_HOME_SUBDIRS` 镜像。 */
+export declare const SENSITIVE_HOME_DIRS: string[];
 
 /** 规整为绝对真实路径（穿透符号链接；目标不存在时向上找第一个存在的祖先）。 */
 export declare function canonicalize(p: string): string;
@@ -43,6 +49,26 @@ export declare function checkWrite(
   event: { toolName?: string; input?: unknown },
   roots: string[] | null,
   baseCwd: string,
+): { block: true; reason: string } | undefined;
+
+/** 主目录下的敏感根目录（规整后）。 */
+export declare function sensitiveRootsOf(home?: string): string[];
+
+/** 大小写不敏感的 `isInside`（Windows 文件系统不区分大小写）。 */
+export declare function isInsideFoldCase(target: string, root: string, caseInsensitive: boolean): boolean;
+
+/** 读侧判定入参（`~` 展开基准、相对路径基准、敏感根与大小写策略均由调用方注入）。 */
+export interface CheckReadOptions {
+  sensitiveRoots: string[];
+  baseCwd: string;
+  home: string;
+  caseInsensitive?: boolean;
+}
+
+/** 单次读调用的判定（敏感目录 fail-closed，其余放行）；返回 `undefined` 表示放行。 */
+export declare function checkRead(
+  event: { toolName?: string; input?: unknown },
+  opts: CheckReadOptions,
 ): { block: true; reason: string } | undefined;
 
 /** 扩展入口：注册 `tool_call` 钩子。 */

@@ -133,11 +133,32 @@ pub fn resolve_key(agent: &Path, provider: &str, typed: &str) -> (String, &'stat
     (String::new(), "none")
 }
 
+/// 已存密钥是否允许发往这次请求的 `base_url`（纯函数，便于单测）。
+///
+/// 规则（2026-10-28 审查收敛）：
+/// - 用户在表单里**成对输入**的密钥（`typed`）与此地址是用户自己的意图，照发；
+/// - **已存**密钥（auth.json / models.json / 环境变量）只发往**该提供商已配置的**地址
+///   （models.json 的 `baseUrl`，未配置时用 catalog 默认值）。否则前端被攻破时
+///   一句 `provider_discover(deepseek, https://attacker.com)` 就能把真密钥 Bearer 出去。
+///
+/// 归一：两侧去尾部 `/`、大小写不敏感（host 大小写无意义；路径部分保守起见也不区分——
+/// 这里要的是"同一配置的同一地址"，不是通用 URL 等价）。
+fn stored_key_allowed(configured_base: Option<&str>, requested_base: &str) -> bool {
+    let Some(cfg) = configured_base.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    cfg.trim_end_matches('/')
+        .eq_ignore_ascii_case(requested_base.trim().trim_end_matches('/'))
+}
+
 /// 「获取可用模型 / 检测」：本地模型目录优先（不联网），否则问端点。
 ///
 /// 返回里带 `source`（catalog/network）、`url`（真打的地址）与 `keySource`
 /// （这次用的是哪把密钥）——用户点"检测"时必须能看出**到底测了什么**，
 /// 否则"通过"两个字毫无信息量。
+///
+/// 密钥外发口径见 [`stored_key_allowed`]：地址与已存密钥不配对时**匿名探测**
+/// （endpoint 多半回 401，用户看到的正是真相），而不是把密钥发给陌生地址。
 #[tauri::command]
 pub async fn provider_discover(
     provider: String,
@@ -150,15 +171,32 @@ pub async fn provider_discover(
     let probe = {
         let agent = agent.clone();
         let provider = provider.clone();
+        let typed = typed.clone();
         tokio::task::spawn_blocking(move || {
             let cached = overview::cached_catalog(&agent, &provider);
             let (key, key_source) = resolve_key(&agent, &provider, &typed);
-            (cached, key, key_source)
+            // 该提供商已配置的 API 地址：models.json 优先，未配置用 catalog 默认值
+            let configured_base = pi_files::read_json(&agent.join("models.json"))
+                .ok()
+                .and_then(|m| {
+                    m.get("providers")
+                        .and_then(|p| p.get(&provider))
+                        .and_then(|c| c.get("baseUrl"))
+                        .and_then(|b| b.as_str())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    catalog::lookup(&provider)
+                        .map(|e| e.base_url)
+                        .filter(|b| !b.is_empty())
+                        .map(str::to_string)
+                });
+            (cached, key, key_source, configured_base)
         })
         .await
         .map_err(|e| e.to_string())?
     };
-    let (cached, key, key_source) = probe;
+    let (cached, mut key, mut key_source, configured_base) = probe;
     if !cached.is_empty() {
         return Ok(json!({
             "source": "catalog",
@@ -169,6 +207,11 @@ pub async fn provider_discover(
     }
     if base_url.trim().is_empty() {
         return Err("请先填写 API 地址，再获取模型".into());
+    }
+    if typed.trim().is_empty() && !stored_key_allowed(configured_base.as_deref(), &base_url) {
+        // 已存密钥与这个地址不配对：匿名探测，keySource 如实报 none
+        key = String::new();
+        key_source = "none";
     }
     let url = discover::listing_url(&base_url, &api);
     let models = discover::fetch(&url, &api, &key).await?;
@@ -227,5 +270,20 @@ mod tests {
         fs::write(dir.path().join("auth.json"), "{}").unwrap();
         fs::write(dir.path().join("models.json"), "{}").unwrap();
         assert_eq!(resolve_key(dir.path(), "my-relay", ""), (String::new(), "none"));
+    }
+
+    /// 已存密钥只发往已配置的地址：这是把"检测"从密钥外发原语变回探测工具的那道闸。
+    #[test]
+    fn stored_key_only_goes_to_the_configured_base() {
+        let cfg = "https://api.deepseek.com";
+        // 配置地址（含尾部斜杠/大小写差异）放行
+        assert!(stored_key_allowed(Some(cfg), "https://api.deepseek.com"));
+        assert!(stored_key_allowed(Some(cfg), "https://api.deepseek.com/"));
+        assert!(stored_key_allowed(Some(cfg), "HTTPS://API.DEEPSEEK.COM"));
+        // 陌生地址 / 前缀碰瓷 / 未配置 → 一律不放
+        assert!(!stored_key_allowed(Some(cfg), "https://attacker.example/v1"));
+        assert!(!stored_key_allowed(Some(cfg), "https://api.deepseek.com.evil.io"));
+        assert!(!stored_key_allowed(None, "https://api.deepseek.com"));
+        assert!(!stored_key_allowed(Some("  "), "https://api.deepseek.com"));
     }
 }

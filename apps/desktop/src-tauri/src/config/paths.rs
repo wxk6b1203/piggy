@@ -145,6 +145,28 @@ pub fn is_under(home: &Path, path: &Path) -> bool {
     path.starts_with(home)
 }
 
+/// 主目录下**任何前端/模型面都不该再碰到**的敏感子目录（凭据与私钥所在：
+/// `.pi` 存 `auth.json` 的 API key 明文，其余三个是业界惯例的密钥目录）。
+///
+/// 与守卫扩展 `resources/piggy-guard.js` 的 `SENSITIVE_HOME_DIRS` **镜像维护**：
+/// 改这里必须同步改守卫（两侧各有测试钉住自己那份清单）。
+pub const SENSITIVE_HOME_SUBDIRS: [&str; 4] = [".pi", ".ssh", ".aws", ".gnupg"];
+
+/// `path` 是否落在主目录的某个敏感子目录内（判定前调用方应先把两边 canonicalize，
+/// 否则工作区内的符号链接指向敏感目录就能骗过前缀比较）。
+pub fn sensitive_under(home: &Path, path: &Path) -> bool {
+    SENSITIVE_HOME_SUBDIRS.iter().any(|d| is_under(&home.join(d), path))
+}
+
+/// 同一路径判定：两边都 canonicalize 后比较（解析符号链接/junction、统一 Windows 大小写）；
+/// 任一侧不存在时退回字面比较（路径都不存在时"相等"仍有一个稳定答案，好过 panic）。
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +305,38 @@ mod tests {
         assert!(!is_under(&home, &PathBuf::from("/h/u/../../etc/passwd")));
         // 相对路径一律拒绝（无法判断它相对谁解析）
         assert!(!is_under(&home, &PathBuf::from("u/a.txt")));
+    }
+
+    #[test]
+    fn sensitive_subdirs_cover_credentials_not_everything() {
+        // 用真实 tempdir 当主目录（is_under 只认绝对路径；POSIX 字面量在 Windows 上不是绝对的）
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // 四个密钥目录全命中（含子路径与目录本身）
+        for d in SENSITIVE_HOME_SUBDIRS {
+            assert!(
+                sensitive_under(home, &home.join(d).join("agent").join("auth.json")),
+                "{d} 应命中"
+            );
+            assert!(sensitive_under(home, &home.join(d)), "{d} 本身应命中");
+        }
+        // 同前缀不碰瓷、普通目录不命中、home 之外不命中
+        assert!(!sensitive_under(home, &home.join(".pipelines").join("x")));
+        assert!(!sensitive_under(home, &home.join("project").join("a.ts")));
+        assert!(!sensitive_under(home, home.parent().unwrap()));
+    }
+
+    #[test]
+    fn same_path_compares_canonically_and_falls_back_to_literal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("x.txt");
+        std::fs::write(&a, "x").unwrap();
+        // 存在的路径：字面不同（相对 vs 绝对）但 canonicalize 后相等
+        assert!(same_path(&a, Path::new(&format!("{}/x.txt", tmp.path().display()))));
+        // 不存在的路径：退回字面比较，相等/不等都有稳定答案
+        let ghost = tmp.path().join("ghost");
+        assert!(same_path(&ghost, &ghost));
+        assert!(!same_path(&ghost, &tmp.path().join("other")));
     }
 
     /* ---------------- 真机证据（跑得到就打印实际解析结果） ---------------- */

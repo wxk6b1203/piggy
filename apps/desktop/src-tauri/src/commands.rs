@@ -764,8 +764,41 @@ pub async fn session_list() -> Result<Vec<list::SessionMeta>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// session_* 命令的路径闸门（纯函数，`root` 注入便于测试）：
+/// 只认**生效会话根下的 `.jsonl` 文件**。
+///
+/// 这些命令直接读文件、甚至把文件移进回收站（`session_delete`）/ 写会话元数据
+/// （`session_rename` / `session_title_generate`），路径来自前端，不可信
+/// （2026-10-28 审查收敛：此前 `trash_session` 收到任意路径都会执行）。
+/// canonicalize 只做闸门——**后续操作仍用前端原路径**（canonicalize 在 Windows 上带
+/// `\\?\` 前缀，把它传给 pi 的 `--session` 会让 pi 起不来，见 `plain_path` 的说明）。
+fn session_file_gate_under(root: &Path, path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("会话路径必须是绝对路径: {path}"));
+    }
+    if p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return Err("只允许操作会话 .jsonl 文件".into());
+    }
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("会话路径包含 `..`".into());
+    }
+    let root_real = std::fs::canonicalize(root).map_err(|e| format!("会话根无法解析: {e}"))?;
+    let p_real = std::fs::canonicalize(p).map_err(|e| format!("会话文件不存在或无法解析: {e}"))?;
+    if !p_real.starts_with(&root_real) {
+        return Err(format!("路径不在生效会话根 {} 内（收到 {path}）", root.display()));
+    }
+    Ok(())
+}
+
+/// [`session_file_gate_under`] 的生产入口：生效会话根由 settings.json / 环境变量决定。
+fn session_file_gate(path: &str) -> Result<(), String> {
+    session_file_gate_under(&pi_files::sessions_root(), path)
+}
+
 #[tauri::command]
 pub async fn session_delete(path: String) -> Result<(), String> {
+    session_file_gate(&path)?;
     list::trash_session(&path)
 }
 
@@ -775,6 +808,7 @@ pub async fn session_delete(path: String) -> Result<(), String> {
 /// 页码是"按需一页"——两者的生命周期不同（轮廓只在打开/复活时取一次）。
 #[tauri::command]
 pub async fn session_outline(path: String) -> Result<Value, String> {
+    session_file_gate(&path)?;
     tokio::task::spawn_blocking(move || {
         let o = crate::sessions::transcript::outline(std::path::Path::new(&path))?;
         Ok::<Value, String>(o.to_json())
@@ -793,6 +827,7 @@ pub async fn session_outline(path: String) -> Result<Value, String> {
 /// **只在探测到 todo 能力时才会被调用**（`plugin_capability`）—— 没装插件就没有这次扫描。
 #[tauri::command]
 pub async fn session_todo(path: String) -> Result<Value, String> {
+    session_file_gate(&path)?;
     tokio::task::spawn_blocking(move || {
         let p = crate::sessions::transcript::todo_projection(std::path::Path::new(&path))?;
         Ok::<Value, String>(p.to_json())
@@ -808,6 +843,19 @@ pub async fn session_todo(path: String) -> Result<Value, String> {
 /// 语义与一致性论证见 `sessions/transcript.rs` 的模块头。
 #[tauri::command]
 pub async fn session_page(
+    path: String,
+    before: Option<u64>,
+    after: Option<u64>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    session_file_gate(&path)?;
+    session_page_routed(path, before, after, limit).await
+}
+
+/// [`session_page`] 的分页路由（`after` 优先于 `before`）。抽成 pub 是因为
+/// `sessions/transcript.rs` 有"命令有没有接上"的接线测试——路径闸门留在命令层
+/// （IPC 边界的事），路由本身是纯逻辑、测试直调这一层。
+pub async fn session_page_routed(
     path: String,
     before: Option<u64>,
     after: Option<u64>,
@@ -877,12 +925,14 @@ pub async fn session_rename(
     path: String,
     name: String,
 ) -> Result<(), String> {
+    session_file_gate(&path)?;
     set_session_name_via_worker(&app, &state, path, name).await
 }
 
 /// 生成标题**会拿什么去生成**（不调用模型）。界面用它做预览与排查。
 #[tauri::command]
 pub async fn session_title_source(path: String) -> Result<Value, String> {
+    session_file_gate(&path)?;
     let cfg = app::perf_config_load();
     tokio::task::spawn_blocking(move || {
         let src = crate::sessions::title::read_source(std::path::Path::new(&path))?;
@@ -933,6 +983,7 @@ pub async fn session_title_generate(
     path: String,
     apply: Option<bool>,
 ) -> Result<Value, String> {
+    session_file_gate(&path)?;
     let cfg = app::perf_config_load();
     let max_chars = cfg.title_max_chars.clamp(1, 200);
     let strategy = cfg.title_source;
@@ -1110,6 +1161,22 @@ pub async fn pi_export_html(
     worker.export_html(output_path.as_deref()).await
 }
 
+/// 文件预览读取的边界闸门（纯函数，已 canonicalize 的输入才进得来）。
+///
+/// 沙箱 = 用户主目录子树 **减去敏感目录**（2026-10-28 审查收敛：`~/.pi` 里是 auth.json
+/// 的 API key 明文，`auth_list` 精心做的掩码不能被这条命令绕过；`.ssh/.aws/.gnupg`
+/// 同理）。调用方必须先把 home 与目标 canonicalize——主目录内的符号链接/junction
+/// 可以指向界外，纯前缀比较挡不住。
+fn preview_gate(home_real: &Path, target_real: &Path) -> Result<(), String> {
+    if !paths::is_under(home_real, target_real) {
+        return Err("路径越界（仅限用户目录；符号链接指向界外已拒绝）".into());
+    }
+    if paths::sensitive_under(home_real, target_real) {
+        return Err("敏感目录（.pi / .ssh / .aws / .gnupg）不允许预览：API key 与私钥所在（docs/08 §6）".into());
+    }
+    Ok(())
+}
+
 /// 文件预览读取（M1 限定用户目录子树；docs/08 §6 scope 收敛）。
 ///
 /// 主目录拿不到时**必须拒绝**：老代码用 `starts_with("")` 判越界，而空路径是
@@ -1122,11 +1189,14 @@ pub async fn fs_preview_read(path: String) -> Result<Value, String> {
     if !paths::is_under(&home, &pb) {
         return Err("路径越界（仅限用户目录）".into());
     }
-    let md = std::fs::metadata(&pb).map_err(|e| e.to_string())?;
+    let home_real = std::fs::canonicalize(&home).map_err(|e| format!("无法确定用户目录的真实位置: {e}"))?;
+    let pb_real = std::fs::canonicalize(&pb).map_err(|e| format!("路径无法解析（不存在或无权限）: {e}"))?;
+    preview_gate(&home_real, &pb_real)?;
+    let md = std::fs::metadata(&pb_real).map_err(|e| e.to_string())?;
     if md.len() > 5 * 1024 * 1024 {
         return Err("文件超过 5MB，暂不支持预览".into());
     }
-    let body = std::fs::read_to_string(&pb).map_err(|e| format!("读取失败（二进制文件?）: {e}"))?;
+    let body = std::fs::read_to_string(&pb_real).map_err(|e| format!("读取失败（二进制文件?）: {e}"))?;
     let mtime_ms = md
         .modified()
         .ok()
@@ -1222,11 +1292,31 @@ pub async fn pi_abort_bash(app: AppHandle, state: State<'_, AppState>, tab_id: S
 
 /* ---------------- M4：资源浏览器 + 快捷编辑（NG4：受限直写 + 冲突警示） ---------------- */
 
+/// `root` 是否锚定在某个已打开标签页的工作目录上（命令壳持锁核对，结果传给 `_core`）。
+///
+/// `root` 是前端传的，此前只检查"是个目录"——前端传 `C:\` 就是全盘浏览/全盘改写
+/// （快捷编辑是**写**原语，2026-10-28 审查收敛）。RightBar 的文件树传的就是活动标签页的
+/// cwd，锚定后合法路径不受影响；不存在匹配标签页时 fail-loud。
+async fn root_is_open_cwd(state: &State<'_, AppState>, root: &str) -> bool {
+    let reg = state.registry.lock().await;
+    reg.is_open_cwd(Path::new(root))
+}
+
 #[tauri::command]
-pub async fn fs_list_dir(root: String, path: String) -> Result<Value, String> {
-    let root = crate::fs_guard::validate_root(Path::new(&root))?;
-    let p = Path::new(&path);
-    crate::fs_guard::ensure_within(&root, p).map_err(|e| e.to_string())?;
+pub async fn fs_list_dir(state: State<'_, AppState>, root: String, path: String) -> Result<Value, String> {
+    fs_list_dir_core(root_is_open_cwd(&state, &root).await, &root, &path)
+}
+
+/// [`fs_list_dir`] 的核心（`known_root` 由命令壳核对，纯函数便于契约测试直调）。
+pub fn fs_list_dir_core(known_root: bool, root: &str, path: &str) -> Result<Value, String> {
+    if !known_root {
+        return Err(format!(
+            "项目根必须是某个已打开标签页的工作目录（收到的是 {root}）——请先打开对应会话"
+        ));
+    }
+    let root = crate::fs_guard::validate_root(Path::new(root))?;
+    let p = Path::new(path);
+    crate::fs_guard::ensure_within_resolved(&root, p).map_err(|e| e.to_string())?;
     let rd = match std::fs::read_dir(p) {
         Ok(rd) => rd,
         Err(e) => return Err(format!("读取目录失败: {e}")),
@@ -1257,14 +1347,37 @@ pub async fn fs_list_dir(root: String, path: String) -> Result<Value, String> {
 /// 快捷编辑写入（NG4）：cwd 子树内 + ≤1MB + mtime 冲突拒绝。
 #[tauri::command]
 pub async fn fs_write_edit(
+    state: State<'_, AppState>,
     root: String,
     path: String,
     content: String,
     base_mtime_ms: Option<u64>,
 ) -> Result<Value, String> {
-    let root = crate::fs_guard::validate_root(Path::new(&root))?;
-    let p = PathBuf::from(&path);
-    crate::fs_guard::ensure_within(&root, &p).map_err(|e| e.to_string())?;
+    fs_write_edit_core(
+        root_is_open_cwd(&state, &root).await,
+        &root,
+        &path,
+        &content,
+        base_mtime_ms,
+    )
+}
+
+/// [`fs_write_edit`] 的核心（同 [`fs_list_dir_core`] 的拆法）。
+pub fn fs_write_edit_core(
+    known_root: bool,
+    root: &str,
+    path: &str,
+    content: &str,
+    base_mtime_ms: Option<u64>,
+) -> Result<Value, String> {
+    if !known_root {
+        return Err(format!(
+            "项目根必须是某个已打开标签页的工作目录（收到的是 {root}）——请先打开对应会话"
+        ));
+    }
+    let root = crate::fs_guard::validate_root(Path::new(root))?;
+    let p = PathBuf::from(path);
+    crate::fs_guard::ensure_within_resolved(&root, &p).map_err(|e| e.to_string())?;
     if !p.is_file() {
         return Err("只允许编辑已存在的文件（NG4：不做新建/重命名）".into());
     }
@@ -1657,5 +1770,72 @@ mod tests {
     fn tab_cwd_wired_to_shared_home_resolver() {
         assert_eq!(tab_cwd(None), paths::home_dir());
         assert_eq!(tab_cwd(Some("")), paths::home_dir());
+    }
+
+    /* ---------------- fs_preview_read / session_* 的边界闸门 ---------------- */
+
+    /// 预览闸门：主目录子树 ∩ 非敏感目录。敏感四件套全拒，同前缀兄弟目录不碰瓷。
+    #[test]
+    fn preview_gate_blocks_sensitive_dirs_and_outside() {
+        // 用真实 tempdir 当主目录：is_under 要求绝对路径，POSIX 形状的字面量
+        // 在 Windows 上 is_absolute() 为假，会让断言测到别的分支。
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        for d in [".pi", ".ssh", ".aws", ".gnupg"] {
+            let err = preview_gate(home, &home.join(d).join("agent").join("auth.json")).unwrap_err();
+            assert!(err.contains("敏感目录"), "{d}: {err}");
+        }
+        // 同前缀兄弟目录（`.pipelines`）不是 `.pi`，不碰瓷
+        assert!(preview_gate(home, &home.join(".pipelines").join("x.json")).is_ok());
+        // 界外（tempdir 的父目录在 home 之外）
+        assert!(preview_gate(home, home.parent().unwrap()).is_err());
+        // 普通文件照常放行
+        assert!(preview_gate(home, &home.join("project").join("a.ts")).is_ok());
+    }
+
+    /// 会话路径闸门：生效会话根下的 .jsonl 放行；界外/异扩展名/相对路径/`..` 全拒。
+    #[test]
+    fn session_file_gate_only_accepts_jsonl_under_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        std::fs::create_dir_all(root.join("--proj--")).unwrap();
+        let session = root.join("--proj--").join("2026-10-28_x.jsonl");
+        std::fs::write(&session, "{}\n").unwrap();
+        std::fs::write(tmp.path().join("outside.jsonl"), "{}\n").unwrap();
+
+        // 根下的 .jsonl（含嵌套布局）放行
+        assert!(session_file_gate_under(&root, &session.to_string_lossy()).is_ok());
+
+        // 界外的 .jsonl：这是审查发现的回收站原语（trash 任意路径），必须拒
+        let err = session_file_gate_under(&root, &tmp.path().join("outside.jsonl").to_string_lossy()).unwrap_err();
+        assert!(err.contains("不在生效会话根"), "{err}");
+        // 异扩展名 / 相对路径 / `..` / 不存在
+        assert!(session_file_gate_under(&root, &session.to_string_lossy().replace(".jsonl", ".txt")).is_err());
+        assert!(session_file_gate_under(&root, "relative/x.jsonl").is_err());
+        assert!(session_file_gate_under(
+            &root,
+            &format!("{}/../escape.jsonl", root.join("--proj--").to_string_lossy())
+        )
+        .is_err());
+        assert!(session_file_gate_under(&root, &root.join("ghost.jsonl").to_string_lossy()).is_err());
+    }
+
+    /// root 锚定闸门：不是已打开标签页的 cwd 时，连目录列表都拿不到
+    /// （此前 root 只查"是个目录"，前端传 `C:\` 即全盘浏览/改写）。
+    #[test]
+    fn fs_cores_refuse_unanchored_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.txt"), "a").unwrap();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        let err = fs_list_dir_core(false, &ws_str, &ws_str).unwrap_err();
+        assert!(err.contains("已打开标签页"), "{err}");
+        let err = fs_write_edit_core(false, &ws_str, &ws.join("a.txt").to_string_lossy(), "b", None).unwrap_err();
+        assert!(err.contains("已打开标签页"), "{err}");
+        // 锚定正确时照常工作
+        let out = fs_list_dir_core(true, &ws_str, &ws_str).unwrap();
+        assert_eq!(out["entries"].as_array().unwrap().len(), 1);
     }
 }

@@ -19,9 +19,9 @@ async fn fs_list_dir_returns_string_names() {
     fs::create_dir(dir.path().join("sub")).unwrap();
 
     let root = dir.path().to_string_lossy().into_owned();
-    let out = piggy_lib::commands::fs_list_dir(root.clone(), root)
-        .await
-        .expect("fs_list_dir ok");
+    // `known_root` 由命令壳核对（root 是否已打开标签页的 cwd，2026-10-28 锚定闸门），
+    // 这里走核心函数直调：形状契约只关心返回值，锚定拒绝由 commands 的单测覆盖。
+    let out = piggy_lib::commands::fs_list_dir_core(true, &root, &root).expect("fs_list_dir ok");
 
     let entries = out["entries"].as_array().expect("entries 是数组");
     assert_eq!(entries.len(), 2, "应列出 2 个条目");

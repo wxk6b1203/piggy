@@ -373,6 +373,15 @@ impl Registry {
     pub fn snapshot(&self, tab_id: &str) -> Option<TabSnapshot> {
         self.tabs.get(tab_id).map(|t| snapshot_of(t, &Value::Null))
     }
+
+    /// `root` 是否是**某个已打开标签页**的工作目录（canonicalize 比较，穿透符号链接与
+    /// Windows 大小写差异）。资源浏览器/快捷编辑的 `root` 参数是前端传的，只有锚定在
+    /// 真实标签页的 cwd 上，"只能访问显式项目根子树"这条边界才不是前端自报的。
+    pub fn is_open_cwd(&self, root: &std::path::Path) -> bool {
+        self.tabs
+            .values()
+            .any(|t| crate::config::paths::same_path(&t.cwd, root))
+    }
 }
 
 /// 会话名的两个来源，按优先级取（用户 2026-09-23 报："点击重新生成标题之后，
@@ -1002,5 +1011,23 @@ mod tests {
             reaping_sites >= 4,
             "复活路径的回收点变少了（{reaping_sites} 处）—— 是不是把某处改回裸 `?` 了？"
         );
+    }
+
+    /// root 锚定核对：资源浏览器/快捷编辑的"项目根"必须是某个已打开标签页的 cwd
+    /// （canonicalize 比较——同一路径的不同写法要算同一个）。
+    #[test]
+    fn is_open_cwd_matches_tabs_by_canonical_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(None);
+        let mut tab = tab_with_name(None);
+        tab.cwd = tmp.path().to_path_buf();
+        reg.tabs.insert("t1".into(), tab);
+
+        // 已打开标签页的 cwd（含等价写法）命中
+        assert!(reg.is_open_cwd(tmp.path()));
+        assert!(reg.is_open_cwd(&tmp.path().join(".")));
+        // 界外路径、未注册目录不命中
+        assert!(!reg.is_open_cwd(&tmp.path().join("not-a-tab")));
+        assert!(!reg.is_open_cwd(&std::env::temp_dir()));
     }
 }

@@ -31,7 +31,7 @@ export interface PermissionModeInfo {
 
 /** 后端不可用时的兜底展示（只影响文案；真实行为始终由后端决定）。 */
 const FALLBACK: PermissionModeInfo[] = [
-  { id: 'read-only', label: '仅可查看', tools: 'read,grep,find,ls', unrestricted: false, pathGuard: false },
+  { id: 'read-only', label: '仅可查看', tools: 'read,grep,find,ls', unrestricted: false, pathGuard: true },
   {
     id: 'workspace',
     label: '工作区内修改',

@@ -22,17 +22,33 @@
  * 也别用 `ctx.cwd`：它在 pi 里是冻结值，`switch_session` 之后不会变。
  *
  * ## 覆盖范围（说清楚，不含糊）
- * 只拦截 `write` / `edit` 两个内置写工具。本档已用 `--tools` 白名单移除了 `bash` / `powershell`，
- * 但**扩展/自定义工具不在守护范围内**——若某扩展自带写文件工具，它能绕过本守卫。
+ * 拦两类：
+ * 1. `write` / `edit`（写边界）：目标必须在会话工作区内（本档已用 `--tools` 白名单移除
+ *    `bash` / `powershell`）。
+ * 2. `read` / `grep` / `find` / `ls`（读敏感目录）：pi 的读工具同样接受绝对路径与 `~` 展开
+ *    （`resolveToCwd()`），而 `~/.pi/agent/auth.json` 里存着**所有 API key 明文**——
+ *    不拦的话，受限档里一次 prompt injection 就能把密钥读进模型上下文（2026-10-28 审查发现）。
+ *    读侧不限制工作区（"仅可查看"承诺的是不改，不是不看系统文件），只对**敏感目录**
+ *    （`.pi` / `.ssh` / `.aws` / `.gnupg`，凭据与私钥所在）fail-closed。
+ *
+ * **扩展/自定义工具不在守护范围内**——若某扩展自带写文件工具，它能绕过本守卫。
+ * 敏感目录清单与 Rust 侧 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像，两边同步改。
  */
 
 import { realpathSync } from 'node:fs';
-import { dirname, isAbsolute, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 const PATH_SEP = process.platform === 'win32' ? ';' : ':';
 
-/** 本档拦截的工具名。 */
+/** 本档拦截写操作的工具名。 */
 export const PIGGY_GUARDED_TOOLS = ['write', 'edit'];
+
+/** 本档做敏感目录检查的读工具名（未提供 path 参数时以会话 cwd 为基准，天然放行）。 */
+export const PIGGY_GUARDED_READ_TOOLS = ['read', 'grep', 'find', 'ls'];
+
+/** 主目录下的敏感目录名（凭据/私钥所在）。与 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像。 */
+export const SENSITIVE_HOME_DIRS = ['.pi', '.ssh', '.aws', '.gnupg'];
 
 /**
  * 把路径规整为绝对真实路径。
@@ -154,6 +170,66 @@ export function checkWrite(event, roots, baseCwd) {
 }
 
 /**
+ * 主目录下的敏感根目录（规整后）。
+ * @param {string} [home] 主目录（默认 `os.homedir()`；测试注入用）
+ * @returns {string[]} 规整后的敏感目录绝对路径
+ */
+export function sensitiveRootsOf(home = homedir()) {
+  return SENSITIVE_HOME_DIRS.map((d) => canonicalize(join(home, d)));
+}
+
+/**
+ * 大小写不敏感的 `isInside`（Windows 文件系统不区分大小写；realpath 只保证**存在部分**
+ * 的 casing 一致，`os.homedir()` 与目标 realpath 的盘符/祖先大小写仍可能不同）。
+ * @param {string} target 已规整的绝对路径
+ * @param {string} root 已规整的绝对根目录
+ * @param {boolean} caseInsensitive
+ * @returns {boolean}
+ */
+export function isInsideFoldCase(target, root, caseInsensitive) {
+  return caseInsensitive
+    ? isInside(target.toLowerCase(), root.toLowerCase())
+    : isInside(target, root);
+}
+
+/**
+ * 判定一次读调用是否放行（敏感目录 fail-closed，其余放行）。
+ * 抽成纯函数以便脱离 pi 运行时直接测试。
+ *
+ * 与写边界不同，这里**不依赖** PIGGY_GUARD_ROOTS：敏感目录的判定基准是主目录，
+ * 与会话工作区无关（"仅可查看"档同样注入本守卫，且那档没有工作区写入语义）。
+ *
+ * @param {{toolName: string, input: unknown}} event 工具调用事件
+ * @param {object} opts
+ * @param {string[]} opts.sensitiveRoots `sensitiveRootsOf()` 的结果
+ * @param {string} opts.baseCwd 相对路径基准（与写侧一致 = 会话 cwd）
+ * @param {string} opts.home 主目录（`~` 展开基准）
+ * @param {boolean} [opts.caseInsensitive] Windows 为 true
+ * @returns {{block: true, reason: string}|undefined} 返回 undefined 表示放行
+ */
+export function checkRead(event, opts) {
+  if (!PIGGY_GUARDED_READ_TOOLS.includes(event?.toolName)) return undefined;
+
+  const raw = /** @type {{path?: unknown}} */ (event?.input)?.path;
+  // 未提供 path（或空串）：pi 以会话 cwd 为基准，不可能是敏感目录，放行
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+
+  // 镜像 pi 的 resolveToCwd()：`~` / `~/x` 展开到主目录（不展开的话 `~/.pi` 会被当成
+  // 工作区里的相对目录名，敏感判定全部落空）
+  let p = raw.trim();
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) p = join(opts.home, p.slice(1));
+  const abs = canonicalize(isAbsolute(p) ? p : resolve(opts.baseCwd, p));
+  const hit = opts.sensitiveRoots.find((root) => isInsideFoldCase(abs, root, opts.caseInsensitive ?? false));
+  if (hit) {
+    return {
+      block: true,
+      reason: `Piggy 守卫：${abs} 在敏感目录内（API key / 私钥所在），本档位不允许读取`,
+    };
+  }
+  return undefined;
+}
+
+/**
  * 扩展入口。
  * @param {import('@earendil-works/pi-coding-agent').ExtensionAPI} pi
  */
@@ -168,6 +244,13 @@ export default function piggyGuard(pi) {
   pi.on('tool_call', async (event, ctx) => {
     const roots = boundaryFor(ctx);
     const baseCwd = roots?.[0] ?? process.cwd();
-    return checkWrite(event, roots, baseCwd);
+    const write = checkWrite(event, roots, baseCwd);
+    if (write) return write;
+    return checkRead(event, {
+      sensitiveRoots: sensitiveRootsOf(),
+      baseCwd,
+      home: homedir(),
+      caseInsensitive: process.platform === 'win32',
+    });
   });
 }

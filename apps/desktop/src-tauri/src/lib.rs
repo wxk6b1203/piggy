@@ -315,7 +315,7 @@ pub fn run() {
                     match &reg.guard_script {
                         Some(p) => eprintln!("[piggy] 权限守卫: {}", p.display()),
                         None => eprintln!(
-                            "[piggy] 权限守卫脚本缺失：档位「工作区内修改」将拒绝启动（仅可查看/完全权限不受影响）"
+                            "[piggy] 权限守卫脚本缺失：限制档位（仅可查看 / 工作区内修改）将拒绝启动（完全权限不受影响）"
                         ),
                     }
                     match &reg.bridge_script {

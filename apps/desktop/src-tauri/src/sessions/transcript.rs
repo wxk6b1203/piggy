@@ -1683,15 +1683,17 @@ mod tests {
         let (_d, path) = write_session(&lines);
         let p = path.to_string_lossy().to_string();
 
-        // 向下续页：`after = 0` 从文件头读，页大小 4（12 轮里只取前 5 轮 → 后面还有）
-        let page = crate::commands::session_page(p.clone(), None, Some(0), Some(4))
+        // 向下续页：`after = 0` 从文件头读，页大小 4（12 轮里只取前 5 轮 → 后面还有）。
+        // 直调路由层 `session_page_routed`：临时夹具不在生效会话根下，会被命令层的
+        // 路径闸门（2026-10-28 收敛）拒绝——闸门有它自己的单测，这里测的是路由接线。
+        let page = crate::commands::session_page_routed(p.clone(), None, Some(0), Some(4))
             .await
             .unwrap();
         assert_eq!(page["rows"][0]["message"]["content"][0]["text"], "问题 1");
         assert!(page["hasNewer"].as_bool().unwrap());
 
         // 尾部那一页：不带 after
-        let tail = crate::commands::session_page(p.clone(), None, None, Some(4))
+        let tail = crate::commands::session_page_routed(p.clone(), None, None, Some(4))
             .await
             .unwrap();
         assert_eq!(tail["hasNewer"], false);
@@ -1699,7 +1701,7 @@ mod tests {
 
         // 换窗：带 before
         let o = outline(&path).unwrap();
-        let mid = crate::commands::session_page(p, Some(o.turns[5].end), None, Some(4))
+        let mid = crate::commands::session_page_routed(p, Some(o.turns[5].end), None, Some(4))
             .await
             .unwrap();
         assert_eq!(

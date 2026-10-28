@@ -369,8 +369,10 @@ pub fn opener_command(l: ShellLauncher) -> Option<&'static str> {
 /// ⚠️ 这个坑**不可能靠退出码发现**：必须真的看"浏览器开了没有"。
 ///
 /// 安全性：URL 已在 `mod.rs::validate_external_url` 过了一遍 scheme 白名单
-/// （只放行 http/https/mailto）与控制字符检查，而且是作为**独立 argv 元素**传进去的
-/// （Rust 会做 cmd 转义），`&` 这类字符进不了提权面 —— 真机验证过带 `&b=2` 的查询串能正常打开。
+/// （只放行 http/https/mailto）、控制字符检查，**并拒绝裸 `"` 与 `^`**。最后一条是关键：
+/// URL 作为独立 argv 元素传进来时 Rust 会做 cmd 转义，但 cmd.exe 不认 `\"` 反斜杠转义——
+/// URL 里的引号会翻转 cmd 的引号状态，其后的 `&` 就成了命令分隔符。校验把引号拦在前面，
+/// 查询串里的 `&` 才真正"进不了提权面"（真机验证过带 `&b=2` 的查询串能正常打开）。
 pub fn launch_url(url: &str, watch: Duration, env: &HashMap<String, String>) -> LaunchOutcome {
     let (args, extra) = url_launch_spec(url, env);
     spawn_watched("cmd.exe", &args, watch, env, &extra)

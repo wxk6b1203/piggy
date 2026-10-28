@@ -123,16 +123,17 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push("--tools".into());
         out.push(names.join(",").into());
     }
-    // 路径守卫（pi `-e`）：只有「工作区内修改」需要。
-    // 脚本缺失时**必须报错而不是静默降级**——否则用户以为修改被限制在 cwd 内、实际没有，
+    // 路径守卫（pi `-e`）：两个限制档都需要——
+    // 「工作区内修改」拦写边界，「仅可查看」拦读敏感目录（`~/.pi` 里存着 API key 明文，
+    // pi 的读工具接受绝对路径与 `~` 展开，不拦就会被 prompt injection 读进模型上下文）。
+    // 脚本缺失时**必须报错而不是静默降级**——否则用户以为限制还在、实际没有，
     // 这种"看起来安全"的假象比直接启动失败更危险。
     if args.permission.needs_path_guard() {
         let Some(guard) = args.guard_script.as_ref().filter(|p| p.is_file()) else {
-            return Err(
-                "GUARD_SCRIPT_MISSING: 权限档位「工作区内修改」需要守卫扩展 resources/piggy-guard.js，\
-                 但未找到。已拒绝以无边界的方式启动——请改用「仅可查看」/「完全权限」，或修复安装。"
-                    .to_string(),
-            );
+            return Err("GUARD_SCRIPT_MISSING: 限制档位（仅可查看 / 工作区内修改）需要守卫扩展 \
+                 resources/piggy-guard.js，但未找到。已拒绝以无边界的方式启动——\
+                 请改用「完全权限」，或修复安装。"
+                .to_string());
         };
         out.push("--extension".into());
         out.push(plain_path(guard).into());
@@ -255,7 +256,8 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
         cmd.env(k, v);
     }
     if args.permission.needs_path_guard() {
-        // 白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入。
+        // 写侧白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入
+        // （读侧敏感目录判定不依赖它，基准是主目录，见 piggy-guard.js 的 checkRead）。
         cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
     }
     // 前置检查：tokio 把 cwd 缺失与二进制缺失都报 NotFound，无法区分（M1 修正记录）
@@ -544,7 +546,9 @@ mod tests {
 
     #[test]
     fn restricted_modes_carry_the_allowlist() {
-        assert!(argv(&args(PermissionMode::ReadOnly)).contains(&"read,grep,find,ls".to_string()));
+        let mut ro = args(PermissionMode::ReadOnly);
+        ro.guard_script = Some(tmp_file("piggy-test-guard-readonly.js"));
+        assert!(argv(&ro).contains(&"read,grep,find,ls".to_string()));
         /* 插件的工具名要**加进**白名单（否则 `--tools` 把它们整个过滤掉，
         插件等于没注入）。名字来自插件的 `piggy-plugin.json`。 */
         let tmp = tempfile::tempdir().unwrap();
@@ -557,13 +561,14 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("index.js"), "// x\n").unwrap();
         let mut a = args(PermissionMode::ReadOnly);
+        a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
         a.bundled_extensions = vec![dir];
         let with_plugin = argv(&a);
         assert!(
             with_plugin.contains(&"read,grep,find,ls,ask_user_question,exit_plan_mode".to_string()),
             "插件工具没进白名单：{with_plugin:?}"
         );
-        // Workspace 档必须有守卫才允许组装 argv（缺守卫是硬错误，见下一个测试）
+        // 限制档必须有守卫才允许组装 argv（缺守卫是硬错误，见下一个测试）
         let mut a = args(PermissionMode::Workspace);
         a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
         let workspace = argv(&a);
@@ -575,31 +580,42 @@ mod tests {
     }
 
     #[test]
-    fn workspace_without_the_guard_refuses_to_start() {
-        // 守卫缺失必须是硬错误：静默启动 = 用户以为有边界、实际没有
-        let err = cli_args(&args(PermissionMode::Workspace)).unwrap_err();
-        assert!(err.starts_with("GUARD_SCRIPT_MISSING"), "{err}");
+    fn restricted_modes_without_the_guard_refuse_to_start() {
+        // 守卫缺失必须是硬错误：静默启动 = 用户以为有边界、实际没有。
+        // 两个限制档都成立——「仅可查看」靠守卫拦读敏感目录，缺了它 auth.json 就裸奔。
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
+            let err = cli_args(&args(mode)).unwrap_err();
+            assert!(err.starts_with("GUARD_SCRIPT_MISSING"), "{mode:?}: {err}");
+        }
     }
 
     #[test]
-    fn workspace_with_the_guard_injects_it() {
-        let mut a = args(PermissionMode::Workspace);
-        a.guard_script = Some(tmp_file("piggy-test-guard.js"));
-        let v = argv(&a);
-        let idx = v.iter().position(|x| x == "--extension").expect("应注入守卫");
-        assert!(v[idx + 1].ends_with("piggy-test-guard.js"));
+    fn restricted_modes_with_the_guard_inject_it() {
+        for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
+            let mut a = args(mode);
+            a.guard_script = Some(tmp_file("piggy-test-guard.js"));
+            let v = argv(&a);
+            let idx = v.iter().position(|x| x == "--extension").expect("应注入守卫");
+            assert!(v[idx + 1].ends_with("piggy-test-guard.js"), "{mode:?}");
+        }
     }
 
     #[test]
     fn bridge_is_injected_in_every_permission_mode() {
-        // 桥接只注册命令、不注册工具，所以不受 --tools 白名单影响，档位不该改变它是否注入
+        // 桥接只注册命令、不注册工具，所以不受 --tools 白名单影响，档位不该改变它是否注入。
+        // ReadOnly 也注入守卫（读敏感目录拦截），argv 里会有两个 `--extension`（守卫在前），
+        // 所以按"--extension 后面跟的是不是桥接"找，而不是取第一个 --extension。
         let bridge = tmp_file("piggy-test-bridge.js");
         for mode in [PermissionMode::ReadOnly, PermissionMode::Full] {
             let mut a = args(mode);
+            a.guard_script = Some(tmp_file("piggy-test-guard-bridge-mode.js"));
             a.bridge_script = Some(bridge.clone());
             let v = argv(&a);
-            let idx = v.iter().position(|x| x == "--extension").expect("应注入桥接");
-            assert!(v[idx + 1].ends_with("piggy-test-bridge.js"), "{mode:?}");
+            assert!(
+                v.windows(2)
+                    .any(|w| w[0] == "--extension" && w[1].ends_with("piggy-test-bridge.js")),
+                "{mode:?}: 应注入桥接 {v:?}"
+            );
         }
     }
 
@@ -717,6 +733,7 @@ mod tests {
         let dir = tmp.path().join("pi-ask");
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = args(PermissionMode::ReadOnly);
+        a.guard_script = Some(tmp_file("piggy-test-guard-bundled.js"));
         a.bundled_extensions = vec![dir.clone()];
         let argv = cli_args(&a).unwrap();
         assert!(argv.iter().any(|s| s == &std::ffi::OsString::from(&dir)));
@@ -750,6 +767,7 @@ mod tests {
         .unwrap();
 
         let mut a = args(PermissionMode::ReadOnly);
+        a.guard_script = Some(tmp_file("piggy-test-guard-override.js"));
         a.bundled_extensions = vec![over, normal];
         let argv = argv(&a);
         let tools = argv
@@ -848,9 +866,10 @@ mod tests {
     #[test]
     fn delegation_off_by_default_injects_nothing() {
         // 默认关：不注入策略、不传环境变量。判定与档位无关，因为压根没开。
-        // （Workspace 档需要守卫脚本，它由 `delegation_is_silently_off_in_restricted_modes` 覆盖）
+        // （两个限制档都需要守卫脚本，这里直接补上——守卫缺失的硬错误另测）
         for mode in [PermissionMode::ReadOnly, PermissionMode::Full] {
-            let a = args(mode);
+            let mut a = args(mode);
+            a.guard_script = Some(tmp_file("piggy-test-guard-delegation-off.js"));
             assert!(!argv(&a).contains(&"--append-system-prompt".to_string()), "{mode:?}");
             assert!(spawn_envs(&a).iter().all(|(k, _)| k != DELEGATION_ENV), "{mode:?}");
             assert!(!subagent_delegation_active(&a), "{mode:?}");
@@ -888,12 +907,10 @@ mod tests {
         for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
             let mut a = args(mode);
             a.subagent_policy = Some(policy_file(tmp.path()));
-            if mode == PermissionMode::Workspace {
-                // 守卫脚本缺失会让 Workspace 直接拒绝启动，先补上
-                let g = tmp.path().join("piggy-guard.js");
-                std::fs::write(&g, "// guard").unwrap();
-                a.guard_script = Some(g);
-            }
+            // 两个限制档都要求守卫脚本（缺失是硬错误），先补上
+            let g = tmp.path().join("piggy-guard.js");
+            std::fs::write(&g, "// guard").unwrap();
+            a.guard_script = Some(g);
             assert!(!argv(&a).contains(&"--append-system-prompt".to_string()), "{mode:?}");
             assert!(spawn_envs(&a).iter().all(|(k, _)| k != DELEGATION_ENV), "{mode:?}");
             assert!(!subagent_delegation_active(&a), "{mode:?}");

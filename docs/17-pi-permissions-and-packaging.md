@@ -26,13 +26,16 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 `write` 的入参描述就是 "Path to the file to write (relative or absolute)"，绝对路径直接落盘。
 因此"工作区内修改"**不能**只靠 `--tools read,grep,find,ls,write,edit` 成立 ——
 那只是拿掉了 shell，写文件仍然可以去任何地方。
+**读工具同样如此**（2026-10-28 审查发现）：`read`/`grep`/`find`/`ls` 也接受绝对路径与
+`~` 展开，`~/.pi/agent/auth.json` 里是 API key 明文 —— 不拦的话，"仅可查看"档里
+一次 prompt injection 就能把全部密钥读进模型上下文。
 
 ### 1.2 三个档位的真实定义
 
 | 档位 | `--tools` | 守卫扩展 | MCP | 实际能做什么 |
 |------|-----------|----------|-----|--------------|
-| **仅可查看** | `read,grep,find,ls` | 不注入 | `--no-mcp` | 只有只读工具，没有写、没有 shell；不拉起 MCP 服务器 |
-| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入 | `--no-mcp` | 可读写文件，写入被守卫限制在会话 cwd 内；**无 shell** |
+| **仅可查看** | `read,grep,find,ls` | 注入（读侧） | `--no-mcp` | 只有只读工具，没有写、没有 shell；读敏感目录（`.pi`/`.ssh`/`.aws`/`.gnupg`）被守卫拦截；不拉起 MCP 服务器 |
+| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入（写侧+读侧） | `--no-mcp` | 可读写文件，写入被守卫限制在会话 cwd 内、读敏感目录被拦；**无 shell** |
 | **完全权限** | **不传** | 不注入 | 不传（用你自己的配置） | 不限制：含 `bash`/`powershell` 与扩展/自定义工具 |
 
 **为什么限制档要显式 `--no-mcp`**（2026-10-09，pi 1.1.0 实测）：pi 1.1.0 的 MCP 过滤判据是
@@ -52,11 +55,17 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 
 ### 1.3 守卫扩展（`resources/piggy-guard.js`）
 
-- 挂 `tool_call` 钩子，只拦 `write` / `edit`；越界返回 `{ block: true, reason }`。
-- 白名单根从环境变量 `PIGGY_GUARD_ROOTS` 读（Piggy 传会话 cwd），**变量缺失时拒绝一切写入**（fail-closed）。
+- 挂 `tool_call` 钩子，拦两类：
+  - **写侧**（`write`/`edit`）：越界返回 `{ block: true, reason }`。
+  - **读侧**（`read`/`grep`/`find`/`ls`，2026-10-28 补）：目标落在主目录的敏感目录
+    （`.pi`/`.ssh`/`.aws`/`.gnupg`，与 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像）内即拦截。
+    读不限制工作区——"仅可查看"承诺的是不改，不是不看系统文件；只拦凭据/私钥所在。
+- 白名单根从环境变量 `PIGGY_GUARD_ROOTS` 读（Piggy 传会话 cwd），**变量缺失时拒绝一切写入**（fail-closed）；
+  读侧敏感目录判定不依赖这个变量（基准是主目录）。
 - 路径比较前先 `realpath`，**穿透符号链接** —— 否则 `workspace/link -> /etc` 能骗过前缀判断。
   目标不存在（新建文件）时向上找第一个存在的祖先再拼回尾段。
-- 边界比较按**路径段**而不是字符前缀，`/work-other` 不会被误判进 `/work`。
+- 边界比较按**路径段**而不是字符前缀，`/work-other` 不会被误判进 `/work`；
+  读侧敏感目录比较在 Windows 上大小写不敏感（文件系统如此）。
 
 两个失败模式都指向同一个原则：**宁可挡住，不可静默放开**。
 
@@ -320,7 +329,7 @@ pi 会因工具名冲突**直接退出** —— 而 Piggy 自己会跳过自带�
 
 ### 2.2d 写边界必须**每次调用现算**（2026-10-10 修）
 
-`piggy-guard.js` 是「工作区内修改」档**唯一**的边界执行点。它的边界原本读
+`piggy-guard.js` 是两个限制档（仅可查看 / 工作区内修改）**唯一**的边界执行点。它的边界原本读
 `PIGGY_GUARD_ROOTS` —— 而那是 Piggy 在 **spawn 那一刻**注入的（`pi/process.rs`），
 于是踩到一个静默越界：**会话的 cwd 可以在同一个进程里变**（当时的触发场景是预热 worker
 被复用去开别的项目的会话；预热池已在 2026-10-13 删除，见 docs/05 §5.7，

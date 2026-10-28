@@ -546,6 +546,22 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 - **主目录未知 = 拒绝服务而不是降级**：`fs_preview_read` 直接报错（沙箱不能"看不见就当没限制"），
   `agent_dir` 给相对 `.pi/agent` 并打一行警告。
 
+**2026-10-28 审查收敛（webview 文件/密钥原语的边界）**，四条闸门都在 Rust 侧、前端不可绕过：
+
+- `fs_preview_read`：沙箱 = 主目录子树 **减敏感目录**（`.pi`/`.ssh`/`.aws`/`.gnupg`，清单在
+  `paths::SENSITIVE_HOME_SUBDIRS`，与守卫扩展镜像）；判定前把 home 与目标都 canonicalize
+  （主目录内的符号链接/junction 指向界外不再放行）。`~/.pi` 里是 auth.json 的 API key 明文，
+  `auth_list` 的掩码不能被这条命令绕过。
+- `fs_list_dir` / `fs_write_edit`：`root` 必须锚定在**某个已打开标签页的工作目录**上
+  （registry 持锁核对，canonicalize 比较）——此前只查"是个目录"，前端传 `C:\` 即全盘浏览/改写；
+  边界判定升级为 `ensure_within_resolved`（穿透符号链接/junction）。
+- `session_delete` / `session_page` / `session_outline` / `session_todo` / `session_title_source` /
+  `session_rename` / `session_title_generate`：路径必须是**生效会话根下的 `.jsonl` 文件**
+  （`session_file_gate`；`session_delete` 会把文件移进回收站，此前收到任意路径都执行）。
+- `provider_discover`：**已存**密钥（auth.json/models.json/环境变量）只发往该提供商
+  **已配置的** API 地址（models.json `baseUrl`，未配置用 catalog 默认值）；地址不配对时匿名探测、
+  `keySource` 如实报 `none`。用户在表单里成对输入的密钥不受影响。
+
 **会话根的优先级**（`pi_files::resolve_sessions_root`，逐条照 `main.ts:675-679`）：
 `--session-dir` 旗标（Piggy 不用，它总是显式 `--session <文件>`）→
 `PI_CODING_AGENT_SESSION_DIR` → `settings.json` 的 `sessionDir` → 默认 `<agent>/sessions`。
@@ -935,6 +951,9 @@ URL 白名单、外链走宿主命令。为什么这么选、代价多少（解�
 `lib/externalLink.ts` 是外链的唯一出口：前端 `isExternalUrlAllowed` 先挡一道，
 宿主 `open_external_url`（Rust `validate_external_url`）再挡一道 —— 两侧白名单
 由 `src/test/markdown.test.tsx` 的"读 Rust 源码核对"用例钉住（改一处就红）。
+宿主那道 2026-10-28 加了第二条：**裸 `"` 与 `^` 一律拒**（cmd.exe 元字符——Windows 经
+`cmd /c start "" <url>` 打开 URL，Rust 的 `\"` 转义 cmd 不认，引号会翻转 cmd 的引号
+状态让 `&` 变命令分隔符；合法 URL 里这两个字符本就该编码为 %22 / %5E）。
 「关于 Piggy 与许可」里的许可原文链接也改走这条路（原先 `<a target="_blank">`
 在 Tauri 里可能什么都不发生，或把应用界面导航走）。
 

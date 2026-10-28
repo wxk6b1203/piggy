@@ -4,14 +4,17 @@
 //!
 //! | 档位 | `--tools` | 守卫扩展 | 语义 |
 //! |------|-----------|----------|------|
-//! | 仅可查看 | `read,grep,find,ls` | 不需要 | 根本没有写/shell 工具 |
-//! | 工作区内修改 | `read,grep,find,ls,write,edit` | 注入 | 无 shell；写工具被路径边界拦截 |
+//! | 仅可查看 | `read,grep,find,ls` | 注入 | 没有写/shell 工具；读工具拦敏感目录（`~/.pi` 存 API key 明文，见 guard 的读侧策略） |
+//! | 工作区内修改 | `read,grep,find,ls,write,edit` | 注入 | 无 shell；写工具被路径边界拦截，读工具拦敏感目录 |
 //! | 完全权限 | 不传（交给 pi 自身默认） | 不需要 | 含 bash/powershell 与插件工具 |
 //!
 //! ## 两个必须记住的事实
 //! 1. pi 的 `write`/`edit` **不做工作区边界检查**（`path-utils.ts` 的 `resolveToCwd` 只展开 `~`），
 //!    所以「工作区内修改」不能只靠 `--tools` 成立，必须配 `resources/piggy-guard.js`。
-//! 2. 「完全权限」**不传** `--tools`：一旦传了显式白名单，pi 的插件/自定义工具会被一并排除，
+//! 2. pi 的 `read`/`grep`/`find`/`ls` 同样接受绝对路径与 `~` 展开——「仅可查看」若不注入守卫，
+//!    一次 prompt injection 就能把 `~/.pi/agent/auth.json` 读进模型上下文（2026-10-28 审查发现），
+//!    所以两个限制档都注入守卫，只是拦截内容不同（写边界 / 读敏感目录）。
+//! 3. 「完全权限」**不传** `--tools`：一旦传了显式白名单，pi 的插件/自定义工具会被一并排除，
 //!    而这正是自定义 pi 打包场景要保住的东西。不传 = 不限制。
 
 use std::path::{Path, PathBuf};
@@ -61,9 +64,11 @@ impl PermissionMode {
         }
     }
 
-    /// 是否需要注入路径守卫扩展（只有允许写文件、又要求边界时才是）。
+    /// 是否需要注入路径守卫扩展。两个限制档都需要：
+    /// 「工作区内修改」靠它拦写边界，「仅可查看」靠它拦读敏感目录（`~/.pi` 等）。
+    /// 「完全权限」刻意不注入 = 不限制。
     pub fn needs_path_guard(self) -> bool {
-        matches!(self, Self::Workspace)
+        matches!(self, Self::ReadOnly | Self::Workspace)
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -119,10 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn only_workspace_mode_needs_the_path_guard() {
+    fn restricted_modes_need_the_path_guard() {
+        assert!(PermissionMode::ReadOnly.needs_path_guard(), "仅可查看也要拦读敏感目录");
         assert!(PermissionMode::Workspace.needs_path_guard());
-        // 只读档没有写工具可拦；完全权限档刻意不拦
-        assert!(!PermissionMode::ReadOnly.needs_path_guard());
+        // 完全权限档刻意不拦（不限制就是它的语义）
         assert!(!PermissionMode::Full.needs_path_guard());
     }
 

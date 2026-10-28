@@ -1075,7 +1075,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
      fs_list_dir 的 OsString 在 mock 里是字符串，真机才炸）。 */
   permission_modes: () => ({
     modes: [
-      { id: 'read-only', label: '仅可查看', tools: 'read,grep,find,ls', unrestricted: false, pathGuard: false },
+      { id: 'read-only', label: '仅可查看', tools: 'read,grep,find,ls', unrestricted: false, pathGuard: true },
       {
         id: 'workspace',
         label: '工作区内修改',
@@ -1424,7 +1424,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     emit(`pty:out:${id}`, { exited: true });
     return null;
   },
-  session_delete: () => {},
+  /* session_* 的路径闸门镜像（真实闸门在 commands.rs::session_file_gate，含 canonicalize；
+     mock 只有字符串，镜像"必须是 .jsonl"这一层——mock 比真机宽松会被当成 bug）。 */
+  session_delete: (a) => {
+    if (!String(a.path ?? '').endsWith('.jsonl')) throw new Error('只允许操作会话 .jsonl 文件');
+  },
   session_rename: (args) => {
     // 重命名也走同一张覆盖表：不然门禁里"重命名之后列表变了"会与生成标题不一致
     mockSessionNames.set(String(args.path ?? ''), String(args.name ?? ''));
@@ -1502,6 +1506,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return null;
   },
   fs_preview_read: (a) => {
+    // 敏感目录镜像（真实闸门在 commands.rs::preview_gate：主目录子树 ∩ 非敏感目录；
+    // mock 只有字符串，镜像"密钥目录不预览"这一层——mock 比真机宽松会被当成 bug）
+    if (/[\\/]\.(pi|ssh|aws|gnupg)([\\/]|$)/.test(String(a.path)))
+      throw new Error('敏感目录（.pi / .ssh / .aws / .gnupg）不允许预览：API key 与私钥所在');
     // 内容随扩展名变化：这样语法高亮/行号/换行等渲染路径在 mock 下也**真的被走到**，
     // 而不是所有文件都吐同一段文本（那会让高亮相关的回归悄无声息地漏掉）。
     const path = String(a.path);
