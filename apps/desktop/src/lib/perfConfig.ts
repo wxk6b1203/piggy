@@ -32,6 +32,7 @@ export interface PerfConfigLoaded {
   pi_source?: string | null;
   pi_path?: string | null;
   subagent_delegation?: boolean;
+  confirm_full_permission?: boolean;
   title_max_chars?: number;
   title_source?: string;
   title_model?: string | null;
@@ -52,6 +53,7 @@ export interface PerfConfigPatch {
   piSource?: string;
   piPath?: string | null;
   subagentDelegation?: boolean;
+  confirmFullPermission?: boolean;
   titleMaxChars?: number;
   titleSource?: string;
   /* `null` 是有意义的取值：清掉覆盖（回到"跟会话自己的模型"/"用 pi 默认档"），
@@ -82,6 +84,7 @@ export async function savePerfConfig(patch: PerfConfigPatch): Promise<void> {
     ['piSource', patch.piSource],
     ['piPath', patch.piPath],
     ['subagentDelegation', patch.subagentDelegation],
+    ['confirmFullPermission', patch.confirmFullPermission],
     ['titleMaxChars', patch.titleMaxChars],
     ['titleSource', patch.titleSource],
     ['titleModel', patch.titleModel],

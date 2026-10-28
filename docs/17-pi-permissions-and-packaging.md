@@ -46,6 +46,15 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
 但"限制档去启动本地进程 / 打开网络出口"与这一档对用户的承诺不符 ——
 **"我不给模型这个工具"和"我不启动这个东西"是两件事**。
 
+### 1.2b 切到「完全权限」的确认（2026-10-28）
+
+- 默认 `~/.piggy/config.json` 的 `confirm_full_permission = true`：**本次运行第一次**
+  切到 Full / 新建 Full 会话时弹 Rust 原生确认框；批准后本次运行不再重复。
+- 设置 → 通用 →「完全权限确认」可关闭；关闭后完全静默。**关闭这个开关本身也会弹一次
+  原生确认**（`perf_config_save` 里判 false），避免被攻破的 webview 静默把它关掉。
+- 为什么不做成默认静默：Full = 移除 pi 的工具白名单（bash / 任意文件），这是权限模型里
+  唯一一次"从受限到不受限"的跃迁，不能只靠 webview 里的 React 确认（那个可以被伪造）。
+
 「完全权限」刻意**不传** `--tools`：一旦传显式白名单，pi 会把**扩展与自定义工具一并过滤掉**
 （`cli/args.ts:307-308` 帮助文本明说 "Applies to built-in, extension, and custom tools"）。
 不传 = 不限制，这才是"完全权限"该有的语义，也是自定义 pi 场景下插件工具能用的唯一档位。

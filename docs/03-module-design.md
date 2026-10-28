@@ -598,8 +598,9 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
   raw JSON 编辑器看不到明文也不会误删。
 - `tab_create`：**新 cwd 静默**（不再弹框）；可信工作区只影响预览——原生 picker / 已有会话
   文件头自动进入可信根，新 cwd 第一次预览时确认一次。显式请求「完全权限」或切到 Full
-  时用原生确认，但**本次运行只问一次**（`TrustedPaths.full_permission_confirmed`），
-  之后同一次运行内的 Full 切档/新 tab 不再弹。确认框都由 Rust 调
+  时用原生确认，**本次运行只问一次**（`TrustedPaths.full_permission_confirmed`），
+  且设置 → 通用里有一个「完全权限确认」开关（`config.json:confirm_full_permission`，
+  默认开）；关闭后完全静默，但**关闭这个开关本身**也要原生确认一次。确认框都由 Rust 调
   `tauri-plugin-dialog`，webview 改不了文案与结果。
 
 **会话根的优先级**（`pi_files::resolve_sessions_root`，逐条照 `main.ts:675-679`）：

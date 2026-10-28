@@ -45,6 +45,7 @@ export function GeneralSection() {
   const [perm, setPerm] = useState<string>('workspace');
   const [perf, setPerf] = useState({ max_workers: 8, idle_timeout_min: 10 });
   const [delegation, setDelegation] = useState(false);
+  const [confirmFull, setConfirmFull] = useState(true);
   // source 是 Windows 事故后加的：默认地址出问题时，得能一眼看出这个目录是
   // 默认值、settings.json 里的自定义值、还是 PI_CODING_AGENT_SESSION_DIR 环境变量。
   const [sessionDir, setSessionDir] = useState<{
@@ -86,6 +87,7 @@ export function GeneralSection() {
       idle_timeout_min: number;
       permission_mode?: string;
       subagent_delegation?: boolean;
+      confirm_full_permission?: boolean;
       title_max_chars?: number;
       title_source?: string;
       title_model?: string | null;
@@ -94,6 +96,7 @@ export function GeneralSection() {
       .then((c) => {
         setPerf({ max_workers: c.max_workers, idle_timeout_min: c.idle_timeout_min });
         setDelegation(c.subagent_delegation ?? false);
+        setConfirmFull(c.confirm_full_permission ?? true);
         if (c.permission_mode) setPerm(c.permission_mode);
         setTitleCfg({
           maxChars: c.title_max_chars ?? 20,
@@ -138,6 +141,7 @@ export function GeneralSection() {
     permissionMode?: string;
     perf?: typeof perf;
     delegation?: boolean;
+    confirmFull?: boolean;
     title?: { maxChars: number; source: string; model: string; thinking: string };
     /** 预览滚动条位置（off / left / right） */
     rail?: RailPlacement;
@@ -156,6 +160,7 @@ export function GeneralSection() {
         piSource: patch.piSource,
         piPath: patch.piPath,
         subagentDelegation: patch.delegation,
+        confirmFullPermission: patch.confirmFull,
         titleMaxChars: patch.title?.maxChars,
         titleSource: patch.title?.source,
         titleModel: patch.title?.model,
@@ -464,6 +469,22 @@ export function GeneralSection() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="pg-settings-row">
+        <span className="pg-settings-label">完全权限确认</span>
+        <Switch
+          checked={confirmFull}
+          disabled={busy}
+          onChange={(v) => {
+            setConfirmFull(v);
+            void save({ confirmFull: v });
+          }}
+        />
+        <span className="pg-fg-dim">
+          开启时，本次运行第一次切到「完全权限」会弹原生确认（默认开）；关闭后完全静默。
+          关闭本身也会弹一次原生确认。
+        </span>
       </div>
 
       <div className="pg-settings-row">

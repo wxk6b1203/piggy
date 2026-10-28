@@ -65,6 +65,11 @@ async fn confirm_full_permission_once(
     title: &str,
     message: &str,
 ) -> bool {
+    // 设置项关掉 = 完全静默（用户显式承担风险；关闭动作本身也要原生确认，见 perf_config_save）
+    let enabled = state.perf.read().map(|c| c.confirm_full_permission).unwrap_or(true);
+    if !enabled {
+        return true;
+    }
     if state.trusted.lock().await.full_permission_confirmed {
         return true;
     }
@@ -591,12 +596,30 @@ pub async fn perf_config_save(
     transcript_detail: Option<String>,
     // 要注入哪些捆绑插件（docs/06 §7）。不传 = 保持既有值。
     bundled_plugins: Option<Vec<String>>,
+    // 切到完全权限前是否弹原生确认（默认开）。不传 = 保持既有值。
+    confirm_full_permission: Option<bool>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
     let mut cfg = app::perf_config_load();
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
+    if let Some(v) = confirm_full_permission {
+        /* 关闭确认本身也是安全语义变更：不许 webview 静默改。 */
+        if !v && cfg.confirm_full_permission {
+            let ok = crate::ui_confirm::confirm(
+                &app,
+                "关闭「完全权限」确认？",
+                "关闭后，切到完全权限 / 新建完全权限会话将不再弹原生确认框。\n\n\
+                 完全权限下的 pi 可以执行任意命令、读写任意文件；只在你明确接受这个风险时关闭。",
+            )
+            .await;
+            if !ok {
+                return Err("已取消：关闭完全权限确认需要用户原生确认".to_string());
+            }
+        }
+        cfg.confirm_full_permission = v;
+    }
     if let Some(n) = title_max_chars {
         cfg.title_max_chars = n.clamp(1, 200);
     }

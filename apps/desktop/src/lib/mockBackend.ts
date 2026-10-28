@@ -34,6 +34,7 @@ const appCfg: {
   pi_source: string;
   pi_path: string | null;
   subagent_delegation: boolean;
+  confirm_full_permission: boolean;
 } = {
   max_workers: 8,
   idle_timeout_min: 10,
@@ -41,6 +42,8 @@ const appCfg: {
   pi_source: 'system',
   pi_path: null,
   subagent_delegation: false,
+  // 与 Rust `PerfConfig` 的默认值一致：完全权限确认默认开
+  confirm_full_permission: true,
 };
 
 let mockTabSeq = 0;
@@ -1026,6 +1029,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     // 不传 = 保持既有值（与真机 perf_config_save 的读-改-写语义一致）
     if (a.subagentDelegation !== undefined) {
       appCfg.subagent_delegation = Boolean(a.subagentDelegation);
+    }
+    if (a.confirmFullPermission !== undefined) {
+      appCfg.confirm_full_permission = Boolean(a.confirmFullPermission);
     }
     // 标题那几项**真的写进去**：以前 mock 把这一段整个丢掉了，于是设置页在 mock 下
     // "改完再读回来还是默认值"——门禁也就永远核对不了"选完模型到底存了什么"。

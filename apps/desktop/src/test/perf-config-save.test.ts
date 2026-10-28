@@ -53,9 +53,21 @@ describe('savePerfConfig', () => {
   it('没提到的字段**不塞进参数**（塞 null 会被后端当成"要改"）', async () => {
     await savePerfConfig({ bundledPlugins: ['pi-ask'] });
     const args = sentSave();
-    for (const key of ['titleModel', 'titleThinking', 'piPath', 'subagentDelegation', 'transcriptDetail']) {
+    for (const key of [
+      'titleModel',
+      'titleThinking',
+      'piPath',
+      'subagentDelegation',
+      'confirmFullPermission',
+      'transcriptDetail',
+    ]) {
       expect(Object.hasOwn(args, key), `${key} 不该出现在这次调用里`).toBe(false);
     }
+  });
+
+  it('「完全权限确认」开关的 false 也要真的写出去', async () => {
+    await savePerfConfig({ confirmFullPermission: false });
+    expect(sentSave().confirmFullPermission).toBe(false);
   });
 
   it('`null` 是有意义的取值（清空覆盖），不能被当成"没传"', async () => {
