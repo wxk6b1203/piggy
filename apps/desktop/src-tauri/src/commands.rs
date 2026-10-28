@@ -34,9 +34,6 @@ pub struct AppState {
 pub struct TrustedPaths {
     pub roots: std::collections::HashSet<PathBuf>,
     pub previews: std::collections::HashSet<PathBuf>,
-    /// 本次 app 运行里用户已经批准过「完全权限」一次；之后的切档/新 tab 不再重复弹框。
-    /// 不是持久化选择：重启后还会再确认一次。
-    pub full_permission_confirmed: bool,
 }
 
 /// 解析为真实路径；不存在/无权限时退回原路径（调用方随后会自己报错）。
@@ -53,31 +50,6 @@ fn is_trusted(paths: &std::collections::HashSet<PathBuf>, p: &Path) -> bool {
     paths.iter().any(|approved| {
         crate::config::paths::same_path(approved, &real) || crate::config::paths::is_under(approved, &real)
     })
-}
-
-/// 本次运行内「完全权限」只确认一次：第一次弹原生框，批准后记住；重启后重新确认。
-///
-/// 完全权限会移除 pi 的工具白名单，是安全语义的跃迁，不能由 webview 静默请求；
-/// 但每次切档都弹也很烦——用户批准一次等于对本次运行的所有 full 切档授权。
-async fn confirm_full_permission_once(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    title: &str,
-    message: &str,
-) -> bool {
-    // 设置项关掉 = 完全静默（用户显式承担风险；关闭动作本身也要原生确认，见 perf_config_save）
-    let enabled = state.perf.read().map(|c| c.confirm_full_permission).unwrap_or(true);
-    if !enabled {
-        return true;
-    }
-    if state.trusted.lock().await.full_permission_confirmed {
-        return true;
-    }
-    let ok = crate::ui_confirm::confirm(app, title, message).await;
-    if ok {
-        state.trusted.lock().await.full_permission_confirmed = true;
-    }
-    ok
 }
 
 /// sessionDir 改动是否需要原生确认（纯函数）：只有"变成一个新的非空目录"才需要。
@@ -312,21 +284,6 @@ pub async fn tab_create(
         Some(s) => PermissionMode::parse(s)?,
         None => default_permission,
     };
-    /* 完全权限 = 无 --tools 白名单 = bash/powershell + 任意文件。这是安全语义的跃迁，
-    不能由 webview 静默请求；但**本次运行确认过一次后不再重复弹**（用户明确抱怨每次切档
-    都弹框）。确认状态在 `TrustedPaths.full_permission_confirmed`，只存内存。 */
-    if permission == PermissionMode::Full
-        && !confirm_full_permission_once(
-            &app,
-            &state,
-            "启用完全权限？",
-            "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
-             本次运行内只会询问这一次；之后的完全权限切档/新建不再弹框。",
-        )
-        .await
-    {
-        return Err("已取消：完全权限需要用户原生确认".to_string());
-    }
     let target = match session_path {
         Some(p) => SessionTarget::Path(p),
         // 新会话：预创建空文件并以 --session 打开 → pi 立即写 header 并置 flushed，
@@ -389,18 +346,6 @@ pub async fn pi_set_permission_mode(
     mode: String,
 ) -> Result<Value, String> {
     let mode = PermissionMode::parse(&mode)?;
-    if mode == PermissionMode::Full
-        && !confirm_full_permission_once(
-            &app,
-            &state,
-            "切换到这个标签页的完全权限？",
-            "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
-             切换会重启这个标签页的 pi 进程。本次运行内只会询问这一次。",
-        )
-        .await
-    {
-        return Err("已取消：完全权限需要用户原生确认".to_string());
-    }
     let out = crate::sessions::registry::set_permission_unlocked(&state.registry, &sink(&app), &tab_id, mode).await?;
     save_default_permission(&state, mode);
     Ok(out)
@@ -411,24 +356,8 @@ pub async fn pi_set_permission_mode(
 /// 与 `pi_set_permission_mode` 的区别：那个是"切这个标签页的档位"（要重启它的 worker），
 /// 这个是"以后新开的会话默认用哪一档"。设置页里传 `tabId: ''` 去调前者会直接报错。
 #[tauri::command]
-pub async fn pi_set_default_permission(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    mode: String,
-) -> Result<Value, String> {
+pub async fn pi_set_default_permission(state: State<'_, AppState>, mode: String) -> Result<Value, String> {
     let parsed = PermissionMode::parse(&mode)?;
-    if parsed == PermissionMode::Full
-        && !confirm_full_permission_once(
-            &app,
-            &state,
-            "把「完全权限」设为默认？",
-            "以后新开的每个会话都会默认使用完全权限（可执行任意命令、读写任意文件）。\n\n\
-             本次运行内只会询问这一次。",
-        )
-        .await
-    {
-        return Err("已取消：默认完全权限需要用户原生确认".to_string());
-    }
     {
         let mut reg = state.registry.lock().await;
         reg.default_permission = parsed;
@@ -596,30 +525,12 @@ pub async fn perf_config_save(
     transcript_detail: Option<String>,
     // 要注入哪些捆绑插件（docs/06 §7）。不传 = 保持既有值。
     bundled_plugins: Option<Vec<String>>,
-    // 切到完全权限前是否弹原生确认（默认开）。不传 = 保持既有值。
-    confirm_full_permission: Option<bool>,
 ) -> Result<(), String> {
     // 读-改-写：config.json 里还有 permission_mode 等字段，
     // 从零构造会让「在设置里改并发数」顺手把权限档位重置——必须保留既有值。
     let mut cfg = app::perf_config_load();
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
-    if let Some(v) = confirm_full_permission {
-        /* 关闭确认本身也是安全语义变更：不许 webview 静默改。 */
-        if !v && cfg.confirm_full_permission {
-            let ok = crate::ui_confirm::confirm(
-                &app,
-                "关闭「完全权限」确认？",
-                "关闭后，切到完全权限 / 新建完全权限会话将不再弹原生确认框。\n\n\
-                 完全权限下的 pi 可以执行任意命令、读写任意文件；只在你明确接受这个风险时关闭。",
-            )
-            .await;
-            if !ok {
-                return Err("已取消：关闭完全权限确认需要用户原生确认".to_string());
-            }
-        }
-        cfg.confirm_full_permission = v;
-    }
     if let Some(n) = title_max_chars {
         cfg.title_max_chars = n.clamp(1, 200);
     }

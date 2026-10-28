@@ -139,12 +139,6 @@ pub struct PerfConfig {
     /// 新建标签页的默认权限档位（pi/permission.rs）。缺省 = 工作区内修改。
     #[serde(default)]
     pub permission_mode: crate::pi::permission::PermissionMode,
-    /// 切到「完全权限」前是否弹原生确认（默认 **true**）。
-    ///
-    /// 关掉之后，本次运行内第一次切 Full 也不再弹——这是用户显式承担风险的开关。
-    /// 打开时也只在本次运行第一次切 Full 时问一次（之后由 `TrustedPaths` 记住）。
-    #[serde(default = "default_confirm_full_permission")]
-    pub confirm_full_permission: bool,
     /// pi 二进制来源（pi/discovery.rs）。**默认 system**：打包虽捆绑自定义 pi，
     /// 但不劫持用户机器上已有的安装。
     #[serde(default)]
@@ -251,18 +245,12 @@ fn default_idle_timeout_min() -> u32 {
     10
 }
 
-/// 「完全权限」确认默认开：安全语义的跃迁不能默认静默。
-fn default_confirm_full_permission() -> bool {
-    true
-}
-
 impl Default for PerfConfig {
     fn default() -> Self {
         Self {
             max_workers: default_max_workers(),
             idle_timeout_min: default_idle_timeout_min(),
             permission_mode: crate::pi::permission::PermissionMode::default(),
-            confirm_full_permission: default_confirm_full_permission(),
             pi_source: crate::pi::discovery::PiSource::default(),
             pi_path: None,
             subagent_delegation: false,
@@ -353,7 +341,6 @@ mod tests {
         let cfg: PerfConfig = serde_json::from_str(raw).expect("多了一个旧字段不该让整份配置失败");
         assert_eq!(cfg.max_workers, 8, "同一条里的其它字段要照读");
         assert_eq!(cfg.bundled_plugins, vec!["pi-ask".to_string()]);
-        assert!(cfg.confirm_full_permission, "老配置缺字段 → 完全权限确认默认开");
         // 存回去时那个字段自然消失（字段本身已删）
         let back = serde_json::to_string(&cfg).unwrap();
         assert!(!back.contains("warm_worker"), "删掉的字段不该再被写回：{back}");
