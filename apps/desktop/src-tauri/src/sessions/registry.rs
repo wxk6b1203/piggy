@@ -11,7 +11,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+
+/// 一个 worker 存活超过这个时长算"稳定"：它此后的崩溃视为**新的**崩溃事件，
+/// 崩溃复活预算重新计（见 [`Registry::claim_revive`]）。10 分钟取的是"最坏崩溃环
+/// 每小时也最多复活 6 次"的上界——既不让长寿标签页累计死锁，也不会高频churn。
+const STABLE_WORKER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 休眠/换档间隙（tab 在、worker 无）时 watcher 的轮询间隔；唤醒装回 worker 即恢复事件驱动。
+const WATCHER_SLEEP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub struct Tab {
     pub tab_id: String,
@@ -28,6 +36,10 @@ pub struct Tab {
     pub permission: PermissionMode,
     /// 最近一次被使用的时间（任意 IPC 命令经 worker_of 触碰；05 §4.1 空闲回收依据）
     pub last_activity: Instant,
+    /// 当前 worker 的装机时间——崩溃预算的"稳定期"判据（见 [`Registry::claim_revive`]）。
+    /// worker 被摘下（休眠/换档/崩溃待复活）时置 `None`；`take_if` 消费后也置 `None`，
+    /// 一个崩溃"集"内预算只重置一次。
+    pub worker_since: Option<Instant>,
 }
 
 impl Tab {
@@ -220,6 +232,7 @@ impl Registry {
             deliberate: false,
             permission,
             last_activity: Instant::now(),
+            worker_since: Some(Instant::now()),
         };
         worker.set_state(WorkerState::Ready);
         let snapshot = snapshot_of(&tab, &state);
@@ -299,6 +312,7 @@ impl Registry {
         };
         tab.deliberate = true; // watcher 不得复活
         tab.restarts = 0; // 休眠/唤醒非崩溃，不计入重启上限
+        tab.worker_since = None; // worker 摘下，稳定期判据随之作废
         if let Some(w) = tab.worker.take() {
             w.shutdown().await;
         }
@@ -348,6 +362,7 @@ impl Registry {
         };
         tab.deliberate = true;
         tab.restarts = 0;
+        tab.worker_since = None;
         if let Some(w) = tab.worker.take() {
             w.shutdown().await;
             return true;
@@ -521,6 +536,7 @@ fn begin_set_permission(
     }
     tab.permission = mode;
     tab.restarts = 0; // 换档不是崩溃，不占崩溃重启预算
+    tab.worker_since = None;
     Ok((tab.worker.take(), tab.session_file.clone()))
 }
 
@@ -611,6 +627,12 @@ impl Registry {
     ///
     /// 占位（`reviving`）是必须的：没有它，两个并发调用会给同一个 tab 拉起两个 pi，
     /// 而两个进程写同一份会话文件正是 `open_files` 互斥要避免的事。
+    ///
+    /// **崩溃预算按"集"计，不按终身计**（2026-10-28 审查 H5 配套缺陷）：上一个 worker
+    /// 存活超过 [`STABLE_WORKER`] = 一次独立的崩溃事件，预算重新从 1 数。否则长期开着
+    /// 标签页累计崩满 3 次后永久卡死——报错里让用户"手动重试"，而手动重试走的正是
+    /// 这条路。`take_if` 消费掉时间戳：同一集内（worker 一直没能活着装回来）只重置
+    /// 一次，连环崩溃仍会在第 4 次认领时被拒。
     pub fn claim_revive(&mut self, tab_id: &str) -> Result<ReviveClaim, String> {
         if let Some(w) = self.ready_worker(tab_id)? {
             return Ok(ReviveClaim::Ready(w));
@@ -621,9 +643,15 @@ impl Registry {
         let Some(tab) = self.tabs.get_mut(tab_id) else {
             return Err(format!("tab 不存在: {tab_id}"));
         };
+        if tab.worker_since.take_if(|t| t.elapsed() >= STABLE_WORKER).is_some() {
+            tab.restarts = 0;
+        }
         tab.restarts += 1;
         if tab.restarts > 3 {
-            return Err(format!("tab {tab_id} 重启次数超限（>3），请手动重试"));
+            return Err(format!(
+                "tab {tab_id} 重启次数超限（连续 >3 次）：请稍候手动重试，\
+                 或关闭标签页后重新打开该会话"
+            ));
         }
         let job = ReviveJob {
             tab_id: tab_id.to_string(),
@@ -672,6 +700,7 @@ impl Registry {
             tab.session_id = state["sessionId"].as_str().map(String::from);
             tab.last_cursor = leaf_id;
             tab.worker = Some(worker.clone());
+            tab.worker_since = Some(Instant::now());
             if tab.deliberate {
                 tab.deliberate = false;
             }
@@ -821,46 +850,86 @@ fn fill_cursor_if_empty(tab: &mut Tab, leaf: Option<String>) -> bool {
     true
 }
 
+/// watcher 重定位的结果。
+enum WatchTarget {
+    /// 跟住当前 worker（拿到它的状态通道）
+    Worker(watch::Receiver<WorkerState>),
+    /// tab 还在、worker 被回收（休眠/换档/复活间隙）：稍后再看
+    Sleeping,
+    /// tab 已关闭：watcher 退场
+    Gone,
+}
+
+/// 取 tab **当前** worker 的状态通道（锁内微秒级，纯定位不做别的）。
+async fn watcher_target(shared: &SharedRegistry, tab_id: &str) -> WatchTarget {
+    let reg = shared.lock().await;
+    match reg.tabs.get(tab_id) {
+        None => WatchTarget::Gone,
+        Some(t) => match &t.worker {
+            Some(w) => WatchTarget::Worker(w.subscribe_state()),
+            None => WatchTarget::Sleeping,
+        },
+    }
+}
+
+/// 崩溃 watcher（docs/01 §2.3）：状态变 Crashed 且非主动关闭 → 退避后自动复活（≤3 次/集）。
+///
+/// **随 tab 存活，不随 worker**（2026-10-28 审查 H5 修正）：旧实现订阅 tab_create 时
+/// 那个 worker 的通道，看到 Stopped 或通道关闭就退出——而休眠唤醒、切权限档、崩溃复活
+/// 全都会换一个新的 `WorkerInner`（新通道），于是"自动复活"每个 tab 终身最多发生一次，
+/// 之后 pi 崩溃只剩一条事件、要等用户交互才懒复活。现在通道关闭时 watcher **重订当前
+/// worker**；休眠中的 tab（无 worker）以 250ms 轮询等它装回来；只有 tab 本身被关掉才退场。
+///
+/// 连环崩溃的节流由 [`Registry::claim_revive`] 的预算负责（一集内 ≤3 次，稳定期后重置）；
+/// 复活失败时本 watcher 会回到循环里对**仍装着的旧 worker** 的 Crashed 再走一轮退避——
+/// 这才真正兑现"≤3 次，指数退避"（旧实现的通道在一次 Crashed 后不再变化，重试从未发生）。
 pub fn spawn_tab_watcher(shared: SharedRegistry, sink: Arc<dyn EventSink>, tab_id: String) {
     tokio::spawn(async move {
-        let mut rx = {
-            let reg = shared.lock().await;
-            let Some(tab) = reg.tabs.get(&tab_id) else { return };
-            let Some(w) = &tab.worker else { return };
-            w.subscribe_state()
-        };
-        loop {
-            if rx.changed().await.is_err() {
-                return;
-            }
-            let s = *rx.borrow();
-            if s == WorkerState::Crashed {
-                let deliberate = {
-                    let reg = shared.lock().await;
-                    reg.tabs.get(&tab_id).map(|t| t.deliberate).unwrap_or(true)
-                };
-                if deliberate {
-                    return;
+        'watch: loop {
+            // 定位当前 worker；休眠中就等一小会再看，tab 没了才退场
+            let mut rx = loop {
+                match watcher_target(&shared, &tab_id).await {
+                    WatchTarget::Worker(rx) => break rx,
+                    WatchTarget::Sleeping => tokio::time::sleep(WATCHER_SLEEP_POLL).await,
+                    WatchTarget::Gone => return,
                 }
-                let attempt = {
-                    let reg = shared.lock().await;
-                    reg.tabs.get(&tab_id).map(|t| t.restarts).unwrap_or(0)
-                };
-                if attempt >= 3 {
-                    sink.emit_json(
-                        &format!("pi:state:{tab_id}"),
-                        json!({"state": WorkerState::Crashed, "gaveUp": true}),
-                    );
-                    return;
+            };
+            loop {
+                // 订阅当下就检查一次：Crashed 可能发生在两次订阅之间（watch 只报"变化"）。
+                // borrow_and_update 把当前值标记为已见，后续 changed() 只等新变化——
+                // 否则重订同一个死 worker 会把同一条 Crashed 反复处理成自旋。
+                if *rx.borrow_and_update() == WorkerState::Crashed {
+                    let deliberate = {
+                        let reg = shared.lock().await;
+                        reg.tabs.get(&tab_id).map(|t| t.deliberate).unwrap_or(true)
+                    };
+                    if !deliberate {
+                        let attempt = {
+                            let reg = shared.lock().await;
+                            reg.tabs.get(&tab_id).map(|t| t.restarts).unwrap_or(0)
+                        };
+                        if attempt >= 3 {
+                            sink.emit_json(
+                                &format!("pi:state:{tab_id}"),
+                                json!({"state": WorkerState::Crashed, "gaveUp": true}),
+                            );
+                            return;
+                        }
+                        let backoff = std::time::Duration::from_secs(1u64 << attempt);
+                        tokio::time::sleep(backoff).await;
+                        /* 复活**不在锁里**跑（`revive_unlocked` 自己在三段之间取锁）：
+                        握手预算是 40s，握着全局锁等它会把所有标签页的命令一起卡住。 */
+                        let _ = revive_unlocked(&shared, &sink, &tab_id).await;
+                        // 复活成功 → tab.worker 已是新通道；失败 → 旧 worker 仍装着且是
+                        // Crashed。两种情况都回到外层重新定位，让下一轮判定接管。
+                        continue 'watch;
+                    }
+                    // deliberate（休眠/换档/关闭途中的自然崩溃）：不复活，等通道关闭后跟新 worker
                 }
-                let backoff = std::time::Duration::from_secs(1u64 << attempt);
-                tokio::time::sleep(backoff).await;
-                /* 复活**不在锁里**跑（`revive_unlocked` 自己在三段之间取锁）：
-                握手预算是 40s，握着全局锁等它会把所有标签页的命令一起卡住。 */
-                let _ = revive_unlocked(&shared, &sink, &tab_id).await;
-            }
-            if s == WorkerState::Stopped {
-                return;
+                // 等这个 worker 的下一个变化；通道关闭（worker 被替换/释放）→ 重新定位
+                if rx.changed().await.is_err() {
+                    continue 'watch;
+                }
             }
         }
     });
@@ -889,6 +958,7 @@ mod tests {
             deliberate: false,
             permission: PermissionMode::Workspace,
             last_activity: Instant::now(),
+            worker_since: None,
         }
     }
 
@@ -968,6 +1038,41 @@ mod tests {
         };
         assert!(err.contains("重启次数超限"), "第 4 次该拒绝：{err}");
         assert!(!reg.reviving.contains("t1"), "被拒的认领留下了占位");
+    }
+
+    /// 稳定期后的崩溃 = 新事件，预算重置；但**一个集只重置一次**（worker_since 被消费），
+    /// 连环崩溃仍会在第 4 次认领时被拒——这是"终身 3 次"死锁与"无限复活"之间的正确落点。
+    #[test]
+    fn revive_budget_resets_once_after_a_stable_worker() {
+        let mut reg = Registry::new(None);
+        let mut t = tab_with_name(None);
+        t.restarts = 3; // 上一集已用满
+        t.worker_since = Some(Instant::now() - STABLE_WORKER - std::time::Duration::from_secs(1));
+        reg.tabs.insert("t1".into(), t);
+
+        // 稳定期后的第一次认领：预算重置（restarts 3 → 1），照常拿到现场
+        assert!(matches!(reg.claim_revive("t1").unwrap(), ReviveClaim::Claimed(_)));
+        reg.release_revive("t1");
+        // 同一集内（worker 没能活着装回来，worker_since 已被消费）：继续累积
+        assert!(matches!(reg.claim_revive("t1").unwrap(), ReviveClaim::Claimed(_)));
+        reg.release_revive("t1");
+        assert!(matches!(reg.claim_revive("t1").unwrap(), ReviveClaim::Claimed(_)));
+        reg.release_revive("t1");
+        assert!(reg.claim_revive("t1").is_err(), "同一集的第 4 次必须拒绝");
+    }
+
+    /// 刚装机就崩不算新事件：年轻的 worker_since 不触发预算重置。
+    #[test]
+    fn young_worker_does_not_reset_the_budget() {
+        let mut reg = Registry::new(None);
+        let mut t = tab_with_name(None);
+        t.restarts = 3;
+        t.worker_since = Some(Instant::now());
+        reg.tabs.insert("t1".into(), t);
+        assert!(
+            reg.claim_revive("t1").is_err(),
+            "短命 worker 的崩溃要继续占预算（连环崩溃必须被挡住）"
+        );
     }
 
     #[test]

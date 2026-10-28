@@ -152,6 +152,14 @@ pub struct TabDescriptor {
 ```
 
 - 职责：tab↔worker↔session 三方绑定、会话文件互斥（02 §6.3）、空闲回收计时（订阅各 worker 的 settled 事件）、worker 复活（switch_session + 游标补齐）；
+- **崩溃 watcher 随 tab 存活，不随 worker**（2026-10-28 H5 修正）：休眠唤醒、切权限档、
+  崩溃复活都会换一个新的 `WorkerInner`（新状态通道），旧实现订阅 tab_create 时那个 worker、
+  通道一关就退出，"自动复活"实际每个 tab 终身最多一次。现在通道关闭时 watcher 重订**当前**
+  worker，休眠中的 tab（无 worker）以 250ms 轮询等它装回来，只有 tab 关闭才退场；
+  复活失败时同一 watcher 会按退避继续重试（这真正兑现了"≤3 次，指数退避"）；
+- **崩溃预算按"集"计**（同日修正）：上一个 worker 存活 ≥10 分钟（`STABLE_WORKER`）后的
+  崩溃视为新事件、预算重置，但一个集只重置一次（`worker_since` 消费制）——旧实现按
+  tab 终身累计，崩满 3 次后连报错里说的"手动重试"也走同一条路，死锁；
 - 事件：`tab-updated` / `worker-state-changed` → 前端。
 
 ### 2.8 `sessions/list.rs` — 会话列表

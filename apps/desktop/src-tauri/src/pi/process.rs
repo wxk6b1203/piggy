@@ -400,18 +400,23 @@ async fn run_reader(worker: Worker, sink: Arc<dyn EventSink>, stdout: ChildStdou
         handle_line(&line, &worker, &sink, &mut coalescer).await;
     }
     coalescer.flush().await;
+    /* 先定终态、再收 pending、最后收尸（2026-10-28 顺序修正，H4）：
+    状态置成 Crashed/Stopped 之后，`ready_worker` 的快路径**立刻**不再发放这个 worker；
+    若先收 pending，"收完 → 置态"之间插进来的请求只能靠 `wait_for_response` 的
+    终态监听兜底。child 回收放最后——shutdown 持有 child 锁做 taskkill 时这里要等它，
+    不能让收尸推迟终态的公布。 */
+    let final_state = if worker.state() == WorkerState::Stopped {
+        WorkerState::Stopped
+    } else {
+        worker.set_state(WorkerState::Crashed);
+        WorkerState::Crashed
+    };
     worker.fail_all_pending("pi worker exited").await;
     // 回收子进程句柄并 wait（防僵尸）
     let exit_code = if let Some(mut child) = worker.child.lock().await.take() {
         child.wait().await.ok().and_then(|s| s.code()).unwrap_or(-1)
     } else {
         -1
-    };
-    let final_state = if worker.state() == WorkerState::Stopped {
-        WorkerState::Stopped
-    } else {
-        worker.set_state(WorkerState::Crashed);
-        WorkerState::Crashed
     };
     let stderr_tail: Vec<String> = worker.stderr_tail.lock().await.iter().cloned().collect();
     /* 退出通知的通道名也要读**当前**绑定（预热池重绑之后，这个进程属于新标签页；

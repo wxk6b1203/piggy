@@ -51,6 +51,15 @@ impl WorkerInner {
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `bash` 的兜底预算（**不是期望等待**）：跑的是用户命令，长构建可能要几分钟。
+/// 超时只表示"不再等最终回执"，进程侧命令仍在跑，可 `abort_bash` 中止后重试。
+/// 此前传 `None` = 永不超时，配合 pending 回收窗口会永久挂死调用方（2026-10-28 审查 H4）。
+const BASH_FALLBACK_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// `compact` 的兜底预算：一次 LLM 总结整段会话，慢模型 + 大会话可能远超普通命令。
+/// 同上，此前是 `None`（永不超时）。
+const COMPACT_FALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// **冷启动预算**：同一个 pi 进程里只有**第一条** stdin 之前的命令要付这笔钱
 /// （起 node、读配置、加载扩展、读会话文件），所以凡是可能成为第一条的命令都用它。
 ///
@@ -128,30 +137,66 @@ impl WorkerInner {
             self.pending.lock().await.remove(&id);
             return Err(format!("pi worker stdin closed: {e}"));
         }
-        // 超时的两件事必须一起做：把 pending 槽收掉（否则一条永远不回的命令会留个死槽），
-        // 以及**把真实等了多久写进错误里** —— 报错文案是用户唯一能拿到的现场，
-        // "等了 10s" 与 "等了 40s" 对判断"pi 卡住了"还是"pi 只是慢"是决定性的。
-        // 用 `select!`（而不是 `timeout(t, rx)`）是为了让"收槽"就发生在超时那一支里：
-        // 若应答同时到达，`handle_line` 已取走槽并成功 send，这里 remove 打空（无害）。
+        // 等待期同时盯住 worker 终态与时长预算，语义见 [`Self::wait_for_response`]。
+        self.wait_for_response(command, id, rx, timeout).await
+    }
+
+    /// 等待应答的三件事：**应答本身 / worker 终态 / 时长预算**。
+    ///
+    /// 终态那一支是 2026-10-28 审查（H4）补的：`fail_all_pending` 是 pending 的唯一
+    /// 批量清理点、只在 run_reader 退出时跑一次——落在它**之后**插入 pending 的请求，
+    /// 进程死透也无人收槽，调用方（Tauri 命令）会**永久挂死**。而 run_reader 退出时
+    /// 总会把 watch 置成 Crashed/Stopped，盯住这条通道就能在那一刻了结所有等待，
+    /// 错误信息也比"永远不回"有用得多。
+    ///
+    /// 超时的两件事必须一起做：把 pending 槽收掉（否则一条永远不回的命令会留个死槽），
+    /// 以及**把真实等了多久写进错误里** —— 报错文案是用户唯一能拿到的现场，
+    /// "等了 10s" 与 "等了 40s" 对判断"pi 卡住了"还是"pi 只是慢"是决定性的。
+    async fn wait_for_response(
+        &self,
+        command: &str,
+        id: u64,
+        rx: oneshot::Receiver<Value>,
+        timeout: Option<Duration>,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let mut state_rx = self.state_rx.clone();
         let wait = async {
             match rx.await {
                 Ok(v) => Ok(v),
                 Err(_) => Err(format!("pi worker dropped response for {command}")),
             }
         };
-        match timeout {
-            None => wait.await,
-            Some(t) => {
-                let started = Instant::now();
-                tokio::select! {
-                    r = wait => r,
-                    _ = tokio::time::sleep(t) => {
+        tokio::pin!(wait);
+        // 没有预算时用"永不就绪"的 future 占位，select 的形状保持一种。
+        let deadline = timeout.map(|t| tokio::time::Instant::from_std(started + t));
+        loop {
+            tokio::select! {
+                r = &mut wait => return r,
+                changed = state_rx.changed() => {
+                    if changed.is_err() {
+                        // 发送端被释放（WorkerInner 所有引用消失）：与终态同义
                         self.pending.lock().await.remove(&id);
-                        Err(format!(
-                            "pi command '{command}' timed out（等了 {}s 没回）",
-                            started.elapsed().as_secs_f32().round() as u64
-                        ))
+                        return Err(format!("pi worker exited before responding to {command}"));
                     }
+                    let s = *state_rx.borrow_and_update();
+                    if matches!(s, WorkerState::Crashed | WorkerState::Stopped) {
+                        self.pending.lock().await.remove(&id);
+                        return Err(format!("pi worker exited before responding to {command}（state={s:?}）"));
+                    }
+                    // 非终态（Spawning/Ready/Busy）：继续等
+                }
+                _ = async {
+                    match deadline {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    self.pending.lock().await.remove(&id);
+                    return Err(format!(
+                        "pi command '{command}' timed out（等了 {}s 没回）",
+                        started.elapsed().as_secs_f32().round() as u64
+                    ));
                 }
             }
         }
@@ -303,7 +348,8 @@ impl WorkerInner {
     }
 
     pub async fn bash(&self, command: &str) -> Result<Value, String> {
-        self.request_checked("bash", json!({ "command": command }), None).await
+        self.request_checked("bash", json!({ "command": command }), Some(BASH_FALLBACK_TIMEOUT))
+            .await
     }
 
     pub async fn export_html(&self, output_path: Option<&str>) -> Result<Value, String> {
@@ -357,7 +403,7 @@ impl WorkerInner {
         if let Some(ci) = custom_instructions {
             p["customInstructions"] = json!(ci);
         }
-        self.request_checked("compact", p, None).await
+        self.request_checked("compact", p, Some(COMPACT_FALLBACK_TIMEOUT)).await
     }
 
     pub async fn abort_bash(&self) -> Result<Value, String> {
@@ -494,5 +540,106 @@ mod tests {
     #[test]
     fn kill_process_tree_tolerates_missing_pid() {
         kill_process_tree(None);
+    }
+
+    /* ---------------- request 的等待语义（2026-10-28 审查 H4） ---------------- */
+
+    use super::{Worker, WorkerInner, WorkerState};
+    use serde_json::json;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{mpsc, watch, Mutex};
+
+    /// 构造一个不挂子进程的假 worker：状态通道、pending 表、stdin 通道都是真的，
+    /// 足够测 `request` 的等待语义（不需要真 pi）。
+    ///
+    /// 返回值带上 stdin 接收端：**调用方必须把它活着拿住**——接收端一掉，通道关闭，
+    /// `request` 会在"插入 pending → send 失败 → 收槽"之间瞬间失败，等不到要测的分支。
+    fn fake_worker(state: WorkerState) -> (Worker, mpsc::Receiver<String>) {
+        let (state_tx, state_rx) = watch::channel(state);
+        let (stdin_tx, stdin_rx) = mpsc::channel(8);
+        (
+            Arc::new(WorkerInner {
+                tab_id: "t-test".into(),
+                cwd: std::path::PathBuf::from("/tmp"),
+                stdin_tx,
+                pending: Mutex::new(HashMap::new()),
+                next_id: AtomicU64::new(0),
+                state_tx,
+                state_rx,
+                stderr_tail: Mutex::new(VecDeque::new()),
+                child: Mutex::new(None),
+            }),
+            stdin_rx,
+        )
+    }
+
+    /// **H4 的核心场景**：请求落在 `fail_all_pending` 之后（唯一的批量清理点已跑过）、
+    /// 进程随后死透 → 等待必须在状态变终态的那一刻了结，而不是永久挂死。
+    /// 这里先手动跑一遍 `fail_all_pending`（模拟它已经收过一轮），再插入请求。
+    #[tokio::test]
+    async fn terminal_state_settles_requests_that_missed_fail_all_pending() {
+        let (w, _stdin_rx) = fake_worker(WorkerState::Ready);
+        w.fail_all_pending("pi worker exited").await; // 模拟清理点已跑过
+        let t = tokio::spawn({
+            let w = w.clone();
+            async move { w.raw_request("bash", json!({}), None).await }
+        });
+        // 等请求真的进了 pending（stdin 通道有容量，send 立即成功）
+        while w.pending.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        w.set_state(WorkerState::Crashed); // run_reader 退出时总会置终态
+        let err = tokio::time::timeout(Duration::from_secs(2), t)
+            .await
+            .expect("等待必须在终态后立刻了结（此前会永久挂死）")
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("exited before responding"), "{err}");
+    }
+
+    /// bash / compact 有兜底预算：worker 活着但不回包时按超时收槽，文案保留"真实等了多久"。
+    #[tokio::test]
+    async fn timeout_branch_keeps_its_wording() {
+        let (w, _stdin_rx) = fake_worker(WorkerState::Ready); // 不回包也不死
+        let err = w
+            .raw_request("get_state", json!({}), Some(Duration::from_millis(80)))
+            .await
+            .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("等了"), "{err}");
+        assert!(w.pending.lock().await.is_empty(), "超时必须收掉 pending 槽");
+    }
+
+    /// 正常路径不受影响：应答先到就按应答走，pending 槽由 handle_line 取走。
+    #[tokio::test]
+    async fn response_still_wins() {
+        let (w, _stdin_rx) = fake_worker(WorkerState::Ready);
+        let t = tokio::spawn({
+            let w = w.clone();
+            async move {
+                w.raw_request("get_state", json!({}), Some(Duration::from_secs(5)))
+                    .await
+            }
+        });
+        while w.pending.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // 模拟 handle_line：取走槽并发对应 id 的应答
+        w.pending
+            .lock()
+            .await
+            .remove(&0)
+            .expect("id 0 的槽应在")
+            .send(json!({ "success": true, "data": { "ok": 1 } }))
+            .expect("接收端应还在等");
+        let out = tokio::time::timeout(Duration::from_secs(2), t)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["data"]["ok"], 1);
     }
 }

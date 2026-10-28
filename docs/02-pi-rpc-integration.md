@@ -77,7 +77,13 @@ spawn 后依次：`get_state` →（若返回 `sessionFile`）绑定 tab↔sessi
   | 冷启动 `COLD_START_TIMEOUT` | **40s** | `get_state`、`switch_session`、`new_session`、`set_session_name`、`get_available_models` | 同一个 pi 进程里只有**第一条**命令要付"起 node + 读配置 + 加载扩展 + 读会话"的钱；凡是**可能成为第一条**的都用它（一次性标题生成就是 spawn 完不握手直接发 `set_session_name`） |
   | 默认 | 30s | 其余有界命令 | — |
   | 长命令 `LONG_TIMEOUT` | **120s** | `get_entries`、`get_messages`、`get_tree` | 要读很久但**一定有尽头**。此前传 `None`＝永不超时，而一个卡住的 pi 会把调用方永久挂住 —— `revive` 就是在 registry 锁里调 `get_entries` 的 |
-  | 无超时 | — | `bash`、`compact` | 真的可能跑几分钟（LLM 压缩 / 用户命令），靠 `abort`/`abort_bash` 取消 |
+  | 兜底 `BASH_FALLBACK_TIMEOUT` / `COMPACT_FALLBACK_TIMEOUT` | **600s / 300s** | `bash`、`compact` | 真的可能跑几分钟（用户命令 / LLM 压缩），2026-10-28 前是 `None`＝永不超时；超时只表示"不再等最终回执"，进程侧可 `abort`/`abort_bash` 中止。兜底数值不是期望等待 |
+- **等待期同时盯住 worker 终态**（2026-10-28 H4）：`fail_all_pending` 是 pending 的唯一批量清理点、
+  只在 run_reader 退出时跑一次——落在它之后插入的请求，进程死透也无人收槽，调用方（Tauri 命令）
+  会**永久挂死**。现在 `request` 的等待 select 里多一支 `state_rx.changed()`：状态变
+  Crashed/Stopped 的那一刻，该 worker 上所有等待中的请求立即以 `pi worker exited before
+  responding…` 了结；`run_reader` 也改为**先定终态、再收 pending、最后收尸**，让
+  `ready_worker` 尽早停止发放死 worker。
 - **握手不持 registry 锁**（2026-10-09）：`create_tab` 拆成「锁内 spawn → **锁外握手** → 锁内记账」
   （`sessions/registry.rs::create_tab_unlocked`），复活同理（`revive_unlocked`，带"正在复活"占位）。
   此前握手在锁里，一次慢启动会让所有标签页的命令一起等（契约用例 C15 量这条：最久一次抢锁 < 300ms，红检 480ms）；
