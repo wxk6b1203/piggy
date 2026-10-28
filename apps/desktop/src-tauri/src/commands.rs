@@ -27,12 +27,16 @@ pub struct AppState {
 
 /// 可信路径表：只有用户经由原生 picker / 原生确认框批准过的路径才进来。
 ///
-/// `roots`：`pick_directory` 选过的目录、`tab_create` 对工作区外目录确认过的路径；
-/// `previews`：`fs_preview_read` / `fs_image_data` 对工作区外文件确认过的路径。
+/// `roots`：`pick_directory` 选过的目录、已有会话文件头里的 cwd、以及用户第一次预览
+/// 某个新工作区时确认过的根。
+/// `previews`：`fs_preview_read` / `fs_image_data` 对主目录/temp 里非工作区文件确认过的路径。
 #[derive(Default)]
 pub struct TrustedPaths {
     pub roots: std::collections::HashSet<PathBuf>,
     pub previews: std::collections::HashSet<PathBuf>,
+    /// 本次 app 运行里用户已经批准过「完全权限」一次；之后的切档/新 tab 不再重复弹框。
+    /// 不是持久化选择：重启后还会再确认一次。
+    pub full_permission_confirmed: bool,
 }
 
 /// 解析为真实路径；不存在/无权限时退回原路径（调用方随后会自己报错）。
@@ -51,14 +55,24 @@ fn is_trusted(paths: &std::collections::HashSet<PathBuf>, p: &Path) -> bool {
     })
 }
 
-/// 新的 cwd 是否需要原生确认（纯函数，便于单测）。
+/// 本次运行内「完全权限」只确认一次：第一次弹原生框，批准后记住；重启后重新确认。
 ///
-/// **不再对 home 免确认**（2026-10-28 复核）：webview 可以 `tab_create({cwd: "~"})`，
-/// 而预览的"工作区内免确认"会把整个 home 当成已批准工作区——`.npmrc`/`.git-credentials`
-/// 又能被静默读走。现在只有**用户通过原生 picker 选过**或**此前后原生确认过**的目录
-/// 才进 `approved`；已有会话的 cwd 由会话文件头单独信任（见 `tab_create`）。
-pub fn cwd_needs_confirmation(cwd: &Path, approved: &std::collections::HashSet<PathBuf>) -> bool {
-    !is_trusted(approved, &canonical_or_self(cwd))
+/// 完全权限会移除 pi 的工具白名单，是安全语义的跃迁，不能由 webview 静默请求；
+/// 但每次切档都弹也很烦——用户批准一次等于对本次运行的所有 full 切档授权。
+async fn confirm_full_permission_once(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    title: &str,
+    message: &str,
+) -> bool {
+    if state.trusted.lock().await.full_permission_confirmed {
+        return true;
+    }
+    let ok = crate::ui_confirm::confirm(app, title, message).await;
+    if ok {
+        state.trusted.lock().await.full_permission_confirmed = true;
+    }
+    ok
 }
 
 /// sessionDir 改动是否需要原生确认（纯函数）：只有"变成一个新的非空目录"才需要。
@@ -264,15 +278,14 @@ pub async fn tab_create(
     /* 打开**已有会话**时，cwd 以会话文件头为准，而不是前端传的字符串：
     前端（被攻破时）可以传一个合法会话文件 + `cwd: C:\`，让 tab 的工作区变成整盘。
     会话文件必须先在生效会话根下（`session_file_gate`），所以文件头里的 cwd 是用户
-    此前用过的目录；这个路径视为已批准，不再弹确认。 */
-    let mut cwd_trusted_by_session = false;
+    此前用过的目录；把它加入可信工作区（预览不再逐次确认）。 */
     if let Some(p) = session_path.as_deref() {
         session_file_gate(p)?;
         if let Some(meta) = list::parse_session_file(Path::new(p)) {
             if let Some(header_cwd) = meta.cwd.as_deref().map(PathBuf::from) {
                 if header_cwd.is_dir() {
                     cwd = header_cwd;
-                    cwd_trusted_by_session = true;
+                    state.trusted.lock().await.roots.insert(canonical_or_self(&cwd));
                 }
             }
         }
@@ -283,41 +296,9 @@ pub async fn tab_create(
             cwd.display()
         ));
     }
-    /* 新的工作区必须由**原生**确认框批准：webview 可以调 `tab_create({cwd:"C:\\"})`
-    甚至 `cwd:"~"`，只靠前端选择器/文案不是边界。原生 picker 选过的目录已进白名单；
-    已有会话的 cwd 由上面的会话文件头信任。 */
-    if !cwd_trusted_by_session {
-        let needs_confirm = {
-            let already_open = {
-                let reg = state.registry.lock().await;
-                reg.tabs.values().any(|t| crate::config::paths::same_path(&t.cwd, &cwd))
-            };
-            if already_open {
-                false
-            } else {
-                let trusted = state.trusted.lock().await;
-                cwd_needs_confirmation(&cwd, &trusted.roots)
-            }
-        };
-        if needs_confirm {
-            let ok = crate::ui_confirm::confirm(
-                &app,
-                "把这个目录作为工作区？",
-                &format!(
-                    "目录：{}\n\n\
-                     确认后 pi 会把这个目录当作本会话的工作区：工作区内的文件预览不再逐次确认，\
-                     「工作区内修改」档的写入边界也以它为准。\n\
-                     只有你主动打开/选择的目录才应继续。",
-                    cwd.display()
-                ),
-            )
-            .await;
-            if !ok {
-                return Err(format!("已取消：未确认把 {} 作为工作区", cwd.display()));
-            }
-            state.trusted.lock().await.roots.insert(canonical_or_self(&cwd));
-        }
-    }
+    /* 新 cwd **静默**（用户要求：不要在每次开新会话时弹框）。工作区是否"可信"不在这里
+    判定：它只影响文件预览，第一次预览某个新工作区的文件时再一次性确认（见
+    `preview_access_gate`）——把确认放在真正发生读取的时刻，而不是建 tab 的时刻。 */
     // 权限档位：显式传入 > 持久化默认。
     // 非法值**直接报错**而不是静默回落——权限档悄悄降级成更宽松的一档，
     // 是本项目最不能接受的失败方式（用户会以为限制还在）。
@@ -327,19 +308,19 @@ pub async fn tab_create(
         None => default_permission,
     };
     /* 完全权限 = 无 --tools 白名单 = bash/powershell + 任意文件。这是安全语义的跃迁，
-    不能由 webview 静默请求：若默认档不是完全权限，必须原生确认。默认档本身是用户
-    在设置页显式改的（`pi_set_default_permission` 也会对 Full 做原生确认）。 */
-    if permission == PermissionMode::Full && default_permission != PermissionMode::Full {
-        let ok = crate::ui_confirm::confirm(
+    不能由 webview 静默请求；但**本次运行确认过一次后不再重复弹**（用户明确抱怨每次切档
+    都弹框）。确认状态在 `TrustedPaths.full_permission_confirmed`，只存内存。 */
+    if permission == PermissionMode::Full
+        && !confirm_full_permission_once(
             &app,
+            &state,
             "启用完全权限？",
             "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
-             只有在你确实需要时才继续。",
+             本次运行内只会询问这一次；之后的完全权限切档/新建不再弹框。",
         )
-        .await;
-        if !ok {
-            return Err("已取消：完全权限需要用户原生确认".to_string());
-        }
+        .await
+    {
+        return Err("已取消：完全权限需要用户原生确认".to_string());
     }
     let target = match session_path {
         Some(p) => SessionTarget::Path(p),
@@ -403,23 +384,17 @@ pub async fn pi_set_permission_mode(
     mode: String,
 ) -> Result<Value, String> {
     let mode = PermissionMode::parse(&mode)?;
-    if mode == PermissionMode::Full {
-        let current = {
-            let reg = state.registry.lock().await;
-            reg.tabs.get(&tab_id).map(|t| t.permission)
-        };
-        if current != Some(PermissionMode::Full) {
-            let ok = crate::ui_confirm::confirm(
-                &app,
-                "切换到这个标签页的完全权限？",
-                "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
-                 切换会重启这个标签页的 pi 进程。",
-            )
-            .await;
-            if !ok {
-                return Err("已取消：完全权限需要用户原生确认".to_string());
-            }
-        }
+    if mode == PermissionMode::Full
+        && !confirm_full_permission_once(
+            &app,
+            &state,
+            "切换到这个标签页的完全权限？",
+            "完全权限会移除 pi 的工具白名单：它可以执行任意命令、读写任意文件。\n\n\
+             切换会重启这个标签页的 pi 进程。本次运行内只会询问这一次。",
+        )
+        .await
+    {
+        return Err("已取消：完全权限需要用户原生确认".to_string());
     }
     let out = crate::sessions::registry::set_permission_unlocked(&state.registry, &sink(&app), &tab_id, mode).await?;
     save_default_permission(&state, mode);
@@ -437,18 +412,17 @@ pub async fn pi_set_default_permission(
     mode: String,
 ) -> Result<Value, String> {
     let parsed = PermissionMode::parse(&mode)?;
-    let current = { state.registry.lock().await.default_permission };
-    if parsed == PermissionMode::Full && current != PermissionMode::Full {
-        let ok = crate::ui_confirm::confirm(
+    if parsed == PermissionMode::Full
+        && !confirm_full_permission_once(
             &app,
+            &state,
             "把「完全权限」设为默认？",
             "以后新开的每个会话都会默认使用完全权限（可执行任意命令、读写任意文件）。\n\n\
-             建议只在确实需要时开启。",
+             本次运行内只会询问这一次。",
         )
-        .await;
-        if !ok {
-            return Err("已取消：默认完全权限需要用户原生确认".to_string());
-        }
+        .await
+    {
+        return Err("已取消：默认完全权限需要用户原生确认".to_string());
     }
     {
         let mut reg = state.registry.lock().await;
@@ -1348,27 +1322,54 @@ fn preview_gate(home_real: &Path, target_real: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 预览的**工作区口径**：默认只允许已打开标签页的 cwd；主目录内的其它文件要一次原生确认。
+/// 预览的**工作区口径**：可信工作区直接放行；新工作区第一次预览时确认一次；
+/// home/temp 里的非工作区文件逐文件确认；其它位置拒绝。
 ///
-/// 这是 H3 的收敛：旧 `fs_preview_read` 静默放行整个 home，webview 被攻破时
-/// `.npmrc`/`.git-credentials` 等都能读走。现在：
-/// - 工作区内 → 放行；
-/// - home 内、工作区外 → 原生确认一次（记住这个文件）；
-/// - home 外且不在任何工作区 → 拒绝。
+/// 这是 H3 的收敛，同时把确认从 `tab_create` 挪到**真正发生读取**的时刻：用户不再
+/// 每次开新会话都弹框，但被攻破的 webview 也不能靠 `tab_create({cwd:"~"})` 把整个 home
+/// 变成静默可读区——第一次预览时才问，且用户看得到具体目录。
 async fn preview_access_gate(app: &AppHandle, state: &State<'_, AppState>, path: &str) -> Result<PathBuf, String> {
     let home = paths::home_dir().ok_or("无法确定用户目录（HOME / USERPROFILE 均为空），预览已禁用")?;
     let home_real = std::fs::canonicalize(&home).map_err(|e| format!("无法确定用户目录的真实位置: {e}"))?;
     let target_real = std::fs::canonicalize(path).map_err(|e| format!("路径无法解析（不存在或无权限）: {e}"))?;
     preview_gate(&home_real, &target_real)?;
 
-    let in_workspace = {
+    // 已经由原生 picker / 已有会话文件头 / 用户此前确认过的工作区 → 直接放行
+    {
+        let trusted = state.trusted.lock().await;
+        if is_trusted(&trusted.roots, &target_real) {
+            return Ok(target_real);
+        }
+    }
+
+    // 目标在某个已打开 tab 的 cwd 下，但这个 cwd 还没被信任：第一次预览时确认这个工作区
+    let containing = {
         let reg = state.registry.lock().await;
-        reg.tabs.values().any(|t| {
+        reg.tabs.values().find_map(|t| {
             let cwd = std::fs::canonicalize(&t.cwd).unwrap_or_else(|_| t.cwd.clone());
-            paths::is_under(&cwd, &target_real)
+            if paths::is_under(&cwd, &target_real) {
+                Some(cwd)
+            } else {
+                None
+            }
         })
     };
-    if in_workspace {
+    if let Some(root) = containing {
+        let ok = crate::ui_confirm::confirm(
+            app,
+            "把这个目录作为可信工作区？",
+            &format!(
+                "目录：{}\n\n\
+                 这是当前会话的工作区。确认后，本次运行内该目录下的文件预览不再逐次询问；\
+                 「工作区内修改」档的写入边界也以它为准。",
+                root.display()
+            ),
+        )
+        .await;
+        if !ok {
+            return Err(format!("已取消：未确认把 {} 作为可信工作区", root.display()));
+        }
+        state.trusted.lock().await.roots.insert(root);
         return Ok(target_real);
     }
     // 主目录之外还有系统临时目录：工具输出/截图经常落在 $TMP（macOS 的 /var/folders、
@@ -1404,7 +1405,8 @@ async fn preview_access_gate(app: &AppHandle, state: &State<'_, AppState>, path:
     Ok(target_real)
 }
 
-/// 文件预览读取（文本）：工作区内直接放行；home 内工作区外需原生确认；敏感目录硬拒。
+/// 文件预览读取（文本）：可信工作区直接放行；新工作区首次预览确认一次；
+/// home/temp 内非工作区文件逐文件确认；敏感目录硬拒。
 #[tauri::command]
 pub async fn fs_preview_read(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Value, String> {
     let pb_real = preview_access_gate(&app, &state, &path).await?;
@@ -2181,26 +2183,22 @@ mod tests {
         );
     }
 
-    /// cwd / sessionDir 变更的确认判据。
+    /// 可信工作区根覆盖子树；sessionDir 变更判据。
     #[test]
-    fn cwd_and_session_dir_confirmation_helpers() {
+    fn trusted_roots_cover_subtrees_and_session_dir_confirmation() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(home.join("proj").join("sub")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let empty = std::collections::HashSet::new();
-        // 不再对 home 免确认：webview 可以传 cwd:"~"，预览会把整个 home 当工作区
-        assert!(cwd_needs_confirmation(&home, &empty));
-        assert!(cwd_needs_confirmation(&home.join("proj"), &empty));
-        assert!(cwd_needs_confirmation(&outside, &empty));
+        assert!(!is_trusted(&empty, &home.join("proj")));
         let mut approved = std::collections::HashSet::new();
         approved.insert(canonical_or_self(&home.join("proj")));
-        approved.insert(canonical_or_self(&outside));
-        assert!(!cwd_needs_confirmation(&home.join("proj"), &approved));
-        assert!(!cwd_needs_confirmation(&outside, &approved));
-        // junction/symlink 按真实路径判：home 内的链接指向 outside，不能被 home 骗过
-        assert!(!cwd_needs_confirmation(&outside, &approved));
+        // 批准父目录 = 批准子树；兄弟/界外不碰瓷
+        assert!(is_trusted(&approved, &home.join("proj").join("sub")));
+        assert!(!is_trusted(&approved, &outside));
+        assert!(!is_trusted(&approved, &home.join("project-other")));
 
         // sessionDir：从无到有/换目录要确认；清空/不变不确认
         assert!(session_dir_change_needs_confirmation(

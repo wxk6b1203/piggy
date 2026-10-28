@@ -663,20 +663,25 @@ impl Registry {
 
     /// 复活成功的记账（锁内）：写回会话信息与游标、发 `piggy:resync` 与 `pi:state`。
     ///
-    /// tab 可能在锁外那段时间里被关掉 → 此时**必须收掉这个 worker**（它已经不在
-    /// `self.tabs` 里，没人会再关它），并返回错误让调用方别再往下走。
+    /// **必须用调用方刚 spawn 出来的 `worker`**，不能从 `tab.worker` 里取：
+    /// - 切权限档时 `begin_set_permission` 已经把旧 worker `take()` 走了，`tab.worker` 是
+    ///   `None`——老实现据此报"tab 在复活期间被关闭"，**每次切档都失败**（2026-10-28 真机）；
+    /// - 崩溃复活时 `tab.worker` 还是那个已经 Crashed 的旧 worker，老实现会把旧 worker
+    ///   置 Ready、把新 worker 丢掉（进程泄漏，且后续命令还发给死的那个）。
+    ///
+    /// tab 确实可能在锁外那段时间被关掉 → 返回错误，调用方负责把新 worker 收掉。
     fn commit_revive(
         &mut self,
         sink: &Arc<dyn EventSink>,
         job: &ReviveJob,
+        worker: &Worker,
         state: &Value,
         data: &Value,
     ) -> Result<Worker, String> {
         let leaf_id = data["leafId"].as_str().map(String::from);
-        let worker = match self.tabs.get_mut(&job.tab_id).and_then(|t| t.worker.clone()) {
-            Some(w) => w,
-            None => return Err(format!("tab 在复活期间被关闭: {}", job.tab_id)),
-        };
+        if !self.tabs.contains_key(&job.tab_id) {
+            return Err(format!("tab 在复活期间被关闭: {}", job.tab_id));
+        }
         sink.emit_json(
             &format!("pi:commit:{}", job.tab_id),
             json!({
@@ -700,7 +705,7 @@ impl Registry {
             &format!("pi:state:{}", job.tab_id),
             json!({"state": WorkerState::Ready, "revived": true, "attempt": job.restarts}),
         );
-        Ok(worker)
+        Ok(worker.clone())
     }
 }
 
@@ -787,7 +792,7 @@ pub async fn revive_unlocked(
         Ok(v) => v,
         Err(e) => return Err(e),
     };
-    match reg.commit_revive(sink, &job, &state, &data) {
+    match reg.commit_revive(sink, &job, &worker, &state, &data) {
         Ok(w) => Ok(w),
         Err(e) => {
             // tab 在锁外那段时间被关掉了：这个 worker 已经没人认领，收掉它
@@ -1105,6 +1110,71 @@ mod tests {
         assert!(is_revive_budget_error("tab t1 重启次数超限（连续 >3 次）"));
         assert!(!is_revive_budget_error("握手超时"));
         assert!(!is_revive_budget_error("spawn pi failed"));
+    }
+
+    /// `commit_revive` 必须把**刚 spawn 出来的 worker** 装进 tab：
+    /// - 切权限档时 tab.worker 已被 `begin_set_permission` 取走（None）；
+    /// - 崩溃复活时 tab.worker 还是死的旧 worker。
+    ///
+    /// 老实现从 tab.worker 取，导致切档必报"tab 在复活期间被关闭"（2026-10-28 真机）。
+    #[test]
+    fn commit_revive_installs_the_new_worker_not_the_old_one() {
+        let (old, _old_rx) = crate::pi::client::test_worker(WorkerState::Crashed);
+        let (new, _new_rx) = crate::pi::client::test_worker(WorkerState::Spawning);
+        let mut reg = Registry::new(None);
+        let mut tab = tab_with_name(None);
+        tab.worker = Some(old.clone());
+        tab.worker_since = Some(Instant::now());
+        tab.deliberate = true;
+        reg.tabs.insert("t1".into(), tab);
+
+        // 切档场景：旧 worker 已被 take 走，tab.worker 是 None。
+        reg.tabs.get_mut("t1").unwrap().worker = None;
+        let job = ReviveJob {
+            tab_id: "t1".into(),
+            cwd: PathBuf::from("/tmp"),
+            expected_file: Some("/tmp/s.jsonl".into()),
+            cursor: None,
+            permission: PermissionMode::Workspace,
+            restarts: 1,
+        };
+        let sink: Arc<dyn EventSink> = Arc::new(crate::events::NullSink);
+        let committed = reg
+            .commit_revive(
+                &sink,
+                &job,
+                &new,
+                &json!({"sessionFile": "/tmp/s.jsonl", "sessionId": "sid"}),
+                &json!({"leafId": "leaf-1"}),
+            )
+            .expect("tab 还在，commit 必须成功");
+        assert!(Arc::ptr_eq(&committed, &new));
+        let installed = reg.tabs.get("t1").unwrap().worker.as_ref().unwrap();
+        assert!(Arc::ptr_eq(installed, &new), "必须装新 worker，不能装旧的");
+        assert_eq!(new.state(), WorkerState::Ready);
+        assert!(!reg.tabs.get("t1").unwrap().deliberate);
+        assert_eq!(reg.tabs.get("t1").unwrap().session_id.as_deref(), Some("sid"));
+    }
+
+    /// tab 在锁外被关掉时，commit 必须报错（调用方据此收掉新 worker）。
+    #[test]
+    fn commit_revive_refuses_a_closed_tab() {
+        let (new, _new_rx) = crate::pi::client::test_worker(WorkerState::Spawning);
+        let mut reg = Registry::new(None);
+        let job = ReviveJob {
+            tab_id: "gone".into(),
+            cwd: PathBuf::from("/tmp"),
+            expected_file: None,
+            cursor: None,
+            permission: PermissionMode::Workspace,
+            restarts: 1,
+        };
+        let sink: Arc<dyn EventSink> = Arc::new(crate::events::NullSink);
+        let err = match reg.commit_revive(&sink, &job, &new, &json!({}), &json!({})) {
+            Ok(_) => panic!("tab 已关闭，commit 不该成功"),
+            Err(e) => e,
+        };
+        assert!(err.contains("被关闭"), "{err}");
     }
 
     #[test]

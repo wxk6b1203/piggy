@@ -42,6 +42,30 @@ pub struct WorkerInner {
 
 pub type Worker = Arc<WorkerInner>;
 
+/// 测试用假 worker（不挂子进程）：状态通道、pending 表、stdin 通道都是真的。
+///
+/// 放在 `#[cfg(test)]` 的模块外，是因为 `sessions/registry.rs` 的 `commit_revive` 测试
+/// 也要用它——那个 bug（用 `tab.worker` 而不是新 spawn 的 worker）没有真 pi 也能钉住。
+#[cfg(test)]
+pub(crate) fn test_worker(state: WorkerState) -> (Worker, mpsc::Receiver<String>) {
+    let (state_tx, state_rx) = watch::channel(state);
+    let (stdin_tx, stdin_rx) = mpsc::channel(8);
+    (
+        Arc::new(WorkerInner {
+            tab_id: "t-test".into(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            stdin_tx,
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
+            state_tx,
+            state_rx,
+            stderr_tail: Mutex::new(VecDeque::new()),
+            child: Mutex::new(None),
+        }),
+        stdin_rx,
+    )
+}
+
 impl WorkerInner {
     /// 这个 worker 服务的标签页 id（spawn 时定下，之后不变）。
     pub fn tab_id(&self) -> String {

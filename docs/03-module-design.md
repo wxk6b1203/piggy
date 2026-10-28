@@ -163,6 +163,10 @@ pub struct TabDescriptor {
   现在 watcher 只负责退避与调用；只有 `claim_revive` 报"超限"才 `gaveUp`，且**不 return**：
   继续盯着死 worker，等手动复活/关 tab 换掉通道后重订，下一次崩溃仍会自动复活。
   退避睡醒后会**重新判 `deliberate`**，避免把刚休眠/换档的 tab 又拉起来；
+- **复活记账必须装"刚 spawn 的新 worker"**（2026-10-28 真机修）：`commit_revive` 以前从
+  `tab.worker` 取 worker。切权限档时旧 worker 已被 `begin_set_permission` 取走（None），
+  于是**每次切档都报"tab 在复活期间被关闭"**；崩溃复活时 `tab.worker` 还是死的旧 worker，
+  会把旧 worker 置 Ready、把新 worker 丢掉。现在 `commit_revive` 显式接收新 worker 并装入 tab；
 - **崩溃预算按"集"计**（同日修正）：上一个 worker 存活 ≥10 分钟（`STABLE_WORKER`）后的
   崩溃视为新事件、预算重置，但一个集只重置一次（`worker_since` 消费制）——旧实现按
   tab 终身累计，崩满 3 次后连报错里说的"手动重试"也走同一条路，死锁；
@@ -571,10 +575,12 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
 **2026-10-28 审查收敛（webview 文件/密钥原语）**，闸门都在 Rust 侧；同日复核又补了一轮
 "检查所信任的状态本身可被 webview 改掉"的洞：
 
-- `fs_preview_read`（文本）：**默认只读已打开标签页的工作区**；主目录或系统临时目录内、
-  工作区外的文件要一次**原生确认**（`ui_confirm`，记住该文件）；其它位置的路径直接拒。
+- `fs_preview_read`（文本）：**可信工作区**（原生 picker 选过的目录、已有会话文件头里的
+  cwd、用户第一次预览时确认过的根）直接放行；新工作区第一次预览时确认一次；主目录或
+  系统临时目录内、工作区外的文件逐文件**原生确认**（`ui_confirm`）；其它位置直接拒。
   `.pi`/`.ssh`/`.aws`/`.gnupg` 与实际 `PI_CODING_AGENT_DIR` 是**硬拒绝**，确认框也不给。
-  判定前把 home、temp 与目标都 canonicalize。
+  判定前把 home、temp 与目标都 canonicalize。**确认发生在首次预览**，不是建 tab 时——
+  用户不再为每个新会话弹框。
 - `fs_list_dir`：参数是 **`tab_id`**，root 由 Rust 从 registry 取（不再接受前端传的
   `root`）；边界判定为 `ensure_within_resolved`（穿透符号链接/junction）。
 - `fs_image_data`：替代 `assetProtocol` 的图片读取——同一套工作区/确认/敏感目录闸门，
@@ -590,10 +596,10 @@ GPLv3 §0 给「Appropriate Legal Notices」下了定义：交互界面必须显
   `provider_save` / `models_write` 改 `baseUrl` 且该 provider 有已存密钥时，必须原生确认。
   `models_read` 把内联 `apiKey` 脱敏成 `__PIGGY_REDACTED__`，`models_write` 原样还原，
   raw JSON 编辑器看不到明文也不会误删。
-- `tab_create`：**任何**新 cwd 都要原生确认，除非它由原生 picker 选过/此前确认过
-  （**home 不再免确认**——webview 可以传 `cwd:"~"`，预览会把整个 home 当已批准工作区）。
-  显式请求「完全权限」且默认档不是完全权限时要原生确认。`pi_set_permission_mode` /
-  `pi_set_default_permission` 升到 Full 同样确认。这些确认框都由 Rust 调
+- `tab_create`：**新 cwd 静默**（不再弹框）；可信工作区只影响预览——原生 picker / 已有会话
+  文件头自动进入可信根，新 cwd 第一次预览时确认一次。显式请求「完全权限」或切到 Full
+  时用原生确认，但**本次运行只问一次**（`TrustedPaths.full_permission_confirmed`），
+  之后同一次运行内的 Full 切档/新 tab 不再弹。确认框都由 Rust 调
   `tauri-plugin-dialog`，webview 改不了文案与结果。
 
 **会话根的优先级**（`pi_files::resolve_sessions_root`，逐条照 `main.ts:675-679`）：
