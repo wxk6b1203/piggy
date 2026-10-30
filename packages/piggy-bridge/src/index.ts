@@ -31,7 +31,12 @@
  * 本文件只依赖上述文档化缝，不 import pi-subagents 任何内部模块（docs/06 §4.5：
  * 官方缝之外的一切视为私有 API；何况两个包各自安装，运行时本来也无法可靠解析）。
  */
-import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent';
+import { installChildPolicy, readChildPolicy, restrictedWorkflowBlockReason } from './subagent-policy';
 
 /* ---------------- 协议常量（与前端 stores/fleet.ts 的 BRIDGE_PREFIX 对齐） ---------------- */
 
@@ -540,7 +545,7 @@ export async function runVerb(verb: BridgeVerb, args: string, ui: BridgeUi, rpc:
 
 /* ---------------- 子代理委派开关（docs/06 §6） ---------------- */
 
-/** 委派开关的环境变量名（由 `pi/process.rs::spawn_envs` 在「完全权限」档注入）。 */
+/** 委派开关的环境变量名（由 `pi/process.rs::spawn_envs` 在所有档位注入，开关打开时）。 */
 export const DELEGATION_ENV = 'PIGGY_SUBAGENT_DELEGATION';
 
 export interface ActivationPlan {
@@ -559,8 +564,9 @@ export interface ActivationPlan {
  * 实测（2026-09-23）：这就是"pi 几乎不用子代理"最直接的一道闸。
  * 开关打开时由我们替他做这一步。
  *
- * `unavailable` 是正常的：限制档位的 `--tools` 白名单会把扩展工具整个过滤掉，
- * `getAllTools()` 里根本没有 `subagent`（真机验证过）。
+ * `unavailable` 现在的含义只剩「pi-subagents 没装 / 没注册 subagent」：
+ * 2026-10-30 起限制档位的 `--tools` 也会显式包含 `subagent,subagents_enable`，
+ * 不再因为 `--tools` 过滤而天生不可用。
  */
 export function planSubagentActivation(opts: {
   enabled: boolean;
@@ -621,6 +627,15 @@ export function createBridge(api: BridgeApi): { rpc: SubagentRpc; dispose: () =>
   };
 }
 
+/** 当前扩展上下文的 pi 会话 id（拿不到就返回 undefined，调用方 fail-closed）。 */
+function sessionIdOf(ctx: ExtensionContext): string | undefined {
+  try {
+    return ctx.sessionManager?.getSessionId?.();
+  } catch {
+    return undefined;
+  }
+}
+
 export default function piggyBridge(pi: ExtensionAPI): void {
   createBridge({
     events: pi.events,
@@ -634,6 +649,70 @@ export default function piggyBridge(pi: ExtensionAPI): void {
       }),
   });
 
+  /* ---------------- 子代理权限继承（docs/06 §6.3） ---------------- */
+
+  let policyDispose: { dispose(): void } | null = null;
+  let policySession: string | null = null;
+  let policyStatus: 'untried' | 'none' | 'ready' | 'blocked' = 'untried';
+  let policyReason = '';
+
+  const resetPolicy = (): void => {
+    policyDispose?.dispose();
+    policyDispose = null;
+    policySession = null;
+    policyStatus = 'untried';
+    policyReason = '';
+  };
+
+  /**
+   * 给当前父会话安装子代理 ceiling + 强制子会话加载守卫。
+   *
+   * `none` = 完全权限，不需要注册；`ready` = 注册成功；`blocked` = 注册失败，
+   * 调用方必须**不激活委派**并拦截 `subagents_enable`。绝不静默放行——
+   * 否则限制档位下子代理可能拿到父会话没有的 `bash`，这是权限提升。
+   */
+  const ensurePolicy = (ctx: ExtensionContext): boolean => {
+    const sessionId = sessionIdOf(ctx);
+    if (!sessionId) {
+      policyStatus = 'blocked';
+      policyReason = '拿不到 pi session id';
+      return false;
+    }
+    if (policySession === sessionId) return policyStatus !== 'blocked';
+
+    resetPolicy();
+    policySession = sessionId;
+    const plan = readChildPolicy(process.env);
+    if (plan.kind === 'none') {
+      policyStatus = 'none';
+      return true;
+    }
+    if (plan.kind === 'blocked') {
+      policyStatus = 'blocked';
+      policyReason = plan.reason;
+      return false;
+    }
+    try {
+      policyDispose = installChildPolicy(sessionId, plan);
+      policyStatus = 'ready';
+      return true;
+    } catch (e) {
+      policyStatus = 'blocked';
+      policyReason = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  };
+
+  let warnedBlocked = false;
+  const warnBlocked = (): void => {
+    if (warnedBlocked) return;
+    warnedBlocked = true;
+    console.warn(
+      `[piggy] 子代理委派未启用：无法安装子代理权限继承（${policyReason || '未知原因'}）。` +
+        ' 这是 fail-closed：宁可不委派，也不让子代理越过当前权限档位。',
+    );
+  };
+
   // 子代理委派开关（docs/06 §6）：开关打开时替模型把 `subagent` 激活，
   // 免掉"先调 subagents_enable"那一轮。
   //
@@ -644,9 +723,14 @@ export default function piggyBridge(pi: ExtensionAPI): void {
   // 曾试过更早的 `session_start` 与扩展工厂体：前者同样早于快照、后者直接抛
   // "Extension runtime not initialized"，都不能让第一轮就带上。
   let warnedUnavailable = false;
-  const onAgentStart = (): void => {
+  const onAgentStart = (_event: unknown, ctx: ExtensionContext): void => {
+    if (process.env[DELEGATION_ENV] !== '1') return;
+    if (!ensurePolicy(ctx)) {
+      warnBlocked();
+      return;
+    }
     const plan = planSubagentActivation({
-      enabled: process.env[DELEGATION_ENV] === '1',
+      enabled: true,
       available: (pi.getAllTools?.() ?? []).map((t) => t.name),
       active: pi.getActiveTools?.() ?? [],
     });
@@ -660,12 +744,42 @@ export default function piggyBridge(pi: ExtensionAPI): void {
     }
     if (plan.reason === 'unavailable' && !warnedUnavailable) {
       warnedUnavailable = true;
-      // 说清楚为什么开关没起作用（限制档位下这是预期行为，不是 bug）
+      // 说清楚为什么开关没起作用（pi-subagents 没装，或没注册 subagent）
       console.warn(
-        '[piggy] 子代理委派已开启，但本会话的工具表里没有 subagent ' +
-          '（限制档位的 --tools 白名单会过滤掉扩展工具）。策略已注入但工具不存在。',
+        '[piggy] 子代理委派已开启，但本会话的工具表里没有 subagent（pi-subagents 未安装？）。',
       );
     }
   };
   pi.on('before_agent_start', onAgentStart);
+
+  /* 限制档位下如果 bridge 装不上 ceiling/守卫（pi-subagents 过旧），
+     `subagents_enable` 仍在 --tools 白名单里。这里 fail-closed 拦截，避免
+     模型用 loader 绕过 ceiling。完全权限档不需要拦截。 */
+  pi.on('tool_call', (event, ctx) => {
+    if (process.env[DELEGATION_ENV] !== '1') return;
+    if (event.toolName !== 'subagent' && event.toolName !== 'subagents_enable') return;
+    if (!ensurePolicy(ctx)) {
+      warnBlocked();
+      return {
+        block: true,
+        reason: `Piggy：子代理委派不可用（${policyReason || '权限继承未就绪'}）。已拒绝以无边界方式启动子代理。`,
+      };
+    }
+    // 限制档位下 workflow 脚本可以走 `runs.host` 起宿主命令，无法被子代理的
+    // capability ceiling / 路径守卫覆盖；这类请求直接拒绝，只放行普通 agent 委派。
+    if (event.toolName === 'subagent') {
+      const reason = restrictedWorkflowBlockReason(
+        event.input,
+        process.env.PIGGY_PERMISSION_MODE?.trim(),
+      );
+      if (reason) return { block: true, reason };
+    }
+    return;
+  });
+
+  pi.on('session_shutdown', () => {
+    resetPolicy();
+    warnedBlocked = false;
+    warnedUnavailable = false;
+  });
 }

@@ -113,12 +113,36 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
     工具名**加进白名单**（名字来自插件的 `piggy-plugin.json`，见 `pi/plugins.rs`）。
     只加"这次真的注入了的"那些插件申报的名字 —— 插件没注入却把名字写进白名单，
     等于告诉模型"你有这个工具"，而它并不存在。 */
+    // 限制档位的委派**必须**有 bridge：子代理的 capability ceiling 与 required guard
+    // 都是 bridge 在父进程里注册的。bridge 缺失时如果仍然把 subagent 加进白名单，
+    // 子代理会按 agent 自己声明的 tools 启动（worker 带 bash）——这是权限提升。
+    // Full 档不需要 bridge（本来就不限制），所以只拦限制档。
+    if subagent_delegation_active(args)
+        && args.permission.needs_path_guard()
+        && !args.bridge_script.as_ref().is_some_and(|p| p.is_file())
+    {
+        return Err("SUBAGENT_BRIDGE_MISSING: 限制档位开启子代理委派需要 bridge 扩展 \
+             resources/piggy-bridge.js，但未找到。已拒绝启动——否则子代理无法继承父会话权限。\
+             请重新安装 Piggy，或在设置里关闭子代理委派。"
+            .to_string());
+    }
     if let Some(list) = args.permission.tool_allowlist() {
         let mut names: Vec<String> = list.split(',').map(|s| s.trim().to_string()).collect();
         let extra = crate::pi::plugins::plugin_tools_for(&args.bundled_extensions);
         for t in extra {
             if !names.iter().any(|n| n == &t) {
                 names.push(t);
+            }
+        }
+        // 子代理工具也是扩展工具，会被 `--tools` 总白名单过滤。委派开关打开时
+        // 把它们显式加进白名单，否则限制档位下进程里根本没有 `subagent`
+        // （2026-10-30：用户要求不再只限「完全权限」档）。子代理自身的工具边界
+        // 由 bridge 注册的 capability ceiling + 守卫扩展继承，见 docs/06 §6.3。
+        if subagent_delegation_active(args) {
+            for t in DELEGATION_TOOLS {
+                if !names.iter().any(|n| n == t) {
+                    names.push(t.to_string());
+                }
             }
         }
         out.push("--tools".into());
@@ -176,10 +200,10 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
     // "Do not invoke subagents unless the operator requested delegation..."，
     // 靠后并且明确自称"这就是那个授权"。
     //
-    // ⚠️ **只在「完全权限」档注入**。真机验证（2026-09-23）：`--tools read,grep,find,ls`
-    // 之下 `pi.getAllTools()` 只剩这 4 个，扩展工具根本没被注册进来，
-    // 连 `subagents_enable` 都不存在 —— 此时注入一段"去委派吧"的策略等于让模型去调一个
-    // 不存在的工具。判定条件写在这里而不是让上层决定，是为了让它能被 `cli_args` 的单测钉死。
+    // 2026-10-30 起**所有权限档位都可注入**：限制档位的 `--tools` 白名单里已经补上了
+    // `subagent,subagents_enable`（见上面的 allowlist 块），而子代理实际能用的工具
+    // 由 bridge 注册的 capability ceiling 收窄到父会话同一套，并强制子会话加载守卫扩展。
+    // 换句话说：允许委派，但子代理**继承**父会话的权限，不会绕过只读/工作区边界。
     if subagent_delegation_active(args) {
         let policy = args
             .subagent_policy
@@ -202,6 +226,14 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
 
 /// 打开子代理委派时注入的环境变量名（桥接扩展 `packages/piggy-bridge` 里同名常量）。
 pub const DELEGATION_ENV: &str = "PIGGY_SUBAGENT_DELEGATION";
+/// 父会话的权限档位。bridge 用它判断"要不要给子代理注册 capability ceiling"。
+pub const PERMISSION_ENV: &str = "PIGGY_PERMISSION_MODE";
+/// 父会话允许的工具名（逗号分隔）。bridge 把同一份名单注册成子代理的 ceiling。
+pub const SUBAGENT_TOOLS_ENV: &str = "PIGGY_SUBAGENT_ALLOWED_TOOLS";
+/// 守卫扩展的绝对路径。bridge 把它注册成子会话的 required extension。
+pub const GUARD_SCRIPT_ENV: &str = "PIGGY_GUARD_SCRIPT";
+/// 委派开关打开时，限制档位要额外加进 `--tools` 的两个扩展工具名。
+pub const DELEGATION_TOOLS: [&str; 2] = ["subagent", "subagents_enable"];
 
 /// 告诉 pi 扩展"宿主是谁"（`pi-ask` 用它决定走提问卡还是降级成逐个对话框）。
 ///
@@ -212,27 +244,49 @@ pub const HOST_ENV: &str = "PIGGY_HOST";
 /// `PIGGY_HOST` 的值。
 pub const HOST_NAME: &str = "piggy";
 
-/// 子代理委派此刻是否**真的**生效（开关打开 **且** 档位能让扩展工具存在）。
+/// 子代理委派此刻是否**真的**生效（开关打开，策略文件已登记）。
+///
+/// 2026-10-30 起不再要求「完全权限」：限制档位通过
+/// `--tools` 补上 `subagent,subagents_enable`，bridge 再把父会话的工具名
+/// 注册成子代理 capability ceiling，并强制子会话加载守卫扩展。子代理继承
+/// 父会话权限，而不是继承"完全权限"。
 ///
 /// 抽出来是为了让「界面显示的开关状态」与「进程实际拿到的能力」用同一个判据——
 /// 两者分叉会让用户以为开了、实际没开（docs/15 规矩 8 同一类问题）。
 pub fn subagent_delegation_active(args: &SpawnArgs) -> bool {
-    args.permission == PermissionMode::Full && args.subagent_policy.is_some()
+    args.subagent_policy.is_some()
 }
 
-/// 交给 pi 进程的环境变量：`SpawnArgs.envs` 加上委派开关。
+/// 交给 pi 进程的环境变量：`SpawnArgs.envs` 加上权限/守卫/委派开关。
 ///
 /// 单独成函数（而不是塞进 `spawn_worker`）是为了让"开关打开时到底传了什么"可被单测覆盖。
 pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
     let mut envs = args.envs.clone();
+    let mut push = |key: &str, value: String| {
+        if !envs.iter().any(|(k, _)| k == key) {
+            envs.push((key.to_string(), value));
+        }
+    };
+
     // 宿主标识：让捆绑的插件能分辨"在 Piggy 里跑"还是"在 pi TUI 里跑"（见 HOST_ENV）
-    if !envs.iter().any(|(k, _)| k == HOST_ENV) {
-        envs.push((HOST_ENV.to_string(), HOST_NAME.to_string()));
+    push(HOST_ENV, HOST_NAME.to_string());
+    // bridge 靠它决定给子代理注册哪一档 capability ceiling（Full = 不限制，不注册）。
+    push(PERMISSION_ENV, args.permission.as_str().to_string());
+    // 限制档位的子会话必须加载守卫；bridge 用这个路径注册 required child extension。
+    // 只传真实存在的文件；缺失时 cli_args 已经会 fail-closed，轮不到 spawn。
+    if args.permission.needs_path_guard() {
+        if let Some(guard) = args.guard_script.as_ref().filter(|p| p.is_file()) {
+            push(GUARD_SCRIPT_ENV, plain_path(guard).to_string_lossy().into_owned());
+        }
     }
     if subagent_delegation_active(args) {
         // 桥接扩展据此在首个模型请求前激活 `subagent`，
         // 省掉模型自己调 `subagents_enable` 的那一轮。
-        envs.push(("PIGGY_SUBAGENT_DELEGATION".to_string(), "1".to_string()));
+        push(DELEGATION_ENV, "1".to_string());
+        // 子代理 ceiling：与父会话同一套工具名（不含委派工具本身，禁止嵌套委派）。
+        if let Some(list) = args.permission.tool_allowlist() {
+            push(SUBAGENT_TOOLS_ENV, list.to_string());
+        }
     }
     envs
 }
@@ -907,22 +961,58 @@ mod tests {
     }
 
     #[test]
-    fn delegation_is_silently_off_in_restricted_modes() {
-        // 真机验证（2026-09-23）：--tools 白名单会把扩展工具整个过滤掉，
-        // `pi.getAllTools()` 里连 subagents_enable 都没有。此时注入"去委派吧"的策略
-        // 等于让模型去调一个不存在的工具 —— 所以限制档位下**不注入**。
+    fn delegation_is_active_in_restricted_modes_and_extends_the_allowlist() {
+        // 2026-10-30：限制档位不再"静默关闭"委派。`--tools` 会把扩展工具过滤掉，
+        // 所以必须把 subagent/subagents_enable 显式加进白名单；子代理的工具边界
+        // 由 bridge 的 capability ceiling + 守卫扩展继承（bridge 单测另锁）。
         let tmp = tempfile::tempdir().unwrap();
         for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
             let mut a = args(mode);
             a.subagent_policy = Some(policy_file(tmp.path()));
-            // 两个限制档都要求守卫脚本（缺失是硬错误），先补上
             let g = tmp.path().join("piggy-guard.js");
             std::fs::write(&g, "// guard").unwrap();
             a.guard_script = Some(g);
-            assert!(!argv(&a).contains(&"--append-system-prompt".to_string()), "{mode:?}");
-            assert!(spawn_envs(&a).iter().all(|(k, _)| k != DELEGATION_ENV), "{mode:?}");
-            assert!(!subagent_delegation_active(&a), "{mode:?}");
+            let b = tmp.path().join("piggy-bridge.js");
+            std::fs::write(&b, "// bridge").unwrap();
+            a.bridge_script = Some(b);
+            let argv = argv(&a);
+            assert!(argv.contains(&"--append-system-prompt".to_string()), "{mode:?}");
+            let tools = argv
+                .iter()
+                .position(|x| x == "--tools")
+                .and_then(|i| argv.get(i + 1))
+                .expect("限制档位必须有 --tools");
+            for name in DELEGATION_TOOLS {
+                assert!(tools.split(',').any(|t| t == name), "{mode:?} 缺 {name}: {tools}");
+            }
+            let envs = spawn_envs(&a);
+            assert!(envs.iter().any(|(k, v)| k == DELEGATION_ENV && v == "1"), "{mode:?}");
+            assert!(
+                envs.iter().any(|(k, _)| k == SUBAGENT_TOOLS_ENV),
+                "{mode:?} 必须把父会话的工具边界交给 bridge"
+            );
+            assert!(
+                envs.iter().any(|(k, _)| k == GUARD_SCRIPT_ENV),
+                "{mode:?} 必须让子会话加载守卫"
+            );
+            assert!(subagent_delegation_active(&a), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn delegation_without_bridge_refuses_in_restricted_modes_only() {
+        // 限制档位的子代理边界靠 bridge 注册；bridge 缺失时不能只凭策略文件就放行。
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = args(PermissionMode::ReadOnly);
+        a.subagent_policy = Some(policy_file(tmp.path()));
+        a.guard_script = Some(tmp_file("piggy-test-guard-no-bridge.js"));
+        let err = cli_args(&a).unwrap_err();
+        assert!(err.starts_with("SUBAGENT_BRIDGE_MISSING"), "{err}");
+
+        // Full 不需要 bridge：它本来就不限制子代理。
+        let mut full = args(PermissionMode::Full);
+        full.subagent_policy = Some(policy_file(tmp.path()));
+        assert!(cli_args(&full).is_ok());
     }
 
     #[test]
@@ -962,8 +1052,9 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "PI_CODING_AGENT_DIR" && v == "/tmp/empty"));
         assert!(envs.iter().any(|(k, _)| k == DELEGATION_ENV));
-        // 宿主标识也一定在（插件靠它分辨"在 Piggy 里跑"还是"在 pi TUI 里跑"）
+        // 宿主标识与权限档位也一定在（bridge 靠它决定要不要给子代理注册 ceiling）
         assert!(envs.iter().any(|(k, v)| k == HOST_ENV && v == HOST_NAME));
-        assert_eq!(envs.len(), 3);
+        assert!(envs.iter().any(|(k, v)| k == PERMISSION_ENV && v == "full"));
+        assert_eq!(envs.len(), 4);
     }
 }

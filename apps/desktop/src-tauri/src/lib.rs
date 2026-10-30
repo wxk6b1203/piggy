@@ -310,8 +310,9 @@ pub fn run() {
                     reg.bridge_script = crate::pi::resources::bridge_script_path(resource_dir.as_deref());
                     // 捆绑的 pi 插件（docs/06 §7）：候选目录，装不装在 spawn 时按配置决定
                     reg.bundled_plugins = bundled_plugin_dirs(resource_dir.as_deref());
-                    // 子代理委派策略（docs/06 §6）：只在开关打开时记录。是否**真的**注入
-                    // 还要看档位（限制档位下扩展工具不存在，注入等于让模型调不存在的工具）。
+                    // 子代理委派策略（docs/06 §6）：所有档位都会注入；限制档位的
+                    // 子代理边界由 bridge 的 capability ceiling + 守卫继承负责，
+                    // 不再要求「完全权限」。
                     reg.subagent_policy = subagent_policy_for(&state, resource_dir.as_deref());
                     reg.default_permission = state.perf.read().map(|p| p.permission_mode).unwrap_or_default();
                     match &reg.guard_script {
@@ -340,7 +341,7 @@ pub fn run() {
                         eprintln!("[piggy] 捆绑插件目录全缺失：结构化提问/计划模式不可用（打包漏登记？）");
                     }
                     if let Some(p) = &reg.subagent_policy {
-                        eprintln!("[piggy] 子代理委派已开启（仅「完全权限」档生效）: {}", p.display());
+                        eprintln!("[piggy] 子代理委派已开启（所有档位；子代理继承父会话权限）: {}", p.display());
                     }
                 } else {
                     // resource_dir 拿不到时也必须初始化守卫与档位：

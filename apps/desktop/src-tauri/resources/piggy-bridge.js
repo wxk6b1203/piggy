@@ -3,6 +3,140 @@
  * 重新生成：pnpm build:bridge     校验是否最新：pnpm --filter piggy-bridge test
  */
 
+// src/subagent-policy.ts
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+var CAPABILITY_REGISTRY_KEY = Symbol.for("pi-subagents.capability-ceiling.v1");
+var REQUIRED_EXTENSIONS_REGISTRY_KEY = Symbol.for("pi-subagents.required-child-extensions.v1");
+var POLICY_SOURCE = "piggy";
+var GUARD_EXTENSION_ID = "piggy-guard";
+function parseTools(raw) {
+  return [
+    ...new Set(
+      (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+    )
+  ];
+}
+function readChildPolicy(env) {
+  const mode = env.PIGGY_PERMISSION_MODE?.trim();
+  if (!mode || mode === "full") return { kind: "none" };
+  if (mode !== "read-only" && mode !== "workspace") {
+    return { kind: "blocked", reason: `\u672A\u77E5\u6743\u9650\u6863\u4F4D ${mode}` };
+  }
+  const allowedTools = parseTools(env.PIGGY_SUBAGENT_ALLOWED_TOOLS);
+  if (allowedTools.length === 0) {
+    return { kind: "blocked", reason: "PIGGY_SUBAGENT_ALLOWED_TOOLS \u7F3A\u5931\uFF08\u7236\u4F1A\u8BDD\u5DE5\u5177\u8FB9\u754C\u672A\u77E5\uFF09" };
+  }
+  const guard = env.PIGGY_GUARD_SCRIPT?.trim();
+  if (!guard) return { kind: "blocked", reason: "PIGGY_GUARD_SCRIPT \u7F3A\u5931\uFF08\u5B50\u4F1A\u8BDD\u65E0\u6CD5\u52A0\u8F7D\u5B88\u536B\uFF09" };
+  if (!path.isAbsolute(guard)) return { kind: "blocked", reason: `\u5B88\u536B\u811A\u672C\u4E0D\u662F\u7EDD\u5BF9\u8DEF\u5F84: ${guard}` };
+  let real;
+  try {
+    real = fs.realpathSync(guard);
+    if (!fs.statSync(real).isFile()) {
+      return { kind: "blocked", reason: `\u5B88\u536B\u811A\u672C\u4E0D\u662F\u6587\u4EF6: ${real}` };
+    }
+  } catch (e) {
+    return { kind: "blocked", reason: `\u5B88\u536B\u811A\u672C\u65E0\u6CD5\u89E3\u6790: ${String(e)}` };
+  }
+  return { kind: "ready", allowedTools: allowedTools.sort(), guardScript: real };
+}
+function piSubagentsVersion() {
+  const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+  const candidates = [
+    path.join(agentDir, "npm", "node_modules", "pi-subagents", "package.json"),
+    path.join(agentDir, "extensions", "pi-subagents", "package.json"),
+    path.join(process.cwd(), "node_modules", "pi-subagents", "package.json")
+  ];
+  for (const p of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
+      if (typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
+    } catch {
+    }
+  }
+  return void 0;
+}
+function supportsChildPolicy(version) {
+  if (!version) return false;
+  const parts = version.split(".");
+  const major = Number.parseInt(parts[0] ?? "", 10);
+  const minor = Number.parseInt(parts[1] ?? "", 10);
+  if (!Number.isInteger(major) || !Number.isInteger(minor)) return false;
+  return major > 0 || minor >= 78;
+}
+function capabilityRegistry() {
+  let root = globalThis[CAPABILITY_REGISTRY_KEY];
+  if (root === void 0) {
+    root = /* @__PURE__ */ new Map();
+    globalThis[CAPABILITY_REGISTRY_KEY] = root;
+  }
+  if (!(root instanceof Map)) {
+    throw new Error("pi-subagents capability-ceiling registry \u5F62\u72B6\u4E0D\u5BF9\uFF08\u7248\u672C\u8FC7\u65E7\uFF1F\uFF09");
+  }
+  return root;
+}
+function requiredRegistry() {
+  let root = globalThis[REQUIRED_EXTENSIONS_REGISTRY_KEY];
+  if (root === void 0) {
+    root = { version: 1, bySession: /* @__PURE__ */ new Map() };
+    globalThis[REQUIRED_EXTENSIONS_REGISTRY_KEY] = root;
+  }
+  if (!root || root.version !== 1 || !(root.bySession instanceof Map)) {
+    throw new Error("pi-subagents required-child-extensions registry \u5F62\u72B6\u4E0D\u5BF9\uFF08\u7248\u672C\u8FC7\u65E7\uFF1F\uFF09");
+  }
+  return root;
+}
+function restrictedWorkflowBlockReason(input, mode) {
+  if (!mode || mode === "full") return null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const record = input;
+  if (record.workflow === void 0 && record.script === void 0) return null;
+  return "Piggy\uFF1A\u9650\u5236\u6863\u4F4D\u4E0B\u4E0D\u5141\u8BB8 workflow \u811A\u672C\u59D4\u6D3E\uFF08\u811A\u672C\u7684\u5BBF\u4E3B\u547D\u4EE4\u65E0\u6CD5\u7EE7\u627F\u8DEF\u5F84\u5B88\u536B\uFF09\uFF1B\u8BF7\u76F4\u63A5\u59D4\u6258\u4E00\u4E2A agent\u3002";
+}
+function installChildPolicy(sessionId, plan, version = piSubagentsVersion()) {
+  if (!sessionId) throw new Error("installChildPolicy \u9700\u8981 sessionId");
+  if (!supportsChildPolicy(version)) {
+    throw new Error(
+      `pi-subagents \u7248\u672C\u8FC7\u65E7\u6216\u627E\u4E0D\u5230\uFF08${version ?? "\u672A\u5B89\u88C5"}\uFF09\uFF1B\u9700\u8981 \u22650.78 \u624D\u80FD\u628A\u5B50\u4EE3\u7406\u9650\u5236\u5728\u7236\u4F1A\u8BDD\u6743\u9650\u5185`
+    );
+  }
+  const caps = capabilityRegistry();
+  const required = requiredRegistry();
+  const reqMap = required.bySession;
+  if (reqMap.has(sessionId)) {
+    throw new Error(`\u4F1A\u8BDD ${sessionId} \u5DF2\u7ECF\u6CE8\u518C\u8FC7 required child extensions\uFF0C\u62D2\u7EDD\u8986\u76D6`);
+  }
+  let bySession = caps.get(sessionId);
+  if (!bySession) {
+    bySession = /* @__PURE__ */ new Map();
+    caps.set(sessionId, bySession);
+  }
+  const token = Symbol(`${POLICY_SOURCE}:${sessionId}`);
+  const ceiling = {
+    version: 1,
+    allowedTools: [...plan.allowedTools],
+    denyExtensions: false,
+    sources: [POLICY_SOURCE]
+  };
+  bySession.set(token, { source: POLICY_SOURCE, ceiling });
+  const snapshot = Object.freeze([
+    Object.freeze({ id: GUARD_EXTENSION_ID, path: plan.guardScript, requireForAllRunners: true })
+  ]);
+  reqMap.set(sessionId, snapshot);
+  let disposed = false;
+  return {
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      bySession?.delete(token);
+      if (bySession?.size === 0) caps.delete(sessionId);
+      if (reqMap.get(sessionId) === snapshot) reqMap.delete(sessionId);
+    }
+  };
+}
+
 // src/index.ts
 var PREFIX = "PIGGY:1:";
 var RPC_VERSION = 1;
@@ -416,6 +550,13 @@ function createBridge(api) {
     }
   };
 }
+function sessionIdOf(ctx) {
+  try {
+    return ctx.sessionManager?.getSessionId?.();
+  } catch {
+    return void 0;
+  }
+}
 function piggyBridge(pi) {
   createBridge({
     events: pi.events,
@@ -427,10 +568,64 @@ function piggyBridge(pi) {
       }
     })
   });
+  let policyDispose = null;
+  let policySession = null;
+  let policyStatus = "untried";
+  let policyReason = "";
+  const resetPolicy = () => {
+    policyDispose?.dispose();
+    policyDispose = null;
+    policySession = null;
+    policyStatus = "untried";
+    policyReason = "";
+  };
+  const ensurePolicy = (ctx) => {
+    const sessionId = sessionIdOf(ctx);
+    if (!sessionId) {
+      policyStatus = "blocked";
+      policyReason = "\u62FF\u4E0D\u5230 pi session id";
+      return false;
+    }
+    if (policySession === sessionId) return policyStatus !== "blocked";
+    resetPolicy();
+    policySession = sessionId;
+    const plan = readChildPolicy(process.env);
+    if (plan.kind === "none") {
+      policyStatus = "none";
+      return true;
+    }
+    if (plan.kind === "blocked") {
+      policyStatus = "blocked";
+      policyReason = plan.reason;
+      return false;
+    }
+    try {
+      policyDispose = installChildPolicy(sessionId, plan);
+      policyStatus = "ready";
+      return true;
+    } catch (e) {
+      policyStatus = "blocked";
+      policyReason = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  };
+  let warnedBlocked = false;
+  const warnBlocked = () => {
+    if (warnedBlocked) return;
+    warnedBlocked = true;
+    console.warn(
+      `[piggy] \u5B50\u4EE3\u7406\u59D4\u6D3E\u672A\u542F\u7528\uFF1A\u65E0\u6CD5\u5B89\u88C5\u5B50\u4EE3\u7406\u6743\u9650\u7EE7\u627F\uFF08${policyReason || "\u672A\u77E5\u539F\u56E0"}\uFF09\u3002 \u8FD9\u662F fail-closed\uFF1A\u5B81\u53EF\u4E0D\u59D4\u6D3E\uFF0C\u4E5F\u4E0D\u8BA9\u5B50\u4EE3\u7406\u8D8A\u8FC7\u5F53\u524D\u6743\u9650\u6863\u4F4D\u3002`
+    );
+  };
   let warnedUnavailable = false;
-  const onAgentStart = () => {
+  const onAgentStart = (_event, ctx) => {
+    if (process.env[DELEGATION_ENV] !== "1") return;
+    if (!ensurePolicy(ctx)) {
+      warnBlocked();
+      return;
+    }
     const plan = planSubagentActivation({
-      enabled: process.env[DELEGATION_ENV] === "1",
+      enabled: true,
       available: (pi.getAllTools?.() ?? []).map((t) => t.name),
       active: pi.getActiveTools?.() ?? []
     });
@@ -444,11 +639,35 @@ function piggyBridge(pi) {
     if (plan.reason === "unavailable" && !warnedUnavailable) {
       warnedUnavailable = true;
       console.warn(
-        "[piggy] \u5B50\u4EE3\u7406\u59D4\u6D3E\u5DF2\u5F00\u542F\uFF0C\u4F46\u672C\u4F1A\u8BDD\u7684\u5DE5\u5177\u8868\u91CC\u6CA1\u6709 subagent \uFF08\u9650\u5236\u6863\u4F4D\u7684 --tools \u767D\u540D\u5355\u4F1A\u8FC7\u6EE4\u6389\u6269\u5C55\u5DE5\u5177\uFF09\u3002\u7B56\u7565\u5DF2\u6CE8\u5165\u4F46\u5DE5\u5177\u4E0D\u5B58\u5728\u3002"
+        "[piggy] \u5B50\u4EE3\u7406\u59D4\u6D3E\u5DF2\u5F00\u542F\uFF0C\u4F46\u672C\u4F1A\u8BDD\u7684\u5DE5\u5177\u8868\u91CC\u6CA1\u6709 subagent\uFF08pi-subagents \u672A\u5B89\u88C5\uFF1F\uFF09\u3002"
       );
     }
   };
   pi.on("before_agent_start", onAgentStart);
+  pi.on("tool_call", (event, ctx) => {
+    if (process.env[DELEGATION_ENV] !== "1") return;
+    if (event.toolName !== "subagent" && event.toolName !== "subagents_enable") return;
+    if (!ensurePolicy(ctx)) {
+      warnBlocked();
+      return {
+        block: true,
+        reason: `Piggy\uFF1A\u5B50\u4EE3\u7406\u59D4\u6D3E\u4E0D\u53EF\u7528\uFF08${policyReason || "\u6743\u9650\u7EE7\u627F\u672A\u5C31\u7EEA"}\uFF09\u3002\u5DF2\u62D2\u7EDD\u4EE5\u65E0\u8FB9\u754C\u65B9\u5F0F\u542F\u52A8\u5B50\u4EE3\u7406\u3002`
+      };
+    }
+    if (event.toolName === "subagent") {
+      const reason = restrictedWorkflowBlockReason(
+        event.input,
+        process.env.PIGGY_PERMISSION_MODE?.trim()
+      );
+      if (reason) return { block: true, reason };
+    }
+    return;
+  });
+  pi.on("session_shutdown", () => {
+    resetPolicy();
+    warnedBlocked = false;
+    warnedUnavailable = false;
+  });
 }
 export {
   ASYNC_COMPLETE_EVENT,

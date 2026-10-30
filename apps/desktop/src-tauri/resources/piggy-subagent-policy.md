@@ -26,6 +26,13 @@ Before relying on a specific agent, call `subagent({action:"list",capabilities:t
 bundled agent definitions do not opt into discovery, so no agent catalogue is injected into this
 prompt — the table below is your roster, but `list` is the authority on what is executable now.
 
+**Permission inheritance:** subagents receive the same permission boundary as this session.
+In a read-only / workspace session they do not get `bash`; workspace children may write only
+inside the session working directory, and the same path guard is loaded in the child. If an
+agent's usual tool is unavailable, pick an agent whose remaining tools fit the task; do not try
+to bypass the boundary. Workflow scripts (`workflow` / `script`) are unavailable in restricted
+modes because their host commands cannot load the path guard; delegate a single agent instead.
+
 ## Roster
 
 | Agent | Use it for |
@@ -39,7 +46,9 @@ prompt — the table below is your roster, but `list` is the authority on what i
 | `delegate` | A lightweight generic subtask; inherits the parent model, no default reads |
 
 Agents named `claude-code` / `codex-exec` / `cursor-agent` drive an external CLI. Only use them if
-`list` reports `runner.available === true`; otherwise they fail on launch.
+`list` reports `runner.available === true`; otherwise they fail on launch. In a restricted
+permission mode they are also unavailable: an external CLI cannot load Piggy's path guard, so the
+launch is rejected rather than run with a wider boundary.
 
 ## Delegate
 

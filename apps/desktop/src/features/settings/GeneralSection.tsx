@@ -562,7 +562,7 @@ export function GeneralSection() {
         <span className="pg-settings-label">子代理委派</span>
         <Switch
           checked={delegation}
-          disabled={busy || perm !== 'full'}
+          disabled={busy}
           onChange={(v) => {
             setDelegation(v);
             void save({ delegation: v });
@@ -572,20 +572,16 @@ export function GeneralSection() {
           开启后 pi 会主动把可独立完成的工作交给子代理（侦察 / 独立复核 / 并行调研）。
         </span>
       </div>
-      {/* 不能工作的情况必须**说出原因**：开关打开却毫无变化，用户只会以为功能坏了。
-          这类"静默失效"是本项目最忌讳的失败方式。 */}
-      {perm !== 'full' ? (
-        <p className="pg-fg-dim pg-settings-note">
-          当前默认档位是「{permModes.find((m) => m.id === perm)?.label ?? perm}」，
-          <strong>子代理委派在该档位不可用</strong>：限制档位的 <code>--tools</code> 白名单会把扩展工具
-          整个过滤掉，pi 进程里根本没有 <code>subagent</code> 这个工具（真机验证过）。
-          请先把默认档位切到「完全权限」。
-        </p>
-      ) : delegation ? (
+      {/* 限制档位也允许委派（2026-10-30）：子代理的工具白名单由 bridge 收窄到
+          父会话同一套，并强制子会话加载守卫扩展。这里必须说清"继承"而不是"放开"，
+          否则用户会以为只读档能派生出可写子代理。 */}
+      {delegation ? (
         <p className="pg-fg-dim pg-settings-note">
           已开启：新会话会往系统提示词追加一段委派策略，并自动激活 <code>subagent</code> 工具
           （否则模型得先自己调一次 <code>subagents_enable</code>——实测那正是"pi 几乎不用子代理"的直接原因）。
-          策略只授权可独立完成、可验证的工作；需要来回澄清的、一两处小改动仍要求它自己做。
+          子代理<strong>继承当前权限档位</strong>：仅可查看 / 工作区内修改下拿不到 shell，
+          工具白名单与父会话一致，子会话也会加载同一份守卫。策略只授权可独立完成、可验证的工作；
+          需要来回澄清的、一两处小改动仍要求它自己做。
         </p>
       ) : null}
 

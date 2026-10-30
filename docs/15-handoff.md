@@ -1796,6 +1796,17 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      修法是 `target: 'esnext'` + `minify: 'terser'`（两个条件缺一不可），源码降级仍由
      `tsconfig.base.json` 的 ES2022 负责。详见 docs/17 §2.8a。
 
+163. **"只为改元数据"的临时 worker 也必须带权限守卫；`Some(ReadOnly)` + `guard_script: None` 是必炸组合。**（2026-10-30 用户真机）
+     生成标题 / 手工改名的最后一步是起一个 ReadOnly 临时 worker 调 `set_session_name`；
+     这条路径曾把 `guard_script` 写死成 `None`，而 2026-10-28 的安全修复让 ReadOnly
+     **fail-closed 要求守卫**，于是标题已经生成成功、用户却看到
+     `GUARD_SCRIPT_MISSING: ... 请改用「完全权限」`。
+     修法：`rename_spawn_args` 从 registry 取真实守卫路径，并加单测锁住
+     "ReadOnly + 守卫在 argv 里"。不要为了绕过它把临时 worker 改成 Full——
+     那会让一个只改元数据的进程带全工具启动。判据：**任何 `SpawnArgs` 的
+     `permission` 只要 `needs_path_guard()`，`guard_script` 就不能是 None，
+     兼容测试/改元数据路径也一样。**
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |

@@ -30,7 +30,10 @@ export async function buildBridge() {
     entryPoints: [resolve(PKG_ROOT, 'src/index.ts')],
     bundle: true,
     format: 'esm',
-    platform: 'neutral',
+    // bridge 现在会 import `node:fs` / `node:path`（校验要注册为 required child
+    // extension 的守卫脚本）。pi 扩展本身就运行在 Node 里，用 node 平台让这两个
+    // 内建模块保持 external，而不是被 esbuild 当成需要打包的依赖。
+    platform: 'node',
     target: 'es2022',
     // pi 的类型导入全在 `import type` 里，esbuild 会整段擦除；这里断言产物确实零依赖。
     external: [],

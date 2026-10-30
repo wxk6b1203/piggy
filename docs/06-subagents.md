@@ -189,10 +189,14 @@ lane 本来就是 registry 里的一个 worker/tab（06 §3.5），提升只是�
 
 ```
 设置开关（~/.piggy/config.json: subagent_delegation）
-   │  仅「完全权限」档
+   │  所有权限档位
    ├─→ pi --append-system-prompt resources/piggy-subagent-policy.md   ← 授权 + 边界 + 花名册
+   ├─→ 限制档位额外把 subagent,subagents_enable 加进 --tools 白名单
    └─→ env PIGGY_SUBAGENT_DELEGATION=1
-          └─→ piggy-bridge before_agent_start: setActiveTools([...,'subagent'])
+          ├─→ piggy-bridge before_agent_start: setActiveTools([...,'subagent'])
+          └─→ bridge 注册子代理边界：
+                capability ceiling.allowedTools = 父会话的 --tools
+                required child extension = resources/piggy-guard.js
 ```
 
 - **策略文件** `resources/piggy-subagent-policy.md`：自称"这就是 pi-subagents 要的那个授权"，
@@ -204,22 +208,46 @@ lane 本来就是 registry 里的一个 worker/tab（06 §3.5），提升只是�
   写明的 `subagents_enable` 兜底。扩展工厂体（`Extension runtime not initialized`）与
   `session_start`（同样早于快照）都试过，都不能让第一轮就带上。
 
-### 6.3 只在「完全权限」档生效（硬约束，不是保守）
+### 6.3 所有档位都可委派，但子代理**继承**父会话权限（2026-10-30 改）
 
-真机验证：`--tools read,grep,find,ls` 之下 `pi.getAllTools()` **只剩这 4 个**，扩展工具根本没被
-注册进进程，`setActiveTools` 静默无效。所以：
+旧约束（2026-09-23）是"只在完全权限档生效"：`--tools read,grep,find,ls` 之下
+`getAllTools()` 只剩这 4 个，扩展工具进不了进程，`setActiveTools` 静默无效。
+但用户明确要求：**委派不该被权限档位一刀切，子代理继承权限即可**。现在的做法：
 
-- 限制档位下 `cli_args` **不注入**策略 —— 注入了等于让模型去调一个不存在的工具；
-- 设置页在档位不是 full 时**禁用开关并当场说明原因**（本项目的铁律：权限档绝不静默失效）；
-- 反过来这也**消除了一条越权路径**：只读档下 `subagent` 在进程里压根不存在，
-  不存在"只读的父进程派生出可写的子代理"。不需要额外去碰 pi-subagents 的
-  capability ceiling（那个只在内部模块导出，RPC 方法表里没有，属于私有 API，禁用）。
+1. **父会话**：限制档位的 `--tools` 显式补上 `subagent,subagents_enable`（扩展工具名同样受
+   `--tools` 总白名单控制；不补就真的没有这两个工具）。真机探针（2026-10-30）：
+   `pi --mode rpc --no-session --tools read,grep,find,ls,subagent,subagents_enable -e <probe>`
+   → `getAllTools()` = `["read","grep","find","ls","subagent","subagents_enable"]`。
+2. **子代理边界**：`piggy-bridge` 用 pi-subagents 的公开 `capability-ceiling` 注册表，把
+   `allowedTools` 设成父会话同一份名单。子代理自己声明的 `bash` 会被交集去掉；
+   `write/edit` 只有在父档位本来就有时才保留。
+3. **守卫**：bridge 用公开的 `required-child-extensions` 注册表，把 `piggy-guard.js` 强制
+   加载进每个子会话。这样「工作区内修改」档的子代理即使拿到 `write/edit`，仍只能写父会话
+   cwd，且读不到 `~/.pi` 等敏感目录。
+4. **fail-closed**：pi-subagents 过旧、注册表不存在、或守卫路径无效时，bridge **不激活**
+   `subagent`，并在 `tool_call` 上拦截 `subagent` / `subagents_enable`；宁可不委派，
+   也不让子代理以高于父会话的权限启动。日志会说明具体原因。
+5. **禁止嵌套**：传给子代理的 ceiling 不包含 `subagent`，子代理不能再派生孙代理。
+6. **限制档位拒绝 workflow 脚本**：workflow 的 `runs.host` 能起宿主命令，无法被
+   子代理的 capability ceiling / 路径守卫覆盖；bridge 在 `tool_call` 直接拒绝带
+   `workflow`/`script` 的 `subagent` 调用，只放行普通 agent 委派。完全权限档不受限。
+
+设置页不再按档位禁用开关；开启后说明"子代理继承当前权限档位"。
+
+> 这套机制依赖 pi-subagents 的公开注册表（capability-ceiling v1、
+> required-child-extensions v1）。它们是**进程内**注册表，不是 RPC 私有接口；
+> bridge 直接用 `Symbol.for(...)` 访问，因此不把 pi-subagents 变成 bridge 的构建依赖。
 
 ### 6.4 失败语义
 
 - 开关打开但策略文件缺失 → `cli_args` 返回 `SUBAGENT_POLICY_MISSING`，**拒绝启动**。
   开关开着却没注入 = 用户以为委派已启用、实际什么都没发生，这是本项目最不能接受的失败方式；
-- 打开开关时先校验文件存在，避免把"每次建会话都失败"的配置写进磁盘；
+- bridge 装不上子代理 ceiling / required guard（pi-subagents 过旧或路径无效）→ **不激活**
+  `subagent`，并在 `tool_call` 拦截 `subagent` / `subagents_enable`，日志说明原因；
+  不会静默降级成"无边界委派"；
+- 限制档位开启委派但 bridge 文件缺失 → `cli_args` 返回 `SUBAGENT_BRIDGE_MISSING`，**拒绝启动**；
+  Full 档不需要 bridge（不受此限制）；
+- 打开开关时先校验策略文件存在，避免把"每次建会话都失败"的配置写进磁盘；
 - `subagent_delegation` 进 `~/.piggy/config.json`，因此必须同时出现在 `PerfConfig`
   （`perf_config_save` 是整体重写，漏了就静默抹掉）。
 

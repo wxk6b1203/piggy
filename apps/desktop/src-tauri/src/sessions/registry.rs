@@ -61,8 +61,9 @@ pub struct Registry {
     /// 缺失只影响 Fleet 数据面，不影响会话启动。
     pub bridge_script: Option<PathBuf>,
     /// 子代理委派策略（pi/resources.rs::subagent_policy_path，docs/06 §6）。
-    /// `Some` = `~/.piggy/config.json` 里开关打开；是否**真的**生效还要看档位
-    /// （见 `pi/process.rs::subagent_delegation_active`）。setup 时填充。
+    /// `Some` = `~/.piggy/config.json` 里开关打开；所有档位都会注入，
+    /// 子代理的工具边界由 bridge 的 capability ceiling + 守卫继承（见
+    /// `pi/process.rs::subagent_delegation_active`）。setup 时填充。
     pub subagent_policy: Option<PathBuf>,
     /// **捆绑的 pi 插件候选**（`pi/resources.rs::bundled_plugin_dir_with_origin`，docs/06 §7）。
     ///

@@ -949,6 +949,37 @@ pub async fn session_page_routed(
     .map_err(|e| e.to_string())?
 }
 
+/// 改元数据用的临时 worker 的 spawn 参数。抽成纯函数是为了让
+/// 「这条路径到底有没有把守卫脚本带上」可以被单测钉住——
+/// 2026-10-30 真机 bug：这里把 `guard_script` 写死成 `None`，而 `ReadOnly`
+/// 档要求守卫，于是**生成标题 / 手工改名**在保存名字那一步稳定报
+/// `GUARD_SCRIPT_MISSING`。生成标题本身已经成功，用户看到的却是"生成失败"。
+fn rename_spawn_args(
+    pi_bin: PathBuf,
+    cwd: PathBuf,
+    path: String,
+    guard_script: Option<PathBuf>,
+) -> crate::pi::process::SpawnArgs {
+    crate::pi::process::SpawnArgs {
+        cwd,
+        pi_bin,
+        session: SessionTarget::Path(path),
+        name: None,
+        // 这个 worker 只用来调一次 set_session_name 改元数据，不该带任何工具能力。
+        // 但它是 `ReadOnly` 档，按 `cli_args` 的规则必须拿到守卫脚本；守卫只影响
+        // 工具调用，而这个 worker 从不发 prompt，所以不会碰到任何文件。
+        permission: PermissionMode::ReadOnly,
+        guard_script,
+        // 改名的临时 worker 也不需要 Fleet 数据面
+        bridge_script: None,
+        envs: Vec::new(),
+        // 只读档位不会走到委派
+        subagent_policy: None,
+        // 改名的临时 worker 不需要任何插件
+        bundled_extensions: Vec::new(),
+    }
+}
+
 /// 关闭会话重命名：临时 worker → set_session_name → 关闭。
 /// 起一个只读临时 worker，只为调一次 `set_session_name`。
 ///
@@ -966,24 +997,14 @@ async fn set_session_name_via_worker(
     let worker = {
         let mut reg = state.registry.lock().await;
         let pi_bin = reg.resolve_bin()?;
+        // ⚠️ 必须把真实的守卫脚本传进去：`ReadOnly` 的 `cli_args` 会 fail-closed。
+        // 守卫缺失时这里仍然会报 GUARD_SCRIPT_MISSING —— 那是安装损坏，和"改名"
+        // 无关；不要为了绕过它而把临时 worker 改成 Full（那会让一个只改元数据的
+        // 进程带全工具启动）。
+        let guard_script = reg.guard_script.clone();
         crate::pi::process::spawn_worker(
             &format!("rename-{}", uuid::Uuid::new_v4()),
-            crate::pi::process::SpawnArgs {
-                cwd,
-                pi_bin,
-                session: SessionTarget::Path(path),
-                name: None,
-                // 这个 worker 只用来调一次 set_session_name 改元数据，不该带任何工具能力
-                permission: PermissionMode::ReadOnly,
-                guard_script: None,
-                // 改名的临时 worker 也不需要 Fleet 数据面
-                bridge_script: None,
-                envs: Vec::new(),
-                // 只读档位，本来就不会走到委派（cli_args 里档位判定也会拦下）
-                subagent_policy: None,
-                // 改名的临时 worker 不需要任何插件
-                bundled_extensions: Vec::new(),
-            },
+            rename_spawn_args(pi_bin, cwd, path, guard_script),
             sink(app),
         )
         .await?
@@ -1977,6 +1998,36 @@ pub async fn pty_close(state: State<'_, AppState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* ---------------- 改元数据 worker 的权限参数 ---------------- */
+
+    /// 回归（2026-10-30 真机）：生成标题 / 手工改名最后一步是起一个 ReadOnly 临时
+    /// worker 调 `set_session_name`。这条路径曾经把 `guard_script` 写死成 `None`，
+    /// 于是 `cli_args` 的 fail-closed 检查稳定报 `GUARD_SCRIPT_MISSING`——标题已经
+    /// 生成成功，用户却看到"生成标题失败"。
+    #[test]
+    fn rename_worker_carries_the_guard_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let guard = tmp.path().join("piggy-guard.js");
+        std::fs::write(&guard, "// guard").unwrap();
+
+        let args = rename_spawn_args(
+            PathBuf::from("pi"),
+            tmp.path().to_path_buf(),
+            "/tmp/s.jsonl".into(),
+            Some(guard.clone()),
+        );
+        assert_eq!(args.permission, PermissionMode::ReadOnly);
+        assert_eq!(args.guard_script.as_deref(), Some(guard.as_path()));
+
+        let argv = crate::pi::process::cli_args(&args).expect("带守卫的 ReadOnly worker 必须能启动");
+        let shown: Vec<String> = argv.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(shown.iter().any(|a| a == "--extension"), "{shown:?}");
+        assert!(
+            shown.iter().any(|a| a == guard.to_str().unwrap()),
+            "守卫路径没进 argv: {shown:?}"
+        );
+    }
 
     /* ---------------- tab_create 的 cwd 解析 ---------------- */
 
