@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::pi::client::WorkerState;
+use crate::process_ext::NoConsoleWindow;
 
 /* ---------------- 模板（纯数据，06 §3.2） ---------------- */
 
@@ -489,6 +490,7 @@ pub fn create_worktree(repo: &PathBuf, name: &str) -> Result<PathBuf, String> {
         .arg("-b")
         .arg(&branch)
         .current_dir(repo)
+        .no_console_window()
         .output()
         .map_err(|e| format!("git 启动失败: {e}"))?;
     if !out.status.success() {
@@ -498,6 +500,7 @@ pub fn create_worktree(repo: &PathBuf, name: &str) -> Result<PathBuf, String> {
             .arg(&path)
             .arg(&branch)
             .current_dir(repo)
+            .no_console_window()
             .output()
             .map_err(|e| format!("git 启动失败: {e}"))?;
         if !retry.status.success() {

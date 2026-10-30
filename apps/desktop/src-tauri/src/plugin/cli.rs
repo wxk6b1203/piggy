@@ -28,6 +28,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::events::EventSink;
+use crate::process_ext::NoConsoleWindow;
 
 /// 一次安装/升级的时间上限。npm 装大依赖图 + 走代理时可以很久，
 /// 但不能没有上限——挂死的子进程会把 job 永远留在"运行中"。
@@ -272,6 +273,7 @@ async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .no_console_window()
         .spawn()
         .map_err(|e| format!("启动 {} 失败: {e}", pi_bin.display()))?;
 

@@ -456,6 +456,68 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
 这几条一致性由 `apps/desktop/src/test/license.test.ts` 锁住（漏一个 `license` 字段、
 把那张纸从资源清单里删掉、或者"顺手润色" LICENSE 都会被它拦下）。
 
+### 2.8 Windows 真机打包的两个坑（2026-10-30，已修）
+
+#### 2.8a `vite build` 在 `json.worker.js?worker` 上失败：esbuild 临时文件被占用
+
+**症状**（用户本机，稳定复现，不是偶发）：
+
+```
+[vite:worker] Could not load .../monaco-editor/esm/vs/language/json/json.worker.js?worker
+  (imported by src/features/common/monaco-setup.ts):
+  remove C:\Users\...\AppData\Local\Temp\esbuild-<hex>: The process cannot access the file
+  because it is being used by another process.
+```
+
+**链路**（Vite 7.3.6 + esbuild 0.28.2）：
+
+1. `vite.config.ts` 的 `build.target` 是 `es2022`，且 `minify` 默认 `esbuild`；
+2. 于是 Vite 的 `vite:esbuild-transpile` 在 **renderChunk** 阶段把**每个产物 chunk**
+   再交给 esbuild（`resolveEsbuildTranspileOptions()`：只要 `target !== 'esnext'` 或
+   `minify === 'esbuild'` 就不会返回 `null`）；
+3. esbuild 的 JS API 对**超过 1MB 的 transform 输入**会先写 `%TEMP%\esbuild-<hex>`，
+   再由 Go 侧读完删除。Monaco 的 `json.worker` 产物 1.2MB、`editor.api` 6MB+，必中；
+4. Windows Defender 的实时扫描会短暂打开这个临时文件，Go 侧 `DeleteFile` 拿到
+   sharing violation → 整个 build 失败。
+
+**修法**：`build.target: 'esnext'` + `build.minify: 'terser'`（`apps/desktop/vite.config.ts`），
+并新增 `terser` devDependency。两个条件缺一不可：只把 target 改成 esnext、minify 仍用
+esbuild 时 renderChunk 仍会跑；只换 terser、target 仍是 es2022 时也会跑。
+源码的降级目标仍由 `tsconfig.base.json` 的 `target: ES2022` 决定（Vite 的源码 transform
+会读 tsconfig），所以这不是把应用整体抬到未经验证的语法级别；terser 是纯 JS，不落临时文件。
+
+**判据**：Windows 上 `pnpm build` 连续通过；改回 `target: 'es2022'` 或
+`minify: 'esbuild'` 任意一条，`json.worker.js?worker` 必须重新变红。
+
+#### 2.8b 打包版一打开就弹一堆命令行黑框：子进程没有 `CREATE_NO_WINDOW`
+
+发布构建是 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` 的 GUI
+进程，本身没有控制台。`CreateProcessW` 的默认行为是：子进程是控制台程序、父进程没有
+控制台时，**给子进程新分配一个控制台窗口**。启动路径上恰好有一串这种子进程：
+
+| 来源 | 子进程 | 时机 |
+|---|---|---|
+| `open_in_app::prefetch_icons` | 每个「打开方式」应用一个 `powershell.exe` | 启动后台预热（数量最多） |
+| `pi::discovery::verify` | `pi --version`（Windows 上可能是 `cmd.exe` 垫片） | 每次发现 pi |
+| `pi::process::spawn_worker` | 每个 tab 一个 `pi`（`cmd.exe` → `node.exe`） | 建会话/切档复活 |
+| `pi::client::kill_process_tree` | `taskkill` | 收 worker |
+| `fleet::create_worktree` | `git` | Fleet worktree |
+| `plugin::cli::run` | `pi install/remove/update` | 插件管理 |
+| `open_in_app::host::run_bounded` | `reg.exe` / `powershell.exe` | 应用解析、图标 |
+
+**修法**：新增 `src/process_ext.rs`，给 `std::process::Command` 与
+`tokio::process::Command` 实现 `NoConsoleWindow::no_console_window()`
+（Windows 上设 `CREATE_NO_WINDOW = 0x0800_0000`，其它平台空操作），
+上表所有**非 UI** spawn 都调用它。
+
+**不要**给 `open_in_app::host::detach()` 那条路加：它已经用
+`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 表达"脱离父进程、不继承控制台"，
+再叠一个 `creation_flags` 会覆盖掉原有标志。`explorer.exe`、文件关联打开属于
+**用户要看见的 UI**，也不该被隐藏。
+
+**判据**：发布版启动、建 tab、切档、打开「打开方式」菜单时，任务管理器里
+`pi` / `powershell` / `cmd` 子进程都不带可见控制台窗口；开发版（带控制台）保持原样。
+
 **界面层**（GPL §5(d) 要求"有交互界面的作品都要显示"）：系统菜单 macOS 上是
 App 菜单「关于」正下方一条「许可与第三方声明」，其它平台在 Help；点它打开
 应用内的「关于 Piggy 与许可」对话框（另有两个入口：命令面板、侧栏版本号），

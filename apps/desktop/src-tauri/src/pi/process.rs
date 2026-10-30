@@ -9,6 +9,7 @@ use crate::pi::codec::JsonlDecoder;
 use crate::pi::permission::PermissionMode;
 use crate::pi::protocol::{classify, Ame, PiEvent, DELTA_KINDS};
 use crate::plain_path;
+use crate::process_ext::NoConsoleWindow;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -260,6 +261,8 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
         // （读侧敏感目录判定不依赖它，基准是主目录，见 piggy-guard.js 的 checkRead）。
         cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
     }
+    // 打包版是 GUI 子系统，每个 pi 控制台子进程都会弹一个黑框（Windows）。
+    cmd.no_console_window();
     // 前置检查：tokio 把 cwd 缺失与二进制缺失都报 NotFound，无法区分（M1 修正记录）
     if !args.cwd.exists() {
         return Err(format!("SESSION_CWD_MISSING: 项目目录不存在: {}", args.cwd.display()));

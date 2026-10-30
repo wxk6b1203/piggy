@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
+use crate::process_ext::NoConsoleWindow;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerState {
@@ -131,6 +133,7 @@ pub(crate) fn kill_process_tree(_pid: Option<u32>) {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .no_console_window()
             .status();
     }
     // 非 Windows：pi 没有 `cmd.exe` 垫片，直接子进程就是 pi 本身，`Child::kill()` 足够。

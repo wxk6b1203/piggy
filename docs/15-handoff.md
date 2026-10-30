@@ -1779,6 +1779,23 @@ pnpm tauri dev                                  # 真机开发（会自己起 Vi
      job 没跑到任何预算断言就红（artifacts 为空）。现在只由 `main.tsx` 写。
      判据：新增/改调试钩子前先 `grep -n "__piggy"` 找同名全局；一个键只留一个写者。
 
+161. **Windows 发布版的每个后台子进程都要 `CREATE_NO_WINDOW`；"打开就弹一堆命令行黑框"先查 spawn。**（2026-10-30 用户真机）
+     `windows_subsystem = "windows"` 的 GUI 进程本身没有控制台，但 `CreateProcessW` 会给
+     控制台子进程**新分配**一个窗口。启动路径上最多的是 `prefetch_icons` 逐个起的
+     `powershell.exe`（每个「打开方式」应用一个），其次是 `pi --version`、每个 tab 的
+     `pi`（`cmd.exe` 垫片 → `node.exe`）、`taskkill`、`git`、插件 `pi`。
+     统一走 `process_ext::NoConsoleWindow::no_console_window()`；`detach()` 那条
+     `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 的路不要再叠 `creation_flags`（会覆盖），
+     `explorer.exe` / 文件关联打开是用户要看见的 UI，也不该隐藏。详见 docs/17 §2.8b。
+
+162. **Windows 上 `vite build` 失败在 `esbuild-*` 临时文件，先看 `build.target` / `minify`。**（2026-10-30）
+     只要 `build.target !== 'esnext'` 或 `minify === 'esbuild'`，Vite 的
+     `vite:esbuild-transpile` 就会在 renderChunk 阶段把每个产物 chunk 再喂 esbuild；
+     超过 1MB 的 chunk（Monaco `json.worker` 1.2MB、`editor.api` 6MB+）会写
+     `%TEMP%\esbuild-*`，Windows Defender 扫描占住它 → `remove ... being used by another process`。
+     修法是 `target: 'esnext'` + `minify: 'terser'`（两个条件缺一不可），源码降级仍由
+     `tsconfig.base.json` 的 ES2022 负责。详见 docs/17 §2.8a。
+
 ## 4. 未完成 / 待决策
 
 | 项 | 说明 |

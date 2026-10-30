@@ -7,6 +7,7 @@ pub mod legal;
 pub mod open_in_app;
 pub mod pi;
 pub mod plugin;
+pub mod process_ext;
 pub mod provider;
 pub mod pty;
 pub mod sessions;

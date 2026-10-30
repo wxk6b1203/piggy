@@ -9,6 +9,7 @@
 use super::catalog::Platform;
 use super::resolver::launch_args;
 use super::spec::{LaunchOutcome, LaunchSpec};
+use crate::process_ext::NoConsoleWindow;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -212,6 +213,9 @@ pub fn run_bounded(command: &str, args: &[&str], timeout: Duration) -> Option<St
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // 图标预热会在后台起一串 powershell.exe / reg.exe；GUI 进程里不抑制就是
+        // 一串黑框（用户报的「打开打包产物弹一堆命令行对话框」）。
+        .no_console_window()
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;

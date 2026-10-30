@@ -37,6 +37,8 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use crate::process_ext::NoConsoleWindow;
+
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -469,6 +471,7 @@ async fn run_pi_once(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .no_console_window()
         .spawn()
         // 报错里用**用户认得的那条路径**（pi_bin），不是解析之后的 node.exe
         .map_err(|e| format!("启动 {} 失败：{e}", pi_bin.display()))?;

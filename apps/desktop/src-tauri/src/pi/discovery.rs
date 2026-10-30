@@ -17,6 +17,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::process_ext::NoConsoleWindow;
+
 /// pi 二进制来源（持久化在 `~/.piggy/config.json`）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -156,6 +158,7 @@ fn verify(path: PathBuf, source: PiSource, via: String, from_env: bool) -> Resul
     }
     let out = Command::new(&path)
         .arg("--version")
+        .no_console_window()
         .output()
         .map_err(|e| DiscoveryError::VersionCheckFailed(e.to_string()))?;
     if !out.status.success() {
