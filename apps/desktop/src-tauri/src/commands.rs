@@ -532,7 +532,7 @@ pub async fn perf_config_save(
     cfg.max_workers = max_workers;
     cfg.idle_timeout_min = idle_timeout_min;
     if let Some(n) = title_max_chars {
-        cfg.title_max_chars = n.clamp(1, 200);
+        cfg.title_max_chars = n.clamp(1, crate::sessions::title::HARD_MAX_CHARS);
     }
     if let Some(s) = title_source.as_deref() {
         cfg.title_source = crate::sessions::title::TitleStrategy::parse(s)?;
@@ -1081,7 +1081,7 @@ pub async fn session_title_generate(
 ) -> Result<Value, String> {
     session_file_gate(&path)?;
     let cfg = app::perf_config_load();
-    let max_chars = cfg.title_max_chars.clamp(1, 200);
+    let max_chars = cfg.title_max_chars.clamp(1, crate::sessions::title::HARD_MAX_CHARS);
     let strategy = cfg.title_source;
     let source = {
         let path = path.clone();

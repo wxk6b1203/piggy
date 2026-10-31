@@ -555,13 +555,13 @@ export let mockTitleFail = false;
 export function setMockTitleFail(v: boolean) {
   mockTitleFail = v;
 }
-/** 生成出来的标题按 20 字上限截断（与真机同一条规则），每次换一个以便看出"重新生成"生效了。 */
+/** 生成出来的标题按配置的字数上限截断（与真机同一条规则，默认 25），每次换一个以便看出"重新生成"生效了。 */
 let mockTitleSeq = 0;
 let mockTitleNext = '插件管理页的标题生成';
 /** 标题配置。`perf_config_save` 会真的改它，`perf_config_load` 会真的读它——
     否则设置页在 mock 下"改了不生效"，门禁也就核对不了"选完模型到底写进去了什么"。 */
 export const mockTitleCfg = {
-  maxChars: 20,
+  maxChars: 25,
   source: 'both' as string,
   model: '' as string,
   thinking: '' as string,

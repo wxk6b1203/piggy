@@ -157,7 +157,7 @@ pub struct PerfConfig {
     /// 生成的会话标题最多多少个**字符**（不是字节；docs/03 §2.16）。
     ///
     /// 按字符算是刻意的：DSH 用 UTF-8 字节上限，于是"20 字节"在中文下只有 6 个字。
-    /// 用户说的"字数"就是字符数。默认 20（侧栏一行约 220px 放得下）。
+    /// 用户说的"字数"就是字符数。默认 25（2026-10-31 用户要求从 20 提高 5 个字符）。
     #[serde(default = "default_title_max_chars")]
     pub title_max_chars: u32,
     /// 标题取材：first（只看第一条）/ recent（只看最近几条）/ both（默认）。
@@ -272,7 +272,8 @@ impl PerfConfig {
         self.idle_timeout_min = self.idle_timeout_min.min(24 * 60);
         // 标题字数：config.json 是可以手改的，0 会让每个标题都变成空串——
         // 那正好是最坏的结果（空标题覆盖掉用户原来的名字），所以这里兜住。
-        self.title_max_chars = self.title_max_chars.clamp(1, 200);
+        // 上限与设置页输入框用同一个产品值（2026-10-31 用户要求 200 → 205）。
+        self.title_max_chars = self.title_max_chars.clamp(1, crate::sessions::title::HARD_MAX_CHARS);
         // 标题模型写成 `provider/modelId` 才有意义；写错了就丢掉（回落"跟会话"），
         // 而不是留着一个每次生成都报错的字符串。
         if let Some(m) = self.title_model.as_deref() {
@@ -390,6 +391,25 @@ mod tests {
         assert_eq!(cfg.max_workers, 4, "一个坏字段不该把别的设置一起重置");
         let cfg: PerfConfig = serde_json::from_str(r#"{"transcript_rail":"left"}"#).unwrap();
         assert_eq!(cfg.transcript_rail, RailPlacement::Left);
+    }
+
+    /// 标题字数的兜底：0 会让标题变成空串（最坏结果），超大值夹回硬上限。
+    /// 上限是产品值（2026-10-31 用户要求 200 → 205，见 `sessions::title`）。
+    #[test]
+    fn title_max_chars_is_clamped_to_the_hard_cap() {
+        let mut cfg = PerfConfig {
+            title_max_chars: 0,
+            ..Default::default()
+        };
+        cfg.clamp();
+        assert_eq!(cfg.title_max_chars, 1);
+
+        let mut cfg = PerfConfig {
+            title_max_chars: u32::MAX,
+            ..Default::default()
+        };
+        cfg.clamp();
+        assert_eq!(cfg.title_max_chars, crate::sessions::title::HARD_MAX_CHARS);
     }
 
     /// 序列化出来的名字就是界面与 mock 用的那三个字面量。

@@ -425,7 +425,9 @@ export function SessionsSidebar() {
                       data-session-path={m.path}
                       title={m.cwd_missing ? `${m.path}（⚠ 项目目录已删除，打开会失败）` : m.path}
                     >
-                      <span className="pg-session-title">
+                      {/* 生成/重命名的名字最多 25 字，窄侧栏仍可能被省略号截断（docs/03 §2.16）：
+                          悬停给完整名字；未命名会话的首条消息可能很长，不塞进 tooltip */}
+                      <span className="pg-session-title" title={m.name || undefined}>
                         {opened && !active ? '• ' : ''}
                         {sessionTitle(m)}
                         {m.cwd_missing ? ' ⚠' : ''}

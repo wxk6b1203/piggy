@@ -75,8 +75,16 @@ impl TitleStrategy {
     }
 }
 
-/// 默认字数上限。侧栏一行约 220px，20 个汉字正好；再长就被省略号吃掉，等于白生成。
-pub const DEFAULT_MAX_CHARS: u32 = 20;
+/// 默认字数上限（2026-10-31 用户要求：20 → 25）。
+///
+/// 侧栏标题是 `nowrap` + 省略号（`styles.css` 的 `.pg-session-title`）：220px 宽时
+/// 20 个汉字刚好一行，25 字在窄侧栏会被省略号吃掉一截——这是用户明确要的值，
+/// 不是没算过宽度（行内把完整标题放进 `title`，悬停仍能读全，见 `SessionsSidebar`）。
+pub const DEFAULT_MAX_CHARS: u32 = 25;
+
+/// 设置里能填的硬上限（`1..=HARD_MAX_CHARS`）。它只做兜底：0 会让标题变成空串，
+/// 超大值没有意义。2026-10-31 与默认值一起 +5：200 → 205（设置输入框的 `max` 抄它）。
+pub const HARD_MAX_CHARS: u32 = 205;
 
 /// pi CLI 认可的思考档位，从 `packages/coding-agent/src/cli/args.ts:60`
 /// 的 `VALID_THINKING_LEVELS` **逐个抄来**的，不是自己起的名。
@@ -967,6 +975,36 @@ mod tests {
         let out = sanitize(long, 10);
         assert_eq!(out.chars().count(), 10);
         assert_eq!(out, "这是一个非常非常非常");
+    }
+
+    /// 默认字数上限是**产品参数**，不是随手可改的实现细节：2026-10-31 用户要求
+    /// 从 20 提到 25（docs/03 §2.16）。`config.json` 缺这个字段时它才是真正生效的值，
+    /// 提示词里的两处上限也来自它——所以两处一起钉住。
+    #[test]
+    fn default_max_chars_is_the_agreed_product_value() {
+        assert_eq!(DEFAULT_MAX_CHARS, 25);
+        let (sys, _) = build_prompt(
+            &TitleSource {
+                cwd: None,
+                provider: None,
+                model_id: None,
+                first_message: Some("第一".into()),
+                recent_messages: vec![],
+                user_message_count: 1,
+                current_name: None,
+                message_count: 1,
+            },
+            TitleStrategy::Both,
+            DEFAULT_MAX_CHARS,
+        );
+        assert!(sys.contains("never exceed 25 characters"), "{sys}");
+    }
+
+    /// 硬上限同样随默认值 +5（200 → 205）：`config.json` 手改成超大值时夹到它，
+    /// 设置输入框的 `max` 也抄它（前端 `TITLE_MAX_CHARS_LIMIT` 是手工对齐的第二份）。
+    #[test]
+    fn hard_cap_is_the_agreed_product_value() {
+        assert_eq!(HARD_MAX_CHARS, 205);
     }
 
     /// 提示词：两句 DSH 的原话必须在（它们是挡真实失败的，不是装饰），

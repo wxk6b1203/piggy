@@ -361,4 +361,36 @@ describe('会话行的入口', () => {
     // 没有名字时是"生成"，有名字时才是"重新生成"
     expect(labels).not.toContain('重新生成标题');
   });
+
+  it('长标题在窄侧栏被省略时，悬停仍能读到完整标题', async () => {
+    // 默认上限提到 25 字后，侧栏（nowrap + ellipsis）未必放得下：完整文本必须留在
+    // `title` 上，否则"生成了更长的标题"换来的只是界面上被截掉一截。
+    const full = '一个超过二十五个字符的会话标题在窄侧栏里会显示成省略号';
+    invokeMock.mockImplementation(async (name: string) => {
+      if (name === 'session_list') {
+        return [
+          {
+            path: '/mock/proj/long.jsonl',
+            file_name: 'long.jsonl',
+            session_id: 'long',
+            cwd: '/mock/proj',
+            name: full,
+            first_message: '原始第一条',
+            mtime_ms: Date.now(),
+            created_ms: Date.now(),
+            size: 10,
+            cwd_missing: false,
+          },
+        ];
+      }
+      return {};
+    });
+
+    const { SessionsSidebar } = await import('@/features/workspace/SessionsSidebar');
+    mountDom(<SessionsSidebar />);
+    await flush();
+    const title = q('.pg-session-title');
+    expect(title?.textContent).toContain(full); // DOM 里是完整文本，CSS 才截断
+    expect(title?.getAttribute('title')).toBe(full);
+  });
 });

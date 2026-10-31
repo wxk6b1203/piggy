@@ -39,6 +39,9 @@ interface PermissionModeInfo {
   pathGuard: boolean;
 }
 
+/** 标题字数硬上限，与 Rust `sessions::title::HARD_MAX_CHARS` 手工对齐（2026-10-31: 200 → 205）。 */
+const TITLE_MAX_CHARS_LIMIT = 205;
+
 export function GeneralSection() {
   const [pi, setPi] = useState<PiSourceState | null>(null);
   const [permModes, setPermModes] = useState<PermissionModeInfo[]>([]);
@@ -56,7 +59,7 @@ export function GeneralSection() {
   const [dirInput, setDirInput] = useState('');
   // 标题生成（docs/03 §2.16）
   const [titleCfg, setTitleCfg] = useState<{ maxChars: number; source: string; model: string; thinking: string }>({
-    maxChars: 20,
+    maxChars: 25,
     source: 'both',
     model: '',
     thinking: '',
@@ -96,7 +99,7 @@ export function GeneralSection() {
         setDelegation(c.subagent_delegation ?? false);
         if (c.permission_mode) setPerm(c.permission_mode);
         setTitleCfg({
-          maxChars: c.title_max_chars ?? 20,
+          maxChars: c.title_max_chars ?? 25,
           source: c.title_source ?? 'both',
           model: c.title_model ?? '',
           thinking: c.title_thinking ?? '',
@@ -272,7 +275,7 @@ export function GeneralSection() {
         <Input
           type="number"
           min={1}
-          max={200}
+          max={TITLE_MAX_CHARS_LIMIT}
           style={{ width: 84 }}
           value={titleCfg.maxChars}
           onChange={(e) =>

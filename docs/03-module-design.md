@@ -428,7 +428,7 @@ pi -p --no-session -nt -nc [--provider P --model M] [--thinking LEVEL] --system-
 资格判定与 DSH 同义：**只取人类用户消息里的文本块**，纯图片/工具结果不算；
 收拾完为空的那条跳过（否则会基于空内容生成）。
 
-**字数上限按字符算**（`title_max_chars`，默认 20）。这是与 DSH 的**有意差异**：
+**字数上限按字符算**（`title_max_chars`，默认 25、设置允许 1–205）。这是与 DSH 的**有意差异**：
 DSH 用 UTF-8 字节（`maxTitleBytes` 默认 80），于是"20 字节"在中文下只有 6 个字；
 用户说的"字数"是字符数。截断用 `chars()`，天然不会切坏多字节字符。
 
