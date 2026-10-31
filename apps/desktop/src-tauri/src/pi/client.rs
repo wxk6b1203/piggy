@@ -8,6 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
+// 只在 `kill_process_tree` 的 `#[cfg(windows)]` 分支里调用；非 Windows 上 import 会
+// 全程未使用（trait 方法本身是跨平台空实现，这里只是不需要把它引入作用域）。
+#[cfg(windows)]
 use crate::process_ext::NoConsoleWindow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
