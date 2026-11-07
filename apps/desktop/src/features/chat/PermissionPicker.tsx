@@ -87,8 +87,6 @@ export function PermissionPicker({ tabId }: { tabId: string }) {
     try {
       await cmd('pi_set_permission_mode', { tabId, mode: id });
       patch(tabId, { permission: id as PermissionModeId });
-      const label = modes.find((m) => m.id === id)?.label ?? id;
-      toast.success(`权限档位已切换为「${label}」`);
     } catch (e) {
       toast.error(String(e));
     } finally {
