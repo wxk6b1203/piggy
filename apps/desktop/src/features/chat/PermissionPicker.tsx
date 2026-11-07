@@ -99,13 +99,12 @@ export function PermissionPicker({ tabId }: { tabId: string }) {
   return (
     <Picker
       className="pg-pill pg-perm-select"
-      buttonTitle={`权限档位：${current.label}\n${describe(current)}\n\n${SWITCH_NOTE}`}
+      buttonTitle={`权限档位：${current.label}\n${describe(current)}`}
       items={items}
       onPick={(id) => void pick(id)}
       title="权限档位"
       width={330}
       disabled={busy}
-      footer={SWITCH_NOTE}
     >
       <Icon name={current.id === 'read-only' ? 'eye' : current.id === 'workspace' ? 'shield' : 'unlock'} size={12} />
       {current.label}
@@ -113,10 +112,6 @@ export function PermissionPicker({ tabId }: { tabId: string }) {
     </Picker>
   );
 }
-
-const SWITCH_NOTE =
-  '切换档位即时生效：工具集在下一轮开始时收窄，路径守卫立刻生效。\n' +
-  '只有从限制档升到「完全权限」且本机配置了 MCP 服务器时，才会重启该会话的 pi 进程以接入 MCP。';
 
 /** 把后端能力矩阵翻译成一句人话——不夸大：只读档不提"沙箱"，工作区档明说有边界守卫。 */
 function describe(m: PermissionModeInfo): string {
