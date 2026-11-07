@@ -35,9 +35,15 @@ pub struct SpawnArgs {
     pub pi_bin: PathBuf,
     pub session: SessionTarget,
     pub name: Option<String>,
-    /// 权限档位（见 `pi/permission.rs`）。`--tools` / `-e` 都是 CLI 参数，
-    /// 所以档位**只能在 spawn 时决定**：切档 = 带同一会话文件重启 worker。
+    /// 权限档位（见 `pi/permission.rs`）。
+    ///
+    /// 2026-11-07 起档位**不再**由 `--tools` 决定（那会让升档必须重启）：
+    /// 工具全量注册，守卫扩展按本档位在运行期 `pi.setActiveTools()` 收窄。
+    /// `permission` 仍然决定 spawn 时的 `--no-mcp` 与守卫注入。
     pub permission: PermissionMode,
+    /// 运行期档位文件（`~/.piggy/permission/<tab>.json`）。守卫每次工具调用前读它。
+    /// `None` = 运行期切档不可用（仅测试/老调用点），此时切档必须重启。
+    pub permission_file: Option<PathBuf>,
     /// 守卫扩展脚本路径；仅 `Workspace` 档使用，缺失时拒绝启动（不静默降级）。
     pub guard_script: Option<PathBuf>,
     /// 桥接扩展脚本路径（`piggy-bridge.js`，docs/06 §4）。**可选**：缺失只是 Fleet 少一条
@@ -104,19 +110,11 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push("--name".into());
         out.push(n.into());
     }
-    /* 工具白名单（pi `--tools` / `-t`）：限制档位靠它拿掉 shell 与写工具。
-    不传 = 不限制（pi 用自身默认 + 插件工具）——这是「完全权限」档的定义。
-
-    ⚠️ pi 的帮助原话："Applies to built-in, extension, and custom tools"。也就是说
-    **`--tools` 会把捆绑插件的工具一起过滤掉**（真机验证：`--tools read,grep,find,ls`
-    之下 `pi.getAllTools()` 只剩这 4 个）。要让插件在限制档位下仍然可用，就得把它申报的
-    工具名**加进白名单**（名字来自插件的 `piggy-plugin.json`，见 `pi/plugins.rs`）。
-    只加"这次真的注入了的"那些插件申报的名字 —— 插件没注入却把名字写进白名单，
-    等于告诉模型"你有这个工具"，而它并不存在。 */
-    // 限制档位的委派**必须**有 bridge：子代理的 capability ceiling 与 required guard
-    // 都是 bridge 在父进程里注册的。bridge 缺失时如果仍然把 subagent 加进白名单，
-    // 子代理会按 agent 自己声明的 tools 启动（worker 带 bash）——这是权限提升。
-    // Full 档不需要 bridge（本来就不限制），所以只拦限制档。
+    /* 委派的前置条件：限制档位的委派**必须**有 bridge。
+    子代理的 capability ceiling 与 required guard 都是 bridge 在父进程里注册的。
+    bridge 缺失时如果仍然把 subagent 加进运行期工具集，子代理会按 agent 自己声明的
+    tools 启动（worker 带 bash）——这是权限提升。Full 档不需要 bridge（本来就不限制），
+    所以只拦限制档。 */
     if subagent_delegation_active(args)
         && args.permission.needs_path_guard()
         && !args.bridge_script.as_ref().is_some_and(|p| p.is_file())
@@ -126,55 +124,46 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
              请重新安装 Piggy，或在设置里关闭子代理委派。"
             .to_string());
     }
-    if let Some(list) = args.permission.tool_allowlist() {
-        let mut names: Vec<String> = list.split(',').map(|s| s.trim().to_string()).collect();
-        let extra = crate::pi::plugins::plugin_tools_for(&args.bundled_extensions);
-        for t in extra {
-            if !names.iter().any(|n| n == &t) {
-                names.push(t);
-            }
-        }
-        // 子代理工具也是扩展工具，会被 `--tools` 总白名单过滤。委派开关打开时
-        // 把它们显式加进白名单，否则限制档位下进程里根本没有 `subagent`
-        // （2026-10-30：用户要求不再只限「完全权限」档）。子代理自身的工具边界
-        // 由 bridge 注册的 capability ceiling + 守卫扩展继承，见 docs/06 §6.3。
-        if subagent_delegation_active(args) {
-            for t in DELEGATION_TOOLS {
-                if !names.iter().any(|n| n == t) {
-                    names.push(t.to_string());
-                }
-            }
-        }
-        out.push("--tools".into());
-        out.push(names.join(",").into());
-    }
+    /* 2026-11-07：不再传 `--tools`（docs/17 §2.1）。
+    pi 的 `--tools` 在**注册期**过滤（`_isAllowedTool` 把工具从 registry 删掉），
+    被过滤掉的工具事后 `pi.setActiveTools()` 也点不亮 —— 升档就只剩"重启"一条路。
+    现在全量注册，由守卫扩展按档位在运行期收窄（`before_agent_start` + `tool_call` 双保险）。
+    限制档仍然传 `--no-mcp`：不想让"仅可查看"的会话去拉起本地 MCP 进程/开网络出口。 */
     // 路径守卫（pi `-e`）：两个限制档都需要——
     // 「工作区内修改」拦写边界，「仅可查看」拦读敏感目录（`~/.pi` 里存着 API key 明文，
     // pi 的读工具接受绝对路径与 `~` 展开，不拦就会被 prompt injection 读进模型上下文）。
     // 脚本缺失时**必须报错而不是静默降级**——否则用户以为限制还在、实际没有，
     // 这种"看起来安全"的假象比直接启动失败更危险。
-    if args.permission.needs_path_guard() {
-        let Some(guard) = args.guard_script.as_ref().filter(|p| p.is_file()) else {
+    // 守卫扩展：**所有档位**都注入（2026-11-07 起）。
+    // 限制档靠它拦写边界/敏感目录 + 收窄工具集；完全权限档靠它保住"运行期还能切回限制档"
+    // 这条能力（切回时它要能立刻 setActiveTools）。完全权限档缺脚本只降级（打不开运行期
+    // 收窄），限制档缺脚本仍然 fail-closed。
+    match args.guard_script.as_ref().filter(|p| p.is_file()) {
+        Some(guard) => {
+            out.push("--extension".into());
+            out.push(plain_path(guard).into());
+        }
+        None if args.permission.needs_path_guard() => {
             return Err("GUARD_SCRIPT_MISSING: 限制档位（仅可查看 / 工作区内修改）需要守卫扩展 \
                  resources/piggy-guard.js，但未找到。已拒绝以无边界的方式启动——\
                  请改用「完全权限」，或修复安装。"
                 .to_string());
-        };
-        out.push("--extension".into());
-        out.push(plain_path(guard).into());
+        }
+        None => {
+            eprintln!("[piggy] 警告：完全权限档没找到 piggy-guard.js，运行期切档将退化为重启");
+        }
     }
     // 桥接扩展（piggy-bridge）：所有档位都注入。它只注册 `/piggy:*` 命令与数据面，
-    // 不注册任何工具，因此不影响 `--tools` 白名单的语义。
+    // 不注册任何工具，因此不影响运行期工具集（`setActiveTools` 的名单）。
     if let Some(bridge) = args.bridge_script.as_ref().filter(|p| p.is_file()) {
         out.push("--extension".into());
         out.push(plain_path(bridge).into());
     }
     /* 捆绑的 pi 插件（docs/06 §7）：目录形式注入，pi 的 `-e` 接受目录。
-    ⚠️ 与 `--tools` 的关系：pi 的帮助写得很清楚 —— `--tools` 是"内置、扩展与自定义工具"
-    的总白名单。限制档位（`tool_allowlist()` 为 Some）之下**插件工具名不在白名单里，
-    所以插件的工具会被整个过滤掉**（真机验证见 docs/15 规矩 8 那条）。这里仍然注入
-    （不注入的话连"插件在不在"都看不出来），但**上层必须据此提示用户**：
-    想用插件工具就得用「完全权限」档，或者把工具名加进白名单。 */
+    ⚠️ 与运行期工具集的关系（2026-11-07 起）：插件工具会被**注册**，但限制档的
+    `setActiveTools` 名单里没有它们 —— 模型看不见、`tool_call` 也拦。
+    要放开某插件的工具，得把 `piggy-plugin.json` 申报的名字并进 `active_tools_for`
+    （`pi/permission.rs`，`allowlist: false` 的覆盖型插件被排除）。 */
     for ext in args.bundled_extensions.iter().filter(|p| p.is_dir()) {
         out.push("--extension".into());
         // ⚠️ 必须摘掉 verbatim 前缀：这一批是**目录形式**的扩展，而 pi（node）加载目录形式的
@@ -184,12 +173,11 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
         out.push(plain_path(ext).into());
     }
     /* 限制档位**显式关掉 MCP**（pi 1.0.4 起的 `--no-mcp`）。
-    ⚠️ 为什么不能只靠 `--tools`：pi 1.1.0 的判据是"白名单里有没有 `mcp__` 前缀的名字"
-    （`agent-session.ts` 的 `_allowlistFiltersMcp`），所以**限制档照样会拉起用户配的
-    MCP 服务器**（真机实测：`--tools read,grep,find,ls` 之下 stdio stub 仍被 spawn）。
-    工具本身不会声明给模型（它们要走 `tool_search`/`codemode`，而那两个也被过滤掉了，
-    pi 自己会回一条 "MCP tools are only reachable from the codemode or tool_search tool"），
-    但"仅可查看"档去启动本地进程 / 打开网络出口，与这一档对用户的承诺不符。
+    2026-11-07 取消 `--tools` 之后这条更关键：MCP 工具一旦注册进 registry，
+    `setActiveTools()` 就只是"不声明"，进程该连的还是会连。限制档的承诺是
+    "不启动本地 MCP 进程 / 不开网络出口"，只能靠 `--no-mcp` 在启动期拿掉。
+    （代价：从限制档升到「完全权限」且真配了 MCP 时，必须重启换进程 —— 见 registry 的
+    `needs_restart`；没配 MCP 的机器不受影响。）
     放在 argv 末尾：老版本 pi 不认识这个 flag 时会当未知 flag 收进 unknownFlags
     （`cli/args.ts` 的 `arg.startsWith("--")` 分支），**不会**吃掉后面的参数值。 */
     if args.permission.tool_allowlist().is_some() {
@@ -228,11 +216,15 @@ pub fn cli_args(args: &SpawnArgs) -> Result<Vec<std::ffi::OsString>, String> {
 pub const DELEGATION_ENV: &str = "PIGGY_SUBAGENT_DELEGATION";
 /// 父会话的权限档位。bridge 用它判断"要不要给子代理注册 capability ceiling"。
 pub const PERMISSION_ENV: &str = "PIGGY_PERMISSION_MODE";
+/// 运行期档位文件路径（守卫扩展读它，见 `pi/permission.rs::write_mode_file`）。
+pub const PERMISSION_FILE_ENV: &str = "PIGGY_PERMISSION_FILE";
+/// 档位文件缺失时守卫的兜底工具集（逗号分隔；仅限制档位有）。
+pub const PERMISSION_TOOLS_ENV: &str = "PIGGY_PERMISSION_TOOLS";
 /// 父会话允许的工具名（逗号分隔）。bridge 把同一份名单注册成子代理的 ceiling。
 pub const SUBAGENT_TOOLS_ENV: &str = "PIGGY_SUBAGENT_ALLOWED_TOOLS";
 /// 守卫扩展的绝对路径。bridge 把它注册成子会话的 required extension。
 pub const GUARD_SCRIPT_ENV: &str = "PIGGY_GUARD_SCRIPT";
-/// 委派开关打开时，限制档位要额外加进 `--tools` 的两个扩展工具名。
+/// 委派开关打开时，限制档位要额外加进**运行期工具集**的两个扩展工具名。
 pub const DELEGATION_TOOLS: [&str; 2] = ["subagent", "subagents_enable"];
 
 /// 告诉 pi 扩展"宿主是谁"（`pi-ask` 用它决定走提问卡还是降级成逐个对话框）。
@@ -247,7 +239,7 @@ pub const HOST_NAME: &str = "piggy";
 /// 子代理委派此刻是否**真的**生效（开关打开，策略文件已登记）。
 ///
 /// 2026-10-30 起不再要求「完全权限」：限制档位通过
-/// `--tools` 补上 `subagent,subagents_enable`，bridge 再把父会话的工具名
+/// 运行期工具集补上 `subagent,subagents_enable`，bridge 再把父会话的工具名
 /// 注册成子代理 capability ceiling，并强制子会话加载守卫扩展。子代理继承
 /// 父会话权限，而不是继承"完全权限"。
 ///
@@ -255,6 +247,19 @@ pub const HOST_NAME: &str = "piggy";
 /// 两者分叉会让用户以为开了、实际没开（docs/15 规矩 8 同一类问题）。
 pub fn subagent_delegation_active(args: &SpawnArgs) -> bool {
     args.subagent_policy.is_some()
+}
+
+/// 本档位在运行期应该**声明给模型**的工具集（`None` = 不限制）。
+///
+/// 单一真相：spawn 时写进档位文件、切档时重写同一份文件；守卫只消费不推导。
+/// 这样"界面显示的档位"与"进程实际声明的工具"不会各算各的（docs/15 规矩 8）。
+pub fn active_tools(args: &SpawnArgs) -> Option<Vec<String>> {
+    let delegation: &[&str] = if subagent_delegation_active(args) {
+        &DELEGATION_TOOLS
+    } else {
+        &[]
+    };
+    crate::pi::permission::active_tools_for(args.permission, &args.bundled_extensions, delegation)
 }
 
 /// 交给 pi 进程的环境变量：`SpawnArgs.envs` 加上权限/守卫/委派开关。
@@ -272,6 +277,15 @@ pub fn spawn_envs(args: &SpawnArgs) -> Vec<(String, String)> {
     push(HOST_ENV, HOST_NAME.to_string());
     // bridge 靠它决定给子代理注册哪一档 capability ceiling（Full = 不限制，不注册）。
     push(PERMISSION_ENV, args.permission.as_str().to_string());
+    // 守卫扩展靠它读**运行期**档位（spawn 期档位是 env，之后以文件为准）。
+    if let Some(path) = &args.permission_file {
+        push(PERMISSION_FILE_ENV, plain_path(path).to_string_lossy().into_owned());
+    }
+    // 档位文件的**兜底**：文件被清理/写坏时，守卫至少还能拿到 spawn 时的工具集。
+    // 没有它，守卫只能 fail-closed（一个工具都不给），会话会不可用。
+    if let Some(active) = active_tools(args) {
+        push(PERMISSION_TOOLS_ENV, active.join(","));
+    }
     // 限制档位的子会话必须加载守卫；bridge 用这个路径注册 required child extension。
     // 只传真实存在的文件；缺失时 cli_args 已经会 fail-closed，轮不到 spawn。
     if args.permission.needs_path_guard() {
@@ -310,13 +324,22 @@ pub async fn spawn_worker(tab_id: &str, args: SpawnArgs, sink: Arc<dyn EventSink
     for (k, v) in spawn_envs(&args) {
         cmd.env(k, v);
     }
-    if args.permission.needs_path_guard() {
-        // 写侧白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入
-        // （读侧敏感目录判定不依赖它，基准是主目录，见 piggy-guard.js 的 checkRead）。
-        cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
-    }
+    // 写侧白名单根 = 会话 cwd。守卫 fail-closed：该变量丢失则拒绝一切写入
+    // （读侧敏感目录判定不依赖它，基准是主目录，见 piggy-guard.js 的 checkRead）。
+    // 完全权限档也传：运行期切回限制档时，守卫要靠它立刻拿到边界。
+    cmd.env("PIGGY_GUARD_ROOTS", &args.cwd);
     // 打包版是 GUI 子系统，每个 pi 控制台子进程都会弹一个黑框（Windows）。
     cmd.no_console_window();
+    // 运行期档位文件：守卫的**唯一**档位真相（spawn 期先写一次初值）。
+    if let Some(path) = &args.permission_file {
+        let active = active_tools(&args);
+        crate::pi::permission::write_mode_file(path, args.permission, active.as_deref()).map_err(|e| {
+            format!(
+                "PERMISSION_FILE_WRITE_FAILED: 写运行期档位文件失败: {}（{e}）",
+                path.display()
+            )
+        })?;
+    }
     // 前置检查：tokio 把 cwd 缺失与二进制缺失都报 NotFound，无法区分（M1 修正记录）
     if !args.cwd.exists() {
         return Err(format!("SESSION_CWD_MISSING: 项目目录不存在: {}", args.cwd.display()));
@@ -532,21 +555,21 @@ async fn handle_line(line: &str, worker: &Worker, sink: &Arc<dyn EventSink>, coa
                 worker.set_state(WorkerState::Busy);
             }
             coalescer.flush().await;
-            sink.emit_json(&format!("pi:commit:{tab}"), v);
+            sink.emit_json(&format!("pi:commit:{tab}"), coalescer.stamp(v));
         }
         PiEvent::AgentSettled => {
             if worker.state() != WorkerState::Stopped {
                 worker.set_state(WorkerState::Ready);
             }
             coalescer.flush().await;
-            sink.emit_json(&format!("pi:commit:{tab}"), v);
+            sink.emit_json(&format!("pi:commit:{tab}"), coalescer.stamp(v));
         }
         PiEvent::ExtensionUiRequest { .. } => {
             sink.emit_json(&format!("pi:ui-req:{tab}"), v);
         }
         _ => {
             coalescer.flush().await;
-            sink.emit_json(&format!("pi:commit:{tab}"), v);
+            sink.emit_json(&format!("pi:commit:{tab}"), coalescer.stamp(v));
         }
     }
 }
@@ -569,6 +592,7 @@ mod tests {
             session: SessionTarget::New,
             name: None,
             permission,
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -598,47 +622,90 @@ mod tests {
         p
     }
 
+    /// 2026-11-07 起：**任何档位都不传 `--tools`**（docs/17 §2.1）。
+    /// 传了就等于在注册期裁掉工具，`setActiveTools()` 再也点不亮它们 —— 升档只能重启。
     #[test]
-    fn full_permission_passes_no_tools_flag() {
-        let a = args(PermissionMode::Full);
-        let v = argv(&a);
-        assert_eq!(v, vec!["--mode", "rpc"]);
-        assert!(!v.iter().any(|x| x == "--tools"));
+    fn no_permission_mode_passes_a_tools_flag() {
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Workspace,
+            PermissionMode::Full,
+        ] {
+            let mut a = args(mode);
+            a.guard_script = Some(tmp_file("piggy-test-no-tools-flag.js"));
+            let v = argv(&a);
+            assert!(!v.iter().any(|x| x == "--tools"), "{mode:?} 仍传了 --tools: {v:?}");
+        }
     }
 
+    /// 运行期档位工具集（守卫 `setActiveTools` 的入参）：矩阵与插件/委派合并。
     #[test]
-    fn restricted_modes_carry_the_allowlist() {
-        let mut ro = args(PermissionMode::ReadOnly);
-        ro.guard_script = Some(tmp_file("piggy-test-guard-readonly.js"));
-        assert!(argv(&ro).contains(&"read,grep,find,ls".to_string()));
-        /* 插件的工具名要**加进**白名单（否则 `--tools` 把它们整个过滤掉，
-        插件等于没注入）。名字来自插件的 `piggy-plugin.json`。 */
+    fn active_tools_matrix_covers_plugins_and_delegation() {
+        use crate::pi::permission::active_tools_for;
+
+        assert_eq!(active_tools_for(PermissionMode::Full, &[], &[]), None);
+        assert_eq!(
+            active_tools_for(PermissionMode::ReadOnly, &[], &[]),
+            Some(
+                vec!["read", "grep", "find", "ls"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            active_tools_for(PermissionMode::Workspace, &[], &[]),
+            Some(
+                vec!["read", "grep", "find", "ls", "write", "edit"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            active_tools_for(PermissionMode::ReadOnly, &[], &DELEGATION_TOOLS)
+                .unwrap()
+                .iter()
+                .filter(|n| n.starts_with("subagent"))
+                .count(),
+            2,
+            "委派工具要进运行期工具集"
+        );
+    }
+
+    /// 插件的工具名要并进**运行期**工具集（不再进 `--tools`）。
+    #[test]
+    fn plugin_tools_are_merged_into_the_runtime_tool_set() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("pi-ask");
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.js"), "// x\n").unwrap();
         std::fs::write(
             dir.join("piggy-plugin.json"),
             r#"{"name":"pi-ask","entry":"index.js","tools":["ask_user_question","exit_plan_mode"]}"#,
         )
         .unwrap();
-        std::fs::write(dir.join("index.js"), "// x\n").unwrap();
         let mut a = args(PermissionMode::ReadOnly);
-        a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
         a.bundled_extensions = vec![dir];
-        let with_plugin = argv(&a);
+        let tools = active_tools(&a).expect("限制档必须有运行期工具集");
+        assert!(tools.iter().any(|t| t == "ask_user_question"), "{tools:?}");
+        assert!(tools.iter().any(|t| t == "exit_plan_mode"), "{tools:?}");
+    }
+
+    /// 完全权限档也注入守卫（2026-11-07）：它是"运行期还能切回限制档"的前提。
+    /// 守卫缺失时完全权限档只降级打日志，不 fail-closed。
+    #[test]
+    fn full_mode_injects_the_guard_when_present() {
+        let mut a = args(PermissionMode::Full);
+        a.guard_script = Some(tmp_file("piggy-test-guard-full.js"));
+        let v = argv(&a);
         assert!(
-            with_plugin.contains(&"read,grep,find,ls,ask_user_question,exit_plan_mode".to_string()),
-            "插件工具没进白名单：{with_plugin:?}"
+            v.windows(2)
+                .any(|w| w[0] == "--extension" && w[1].ends_with("piggy-test-guard-full.js")),
+            "{v:?}"
         );
-        // 限制档必须有守卫才允许组装 argv（缺守卫是硬错误，见下一个测试）
-        let mut a = args(PermissionMode::Workspace);
-        a.guard_script = Some(tmp_file("piggy-test-guard-allowlist.js"));
-        let workspace = argv(&a);
-        assert!(workspace.contains(&"read,grep,find,ls,write,edit".to_string()));
-        assert!(
-            !workspace.iter().any(|x| x.contains("bash")),
-            "不应放开 shell: {workspace:?}"
-        );
+        // 缺守卫时仍然能起（完全权限档本来就不需要它）
+        assert!(cli_args(&args(PermissionMode::Full)).is_ok());
     }
 
     #[test]
@@ -787,7 +854,7 @@ mod tests {
         );
     }
 
-    /// 限制档位下插件**照样注入**（工具会不会被 `--tools` 过滤掉是另一件事，
+    /// 限制档位下插件**照样注入**（工具会不会进运行期工具集是另一件事，
     /// 见 `plugins.rs` 顶部与 docs/15 规矩 8；但"注入了什么"必须能从 argv 看出来）。
     #[test]
     fn bundled_plugins_are_injected_in_restricted_modes_too() {
@@ -805,7 +872,7 @@ mod tests {
     ///
     /// `plugins.rs` 那边有单测盯着 `plugin_tools_for`；这条盯的是**最终 argv**：
     /// 清单写了 `"allowlist": false` 的插件，它的 `write`/`edit` 绝不能出现在
-    /// 「仅可查看」档的 `--tools` 里。两处都要，是因为"合并发生在 `cli_args` 里"
+    /// 「仅可查看」档的运行期工具集里。两处都要，是因为"合并发生在 `active_tools_for` 里"
     /// 这件事只有这条能证明（以前的白名单测试只钉静态常量）。
     #[test]
     fn override_type_plugin_does_not_widen_a_restricted_allowlist() {
@@ -831,17 +898,12 @@ mod tests {
         let mut a = args(PermissionMode::ReadOnly);
         a.guard_script = Some(tmp_file("piggy-test-guard-override.js"));
         a.bundled_extensions = vec![over, normal];
-        let argv = argv(&a);
-        let tools = argv
-            .windows(2)
-            .find(|w| w[0] == "--tools")
-            .map(|w| w[1].clone())
-            .expect("限制档必须带 --tools");
+        let tools = active_tools(&a).expect("限制档必须有运行期工具集");
         assert!(
-            !tools.contains("write") && !tools.contains("edit"),
-            "覆盖型插件的 write/edit 混进了「仅可查看」的白名单：{tools}"
+            !tools.iter().any(|t| t == "write" || t == "edit"),
+            "覆盖型插件的 write/edit 混进了「仅可查看」的运行期工具集：{tools:?}"
         );
-        assert!(tools.contains("ask_user_question"), "正常插件的工具名该合并：{tools}");
+        assert!(tools.iter().any(|t| t == "ask_user_question"), "{tools:?}");
     }
 
     /// worker 启动命令：**能剥掉 cmd 垫片就剥**（Windows 上那一层 cmd.exe 是孤儿进程的真凶），
@@ -876,8 +938,8 @@ mod tests {
 
     #[test]
     fn restricted_modes_disable_mcp_explicitly() {
-        /* `--tools` 在 pi 1.1.0 上**拦不住 MCP**（判据是"白名单里有没有 mcp__ 前缀"），
-        所以限制档必须显式带上 `--no-mcp`；完全权限档不带（那是"用你自己的配置"）。 */
+        /* 限制档必须显式带上 `--no-mcp`（2026-11-07 取消 `--tools` 后，它成了
+        唯一能阻止 MCP 进程被拉起的开关）；完全权限档不带（那是"用你自己的配置"）。 */
         for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
             let mut a = args(mode);
             // 「工作区内修改」档要求守卫脚本存在（缺失是 fail-closed），这里给一个真的
@@ -962,8 +1024,8 @@ mod tests {
 
     #[test]
     fn delegation_is_active_in_restricted_modes_and_extends_the_allowlist() {
-        // 2026-10-30：限制档位不再"静默关闭"委派。`--tools` 会把扩展工具过滤掉，
-        // 所以必须把 subagent/subagents_enable 显式加进白名单；子代理的工具边界
+        // 2026-10-30：限制档位不再"静默关闭"委派。扩展工具默认不进运行期工具集，
+        // 所以必须把 subagent/subagents_enable 显式加进去；子代理的工具边界
         // 由 bridge 的 capability ceiling + 守卫扩展继承（bridge 单测另锁）。
         let tmp = tempfile::tempdir().unwrap();
         for mode in [PermissionMode::ReadOnly, PermissionMode::Workspace] {
@@ -977,13 +1039,10 @@ mod tests {
             a.bridge_script = Some(b);
             let argv = argv(&a);
             assert!(argv.contains(&"--append-system-prompt".to_string()), "{mode:?}");
-            let tools = argv
-                .iter()
-                .position(|x| x == "--tools")
-                .and_then(|i| argv.get(i + 1))
-                .expect("限制档位必须有 --tools");
+            // 2026-11-07：委派工具不再进 `--tools`（那份白名单已取消），而是进运行期工具集。
+            let tools = active_tools(&a).expect("限制档位必须有运行期工具集");
             for name in DELEGATION_TOOLS {
-                assert!(tools.split(',').any(|t| t == name), "{mode:?} 缺 {name}: {tools}");
+                assert!(tools.iter().any(|t| t == name), "{mode:?} 缺 {name}: {tools:?}");
             }
             let envs = spawn_envs(&a);
             assert!(envs.iter().any(|(k, v)| k == DELEGATION_ENV && v == "1"), "{mode:?}");
@@ -997,6 +1056,31 @@ mod tests {
             );
             assert!(subagent_delegation_active(&a), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn spawn_envs_carry_the_permission_file_and_fallback_tool_list() {
+        let mut a = args(PermissionMode::Workspace);
+        a.permission_file = Some(PathBuf::from("/tmp/piggy-perm.json"));
+        let envs = spawn_envs(&a);
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == PERMISSION_FILE_ENV && v == "/tmp/piggy-perm.json"),
+            "运行期档位文件路径必须交给守卫：{envs:?}"
+        );
+        let tools = envs
+            .iter()
+            .find(|(k, _)| k == PERMISSION_TOOLS_ENV)
+            .map(|(_, v)| v.clone())
+            .expect("限制档必须有兜底工具集");
+        assert_eq!(tools, "read,grep,find,ls,write,edit");
+
+        // 完全权限：有文件（供运行期降档），但没有兜底工具集（不限制）
+        let mut f = args(PermissionMode::Full);
+        f.permission_file = Some(PathBuf::from("/tmp/piggy-perm.json"));
+        let envs = spawn_envs(&f);
+        assert!(envs.iter().any(|(k, _)| k == PERMISSION_FILE_ENV));
+        assert!(!envs.iter().any(|(k, _)| k == PERMISSION_TOOLS_ENV));
     }
 
     #[test]

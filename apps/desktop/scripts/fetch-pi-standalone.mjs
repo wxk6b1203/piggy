@@ -68,10 +68,11 @@ if (!OS_NAME) {
 }
 
 /* 默认版本 = **与 Piggy 一起验证过的那个 pi**（docs/08 §7.1 的成对锚定）。
-   2026-10-22 从 1.2.0 升到 1.4.0：RPC/扩展 API 面与 1.2.0 逐字段比对无破坏，
-   provider 目录按 1.4.0 重生成（kimi-coding 改到 Chat Completions、opencode-go
-   补 google-generative-ai），内置扩展表仍为 4 条；契约测试在 1.4.0 上重跑。 */
-const VERSION = arg('--version', '1.4.0');
+   2026-11-07 从 1.4.0 升到 1.5.0（docs/22 §2）：RPC 命令/事件面未变，
+   provider 目录与内置扩展表按 1.5.0 重生成后**数据完全一致**（仅版本头变化）。
+   1.5.0 的破坏性变更在工具参数校验（TypeBox → pi-schema），只影响自定义工具的
+   参数 schema 语义，见 piggy-bridge 的 typecheck 与 docs/22 §2.3。 */
+const VERSION = arg('--version', '1.5.0');
 const OS = arg('--os', OS_NAME);
 const ARCH = arg('--arch', process.arch);
 const ASSET = `pi-${OS}-${ARCH}${OS === 'windows' ? '.zip' : '.tar.gz'}`;

@@ -72,6 +72,8 @@ describe('协议 schema 行为', () => {
 
   it('合帧器 Frame 结构可解析', () => {
     frameSchema.parse({
+      seq: 1,
+      t: 1_763_000_000_000,
       text: [{ contentIndex: 0, delta: 'hello' }],
       thinking: [{ contentIndex: 1, delta: 'hm' }],
       toolArgs: [{ contentIndex: 2, delta: '{"comm' }],

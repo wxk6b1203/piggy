@@ -6,10 +6,13 @@
  * 如果这里硬编码一份"看起来对"的描述，后端一改就会变成谎话——所以档位名、工具清单、
  * 是否有路径守卫全部从 `permission_modes` 命令读，前端只负责呈现。
  *
- * ## 切档为什么会有一次重启
- * `--tools` / `-e` 都是 pi 的 CLI 参数，RPC 没有运行期改工具的接口。
- * 因此后端会"停旧进程 → 按新档复活"，会话文件与游标不变（复用崩溃复活路径）。
- * 这里明确告知用户，而不是让切换看起来是零成本的。
+ * ## 切档为什么会（偶尔）重启
+ * 2026-11-07 起工具集不再由 `--tools` 在启动时裁掉，而是守卫扩展按档位
+ * `pi.setActiveTools()` 在运行期收窄 —— 所以**大多数切换是即时的**，不重启、不断流。
+ *
+ * 唯一例外：从限制档升到「完全权限」，且本机/本项目配置了 MCP 服务器。
+ * 那种进程 spawn 时带了 `--no-mcp`，MCP 工具从未注册，`setActiveTools()` 点不亮，
+ * 只能换一个进程（后端 `needs_restart` 判定，见 `sessions/registry.rs`）。
  */
 import { useEffect, useState } from 'react';
 import { toast } from '@/lib/feedback';
@@ -112,7 +115,8 @@ export function PermissionPicker({ tabId }: { tabId: string }) {
 }
 
 const SWITCH_NOTE =
-  '切换档位需要重启该会话的 pi 进程（工具白名单是启动参数），会话内容与游标不受影响。';
+  '切换档位即时生效：工具集在下一轮开始时收窄，路径守卫立刻生效。\n' +
+  '只有从限制档升到「完全权限」且本机配置了 MCP 服务器时，才会重启该会话的 pi 进程以接入 MCP。';
 
 /** 把后端能力矩阵翻译成一句人话——不夸大：只读档不提"沙箱"，工作区档明说有边界守卫。 */
 function describe(m: PermissionModeInfo): string {

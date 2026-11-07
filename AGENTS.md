@@ -17,7 +17,7 @@ before non-trivial changes skim `docs/15-handoff.md` §3, a 150+ item list of "l
 
 - Node ≥ 20 (dev + CI use 24), pnpm 11.24.0 (`packageManager`), Rust stable with the Tauri 2 toolchain.
 - `pnpm install` — pnpm workspace covering `apps/*` and `packages/*`.
-- `pi` is an external runtime anchored at **1.4.0**; six anchors are reconciled by
+- `pi` is an external runtime anchored at **1.5.0**; six anchors are reconciled by
   `node apps/desktop/scripts/check-pi-pin.mjs`. Discovery order: explicit path in settings → `PI_BIN`
   → bundled standalone (full SKU) → `PATH`.
 - Optional: system Chrome for the browser gates; `pnpm --filter @piggy/desktop exec playwright install chromium`
@@ -73,7 +73,7 @@ apps/desktop/src-tauri/      Rust host
   tests/                     ipc_contract, fixtures_parse, path_separators, menu_smoke, contract (feature `contract`)
 packages/pi-protocol/        TS types + zod schemas for the pi RPC protocol, mirrored by Rust-side fixtures
 packages/piggy-bridge/       pi extension bridging pi-subagents into the GUI; built into src-tauri/resources/piggy-bridge.js
-docs/                        design SSOT (00–20, Chinese) + screenshots
+docs/                        design SSOT (00–21, Chinese) + screenshots
 ```
 
 Data flow for one streaming turn: UI `invoke` → Rust command → worker stdin → stdout JSONL →
@@ -85,8 +85,10 @@ Boundaries that matter:
 - All LLM calls, tool execution and session persistence happen inside pi. Piggy only supervises, relays, renders, configures.
 - One worker per tab; at most one worker per session file (registry enforces this — session files are append-only JSONL trees).
 - Zero telemetry; API keys live in `~/.pi/agent/auth.json` (models.json inline keys are redacted on read) and are never returned to the frontend in cleartext.
-- Permission modes (仅可查看 / 工作区内修改 / 完全权限) = pi `--tools` whitelist + a `tool_call` guard extension
-  (`resources/piggy-guard.js`); switching mode restarts the worker on the same session file.
+- Permission modes (仅可查看 / 工作区内修改 / 完全权限) = a runtime tool set applied by the guard extension
+  (`resources/piggy-guard.js`, `pi.setActiveTools()` from `~/.piggy/permission/<tab>.json`) plus path checks in
+  `tool_call`; no `--tools` flag is passed. Switching mode is live (next turn) except widening to Full while
+  MCP is configured, which restarts the worker on the same session file.
 
 ## Conventions & gotchas
 

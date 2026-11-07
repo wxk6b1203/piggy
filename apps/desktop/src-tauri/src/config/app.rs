@@ -14,6 +14,37 @@ fn config_dir() -> PathBuf {
     paths::home_dir_or_temp().join(".piggy")
 }
 
+/// 请求头快照目录 `~/.piggy/traces/`（docs/05 §6.4）。
+///
+/// 与 config.json 分开放：前者是**诊断数据**（可随时删、不应影响启动），
+/// 后者是用户配置（丢了会改行为）。
+pub fn traces_dir() -> PathBuf {
+    config_dir().join("traces")
+}
+
+/// 运行期权限档位的**单一真相文件**（docs/17 §2.1）：`~/.piggy/permission/<tab>.json`。
+///
+/// 守卫扩展每轮 / 每次工具调用读它；Rust 在切档时原子重写。
+/// 放在用户配置目录而不是临时目录：崩溃/重启后档位仍可解释，临时目录会被系统清掉。
+pub fn permission_path(tab_id: &str) -> PathBuf {
+    config_dir().join("permission").join(format!("{tab_id}.json"))
+}
+
+/// tab id 进文件名前的白名单化：只允许 `[A-Za-z0-9_-]`。
+/// tab id 由前端生成（UUID），但**路径不能信输入**——这是唯一一道闸。
+pub fn permission_path_for(tab_id: &str) -> Option<PathBuf> {
+    if tab_id.is_empty() || tab_id.len() > 128 {
+        return None;
+    }
+    if !tab_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(permission_path(tab_id))
+}
+
 fn layout_path() -> PathBuf {
     config_dir().join("layout.json")
 }

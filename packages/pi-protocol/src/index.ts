@@ -267,6 +267,10 @@ export type FrameItem = z.infer<typeof frameItemSchema>;
 
 export const frameSchema = z
   .object({
+    /** 信封序号（docs/02 §5.2）：`pi:frame` 与 `pi:commit` 共用，单调递增。 */
+    seq: z.number().int().nonnegative(),
+    /** 墙钟毫秒。`seq` 定序，`t` 定"多久"（首字延迟 / 每步耗时）。 */
+    t: z.number().int().nonnegative(),
     text: z.array(frameItemSchema).optional(),
     thinking: z.array(frameItemSchema).optional(),
     toolArgs: z.array(frameItemSchema).optional(),

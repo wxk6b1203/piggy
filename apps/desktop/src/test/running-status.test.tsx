@@ -231,7 +231,7 @@ describe('转录末尾（只在跑的时候挂）', () => {
     ).toBeNull();
 
     await act(async () => {
-      useMessages.getState().applyFrame(TAB, { text: [{ contentIndex: 0, delta: '先看代码' }] });
+      useMessages.getState().applyFrame(TAB, { seq: 1, t: Date.now(), text: [{ contentIndex: 0, delta: '先看代码' }] });
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(domContainer().querySelector('.pg-running-divider'), '助手有字了才分界').not.toBeNull();

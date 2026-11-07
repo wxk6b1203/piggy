@@ -10,8 +10,24 @@ import { textOfContent } from '@/lib/messageText';
 type Handler = (payload: unknown) => void;
 const bus = new Map<string, Set<Handler>>();
 
+/**
+ * 事件信封（docs/02 §5.2）：与 Rust 侧 `FrameCoalescer::stamp` 同一套语义 ——
+ * `pi:frame` / `pi:commit` 两类通道共用一个 per-tab 计数器，`seq` 单调、`t` 墙钟毫秒。
+ * 放在 `emit` 这一层，是为了让 mock 不可能出现"真实后端有信封、mock 没有"的偏差。
+ */
+const envelopeSeq = new Map<string, number>();
+function envelope(channel: string, payload: unknown): unknown {
+  const m = /^pi:(frame|commit):(.+)$/.exec(channel);
+  if (!m || typeof payload !== 'object' || payload === null) return payload;
+  const tab = m[2]!;
+  const seq = (envelopeSeq.get(tab) ?? 0) + 1;
+  envelopeSeq.set(tab, seq);
+  return { ...(payload as Record<string, unknown>), seq, t: Date.now() };
+}
+
 function emit(channel: string, payload: unknown) {
-  bus.get(channel)?.forEach((h) => h(payload));
+  const stamped = envelope(channel, payload);
+  bus.get(channel)?.forEach((h) => h(stamped));
 }
 
 const now = () => Date.now();

@@ -27,6 +27,7 @@ Piggy 是一个以 [pi](https://github.com/earendil-works/pi) 为引擎、**Taur
 | 18 | [18-pi-subagents-pnpm-realpath.md](18-pi-subagents-pnpm-realpath.md) | 上游问题：pi-subagents async runner 与 pnpm 软链布局不兼容（根因/A-B 复现/一行补丁/issue 正文） | 后端/环境排查 |
 | 19 | [19-builtin-browser.md](19-builtin-browser.md) | **内置浏览器方案**（⚠️ **未实现**，方案 v2 待拍板）：**CDP over pipe 驱动独立 Chrome**（无端口暴露）+ 一会话一标签 + 右栏控制台；含实测数字、能力矩阵、安全边界、门禁与分期 | 后端 + 前端，动手前先读 |
 | 20 | [20-pi-durable-evaluation.md](20-pi-durable-evaluation.md) | **pi-durable 评估**（2026-10-22）：它不是 pi 的持久化插件，而是另一套 agent harness；当前**不采用**，只保留观察与重评触发条件 | 架构/产品决策，排期前先读 |
+| 21 | [21-dsh-baseline-evaluation.md](21-dsh-baseline-evaluation.md) | **dsh 基座评估**（2026-11-07）：可观测性/性能/执行能力三维实测与源码核对；结论**不换基座**（SDK 无 token 流/cancel/切模型），抄设计 + 设触发条件 | 架构/产品决策，排期前先读 |
 
 推荐阅读路径：
 
@@ -36,6 +37,7 @@ Piggy 是一个以 [pi](https://github.com/earendil-works/pi) 为引擎、**Taur
 - **做子代理功能**：01 → 06 → 02（环境踩坑先看 18）
 - **评审性能**：05 → 04 §4 → 02 §5
 - **排查 UI 问题**：先跑 `pnpm --filter @piggy/desktop ui:debug`，再读 14
+- **评估换/加基座**：00（边界）→ 20（durable）→ 21（dsh），先看触发条件再谈排期
 
 ## 闭环承诺
 

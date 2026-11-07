@@ -685,8 +685,36 @@ pub async fn pi_prompt(
     streaming_behavior: Option<String>,
 ) -> Result<bool, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
+    record_request_header(&state, &tab_id, &worker).await;
     worker.prompt(&message, images, streaming_behavior.as_deref()).await?;
     Ok(true)
+}
+
+/// 发 prompt 前落一条请求头快照（docs/05 §6.4）。
+///
+/// **best-effort**：任何一步失败都静默跳过 —— 观测数据永远不能挡住用户发消息。
+/// `get_state` 是一次额外 RPC（~ms 级），换来"这一轮用的哪个模型/思考档"的确定性；
+/// 不缓存是因为同一标签页里 `set_model` / `set_thinking_level` 随时会改。
+async fn record_request_header(state: &AppState, tab_id: &str, worker: &crate::pi::client::Worker) {
+    let ctx = {
+        let reg = state.registry.lock().await;
+        reg.snapshot_context(tab_id)
+    };
+    let Some(ctx) = ctx else { return };
+    let Ok(st) = worker.get_state().await else { return };
+    let model = st["model"]["id"].as_str().or_else(|| st["model"].as_str());
+    let provider = st["model"]["provider"].as_str();
+    let thinking = st["thinkingLevel"].as_str();
+    let _ = crate::sessions::reqlog::record(&crate::sessions::reqlog::TurnSnapshot {
+        tab_id,
+        session_file: ctx.session_file.as_deref(),
+        cwd: &ctx.cwd,
+        permission: ctx.permission.as_str(),
+        model,
+        provider,
+        thinking,
+        tools: ctx.active_tools.as_deref(),
+    });
 }
 
 #[tauri::command]
@@ -716,7 +744,29 @@ pub async fn pi_get_messages(app: AppHandle, state: State<'_, AppState>, tab_id:
 #[tauri::command]
 pub async fn pi_get_session_stats(app: AppHandle, state: State<'_, AppState>, tab_id: String) -> Result<Value, String> {
     let worker = worker_of(&app, &state, &tab_id).await?;
-    worker.get_session_stats().await
+    /* 统计缓存（docs/05 §6.4）：pi 的 get_session_stats 是**每次全量重扫**会话文件，
+    而前端每次提交都会刷新一次。会话文件是追加式（大小只增），所以"大小没变 = 统计没变"。
+    键 = 会话文件路径，值随文件大小失效；拿不到会话文件时照旧问 pi。 */
+    let session_file = {
+        let reg = state.registry.lock().await;
+        reg.tabs.get(&tab_id).and_then(|t| t.session_file.clone())
+    };
+    let cached = session_file.as_deref().and_then(|p| {
+        let path = std::path::Path::new(p);
+        crate::sessions::stats_cache::stamp(path)
+            .and_then(|size| crate::sessions::stats_cache::get(path, size).map(|v| (path.to_path_buf(), size, v)))
+    });
+    if let Some((_, _, v)) = cached {
+        return Ok(v);
+    }
+    let v = worker.get_session_stats().await?;
+    if let Some(p) = session_file {
+        let path = std::path::PathBuf::from(p);
+        if let Some(size) = crate::sessions::stats_cache::stamp(&path) {
+            crate::sessions::stats_cache::put(&path, size, v.clone());
+        }
+    }
+    Ok(v)
 }
 
 #[tauri::command]
@@ -965,6 +1015,8 @@ fn rename_spawn_args(
         pi_bin,
         session: SessionTarget::Path(path),
         name: None,
+        // 运行期档位文件：改名工人不需要切档，给 None（守卫退回 env 的 spawn 档位）。
+        permission_file: None,
         // 这个 worker 只用来调一次 set_session_name 改元数据，不该带任何工具能力。
         // 但它是 `ReadOnly` 档，按 `cli_args` 的规则必须拿到守卫脚本；守卫只影响
         // 工具调用，而这个 worker 从不发 prompt，所以不会碰到任何文件。

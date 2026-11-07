@@ -16,6 +16,9 @@ pub struct FrameCoalescer {
     /// 通道名里的标签页 id（spawn 时定死；2026-10-17 去掉共享槽，见 `client.rs`）
     tab: String,
     sink: Arc<dyn EventSink>,
+    /// 事件信封序号（docs/02 §5.2）：每发出一个 `pi:frame` / `pi:commit` 自增。
+    /// 前端用 `(seq, t)` 重建时序：`seq` 单调定序，`t` 是墙钟毫秒（可跨进程/跨会话比较）。
+    seq: u64,
     text: Vec<(i64, String)>,
     thinking: Vec<(i64, String)>,
     tool_args: Vec<(i64, String)>,
@@ -28,6 +31,7 @@ impl FrameCoalescer {
         Self {
             tab,
             sink,
+            seq: 0,
             text: Vec::new(),
             thinking: Vec::new(),
             tool_args: Vec::new(),
@@ -67,6 +71,18 @@ impl FrameCoalescer {
             || self.usage.is_some()
     }
 
+    /// 给一条将要发往渲染进程的事件盖信封（`seq` 单调 + `t` 墙钟毫秒）。
+    ///
+    /// `pi:frame` 与 `pi:commit` **共用同一个计数器**，所以一次 delta 帧和它之后的
+    /// `message_end` 提交在时间线上的先后是确定的——这正是 docs/05 §6 预算与轨迹
+    /// 时间线做"首字延迟 / 每步耗时"所需要的。
+    pub fn stamp(&mut self, mut v: Value) -> Value {
+        self.seq += 1;
+        v["seq"] = json!(self.seq);
+        v["t"] = json!(now_ms());
+        v
+    }
+
     /// 冲刷一帧到 `pi:frame:{tab}`；空帧不发送（零事件零开销）。
     pub async fn flush(&mut self) {
         if !self.has_pending() {
@@ -84,6 +100,7 @@ impl FrameCoalescer {
             "signals": self.signals,
             "usage": self.usage,
         });
+        let frame = self.stamp(frame);
         self.sink.emit_json(&format!("pi:frame:{}", self.tab), frame);
         self.text.clear();
         self.thinking.clear();
@@ -91,6 +108,14 @@ impl FrameCoalescer {
         self.signals.clear();
         self.usage = None;
     }
+}
+
+/// 墙钟毫秒。取不到系统时钟时退回 0（时间线只是"没有绝对时间"，不影响定序）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -140,6 +165,32 @@ mod tests {
         assert_eq!(text.len(), 3);
         assert_eq!(text[0].1, "Hel");
         assert_eq!(payload["usage"]["totalTokens"], 5);
+        // 信封（docs/02 §5.2）：帧自带 seq + 墙钟毫秒，前端不必再靠到达顺序猜时序
+        assert_eq!(payload["seq"], 1, "首帧 seq 从 1 开始");
+        assert!(payload["t"].as_u64().unwrap() > 1_700_000_000_000, "t 是毫秒时间戳");
+    }
+
+    #[tokio::test]
+    async fn envelope_seq_is_monotonic_across_frames_and_commits() {
+        let sink = Arc::new(CollectorSink {
+            events: StdMutex::new(Vec::new()),
+        });
+        let mut c = FrameCoalescer::new("t1".to_string(), sink.clone());
+        c.push_delta(&ame("text_delta", 0, Some("a")));
+        c.flush().await;
+        // process.rs 的提交路径走同一个 stamp：帧与提交共用一个计数器
+        let commit = c.stamp(json!({"type": "message_end"}));
+        c.flush().await; // 空帧不发送
+        c.push_delta(&ame("text_delta", 0, Some("b")));
+        c.flush().await;
+        assert_eq!(commit["seq"], 2);
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2, "空帧既不发送也不占序号");
+        assert_eq!(events[0].1["seq"], 1);
+        assert_eq!(events[1].1["seq"], 3, "提交占掉的 2 号不会复用");
+        let t0 = events[0].1["t"].as_u64().unwrap();
+        let t1 = events[1].1["t"].as_u64().unwrap();
+        assert!(t1 >= t0);
     }
 
     #[tokio::test]

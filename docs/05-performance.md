@@ -336,6 +336,24 @@ S1 单会话长流式（30min）；S2 8 tab 并发流式；S3 万条消息会话
 - 每夜：全场景 + 预算断言（RSS/帧率/CPU 阈值来自 §2）；
 - 数据入库画趋势线，回归 >10% 自动标记 issue。
 
-### 6.4 反模式黑名单（评审速查）
+### 6.4 观测落盘（2026-11-07 补，docs/21 §8 C1–C3 的落地）
+
+三件事，都不增加运行时耦合：
+
+| 落点 | 内容 | 谁写 | 什么时候 |
+|---|---|---|---|
+| `pi:frame:<tab>` / `pi:commit:<tab>` 的 `seq` + `t` | 单调序号 + 墙钟毫秒 | `pi/coalesce.rs::stamp`（帧与提交共用一个计数器） | 每帧 / 每次提交 |
+| `~/.piggy/traces/requests.jsonl` | 每轮一行：tab / 会话文件 / cwd / 权限档 / model / provider / thinkingLevel / 工具名 / `systemHash` | `pi_prompt` 命令（发消息前，best-effort） | 每次发 prompt |
+| `~/.piggy/traces/system/<hash>.json` | 会话文件开头 1MB 里第一条 `role:"system"` 的原文（内容寻址，同一份只写一次） | `sessions/reqlog.rs` | 同上（哈希未见过时） |
+
+- 用途：排障时回答"这一轮模型到底看到什么模型/工具/提示词"（对应 dsh 的 `request/header`，
+  pi 没有这个事件，只能宿主补）；配合 `seq/t` 能算首字延迟与每步耗时。
+- **写失败不影响发消息**：调用点全部 `let _ = ...`；这是诊断数据，不是业务状态。
+- 清理：整个 `~/.piggy/traces/` 可随时删；不参与启动、不进 config.json。
+- 统计缓存（`sessions/stats_cache.rs`）：`pi_get_session_stats` 是 pi 侧的全量重扫，
+  按**会话文件大小**缓存（追加式文件，大小只增 → 没变就是没变），上限 32 份。
+  这不能替代"投影化"（增量 fold 才是根解），但把"没新消息时的重复刷新"从 O(n) 降到 O(1)。
+
+### 6.5 反模式黑名单（评审速查）
 
 `setInterval` 轮询 / data URI 图片 / 每帧 setState / 完整 Markdown 解析流式文本 / antd 进转录子树 / 无界缓冲 / 动画 layout 属性 / 全量 Shiki 打包 / Monaco 全语言打包与无 dispose 挂载 / 键盘事件里做重计算。

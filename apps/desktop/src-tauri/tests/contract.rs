@@ -36,6 +36,8 @@ async fn spawn(cwd: &Path, session: SessionTarget) -> Worker {
             name: None,
             // 契约测试只验证 RPC 协议，不需要守卫脚本；用完全权限档避免依赖外部资源
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -129,6 +131,8 @@ async fn c3_id_echo() {
             name: None,
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -282,6 +286,8 @@ async fn c7_megabyte_lines() {
             name: None,
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -384,6 +390,8 @@ async fn e2e_streaming_pipeline() {
             name: None,
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -453,6 +461,8 @@ async fn e2e_crash_recovery() {
             name: None,
             // 契约测试只验证 RPC 协议，不依赖守卫资源 → 用完全权限档
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),
@@ -562,6 +572,8 @@ async fn c12_bridge_status_payload_over_rpc() {
             session: SessionTarget::NoSession,
             name: None,
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: Some(bridge_script()),
             envs: Vec::new(),
@@ -625,6 +637,8 @@ async fn c13_bridge_degrades_without_pi_subagents() {
             session: SessionTarget::NoSession,
             name: None,
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: Some(bridge_script()),
             envs: vec![(
@@ -680,6 +694,8 @@ async fn run_lane(mgr: &piggy_lib::fleet::FleetManager, run_id: &str, lane_key: 
             session: SessionTarget::NoSession,
             name: Some(format!("fleet:test/{lane_key}")),
             permission: PermissionMode::Full,
+            // 契约测试不切档：没有运行期档位文件（守卫退回 spawn 期 env）
+            permission_file: None,
             guard_script: None,
             bridge_script: None,
             envs: Vec::new(),

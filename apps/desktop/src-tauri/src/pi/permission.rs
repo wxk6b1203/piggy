@@ -71,6 +71,26 @@ impl PermissionMode {
         matches!(self, Self::ReadOnly | Self::Workspace)
     }
 
+    /// 运行期"声明给模型的工具集"：`None` = 不限制（完全权限）。
+    ///
+    /// 与 [`Self::tool_allowlist`] 的分工（docs/17 §2.1）：
+    /// - `tool_allowlist` 是**历史**的 spawn 期白名单，仍被 bridge 用来推导子代理 ceiling；
+    /// - 这里算的是 `pi.setActiveTools()` 的入参 —— 含注入插件申报的工具与委派工具。
+    ///
+    /// 为什么不再用 `--tools`：pi 的 `--tools` 在**注册期**过滤（`_isAllowedTool` 直接
+    /// 把工具从 registry 里删掉），被过滤的工具事后 `setActiveTools()` 也点不亮。
+    /// 要支持运行期升档，只能"全注册 + 运行期收窄"。
+    pub fn runtime_tools(&self, extra: &[String]) -> Option<Vec<String>> {
+        let base = self.tool_allowlist()?;
+        let mut names: Vec<String> = base.split(',').map(|s| s.trim().to_string()).collect();
+        for name in extra {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.clone());
+            }
+        }
+        Some(names)
+    }
+
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim() {
             "read-only" | "readonly" => Ok(Self::ReadOnly),
@@ -89,6 +109,74 @@ impl PermissionMode {
 /// 探测逻辑见 `pi/resources.rs::extension_script`（与 piggy-bridge 共用同一套）。
 pub fn guard_script_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
     crate::pi::resources::guard_script_path(resource_dir)
+}
+
+/// spawn 与运行期切档**共用**的工具集计算（单一真相）。
+///
+/// @param plugin_dirs 本次注入的插件目录（`bundled_extensions`，已按配置过滤）
+/// @param delegation_tools 委派打开时要加进来的工具名；关闭时传空
+pub fn active_tools_for(
+    mode: PermissionMode,
+    plugin_dirs: &[PathBuf],
+    delegation_tools: &[&str],
+) -> Option<Vec<String>> {
+    let mut extra = crate::pi::plugins::plugin_tools_for(plugin_dirs);
+    for name in delegation_tools {
+        extra.push((*name).to_string());
+    }
+    mode.runtime_tools(&extra)
+}
+
+/* ---------------- 运行期档位文件（docs/17 §2.1） ---------------- */
+
+/// 档位文件的内容：`all` 为真时守卫**不调用** `setActiveTools`（保持 pi 默认全集）。
+///
+/// 不用 `Option<Vec<String>>` 直接序列化，是因为守卫（JS）要一个稳定的判别式：
+/// `all: true` 比 `activeTools: null` 更难写错。
+pub fn mode_file_json(mode: PermissionMode, active: Option<&[String]>) -> serde_json::Value {
+    serde_json::json!({
+        "mode": mode.as_str(),
+        "all": active.is_none(),
+        "activeTools": active.map(|v| v.to_vec()).unwrap_or_default(),
+    })
+}
+
+/// 原子写档位文件（同目录 tmp + rename，与 `config/app.rs` 的 layout 写入同一手法）。
+pub fn write_mode_file(path: &Path, mode: PermissionMode, active: Option<&[String]>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = serde_json::to_vec(&mode_file_json(mode, active))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// 这个工作区/机器上有没有配置 MCP 服务器。
+///
+/// 只用于一个判断：从限制档切到「完全权限」时，要不要为了**注册 MCP 工具**重启 worker
+/// （限制档 spawn 时带了 `--no-mcp`，MCP 工具根本没进 registry，`setActiveTools` 点不亮）。
+/// 没配置 MCP 的机器（大多数）不必重启——这是运行期切档能覆盖的常见情形。
+///
+/// 判据与 pi 一致：`<agent_dir>/mcp.json` 与 `<cwd>/.pi/mcp.json` 的 `mcpServers`。
+/// 解析失败按"有配置"处理（fail-safe：宁可多重启一次，也不要静默少给 MCP 工具）。
+pub fn mcp_configured(cwd: &Path) -> bool {
+    let agent = crate::config::paths::agent_dir().join("mcp.json");
+    let project = cwd.join(".pi").join("mcp.json");
+    [agent, project].iter().any(|p| mcp_file_has_servers(p))
+}
+
+fn mcp_file_has_servers(path: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false; // 文件不存在 = 没配置
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => v
+            .get("mcpServers")
+            .and_then(|s| s.as_object())
+            .is_some_and(|o| !o.is_empty()),
+        Err(_) => true,
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +232,58 @@ mod tests {
             assert_eq!(PermissionMode::parse(m.as_str()).unwrap(), m);
         }
         assert!(PermissionMode::parse("sandbox").is_err());
+    }
+
+    #[test]
+    fn runtime_tools_merge_extras_only_for_restricted_modes() {
+        let extra = vec!["ask_user_question".to_string()];
+        assert_eq!(PermissionMode::Full.runtime_tools(&extra), None);
+        let ro = PermissionMode::ReadOnly.runtime_tools(&extra).unwrap();
+        assert_eq!(ro, vec!["read", "grep", "find", "ls", "ask_user_question"]);
+        // 去重：同一名字只出现一次
+        let dup = PermissionMode::ReadOnly
+            .runtime_tools(&["read".to_string(), "read".to_string()])
+            .unwrap();
+        assert_eq!(dup.iter().filter(|n| *n == "read").count(), 1);
+    }
+
+    #[test]
+    fn mode_file_is_written_atomically_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!("piggy-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tab-1.json");
+        let active = vec!["read".to_string(), "grep".to_string()];
+        write_mode_file(&path, PermissionMode::ReadOnly, Some(&active)).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["mode"], "read-only");
+        assert_eq!(raw["all"], false);
+        assert_eq!(raw["activeTools"], serde_json::json!(active));
+        // 原子写：不留下 tmp 文件
+        assert!(!path.with_extension("json.tmp").exists());
+
+        write_mode_file(&path, PermissionMode::Full, None).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["mode"], "full");
+        assert_eq!(raw["all"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_config_detection_is_fail_safe() {
+        let dir = std::env::temp_dir().join(format!("piggy-mcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mcp.json");
+
+        assert!(!super::mcp_file_has_servers(&file), "文件不存在 = 没配");
+        std::fs::write(&file, r#"{"mcpServers":{}}"#).unwrap();
+        assert!(!super::mcp_file_has_servers(&file), "空表 = 没配");
+        std::fs::write(&file, r#"{"mcpServers":{"docs":{"command":"x"}}}"#).unwrap();
+        assert!(super::mcp_file_has_servers(&file));
+        // 坏 JSON：按"有配置"处理（宁可多重启一次，不要静默少给 MCP 工具）
+        std::fs::write(&file, "{").unwrap();
+        assert!(super::mcp_file_has_servers(&file));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

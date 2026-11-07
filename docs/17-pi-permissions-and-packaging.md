@@ -10,16 +10,25 @@
 
 ### 1.1 为什么不是"加个字段"那么简单
 
-pi **没有权限模型**。它只有两个原语，而且都只能在**启动时**决定：
+pi **没有权限模型**。它有三个原语，前两个在启动期、第三个在运行期：
 
-| 原语 | 作用 | 依据 |
-|------|------|------|
-| `--tools <list>` | 内置/扩展/自定义工具的**总白名单** | `cli/args.ts:147`；过滤 `core/sdk.ts:260-266` |
-| `-e <path>` 扩展钩子 | 可在工具执行前 `block` | `core/extensions/types.ts:1217`；消费 `core/extensions/runner.ts:1133-1150` |
+| 原语 | 作用 | 时机 | 依据 |
+|------|------|------|------|
+| `--tools <list>` | 内置/扩展/自定义工具的**总白名单**；注意它是在**注册期**过滤（不匹配的工具根本不进 registry） | 启动 | `cli/args.ts:147`；`_isAllowedTool` |
+| `-e <path>` 扩展钩子 | 可在 `tool_call` 里 `block` 一次调用（执行期拦截） | 启动加载 | `core/extensions/types.ts:1217` |
+| **`pi.setActiveTools()`** | 改"声明给模型"的工具集；**运行期可调**，下一次 agent run 生效 | **运行期** | `core/extensions/types.ts:1778`；`core/agent-session.ts:1538` |
 
-RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 case 列表里不存在
-`set_tools` / `set_config` / `reload` 之类（`grep -rn "set_config\|set_tools" packages/coding-agent/src` 无结果）。
-所以：**切换档位 = 带同一会话文件重启 worker**。
+RPC 里**没有** `set_tools` / `set_config` / `reload` 这类命令（`modes/rpc/rpc-mode.ts` 的 case 列表），
+但扩展 API 有 `setActiveTools()` —— 这是 2026-11-07 之后"切档不重启"的全部依据。
+
+**为什么不能继续用 `--tools` 做档位**：注册期过滤意味着被删掉的工具事后 `setActiveTools()`
+也点不亮（`_refreshToolRegistry` 用 `_isAllowedTool` 建 registry）。所以"启动裁工具"
+与"运行期升档"天然冲突。现在的组合是：
+
+> 启动**不传** `--tools`（全量注册）→ 守卫按档位 `setActiveTools()` 收窄 → `tool_call` 兜底拦截。
+
+代价：插件工具在所有档位都会被**注册**（但限制档不声明给模型）；MCP 仍靠 `--no-mcp` 在
+限制档关掉（见 §1.2），所以"限制档不拉起本地 MCP 进程"的承诺没变。
 
 另一件必须知道的事：**pi 的 `write`/`edit` 没有工作区边界检查**。
 `core/tools/path-utils.ts` 的 `resolveToCwd()` 只做 `~` 展开与相对/绝对路径规整，
@@ -32,13 +41,17 @@ RPC 里**没有**运行期改工具的接口 —— `modes/rpc/rpc-mode.ts` 的 
 
 ### 1.2 三个档位的真实定义
 
-| 档位 | `--tools` | 守卫扩展 | MCP | 实际能做什么 |
-|------|-----------|----------|-----|--------------|
-| **仅可查看** | `read,grep,find,ls` | 注入（读侧） | `--no-mcp` | 只有只读工具，没有写、没有 shell；读敏感目录（`.pi`/`.ssh`/`.aws`/`.gnupg`）被守卫拦截；不拉起 MCP 服务器 |
-| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入（写侧+读侧） | `--no-mcp` | 可读写文件，写入被守卫限制在会话 cwd 内、读敏感目录被拦；**无 shell** |
-| **完全权限** | **不传** | 不注入 | 不传（用你自己的配置） | 不限制：含 `bash`/`powershell` 与扩展/自定义工具 |
+| 档位 | 运行期工具集（`setActiveTools`） | 守卫扩展 | MCP | 实际能做什么 |
+|------|------------------------------|----------|-----|--------------|
+| **仅可查看** | `read,grep,find,ls` | 注入（读侧 + 工具集） | `--no-mcp` | 只有只读工具，没有写、没有 shell；读敏感目录（`.pi`/`.ssh`/`.aws`/`.gnupg`）被守卫拦截；不拉起 MCP 服务器 |
+| **工作区内修改**（默认） | `read,grep,find,ls,write,edit` | 注入（写侧+读侧+工具集） | `--no-mcp` | 可读写文件，写入被守卫限制在会话 cwd 内、读敏感目录被拦；**无 shell** |
+| **完全权限** | 不限制（恢复 spawn 时的基线） | 注入（切档时才起作用） | 不传（用你自己的配置） | 不限制：含 `bash`/`powershell` 与扩展/自定义工具 |
 
-**为什么限制档要显式 `--no-mcp`**（2026-10-09，pi 1.1.0 实测）：pi 1.1.0 的 MCP 过滤判据是
+> 表里的"运行期工具集"= `pi/sessions/registry.rs` 写进 `~/.piggy/permission/<tab>.json` 的
+> `activeTools`（含本次注入插件申报的工具与委派工具）。守卫每轮 `before_agent_start`
+> 重放一次，`tool_call` 再按同一份名单兜底。
+
+**为什么限制档要显式 `--no-mcp`**（2026-10-09 起；2026-11-07 取消 `--tools` 后更需要）：pi 的 MCP 过滤判据是
 "白名单里有没有 `mcp__` 前缀的名字"（`core/agent-session.ts` 的 `_allowlistFiltersMcp`），
 所以 `--tools read,grep,find,ls` 之下**用户的 MCP 服务器照样被拉起**（stdio stub 实测被 spawn）。
 工具本身不会声明给模型（它们要走 `tool_search`/`codemode`，而那两个也被白名单过滤掉了，
@@ -56,9 +69,9 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
   就能通过内嵌终端 `pty_*`、插件安装等既有能力执行命令；H3 修复的重点是**静默读文件/密钥**
   与配置重定向，不是把 webview 当完全不可信（那需要另一轮 capability 隔离）。
 
-「完全权限」刻意**不传** `--tools`：一旦传显式白名单，pi 会把**扩展与自定义工具一并过滤掉**
-（`cli/args.ts:307-308` 帮助文本明说 "Applies to built-in, extension, and custom tools"）。
-不传 = 不限制，这才是"完全权限"该有的语义，也是自定义 pi 场景下插件工具能用的唯一档位。
+**2026-11-07 起所有档位都不传 `--tools`**：白名单在注册期裁剪，被裁掉的工具运行期点不亮，
+"切档不重启"就没法做（见 §1.1）。代价是插件工具在所有档位都会被注册，限制档由守卫
+`setActiveTools()` 不声明它们；模型看不见、`tool_call` 也拦得住。
 
 实现：`apps/desktop/src-tauri/src/pi/permission.rs`（档位矩阵与单测）、
 `resources/piggy-guard.js`（守卫扩展）、`pi/process.rs::spawn_worker`（拼参数）。
@@ -91,18 +104,24 @@ pi 自己会回一句 "MCP tools are only reachable from the codemode or tool_se
   （pi 自己加载扩展失败只是打印一行 + 提示 `-ne`，然后**继续跑** —— 已实测确认）。
 - 守卫内部处理器抛异常时 pi 也会阻止执行（`agent-session.ts:548` `Extension failed, blocking execution`）。
 
-### 1.4 切档为什么要重启
+### 1.4 切档为什么（几乎）不再重启
 
-`--tools`/`-e` 是 CLI 参数。切档走的是**和崩溃复活完全相同**的路径
-（`sessions/registry.rs::set_permission_unlocked` → `revive_unlocked`）：停旧进程 →
-按新档 spawn → 必要时 `switch_session` → `get_entries(since=cursor)` 游标补齐 → 发 `resync`。
-会话文件与游标不变，所以对话内容不丢。
+2026-11-07 起 `set_permission_unlocked` 有两条路径（`sessions/registry.rs::plan_set_permission`）：
 
-整条路径**不持 registry 锁**：复活要握手（冷启动预算 40s），握着全局锁做这件事会让
-所有标签页一起等（2026-10-09 复查修；契约用例 C15 量这条）。
+| 情形 | 动作 |
+|---|---|
+| 降档 / 限制档之间互切 / spawn 本来就是完全权限 | **就地生效**：原子写 `~/.piggy/permission/<tab>.json`，守卫下一轮 `before_agent_start` 调 `setActiveTools()`；`tool_call` 立刻按新档拦截。不断流、不动进程 |
+| 从限制档升到「完全权限」**且**本机/本项目配了 MCP | **重启**：进程 spawn 时带了 `--no-mcp`，MCP 工具从未注册，`setActiveTools()` 点不亮。走与崩溃复活相同的路径（`revive_unlocked`） |
+| 升到「完全权限」但没有 MCP 配置 | 就地生效（`--no-mcp` 在没配置时是个 no-op） |
 
-流式中拒绝切档（会打断回合，且用户看不出"前半段一个档、后半段另一个档"）。
-换档不占崩溃重启预算（`restarts` 归零）。
+重启那条路径**不持 registry 锁**（复活要握手，握着全局锁会让所有标签页一起等；
+契约用例 C15 量这条）。会话文件与游标不变，所以对话内容不丢；换档不占崩溃重启预算。
+
+流式中仍然拒绝切档（会打断回合，且用户看不出"前半段一个档、后半段另一个档"）。
+
+**守卫的降级链**（任何一环丢了都不能变成"没有限制"）：
+档位文件 → `PIGGY_PERMISSION_TOOLS`（spawn 期工具集）→ 两者都没有时**拒绝一切工具调用**
+（fail-closed；因为 `bash` 不在路径守卫范围内，放过去就是提权）。
 
 ### 1.5 默认值与持久化
 
@@ -187,7 +206,7 @@ pi 自己 `bash` 工具起的子进程仍然拿不到 `git`/`python`/用户自�
 `PIGGY_SHELL=/path/to/shell` 换一个 shell 来问。
 门禁是 `login_shell_path_makes_a_node_shim_runnable`：**造一个真的 `exec node` 垫片**，
 先用 Finder 那套 `PATH` 断言它报 `node: not found`（复现），再用补齐后的 `PATH`
-断言 `pi --version` 真的跑出 `1.4.0`（修好了）。把 `-ilc` 改回 `-lc` 它必须变红 ——
+断言 `pi --version` 真的跑出 `1.5.0`（修好了）。把 `-ilc` 改回 `-lc` 它必须变红 ——
 已验证（红时报的就是用户那句 `exec: node: not found`）。
 
 ⚠️ 因此 `PI_BIN` 这条**仍然**只适合开发/QA：GUI 启动时它本来就传不进来
@@ -235,10 +254,10 @@ pi 自己 `bash` 工具起的子进程仍然拿不到 `git`/`python`/用户自�
    设置页读列表时也把当前会话的 cwd 传下去（否则界面会承诺一个 spawn 时做不到的事）。
    ② 失败已经发生时（pi 已经退出），`pi:state` 的 `stderrTail` 会被前端翻成一句可操作的
    提示（"两者留一个：删掉你自己装的那份，或到设置 › 通用 › 内置插件关掉 Piggy 这份"）。
-2. **`--tools` 会把插件工具一起过滤掉**：pi 的帮助写着 "Applies to built-in, extension, and
-   custom tools"，真机实测 `--tools read` 之下 `getAllTools()` 只剩 `["read"]`
-   （插件的两个工具都没了）。所以限制档位拼白名单时，要把**这次真的注入了的**插件在
-   `piggy-plugin.json` 里申报的工具名加进去（`pi/process.rs::cli_args`）。
+2. **插件工具要进"运行期工具集"**（2026-11-07 前是进 `--tools`）：限制档只声明
+   档位自带的那几个工具，插件申报的工具名必须显式并进 `activeTools`，否则插件等于没注入
+   （模型看不见它）。合并点在 `pi/permission.rs::active_tools_for`，
+   spawn 期写档位文件、切档期重写同一份文件 —— 单一真相。
 3. **清单缺失/入口不存在就不注入**：pi 对"加载失败的扩展"的处理是报诊断并退出 ——
    宁可少一个功能，也不能让用户开不了会话。
 4. **目录缺失要留在列表里、并说清是哪一种"没有"**（2026-10-09 补）：`lib.rs` 以前用
@@ -248,14 +267,13 @@ pi 自己 `bash` 工具起的子进程仍然拿不到 `git`/`python`/用户自�
    与"设置里关掉了"是两句不同的话。同理，候选③（源码树）会在界面与启动日志里
    标成**开发态**：它是编译期烧进二进制的构建机绝对路径，打包产物里出现它就说明清单漏登记了。
 
-5. **覆盖型插件的工具名不进 `--tools` 白名单**（2026-10-09 补）：白名单是权限档位的边界，
-   而有一类插件注册的是**顶替 pi 内置工具**的扩展（收录的 `pi-guardrails` 顶替
-   `write`/`edit` 加写前校验）。把 `write,edit` 并进「仅可查看」档的白名单 = **凭空把只读档变成可写档**，
-   而当时的单测只钉静态常量、抓不到合并结果。规矩：清单里写 `"allowlist": false`
-   （`pi/plugins.rs::Manifest::allowlist`，默认 true 保持老行为），
-   `vendor-plugin.mjs` 对应 `--no-allowlist` 开关；两条闸门盯着它 ——
-   `plugin-contract.test.ts`（申报了内置工具名就必须显式 allowlist:false）与
-   `pi/process.rs` 的 argv 级用例（限制档的 `--tools` 里不许出现 write/edit）。
+5. **覆盖型插件的工具名不进限制档的运行期工具集**（2026-10-09 补，2026-11-07 更新）：
+   有一类插件注册的是**顶替 pi 内置工具**的扩展（收录的 `pi-guardrails` 顶替
+   `write`/`edit` 加写前校验）。把 `write,edit` 并进「仅可查看」档 = **凭空把只读档变成可写档**。
+   规矩不变：清单里写 `"allowlist": false`（`pi/plugins.rs::Manifest::allowlist`，默认 true），
+   `vendor-plugin.mjs` 对应 `--no-allowlist` 开关；闸门从"argv 里不许出现 write/edit"
+   改成"`active_tools_for(ReadOnly, …)` 的结果里不许出现 write/edit"
+   （`pi/process.rs::override_type_plugin_does_not_widen_a_restricted_allowlist`）。
 
 6. **目录必须登记进两个 SKU 的 `bundle.resources`，而且要用 `**/*`**（2026-10-09 补）：
    `pi-plugins/` 是 10-06 进来的，而资源清单里**从来没登记过它** → 打包产物零插件；
@@ -419,12 +437,14 @@ CLI 参数  >  环境变量  >  项目 .pi/settings.json  >  全局 ~/.pi/agent/
   `registerCommand`、`registerFlag`、`registerProvider`。
 - **MCP：0.87 时代 pi 没有 MCP；1.1.0 起有了**（内置 `mcp` 扩展 + `--no-mcp` 开关，
   工具以 `mcp__*` 名字出现，且只能经 `tool_search`/`codemode` 触达）。
-  Piggy 在**限制档**显式关掉它（见 §1.2），完全权限档留给用户自己的配置。
+  Piggy 在**限制档**显式关掉它（`--no-mcp`，见 §1.2），完全权限档留给用户自己的配置。
+  ⚠️ 这也是运行期切档唯一的例外：从限制档升到完全权限时，若配了 MCP 就得重启换进程（§1.4）。
   用户自己的 MCP 配置读 `<agent-dir>/mcp.json` 与项目 `.pi/mcp.json`。
 - `get_commands`（Composer 的 `/` 补全）只有三个来源：extension、prompt 模板、skill。
   **内置 TUI 斜杠命令不在其中。**
-- ⚠️ **`--tools` 会连插件工具一起过滤。** 默认档位是「工作区内修改」，
-  所以自定义 pi 带的扩展工具默认**不可见**；要用插件工具得把该标签页切到「完全权限」。
+- ⚠️ **自定义 pi 带的扩展工具默认仍然不可见**：限制档只声明档位自带的工具，
+  插件工具要显式并进运行期工具集（§2.2b 纪律 2），或者把该标签页切到「完全权限」。
+  2026-11-07 之前这条是 `--tools` 的副作用；现在是守卫 `setActiveTools()` 的显式选择。
 
 ### 2.6 打包 standalone 的两个坑（已修）
 

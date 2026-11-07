@@ -42,12 +42,81 @@
  * 敏感目录清单与 Rust 侧 `config/paths.rs::SENSITIVE_HOME_SUBDIRS` 镜像，两边同步改。
  */
 
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PATH_SEP = process.platform === 'win32' ? ';' : ':';
+
+/** 运行期档位文件（`~/.piggy/permission/<tab>.json`，由 Rust 原子写）。 */
+export const PERMISSION_FILE_ENV = 'PIGGY_PERMISSION_FILE';
+/** spawn 期档位（兜底；文件读不到时用）。与 Rust `pi/process.rs::PERMISSION_ENV` 同名。 */
+export const PERMISSION_ENV = 'PIGGY_PERMISSION_MODE';
+/** spawn 期工具集（逗号分隔）。档位文件缺失时的最后一道兜底。 */
+export const PERMISSION_TOOLS_ENV = 'PIGGY_PERMISSION_TOOLS';
+
+/**
+ * 读当前档位。
+ *
+ * **文件是唯一真相**：切档发生在另一个进程（Rust），扩展不能缓存。每次工具调用都读
+ * （几十字节，一次 `readFileSync`），换来"切档立即生效"。
+ *
+ * 降级链：文件 → 环境变量（spawn 期档位）。文件半写/缺失时退回环境变量，
+ * 这样"切档失败"最多是"没切成"，不会变成"没有限制"。
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {(path: string, encoding: string) => string} [readFile]
+ * @returns {{mode: string, all: boolean, activeTools: string[]|null}}
+ */
+export function readPermission(env = process.env, readFile = readFileSync) {
+  const file = typeof env[PERMISSION_FILE_ENV] === 'string' ? env[PERMISSION_FILE_ENV].trim() : '';
+  if (file) {
+    try {
+      const parsed = JSON.parse(readFile(file, 'utf8'));
+      if (parsed && typeof parsed.mode === 'string') {
+        const list = Array.isArray(parsed.activeTools)
+          ? parsed.activeTools.filter((n) => typeof n === 'string')
+          : [];
+        return {
+          mode: parsed.mode,
+          all: parsed.all === true || parsed.mode === 'full',
+          // 空列表 = 文件坏了一半：不拿它当"一个工具都不给"，退回"不做名字过滤"
+          activeTools: list.length > 0 ? list : null,
+        };
+      }
+    } catch {
+      /* 文件还没写出来 / 正在 rename 的瞬间：退回环境变量 */
+    }
+  }
+  const mode =
+    typeof env[PERMISSION_ENV] === 'string' && env[PERMISSION_ENV].trim()
+      ? env[PERMISSION_ENV].trim()
+      : 'workspace';
+  const fromEnv = String(env[PERMISSION_TOOLS_ENV] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // ⚠️ 名单缺失时**不能**返回"不过滤"：限制档的 bash 不在路径守卫范围内，
+  // 一次文件丢失就会变成提权。这里宁可 fail-closed（toolAllowed 对 null 返回 false）。
+  return { mode, all: mode === 'full', activeTools: fromEnv.length > 0 ? fromEnv : null };
+}
+
+/**
+ * 工具名是否被当前档位允许。
+ * 文件名过滤是**第二道**（第一道是 `pi.setActiveTools()` 不把工具声明给模型）；
+ * 它兜住"扩展在运行期又注册了工具"这类 setActiveTools 还没跟上的窗口。
+ *
+ * @param {string} toolName
+ * @param {{all: boolean, activeTools: string[]|null}} perm
+ * @returns {boolean}
+ */
+export function toolAllowed(toolName, perm) {
+  if (perm.all) return true;
+  // 名单缺失 = fail-closed。绝不能让"文件没了"变成"限制没了"。
+  if (!perm.activeTools) return false;
+  return perm.activeTools.includes(toolName);
+}
 
 /** pi `normalizePath` 会归一化的 Unicode 空格（NBSP / en-space / … / 全角空格）。 */
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -109,6 +178,10 @@ export function resolvePiPath(filePath, baseCwd, home = homedir(), platform = pr
     normalized = join(home, normalized.slice(2));
   }
   if (/^file:\/\//.test(normalized)) {
+    // 只有 scheme+分隔符、没有路径（`file://`）在 Node 里会解析成 `/` —— 那不是模型想指的
+    // 文件，按畸形处理（fail-closed）。2026-11-07 起 Node 24.14 的 fileURLToPath 不再抛错，
+    // 旧实现会把它当根目录放行。
+    if (/^file:\/\/*$/i.test(normalized)) return null;
     try {
       normalized = fileURLToPath(normalized);
     } catch {
@@ -374,9 +447,64 @@ export default function piggyGuard(pi) {
     // 提前告警：真到拦截时才报错会淹没在工具结果里
     console.error('[piggy-guard] PIGGY_GUARD_ROOTS 缺失，本会话所有写入都会被拒绝');
   }
+
+  /* 完全权限档的"基线工具集"：进入完全权限时恢复到它。
+     只在**完全权限**下刷新——限制档里 `getActiveTools()` 已经被我们自己收窄了，
+     拿它当基线会把收窄结果当成"全部"。 */
+  const state = { fullTools: null, narrowed: false };
+
+  const applyMode = () => {
+    const perm = readPermission();
+    if (typeof pi.setActiveTools !== 'function') return perm;
+    if (perm.all) {
+      if (state.narrowed && state.fullTools) {
+        pi.setActiveTools(state.fullTools);
+        state.narrowed = false;
+      }
+      return perm;
+    }
+    if (perm.activeTools) {
+      pi.setActiveTools(perm.activeTools);
+      state.narrowed = true;
+    }
+    return perm;
+  };
+
+  pi.on('session_start', () => {
+    // 先记基线（此刻还是 pi 的默认全集），再按档位收窄
+    if (typeof pi.getActiveTools === 'function') state.fullTools = pi.getActiveTools();
+    applyMode();
+  });
+
+  /* 每轮开始前重放一次档位：切档可能发生在两轮之间（用户点了档位、或另一个入口改了文件）。
+     这个位置是权威的——`before_agent_start` 里调用 `setActiveTools()` 不会被 pi 撤销。 */
+  pi.on('before_agent_start', () => {
+    const perm = readPermission();
+    if (perm.all && typeof pi.getActiveTools === 'function') {
+      // 完全权限下让 pi 当权威：新注册的工具（MCP 连接完成等）会被自动激活
+      if (state.narrowed && state.fullTools) {
+        pi.setActiveTools(state.fullTools);
+        state.narrowed = false;
+      }
+      state.fullTools = pi.getActiveTools();
+      return;
+    }
+    applyMode();
+  });
+
   /* ⚠️ 边界**每次调用现算**（见 boundaryFor）：会话可能在同一个进程里被 switch_session
      切到别的目录，spawn 时写死的 PIGGY_GUARD_ROOTS 那时已经过期，只有会话自己的 cwd 是权威。 */
   pi.on('tool_call', async (event, ctx) => {
+    const perm = readPermission();
+    // 完全权限：不拦、不查路径（与 2026-11-07 之前"不注入守卫"的语义一致）
+    if (perm.all) return undefined;
+    // 第一道已经由 setActiveTools 拿掉；这一道兜住"扩展运行期新注册"的窗口
+    if (!toolAllowed(event?.toolName, perm)) {
+      return {
+        block: true,
+        reason: `Piggy 守卫：当前权限档位「${perm.mode}」不提供工具 ${event?.toolName}`,
+      };
+    }
     const roots = boundaryFor(ctx);
     const baseCwd = roots?.[0] ?? process.cwd();
     const home = homedir();

@@ -31,9 +31,16 @@ pub struct Tab {
     pub worker: Option<Worker>,
     pub restarts: u32,
     pub deliberate: bool,
-    /// 本标签页的权限档位。`--tools`/`-e` 是 CLI 参数，改档必须重启 worker；
-    /// 该字段随 `revive_tab` 一起传给新进程，保证重启后档位不丢。
+    /// 本标签页**当前**的权限档位（用户选择）。
+    ///
+    /// 2026-11-07 起运行期可切：`permission` 立即变，worker 不必重启；
+    /// 守卫读 `~/.piggy/permission/<tab>.json` 收窄工具集（docs/17 §2.1）。
     pub permission: PermissionMode,
+    /// 这台 worker **spawn 时**的档位（决定它有没有带 `--no-mcp`）。
+    ///
+    /// 只在"升到完全权限"时需要：spawn 时带了 `--no-mcp` 的进程里 MCP 工具
+    /// 压根没注册，`setActiveTools()` 点不亮，只能重启换进程。无 MCP 配置时不重启。
+    pub spawn_permission: PermissionMode,
     /// 最近一次被使用的时间（任意 IPC 命令经 worker_of 触碰；05 §4.1 空闲回收依据）
     pub last_activity: Instant,
     /// 当前 worker 的装机时间——崩溃预算的"稳定期"判据（见 [`Registry::claim_revive`]）。
@@ -107,6 +114,33 @@ pub struct TabSnapshot {
     pub worker_state: WorkerState,
     pub permission: PermissionMode,
     pub state: Value,
+}
+
+/// 发 prompt 前请求头快照需要的现场（docs/05 §6.4）：只读，不改任何状态。
+pub struct SnapshotContext {
+    pub cwd: PathBuf,
+    pub session_file: Option<String>,
+    pub permission: PermissionMode,
+    pub active_tools: Option<Vec<String>>,
+}
+
+impl Registry {
+    /// 给请求头快照取现场。tab 不在就返回 `None`（调用方静默跳过）。
+    pub fn snapshot_context(&self, tab_id: &str) -> Option<SnapshotContext> {
+        let tab = self.tabs.get(tab_id)?;
+        let plugins = crate::pi::plugins::enabled_plugin_dirs(&self.bundled_plugins, Some(&tab.cwd));
+        let delegation: &[&str] = if self.subagent_policy.is_some() {
+            &crate::pi::process::DELEGATION_TOOLS
+        } else {
+            &[]
+        };
+        Some(SnapshotContext {
+            cwd: tab.cwd.clone(),
+            session_file: tab.session_file.clone(),
+            permission: tab.permission,
+            active_tools: crate::pi::permission::active_tools_for(tab.permission, &plugins, delegation),
+        })
+    }
 }
 
 impl Registry {
@@ -232,6 +266,7 @@ impl Registry {
             restarts: 0,
             deliberate: false,
             permission,
+            spawn_permission: permission,
             last_activity: Instant::now(),
             worker_since: Some(Instant::now()),
         };
@@ -262,10 +297,12 @@ impl Registry {
         因工具名冲突直接退出（真机复现过），而 2026-10-09 之前这里写死 `None`，
         等于那条路在生产里一直瞎着。 */
         let plugins = crate::pi::plugins::enabled_plugin_dirs(&self.bundled_plugins, Some(&cwd));
+        let permission_file = crate::config::app::permission_path_for(tab_id);
         let build = |pi_bin: PathBuf| SpawnArgs {
             cwd: cwd.clone(),
             pi_bin,
             session: session.clone(),
+            permission_file: permission_file.clone(),
             name: name.clone(),
             permission,
             guard_script: guard.clone(),
@@ -514,28 +551,56 @@ pub async fn create_tab_unlocked(
 ///
 /// 抽出来是为了让命令层能在锁内只做微秒级的事 —— 停进程要 `abort`（最多 2s）+
 /// `taskkill`，复活要握手（40s 预算），两件都不能在锁里做。
-fn begin_set_permission(
-    reg: &mut Registry,
-    tab_id: &str,
-    mode: PermissionMode,
-) -> Result<(Option<Worker>, Option<String>), String> {
+/// 切档计划（docs/17 §2.1）：能就地生效，还是必须带同一份会话文件重启 worker。
+enum PermissionChange {
+    /// 写运行期档位文件即可，worker 不动。
+    Runtime,
+    /// spawn 时带了 `--no-mcp`，目标又是「完全权限」，而本机/本项目配了 MCP：
+    /// 那个进程里 MCP 工具从来没注册过，`setActiveTools()` 点不亮，只能换进程。
+    Restart {
+        worker: Worker,
+        session_file: Option<String>,
+    },
+}
+
+/// 只有一种情形必须换进程（docs/17 §2.1）：
+/// 目标是完全权限、当前 worker 是限制档 spawn 的（带过 `--no-mcp`），且本机配了 MCP。
+/// 其它所有切换都能靠守卫的 `setActiveTools()` 就地生效。
+///
+/// 抽成纯函数：这条判据错了，要么"切了没生效"（用户以为完全权限、实际缺 MCP 工具），
+/// 要么"每次都重启"（运行期切档等于没做）。
+fn needs_restart(spawn: PermissionMode, has_worker: bool, target: PermissionMode) -> bool {
+    has_worker && target == PermissionMode::Full && spawn != PermissionMode::Full
+}
+
+fn plan_set_permission(reg: &mut Registry, tab_id: &str, mode: PermissionMode) -> Result<PermissionChange, String> {
     let Some(tab) = reg.tabs.get_mut(tab_id) else {
         return Err(format!("tab 不存在: {tab_id}"));
     };
-    let state = tab.worker.as_ref().map(|w| w.state());
-    if matches!(state, Some(WorkerState::Busy)) {
+    if matches!(tab.worker.as_ref().map(|w| w.state()), Some(WorkerState::Busy)) {
         return Err("会话正在运行，请先中断（Esc）再切换权限档位".to_string());
     }
+    let must_restart = needs_restart(tab.spawn_permission, tab.worker.is_some(), mode)
+        && crate::pi::permission::mcp_configured(&tab.cwd);
     tab.permission = mode;
+    if !must_restart {
+        return Ok(PermissionChange::Runtime);
+    }
     tab.restarts = 0; // 换档不是崩溃，不占崩溃重启预算
     tab.worker_since = None;
-    Ok((tab.worker.take(), tab.session_file.clone()))
+    Ok(PermissionChange::Restart {
+        worker: tab.worker.take().expect("must_restart 已确认有 worker"),
+        session_file: tab.session_file.clone(),
+    })
 }
 
-/// **锁外切权限档位**（`--tools`/`-e` 都是 CLI 参数 → 只能带同一份会话文件重启 worker）。
+/// 切换权限档位（docs/17 §2.1）。
 ///
-/// 三段式：改档（锁内）→ 停旧进程（锁外）→ 按新档复活（锁外，复用崩溃复活那条路径，
-/// 因此会话文件、游标补齐、resync 的语义完全一致）。
+/// 两条路径：
+/// - **就地生效**：写 `~/.piggy/permission/<tab>.json`，守卫在下一轮 `before_agent_start`
+///   用 `pi.setActiveTools()` 收窄/放开，`tool_call` 立刻按新档位拦截。不重启、不断流。
+/// - **重启**：唯一必须重启的情形是"升到完全权限 + 本机配了 MCP + 这个进程带 `--no-mcp`"。
+///
 /// 拒绝在流式中切换：那会打断进行中的回合，且用户看不到"后半段用了另一个档位"。
 pub async fn set_permission_unlocked(
     shared: &SharedRegistry,
@@ -543,32 +608,79 @@ pub async fn set_permission_unlocked(
     tab_id: &str,
     mode: PermissionMode,
 ) -> Result<Value, String> {
-    let (old_worker, session_file) = {
+    let plan = {
         let mut reg = shared.lock().await;
-        begin_set_permission(&mut reg, tab_id, mode)?
+        plan_set_permission(&mut reg, tab_id, mode)?
     };
-    // 主动停旧进程；deliberate 期间 watcher 不会把它当崩溃复活
-    if let Some(w) = old_worker {
-        let _ = w.shutdown().await;
-    }
-    let revived = revive_unlocked(shared, sink, tab_id).await;
-    let worker_state = {
-        let reg = shared.lock().await;
-        reg.tabs
-            .get(tab_id)
-            .map(|t| t.worker_state())
-            .unwrap_or(WorkerState::Crashed)
-    };
-    match revived {
-        Ok(_) => Ok(json!({
-            "tabId": tab_id,
-            "permission": mode,
-            "workerState": worker_state,
-            "sessionFile": session_file,
-            "tools": mode.tool_allowlist(),
-            "pathGuard": mode.needs_path_guard(),
-        })),
-        Err(e) => Err(format!("已切换到「{}」，但 worker 重启失败：{e}", mode.label())),
+    match plan {
+        PermissionChange::Runtime => {
+            let (path, active) = {
+                let reg = shared.lock().await;
+                let Some(tab) = reg.tabs.get(tab_id) else {
+                    return Err(format!("tab 不存在: {tab_id}"));
+                };
+                let plugins = crate::pi::plugins::enabled_plugin_dirs(&reg.bundled_plugins, Some(&tab.cwd));
+                let delegation: &[&str] = if reg.subagent_policy.is_some() {
+                    &crate::pi::process::DELEGATION_TOOLS
+                } else {
+                    &[]
+                };
+                (
+                    crate::config::app::permission_path_for(tab_id),
+                    crate::pi::permission::active_tools_for(mode, &plugins, delegation),
+                )
+            };
+            let Some(path) = path else {
+                return Err(format!("非法 tab id（进不了档位文件名）: {tab_id}"));
+            };
+            crate::pi::permission::write_mode_file(&path, mode, active.as_deref())
+                .map_err(|e| format!("PERMISSION_FILE_WRITE_FAILED: {}（{e}）", path.display()))?;
+            let worker_state = {
+                let reg = shared.lock().await;
+                reg.tabs
+                    .get(tab_id)
+                    .map(|t| t.worker_state())
+                    .unwrap_or(WorkerState::Crashed)
+            };
+            // 多窗口/多视图同步：档位是 tab 级状态，其它监听者要能立刻看到
+            sink.emit_json(
+                &format!("pi:state:{tab_id}"),
+                json!({"state": worker_state, "permission": mode, "runtimeSwitch": true}),
+            );
+            Ok(json!({
+                "tabId": tab_id,
+                "permission": mode,
+                "workerState": worker_state,
+                "sessionFile": serde_json::Value::Null,
+                "tools": active,
+                "pathGuard": mode.needs_path_guard(),
+                "restarted": false,
+            }))
+        }
+        PermissionChange::Restart { worker, session_file } => {
+            // 主动停旧进程；deliberate 期间 watcher 不会把它当崩溃复活
+            let _ = worker.shutdown().await;
+            let revived = revive_unlocked(shared, sink, tab_id).await;
+            let worker_state = {
+                let reg = shared.lock().await;
+                reg.tabs
+                    .get(tab_id)
+                    .map(|t| t.worker_state())
+                    .unwrap_or(WorkerState::Crashed)
+            };
+            match revived {
+                Ok(_) => Ok(json!({
+                    "tabId": tab_id,
+                    "permission": mode,
+                    "workerState": worker_state,
+                    "sessionFile": session_file,
+                    "tools": mode.tool_allowlist(),
+                    "pathGuard": mode.needs_path_guard(),
+                    "restarted": true,
+                })),
+                Err(e) => Err(format!("已切换到「{}」，但 worker 重启失败：{e}", mode.label())),
+            }
+        }
     }
 }
 
@@ -697,6 +809,7 @@ impl Registry {
             tab.session_id = state["sessionId"].as_str().map(String::from);
             tab.last_cursor = leaf_id;
             tab.worker = Some(worker.clone());
+            tab.spawn_permission = job.permission;
             tab.worker_since = Some(Instant::now());
             if tab.deliberate {
                 tab.deliberate = false;
@@ -983,9 +1096,72 @@ mod tests {
             restarts: 0,
             deliberate: false,
             permission: PermissionMode::Workspace,
+            spawn_permission: PermissionMode::Workspace,
             last_activity: Instant::now(),
             worker_since: None,
         }
+    }
+
+    #[test]
+    fn restart_is_only_needed_when_widening_from_an_mcp_less_worker() {
+        use PermissionMode::{Full, ReadOnly, Workspace};
+        // 目标完全权限 + spawn 是限制档 + 有 worker → 可能重启（还要看 MCP 配置）
+        assert!(needs_restart(Workspace, true, Full));
+        assert!(needs_restart(ReadOnly, true, Full));
+        // spawn 本来就是完全权限：工具全注册，切回完全权限不用重启
+        assert!(!needs_restart(Full, true, Full));
+        // 降档/平级：永远不重启
+        assert!(!needs_restart(Full, true, Workspace));
+        assert!(!needs_restart(Workspace, true, ReadOnly));
+        // 没有 worker（休眠）：下次 spawn 直接按新档位起
+        assert!(!needs_restart(Workspace, false, Full));
+    }
+
+    #[test]
+    fn runtime_switch_updates_the_tab_without_taking_the_worker() {
+        let mut reg = Registry {
+            pi_bin: None,
+            builtin: None,
+            pi_source: Default::default(),
+            pi_custom_path: None,
+            guard_script: None,
+            bridge_script: None,
+            subagent_policy: None,
+            bundled_plugins: Vec::new(),
+            default_permission: PermissionMode::Workspace,
+            tabs: HashMap::new(),
+            open_files: HashMap::new(),
+            reviving: std::collections::HashSet::new(),
+        };
+        reg.tabs.insert("t1".into(), tab_with_name(None));
+        let plan = plan_set_permission(&mut reg, "t1", PermissionMode::ReadOnly).unwrap();
+        assert!(matches!(plan, PermissionChange::Runtime));
+        assert_eq!(reg.tabs["t1"].permission, PermissionMode::ReadOnly);
+        // 降档不需要动 spawn 记录（进程还是限制档 spawn 的）
+        assert_eq!(reg.tabs["t1"].spawn_permission, PermissionMode::Workspace);
+    }
+
+    #[test]
+    fn unknown_tab_is_reported() {
+        let mut reg = Registry {
+            pi_bin: None,
+            builtin: None,
+            pi_source: Default::default(),
+            pi_custom_path: None,
+            guard_script: None,
+            bridge_script: None,
+            subagent_policy: None,
+            bundled_plugins: Vec::new(),
+            default_permission: PermissionMode::Workspace,
+            tabs: HashMap::new(),
+            open_files: HashMap::new(),
+            reviving: std::collections::HashSet::new(),
+        };
+        let err = match plan_set_permission(&mut reg, "nope", PermissionMode::Full) {
+            Err(e) => e,
+            Ok(_) => panic!("不存在的 tab 必须报错"),
+        };
+        assert!(err.contains("tab 不存在"), "{err}");
     }
 
     #[test]

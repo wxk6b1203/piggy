@@ -231,6 +231,10 @@ describe('扩展入口', () => {
       }),
     };
     process.env.PIGGY_GUARD_ROOTS = workspace;
+    // 运行期工具集（2026-11-07）：真实 spawn 会由 Rust 写档位文件/注入这份兜底名单；
+    // 单测里直接给「工作区内修改」的工具集，免得被"名单缺失 fail-closed"误伤。
+    process.env.PIGGY_PERMISSION_TOOLS = 'read,grep,find,ls,write,edit';
+    process.env.PIGGY_PERMISSION_MODE = 'workspace';
     try {
       piggyGuard(pi);
       expect(pi.on).toHaveBeenCalledWith('tool_call', expect.any(Function));
@@ -247,6 +251,8 @@ describe('扩展入口', () => {
       expect(blocked?.block).toBe(true);
     } finally {
       delete process.env.PIGGY_GUARD_ROOTS;
+      delete process.env.PIGGY_PERMISSION_TOOLS;
+      delete process.env.PIGGY_PERMISSION_MODE;
     }
   });
 
@@ -330,6 +336,8 @@ describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
     const handlers = new Map<string, (e: unknown, c?: PiggyGuardHookCtx) => unknown>();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.PIGGY_GUARD_ROOTS = workspace; // spawn 时写死的那个目录
+    process.env.PIGGY_PERMISSION_TOOLS = 'read,grep,find,ls,write,edit';
+    process.env.PIGGY_PERMISSION_MODE = 'workspace';
     try {
       const pi = {
         /* 钩子第二个参数的形状与 `piggy-guard.d.ts` 的 `PiggyGuardHookCtx` 对齐：
@@ -360,6 +368,8 @@ describe('写入边界的来源（会话 cwd 优先于环境变量）', () => {
       expect(blocked?.block, '旧项目的写必须被拦').toBe(true);
     } finally {
       delete process.env.PIGGY_GUARD_ROOTS;
+      delete process.env.PIGGY_PERMISSION_TOOLS;
+      delete process.env.PIGGY_PERMISSION_MODE;
       errSpy.mockRestore();
     }
   });
